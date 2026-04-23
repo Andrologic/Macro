@@ -134,6 +134,48 @@ pub struct WorkspaceTaskExecutionTargetDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualFeatureMergeWorkflowRepositoryDto {
+    pub id: String,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "repoPath")]
+    pub repo_path: String,
+    #[serde(rename = "sourceBranchName")]
+    pub source_branch_name: String,
+    #[serde(rename = "targetBranchName")]
+    pub target_branch_name: String,
+    pub state: String,
+    #[serde(default, rename = "hadChangesAtStart")]
+    pub had_changes_at_start: bool,
+    #[serde(default, rename = "mergeAppliedAt")]
+    pub merge_applied_at: Option<String>,
+    #[serde(default, rename = "blockingKind")]
+    pub blocking_kind: Option<String>,
+    #[serde(default, rename = "blockingReason")]
+    pub blocking_reason: Option<String>,
+    #[serde(default, rename = "conflictFiles")]
+    pub conflict_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualFeatureMergeWorkflowDto {
+    pub kind: String,
+    pub phase: String,
+    #[serde(rename = "taskStatus")]
+    pub task_status: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(default, rename = "lastLoadedAt")]
+    pub last_loaded_at: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub repositories: Vec<ManualFeatureMergeWorkflowRepositoryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualFeatureDto {
     pub id: String,
     #[serde(rename = "conversationId")]
@@ -161,6 +203,8 @@ pub struct ManualFeatureDto {
     pub context_project_ids: Vec<String>,
     #[serde(default, rename = "executionTargets")]
     pub execution_targets: Vec<WorkspaceTaskExecutionTargetDto>,
+    #[serde(default, rename = "mergeWorkflow")]
+    pub merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "updatedAt")]

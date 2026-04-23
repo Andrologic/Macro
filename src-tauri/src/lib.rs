@@ -445,6 +445,7 @@ pub fn run() {
             commands::workspace::workspace_restore_manual_feature,
             commands::workspace::workspace_delete_manual_feature,
             commands::workspace::workspace_update_standalone_task_status,
+            commands::workspace::workspace_update_manual_feature_merge_workflow,
             // Tool policy validation command
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,

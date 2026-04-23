@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
+import { persistArchitectPlanStrategyPreview } from '../../services/architectPlanRuntimeService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
@@ -585,7 +586,30 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   const handleDiscardStrategyPreview = useCallback(() => {
     setStrategyMutationPreview(null);
-  }, [setStrategyMutationPreview]);
+    if (activePlanContext?.id) {
+      const projectIds = Array.from(
+        new Set([
+          ...planNodes.flatMap((node) => normalizeNodeProjectIds(node)),
+          ...predictedBranches.map((branch) => branch.projectId),
+        ])
+      );
+      void persistArchitectPlanStrategyPreview({
+        branchName: targetBranch,
+        plan: {
+          id: activePlanContext.id,
+          projectId: projectIds[0],
+          projectIds,
+        },
+        preview: null,
+      });
+    }
+  }, [
+    activePlanContext,
+    planNodes,
+    predictedBranches,
+    setStrategyMutationPreview,
+    targetBranch,
+  ]);
 
   const handleApplyStrategyPreview = useCallback(async () => {
     if (!activeStrategyMutationPreview || !activePlanContext) return;
@@ -610,6 +634,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
       });
       setStrategyMutationPreview(null);
+      await persistArchitectPlanStrategyPreview({
+        branchName: targetBranch,
+        plan: updatedPlan,
+        preview: null,
+      });
       await useTaskStore.getState().refreshFromPlan();
       notify.success(
         activeStrategyMutationPreview.autoProvisionBranches

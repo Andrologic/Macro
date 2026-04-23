@@ -5,10 +5,11 @@ use crate::db::repository;
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectAccessChangePreviewDto,
-    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
-    ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
+    ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
+    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto,
+    ProjectGroupDto, ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto,
+    WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
@@ -689,4 +690,23 @@ pub async fn workspace_update_standalone_task_status(
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::update_standalone_task_status(&workspace_path, &metadata_root, &task_id, &status)
         .await
+}
+
+#[tauri::command]
+pub async fn workspace_update_manual_feature_merge_workflow(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_manual_feature_merge_workflow(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        merge_workflow,
+    )
+    .await
 }

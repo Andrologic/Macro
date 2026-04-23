@@ -23,6 +23,7 @@ import {
   getFileChangesExecutionTargets,
 } from '../services/fileChangesReviewScope';
 import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
+import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -138,6 +139,7 @@ interface FileChangesTaskLike {
   task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization';
   project_id?: string | null;
   assigned_branch: string;
+  base_branch?: string | null;
   execution_targets?: TaskExecutionTarget[];
 }
 
@@ -196,6 +198,34 @@ const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies 
   getTaskState: () => useTaskStore.getState(),
   setTaskState: (partial) => useTaskStore.setState(partial),
 });
+
+const resolveReviewRepositoryIntegrationBranch = (
+  deps: FileChangesStoreDependencies,
+  task: FileChangesTaskLike,
+  options: {
+    existingPlanBranchName?: string | null;
+    repositoryId?: string | null;
+    target?: TaskExecutionTarget | null;
+  } = {}
+): string | null => {
+  if (options.existingPlanBranchName) {
+    return options.existingPlanBranchName;
+  }
+
+  if (task.task_source !== 'standalone') {
+    return null;
+  }
+
+  const executionTarget =
+    options.target ||
+    getFileChangesExecutionTargets(task, deps.getGitFlowBaseBranch).find(
+      (target) =>
+        buildFileChangesRepositoryId(target) === options.repositoryId
+    ) ||
+    null;
+
+  return resolveStandaloneTargetBranchName(task, executionTarget);
+};
 
 export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
   const root: FolderNode[] = [];
@@ -636,7 +666,9 @@ const loadRepositoryState = async (params: {
     repoPath,
     worktreePath,
     branchName: normalizeBranchName(target.branchName),
-    planBranchName: target.planBranchName || (task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : null),
+    planBranchName:
+      target.planBranchName ||
+      resolveReviewRepositoryIntegrationBranch(deps, task, { target }),
     changes,
     stagedPaths,
     selectedChangeId,
@@ -674,13 +706,18 @@ const ensureNoForeignStagedFiles = async (
 
 const buildCompletionRepositoryRecord = (
   deps: FileChangesStoreDependencies,
+  task: FileChangesTaskLike,
   repository: ReviewRepositoryState,
   existingRecord?: TaskCompletionRepositoryRecord
 ): TaskCompletionRepositoryRecord => ({
   projectId: repository.projectId,
   repoPath: repository.repoPath,
   branchName: repository.branchName,
-  planBranchName: repository.planBranchName || deps.getGitFlowBaseBranch(),
+  planBranchName:
+    resolveReviewRepositoryIntegrationBranch(deps, task, {
+      repositoryId: repository.id,
+      existingPlanBranchName: repository.planBranchName,
+    }) || deps.getGitFlowBaseBranch(),
   mergeOutput: existingRecord?.mergeOutput,
 });
 
@@ -1512,9 +1549,11 @@ export const createFileChangesStore = (
       throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
     }
 
-    const integrationBranchName = repository.planBranchName || (
-      task.task_source === 'standalone' ? deps.getGitFlowBaseBranch() : null
-    );
+    const integrationBranchName =
+      resolveReviewRepositoryIntegrationBranch(deps, task, {
+        repositoryId,
+        existingPlanBranchName: repository.planBranchName,
+      });
     if (!integrationBranchName) {
       throw new Error(
         tChanges(
@@ -1600,7 +1639,7 @@ export const createFileChangesStore = (
 
       const completionRecords = nextRepositories.map((currentRepository) =>
         nextExecutionRecords[currentRepository.id] ||
-        buildCompletionRepositoryRecord(deps, currentRepository)
+        buildCompletionRepositoryRecord(deps, task, currentRepository)
       );
       let taskCompleted = false;
       const taskStatus: TaskStatus | null = deps.getTaskState().getTaskById(task.id)?.status ?? null;

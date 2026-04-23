@@ -75,6 +75,8 @@ const getIconName = (state: TaskStatusIndicatorState) => {
       return 'git-merge';
     case 'merging':
       return 'git-merge';
+    case 'merge_partial':
+      return 'git-merge';
     case 'merge_blocked':
       return 'git-merge';
     case 'merge_failed':

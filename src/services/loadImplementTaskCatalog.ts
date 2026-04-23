@@ -14,6 +14,9 @@ import {
   isExecutableImplementPlanStatus,
   type ImplementTaskCatalog,
 } from './implementTaskCatalog';
+import { readArchitectPlanRuntime } from './architectPlanRuntimeService';
+import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
+import { buildPlanFinalizationTaskId } from './planFinalization';
 
 interface ActivePlanContextState {
   id: string;
@@ -254,10 +257,60 @@ export const createLoadImplementTaskCatalog = (
       plans = upsertPlanRecord(plans, activePlan);
     }
 
-    return dependencies.buildImplementTaskCatalog({
+    const catalog = dependencies.buildImplementTaskCatalog({
       plans,
       fallbackTasks,
     });
+
+    const runtimeEntries = (
+      await Promise.all(
+        plans.map(async (plan) => {
+          const runtime = await readArchitectPlanRuntime({
+            branchName: plan.targetBranch,
+            planId: plan.id,
+            projectIds: plan.projectIds,
+          });
+          return runtime ? ([plan.id, runtime] as const) : null;
+        }),
+      )
+    ).filter(
+      (
+        entry,
+      ): entry is readonly [
+        string,
+        NonNullable<Awaited<ReturnType<typeof readArchitectPlanRuntime>>>,
+      ] => entry !== null,
+    );
+    const runtimeByPlanId = new Map(runtimeEntries);
+
+    return {
+      ...catalog,
+      tasks: catalog.tasks.map((task) => {
+        if (!task.plan_id) {
+          return task;
+        }
+        const runtime = runtimeByPlanId.get(task.plan_id);
+        if (!runtime) {
+          return task;
+        }
+        const session =
+          runtime.mergeWorkflows[
+            task.task_source === 'plan_finalization'
+              ? buildPlanFinalizationTaskId(task.plan_id)
+              : task.id
+          ] || null;
+        if (!session) {
+          return task;
+        }
+        return {
+          ...task,
+          merge_workflow: session,
+          merge_workflow_summary:
+            task.merge_workflow_summary ||
+            summarizePersistedMergeWorkflowSession(session),
+        };
+      }),
+    };
   };
 };
 

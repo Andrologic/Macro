@@ -95,6 +95,11 @@ const gitMergeCheckMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitBranchDeleteRemoteMock = mock(async () => undefined);
 const gitPullMock = mock(async () => undefined);
+const fsReadFileWithOptionsMock = mock(async () => {
+  throw new Error('not found');
+});
+const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
+const workspaceGetActiveRootMock = mock(async () => '/repos/web');
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
 const workspaceUpdateStandaloneTaskStatusMock = mock(async () => undefined);
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
@@ -187,6 +192,9 @@ mock.module('../services/tauriIpc', () => ({
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
   gitPull: gitPullMock,
+  fsReadFileWithOptions: fsReadFileWithOptionsMock,
+  fsWriteFile: fsWriteFileMock,
+  workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
 }));
@@ -204,6 +212,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
   gitPull: gitPullMock,
+  fsReadFileWithOptions: fsReadFileWithOptionsMock,
+  fsWriteFile: fsWriteFileMock,
+  workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
 }));
