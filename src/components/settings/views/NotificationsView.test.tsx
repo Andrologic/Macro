@@ -102,6 +102,10 @@ const loadNotificationsView = async (devMode: boolean) => {
   mock.restore();
 
   mock.module('react-i18next', () => ({
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
     useTranslation: () => ({
       t: (
         _key: string,

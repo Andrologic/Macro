@@ -112,9 +112,19 @@ const resolveRuntimeWorkspacePaths = async (params: {
   repoPaths?: Array<string | null | undefined>;
 }): Promise<string[]> => {
   const appState = useAppStore.getState();
-  const projectPaths = (params.projectIds || []).map(
-    (projectId) => appState.getProjectById(projectId)?.path ?? null,
-  );
+  const appStateWithOptionalProjects = appState as unknown as {
+    projects?: Array<{ id?: string; path?: string | null }>;
+  };
+  const projects = Array.isArray(appStateWithOptionalProjects.projects)
+    ? appStateWithOptionalProjects.projects
+    : [];
+  const projectPaths = (params.projectIds || []).map((projectId) => {
+    const project = typeof appState.getProjectById === 'function'
+      ? appState.getProjectById(projectId)
+      : projects.find((candidate) => candidate.id === projectId);
+
+    return project?.path ?? null;
+  });
   let activeRoot: string | null = null;
   if (tauriIpc.isTauriAvailable()) {
     try {

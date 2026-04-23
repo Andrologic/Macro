@@ -58,7 +58,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     void loadMergeWorkflowReview(task.id).catch(() => undefined);
   }, [loadMergeWorkflowReview, runtime, task.id]);
 
-  const repositories = runtime?.repositories || [];
+  const repositories = useMemo(() => runtime?.repositories ?? [], [runtime?.repositories]);
   const viewState = resolveMergeWorkflowViewState(runtime, {
     canArchive: isPlanFinalizationTask,
   });
