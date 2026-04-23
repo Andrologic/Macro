@@ -43,7 +43,7 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
   const mergeWorkflowRuntimeByTaskId = useTaskStore(
-    (state) => state.mergeWorkflowRuntimeByTaskId
+    (state) => state.mergeWorkflowRuntimeByTaskId ?? {}
   );
   const runningTaskIds = useMemo(
     () =>

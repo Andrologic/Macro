@@ -498,13 +498,15 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         : null,
     [activePlanContext, strategyMutationPreview]
   );
+  const activePlanId = activePlanContext?.id ?? null;
+  const activePlanTargetBranch = activePlanContext?.targetBranch ?? null;
   const frozenNodeById = useMemo<Map<string, FrozenPlanNode>>(() => {
-    if (!activePlanContext?.id) {
+    if (!activePlanId) {
       return new Map<string, FrozenPlanNode>();
     }
     return buildFrozenPlanNodeMap({
       plan: {
-        id: activePlanContext.id,
+        id: activePlanId,
         nodes: planNodes,
       },
       tasks: tasks.map((task) => ({
@@ -513,19 +515,19 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         status: task.status,
       })),
     });
-  }, [activePlanContext?.id, planNodes, tasks]);
+  }, [activePlanId, planNodes, tasks]);
 
   const targetBranch = useMemo(() => {
-    if (activePlanContext?.targetBranch) {
+    if (activePlanTargetBranch) {
       try {
-        return resolveTargetBranch(activePlanContext.targetBranch);
+        return resolveTargetBranch(activePlanTargetBranch);
       } catch {
         return getGitFlowBaseBranch();
       }
     }
 
     return getGitFlowBaseBranch();
-  }, [activePlanContext?.targetBranch]);
+  }, [activePlanTargetBranch]);
 
   const getFrozenReasonLabel = useCallback(
     (reason: FrozenPlanNode['reason']): string => {
@@ -655,6 +657,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPlanNodes,
     setPredictedBranches,
     setStrategyMutationPreview,
+    targetBranch,
   ]);
 
   const handleValidatePlan = async () => {

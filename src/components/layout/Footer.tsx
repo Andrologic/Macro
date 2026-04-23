@@ -237,8 +237,10 @@ export const Footer: React.FC = () => {
     });
   }, [gitScopeProjectId, isTauriRuntime, scopeProjects, t]);
 
+  const focusedProjectPath = focusedProject?.path ?? null;
+
   const refreshFocusedProjectBranch = useCallback(async () => {
-    if (!isTauriRuntime || !focusedProject?.path) {
+    if (!isTauriRuntime || !focusedProjectPath) {
       setFocusedProjectBranch(null);
       return;
     }
@@ -246,12 +248,12 @@ export const Footer: React.FC = () => {
     const unavailableLabel = t('footer.sync.branchUnavailable', 'unavailable');
     const detachedLabel = t('footer.sync.branchDetached', 'detached');
     try {
-      const status = await tauriIpc.gitStatus(focusedProject.path);
+      const status = await tauriIpc.gitStatus(focusedProjectPath);
       setFocusedProjectBranch(status.branch || detachedLabel);
     } catch {
       setFocusedProjectBranch(unavailableLabel);
     }
-  }, [focusedProject?.path, isTauriRuntime, t]);
+  }, [focusedProjectPath, isTauriRuntime, t]);
 
   const refreshMacroStatus = useCallback(async (ensure = false) => {
     if (!isTauriRuntime) {
