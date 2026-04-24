@@ -22,6 +22,7 @@ import {
 } from '../../services/fileChangesReviewScope';
 import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
+import { isSmartCommitMessageGenerationError } from '../../services/smartCommitMessageGenerator';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
@@ -351,6 +352,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     changeIds: string[];
     scopeLabel: string;
   } | null>(null);
+  const [commitMessageGenerationError, setCommitMessageGenerationError] = useState<string | null>(null);
   const {
     repositories,
     reviewSummary,
@@ -360,6 +362,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedDiffTarget,
     isDiffModalOpen,
     isLoading,
+    isGeneratingCommitMessages,
     isCommitting,
     lastError,
     executionRecords,
@@ -369,10 +372,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     openDiffModal,
     closeDiffModal,
     stageChanges,
-    stageAllChanges,
+    stageAllTaskChanges,
     revertChanges,
-    commitStagedChanges,
-    setCommitMessageDraft,
+    commitAllReadyTaskRepositories,
     getOverallStats,
   } = useFileChangesStore();
   const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
@@ -530,6 +532,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     reviewSummary.hasCommittedRepositories || Object.keys(executionRecords).length > 0;
   const canFinishTask =
     !isCommitting &&
+    !isGeneratingCommitMessages &&
     currentTask !== null &&
     !currentTask.draft &&
     currentTask.status !== 'Completed' &&
@@ -537,26 +540,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     reviewSummary.actionCounts.pending_validation === 0 &&
     reviewSummary.actionCounts.ready_to_commit === 0 &&
     hasTaskCommittedRepositories;
-  const nextValidationRepositoryId =
-    (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.hasPendingVisibleChanges
-      ? selectedRepositoryId
-      : reviewSummary.repositories.find((repository) => repository.hasPendingVisibleChanges)?.id) || null;
-  const nextCommitRepositoryId =
-    (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.hasValidatedStagedChanges
-      ? selectedRepositoryId
-      : reviewSummary.repositories.find((repository) => repository.hasValidatedStagedChanges)?.id) || null;
-  const nextValidationRepository = nextValidationRepositoryId
-    ? repositories.find((repository) => repository.id === nextValidationRepositoryId) ?? null
-    : null;
-  const nextCommitRepository = nextCommitRepositoryId
-    ? repositories.find((repository) => repository.id === nextCommitRepositoryId) ?? null
-    : null;
-  const isValidateChangesDisabled = isCommitting || !hasPendingValidation;
+  const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
   const validateChangesDisabledReason = t(
     'implement.noRemainingChangesToValidate',
     'No remaining unstaged changes to validate.'
   );
-  const isCommitDisabled = isCommitting || !hasReadyToCommit;
+  const isCommitDisabled = isCommitting || isGeneratingCommitMessages || !hasReadyToCommit;
   const commitDisabledReason = t('implement.noValidatedChangesToCommit', 'Validate changes before commit.');
 
   const displayError = normalizeCommitErrorMessage(
@@ -570,19 +559,25 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     ? currentTaskLoadMessage
     : null;
   const handleCommit = async () => {
-    if (isCommitting || !nextCommitRepository) return;
-    const commitMessage = nextCommitRepository.commitMessageDraft;
-    setCommitMessageDraft(nextCommitRepository.id, commitMessage);
+    if (isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
+    setCommitMessageGenerationError(null);
 
     try {
-      const result = await commitStagedChanges(nextCommitRepository.id, commitMessage);
+      const result = await commitAllReadyTaskRepositories();
       notify.success(
-        t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
-          hash: result.hash,
+        t('implement.taskRepositoriesCommitSuccess', 'Created commits for {{count}} repository(ies).', {
+          count: result.commits.length,
         })
       );
     } catch (error) {
       const messageText = toServiceError(error).message;
+      if (isSmartCommitMessageGenerationError(error)) {
+        setCommitMessageGenerationError(
+          messageText ||
+            t('implement.commitMessageGenerationFailed', 'Could not generate commit messages.')
+        );
+        return;
+      }
       notify.error(
         normalizeCommitErrorMessage(
           messageText || t('implement.commitFailed', 'Failed to commit changes'),
@@ -593,10 +588,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleValidateChanges = async () => {
-    if (!nextValidationRepository) return;
-    selectRepository(nextValidationRepository.id);
+    if (!hasPendingValidation) return;
     try {
-      await stageAllChanges(nextValidationRepository.id);
+      await stageAllTaskChanges();
       notify.success(t('implement.validateChangesSuccess', 'Changes validated and staged.'));
     } catch (error) {
       notify.error(
@@ -635,17 +629,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleOpenCommit = () => {
-    if (!nextCommitRepository) return;
     if (isReadOnlyRemoteMode) {
       notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
       return;
     }
-    selectRepository(nextCommitRepository.id);
     void handleCommit();
   };
 
   const handleFinishTask = async () => {
-    if (!currentTask || isCommitting) return;
+    if (!currentTask || isCommitting || isGeneratingCommitMessages) return;
     try {
       await finishTask(currentTask.id);
       resetReviewState();
@@ -666,7 +658,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const primaryAction = canFinishTask
     ? {
         onClick: () => void handleFinishTask(),
-        disabled: false,
+        disabled: isGeneratingCommitMessages,
         title: undefined,
         icon: 'git-merge' as const,
         label: t('implement.finishTask', 'Finish task'),
@@ -676,7 +668,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         disabled: isCommitDisabled,
         title: isCommitDisabled ? commitDisabledReason : undefined,
         icon: 'git-commit' as const,
-        label: t('implement.commitChangesGeneric', 'Commit'),
+        label: isGeneratingCommitMessages
+          ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+          : t('implement.commitChangesGeneric', 'Commit'),
       };
 
   const actionLabels = {
@@ -1036,6 +1030,27 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             void handleRevert(scope.repositoryId, scope.changeIds);
           }}
         />
+      )}
+
+      {commitMessageGenerationError && (
+        <ConfirmPromptModal
+          isOpen={true}
+          title={t('implement.commitMessageGenerationTitle', 'Couldn’t generate commit messages')}
+          description={t(
+            'implement.commitMessageGenerationDescription',
+            'Macro could not prepare the commit messages. You can retry generation or cancel without creating commits.'
+          )}
+          confirmLabel={t('common.retry', 'Retry')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          isSubmitting={isGeneratingCommitMessages}
+          onCancel={() => setCommitMessageGenerationError(null)}
+          onConfirm={() => {
+            setCommitMessageGenerationError(null);
+            void handleCommit();
+          }}
+        >
+          <p className="text-xs text-muted-foreground">{commitMessageGenerationError}</p>
+        </ConfirmPromptModal>
       )}
     </aside>
   );

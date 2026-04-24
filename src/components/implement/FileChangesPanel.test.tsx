@@ -161,9 +161,11 @@ describe('FileChangesPanel', () => {
   let root: Root | null = null;
   let stageChangesMock: ReturnType<typeof mock>;
   let stageAllChangesMock: ReturnType<typeof mock>;
+  let stageAllTaskChangesMock: ReturnType<typeof mock>;
   let loadCurrentChangesMock: ReturnType<typeof mock>;
   let finishTaskMock: ReturnType<typeof mock>;
   let commitStagedChangesMock: ReturnType<typeof mock>;
+  let commitAllReadyTaskRepositoriesMock: ReturnType<typeof mock>;
 
   const seedStores = (
     repository: ReviewRepositoryState,
@@ -238,8 +240,10 @@ describe('FileChangesPanel', () => {
       closeDiffModal: mock(() => undefined),
       stageChanges: stageChangesMock,
       stageAllChanges: stageAllChangesMock,
+      stageAllTaskChanges: stageAllTaskChangesMock,
       revertChanges: mock(async () => undefined),
       commitStagedChanges: commitStagedChangesMock,
+      commitAllReadyTaskRepositories: commitAllReadyTaskRepositoriesMock,
       setCommitMessageDraft: mock(() => undefined),
       getOverallStats: () => repository.stats,
     });
@@ -252,6 +256,7 @@ describe('FileChangesPanel', () => {
     await loadFileChangesPanelModules();
     stageChangesMock = mock(async () => undefined);
     stageAllChangesMock = mock(async () => undefined);
+    stageAllTaskChangesMock = mock(async () => undefined);
     loadCurrentChangesMock = mock(async () => undefined);
     finishTaskMock = mock(async () => undefined);
     commitStagedChangesMock = mock(async () => ({
@@ -260,6 +265,22 @@ describe('FileChangesPanel', () => {
       taskCompleted: false,
       taskStatus: 'InProgress',
       committedRepositoryId: 'repo-1',
+      repositories: [],
+    }));
+    commitAllReadyTaskRepositoriesMock = mock(async () => ({
+      taskId: 'task-1',
+      taskCompleted: false,
+      taskStatus: 'InProgress',
+      commits: [
+        {
+          hash: 'abc123',
+          taskId: 'task-1',
+          taskCompleted: false,
+          taskStatus: 'InProgress',
+          committedRepositoryId: 'repo-1',
+          repositories: [],
+        },
+      ],
       repositories: [],
     }));
     container = document.createElement('div');
@@ -356,7 +377,8 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    expect(stageAllChangesMock).toHaveBeenCalledWith('repo-1');
+    expect(stageAllTaskChangesMock).toHaveBeenCalledTimes(1);
+    expect(stageAllChangesMock).not.toHaveBeenCalled();
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().tasks[0]?.status).toBe('InProgress');
   });
@@ -376,11 +398,23 @@ describe('FileChangesPanel', () => {
 
     expect(buttonTexts).toContain('Commit');
     expect(buttonTexts).not.toContain('Finish task');
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    expect(commitButton).toBeDefined();
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
+    expect(commitStagedChangesMock).not.toHaveBeenCalled();
   });
 
   it('shows the backend commit error message when the commit rejects with an object payload', async () => {
     const repository = buildRepository(true);
-    commitStagedChangesMock = mock(async () => {
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
       throw { message: 'Backend exploded' };
     });
     seedStores(repository);
@@ -401,6 +435,46 @@ describe('FileChangesPanel', () => {
 
     expect(notifyErrorMock).toHaveBeenCalledWith('Backend exploded');
     expect(notifyErrorMock).not.toHaveBeenCalledWith('[object Object]');
+  });
+
+  it('shows a retry modal when commit message generation fails', async () => {
+    const repository = buildRepository(true);
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
+      const error = new Error('model unavailable');
+      error.name = 'SmartCommitMessageGenerationError';
+      throw error;
+    });
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    expect(commitButton).toBeDefined();
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Couldn’t generate commit messages');
+    expect(document.body.textContent).toContain('Retry');
+    expect(document.body.textContent).toContain('Cancel');
+    expect(notifyErrorMock).not.toHaveBeenCalled();
+
+    const retryButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Retry');
+    expect(retryButton).toBeDefined();
+
+    await act(async () => {
+      retryButton?.click();
+      await flushRender();
+    });
+
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(2);
   });
 
   it('switches the primary action to Finish task once the task is fully resolved', async () => {
@@ -453,6 +527,7 @@ describe('FileChangesPanel', () => {
 
     expect(finishTaskMock).toHaveBeenCalledWith('task-1');
     expect(commitStagedChangesMock).not.toHaveBeenCalled();
+    expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
   });
 
   it('renders the dedicated plan finalization panel instead of loading file changes', async () => {
