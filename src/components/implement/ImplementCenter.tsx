@@ -112,7 +112,7 @@ export const ImplementCenter: React.FC = () => {
       )
     : isWorkspaceMissing
       ? workspaceState.kind === 'noProjectAvailable'
-        ? t('terminal.addSubprojectToOpen', 'Ajoutez un sous-projet pour ouvrir un terminal.')
+        ? t('terminal.addProjectToOpen', 'Ajoutez un projet pour ouvrir un terminal.')
         : t('terminal.selectProjectToOpen', 'Sélectionnez un projet pour ouvrir un terminal.')
     : !selectedTask
       ? t('implement.selectTaskToStart', 'Select a task to start implementation.')

@@ -460,15 +460,30 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   ...overrides,
 });
 
+const buildProjectGroups = () => [
+  {
+    id: 'group-1',
+    name: 'Platform',
+    projects: [
+      {
+        id: 'project-1',
+        name: 'API',
+        path: '/tmp/api',
+        isReadOnly: false,
+      },
+    ],
+  },
+];
+
 const resetState = () => {
   appState = {
     mode: 'Chat',
     agentType: 'default',
     setAgentType: mock(() => undefined),
-    selectedGroupId: null,
+    selectedGroupId: 'group-1',
     selectedProjectId: null,
     selectedTaskId: null,
-    projectGroups: [],
+    projectGroups: buildProjectGroups(),
     activeArchitectPlanId: null,
     planNodes: [],
     predictedBranches: [],
@@ -613,6 +628,31 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('blocks orphan architect conversations when no project is available', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      selectedGroupId: null,
+      selectedProjectId: null,
+      projectGroups: [],
+      activeArchitectPlanId: null,
+    };
+    chatState = {
+      ...chatState,
+      messages: [buildMessage({ content: 'Old orphan architect conversation' })],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Ajoutez un projet pour commencer avec Macro.');
+    expect(requireContainer().textContent).not.toContain('Old orphan architect conversation');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer?.disabled).toBe(true);
   });
 
   it('renders architect plan naming recovery actions when a plan still needs a name', async () => {

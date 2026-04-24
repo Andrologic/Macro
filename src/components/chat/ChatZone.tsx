@@ -647,8 +647,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const isModeProjectWorkspaceMissing =
-    (mode === 'Architect' && isWorkspaceMissing && !activeArchitectPlanId) ||
-    (mode === 'Implement' && isWorkspaceMissing && !selectedTask);
+    (mode === 'Architect' || mode === 'Implement') && isWorkspaceMissing;
   const selectedTaskScopedProjectIds = useMemo(() => {
     if (selectedTaskProjectIds.length === 0) {
       return [];
@@ -715,10 +714,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         icon: 'compass' as const,
         title: `${t('header.architect', 'Architect')} - ${selectedGlobalProjectName || t('header.selectProject', 'Select Project')}`,
         subtitle:
-          currentConversation?.title ||
-          (focusedProjectName && focusedProjectName !== selectedGlobalProjectName
-            ? focusedProjectName
-            : null),
+          isModeProjectWorkspaceMissing
+            ? null
+            : currentConversation?.title ||
+              (focusedProjectName && focusedProjectName !== selectedGlobalProjectName
+                ? focusedProjectName
+                : null),
       };
     }
 
@@ -738,6 +739,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [
     currentConversation?.title,
     focusedProjectName,
+    isModeProjectWorkspaceMissing,
     mode,
     projectScopeLabel,
     selectedGlobalProjectName,
@@ -854,10 +856,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [currentMessages.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
+    if (mode === 'Architect' && isWorkspaceMissing) return null;
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
-    if (mode === 'Implement') return null;
+    if (mode === 'Architect' || mode === 'Implement') return null;
     const conversation = await createConversation(t('chat.newConversation', 'New Conversation'), null, null);
     return conversation.id;
   }, [
@@ -865,6 +868,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversationForCurrentMode,
     mode,
     selectedConversationId,
+    isWorkspaceMissing,
     t,
   ]);
 
@@ -1063,6 +1067,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleSend = async () => {
     if (isComposerDisabled || activeQuestionnaire) return;
+    if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if (isImplementComposerInKickoffMode) {
       if (!text || isBusySending) return;
@@ -1325,6 +1330,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </div>
               </div>
             </div>
+          ) : isModeProjectWorkspaceMissing ? (
+            <ProjectWorkspaceEmptyState
+              stateKind={workspaceState.kind}
+              onPrimaryAction={() => openProjectModal(null)}
+            />
           ) : selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
               {renderedMessageItems.map((virtualMessage) => {
@@ -1359,11 +1369,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 );
               })}
             </div>
-          ) : isModeProjectWorkspaceMissing ? (
-            <ProjectWorkspaceEmptyState
-              stateKind={workspaceState.kind}
-              onPrimaryAction={() => openProjectModal(null)}
-            />
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
@@ -1497,7 +1502,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   title={
                     isModeProjectWorkspaceMissing
                       ? workspaceState.kind === 'noProjectAvailable'
-                        ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                        ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                         : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : !activeArchitectPlanId
                       ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
@@ -1625,7 +1630,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         ? t('chat.loadingConversation', 'Restoring conversation...')
                       : isModeProjectWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
-                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
