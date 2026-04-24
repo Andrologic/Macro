@@ -102,6 +102,105 @@ const buildDiffOps = (left: string[], right: string[]): DiffOp[] => {
   return operations;
 };
 
+export const buildParsedDiffFromTextPair = (
+  originalContent: string,
+  modifiedContent: string
+): ParsedDiffContent => {
+  const left = splitTextLines(originalContent);
+  const right = splitTextLines(modifiedContent);
+  const operations = buildDiffOps(left, right);
+  const lines: ParsedDiffLine[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let oldLineNumber = 1;
+  let newLineNumber = 1;
+
+  for (const operation of operations) {
+    if (operation.type === 'equal') {
+      lines.push({
+        type: 'context',
+        content: operation.value,
+        oldLineNumber,
+        newLineNumber,
+      });
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      continue;
+    }
+
+    if (operation.type === 'remove') {
+      deletions += 1;
+      lines.push({
+        type: 'removed',
+        content: operation.value,
+        oldLineNumber,
+        newLineNumber: null,
+      });
+      oldLineNumber += 1;
+      continue;
+    }
+
+    additions += 1;
+    lines.push({
+      type: 'added',
+      content: operation.value,
+      oldLineNumber: null,
+      newLineNumber,
+    });
+    newLineNumber += 1;
+  }
+
+  return {
+    originalContent,
+    modifiedContent,
+    additions,
+    deletions,
+    hunks:
+      additions === 0 && deletions === 0
+        ? []
+        : [
+            {
+              header: `@@ -${left.length > 0 ? 1 : 0},${left.length} +${right.length > 0 ? 1 : 0},${right.length} @@`,
+              oldStart: left.length > 0 ? 1 : 0,
+              oldCount: left.length,
+              newStart: right.length > 0 ? 1 : 0,
+              newCount: right.length,
+              lines,
+            },
+          ],
+  };
+};
+
+export const buildStableLineNumberMap = (
+  leftContent: string,
+  rightContent: string
+): Map<number, number> => {
+  const left = splitTextLines(leftContent);
+  const right = splitTextLines(rightContent);
+  const operations = buildDiffOps(left, right);
+  const lineMap = new Map<number, number>();
+  let leftLineNumber = 1;
+  let rightLineNumber = 1;
+
+  for (const operation of operations) {
+    if (operation.type === 'equal') {
+      lineMap.set(leftLineNumber, rightLineNumber);
+      leftLineNumber += 1;
+      rightLineNumber += 1;
+      continue;
+    }
+
+    if (operation.type === 'remove') {
+      leftLineNumber += 1;
+      continue;
+    }
+
+    rightLineNumber += 1;
+  }
+
+  return lineMap;
+};
+
 export const buildSplitDiffRows = (originalContent: string, modifiedContent: string): SplitDiffRow[] => {
   const left = splitTextLines(originalContent);
   const right = splitTextLines(modifiedContent);

@@ -1,14 +1,12 @@
 import type { SupportedLanguage } from "./languages";
-import en from "./locales/en.json";
+import type en from "./locales/en.json";
 
 export type TranslationSchema = typeof en;
 
-export const baseResources = {
-  en: { translation: en },
-} satisfies Pick<Record<SupportedLanguage, { translation: TranslationSchema }>, "en">;
+export const baseResources = {};
 
 const translationLoaders: Record<SupportedLanguage, () => Promise<TranslationSchema>> = {
-  en: async () => en,
+  en: async () => (await import("./locales/en.json")).default satisfies TranslationSchema,
   fr: async () => (await import("./locales/fr.json")).default satisfies TranslationSchema,
   es: async () => (await import("./locales/es.json")).default satisfies TranslationSchema,
   de: async () => (await import("./locales/de.json")).default satisfies TranslationSchema,

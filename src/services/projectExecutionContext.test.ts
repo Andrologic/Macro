@@ -183,6 +183,45 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
+  it('keeps writable context-only task repos readable but non-actionable', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects,
+      projectGroups,
+      tasks: [
+        {
+          id: 'task-1',
+          project_id: 'macro-api',
+          project_ids: ['macro-api'],
+          context_project_ids: ['macro-web'],
+          assigned_branch: 'feature/payments',
+          execution_targets: [
+            {
+              projectId: 'macro-api',
+              branchName: 'feature/payments',
+              worktreeKey: 'macro-api::feature/payments',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: 'macro-suite',
+      selectedTaskId: 'task-1',
+      branchWorktrees: {
+        'macro-api::feature/payments': 'C:/worktrees/macro-api-payments',
+      },
+    });
+
+    expect(context.projectIds).toEqual(['macro-api', 'macro-web']);
+    expect(context.actionableProjectIds).toEqual(['macro-api']);
+    expect(context.contextProjectIds).toEqual(['macro-web']);
+    expect(context.workspacePathsByProjectId).toEqual({
+      'macro-api': 'C:/worktrees/macro-api-payments',
+      'macro-web': 'projects/macro-web',
+    });
+    expect(context.projectMounts.find((mount: { projectId: string }) => mount.projectId === 'macro-web')?.isReadOnly).toBe(true);
+  });
+
   it('falls back to the selected project when an implement conversation has no task scope', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({

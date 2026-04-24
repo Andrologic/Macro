@@ -21,7 +21,7 @@
     "tauri:build:debug": "bunx tauri build --debug",
     "icons:apple": "bash ./dev/generate-apple-icons.sh",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
-    "clean": "rm -rf dist node_modules src-tauri/target src-tauri/binaries bun.lockb bun.lock .vite",
+    "clean": "rm -rf dist node_modules src-tauri/target src-tauri/binaries bun.lockb .vite",
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",
     "i18n:audit": "bun dev/i18n/audit.mjs",
     "i18n:generate": "python dev/i18n/generate_locales.py",

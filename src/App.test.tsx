@@ -15,17 +15,26 @@ type AppStoreState = {
 };
 
 type AppBootstrapSnapshot = {
+  phase: 'idle' | 'critical' | 'resuming' | 'ready' | 'error';
   critical: boolean;
   high: boolean;
   normal: boolean;
   low: boolean;
   ready: boolean;
   errors: Record<string, string>;
+  warnings: Record<string, string>;
+  startupError: {
+    message: string;
+    failedSteps: string[];
+    details?: string;
+  } | null;
 };
 
 let appState: AppStoreState;
 let appBootstrapSnapshot: AppBootstrapSnapshot;
 let importCounter = 0;
+const actualDesktopPlatform = await import('./utils/desktopPlatform');
+const actualAppBootstrap = await import('./services/appBootstrap');
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {
   const hook = ((selector?: (state: T) => unknown) => {
@@ -89,6 +98,7 @@ const registerAppMocks = () => {
   }));
 
   mock.module('./utils/desktopPlatform', () => ({
+    ...actualDesktopPlatform,
     getPlatformChromeState: () => ({
       platform: 'windows',
       isTauriWindow: false,
@@ -98,17 +108,13 @@ const registerAppMocks = () => {
     }),
   }));
 
-  mock.module('./components/layout/titleBarLayout', () => ({
-    getTitleBarLayout: () => ({
-      titleBarHeightPx: 48,
-    }),
-  }));
-
   mock.module('./services/appBootstrap', () => ({
+    ...actualAppBootstrap,
     appBootstrap: {
       getSnapshot: () => appBootstrapSnapshot,
       subscribe: () => () => undefined,
       ensureStarted: () => Promise.resolve(),
+      restart: () => Promise.resolve(),
     },
   }));
 
@@ -139,10 +145,6 @@ const registerAppMocks = () => {
   mock.module('./components/layout/Footer', () => ({
     Footer: () => <footer data-testid="mock-footer" />,
   }));
-
-  mock.module('zustand/react/shallow', () => ({
-    useShallow: <T,>(selector: T) => selector,
-  }));
 };
 
 const loadApp = async () => {
@@ -169,12 +171,15 @@ describe('App layout containment', () => {
     };
 
     appBootstrapSnapshot = {
+      phase: 'ready',
       critical: true,
       high: true,
       normal: true,
       low: true,
       ready: true,
       errors: {},
+      warnings: {},
+      startupError: null,
     };
   });
 
@@ -230,5 +235,55 @@ describe('App layout containment', () => {
     expect(centerPanelWrapper?.className).toContain('overflow-hidden');
     expect(rightPanelWrapper?.className).toContain('min-h-0');
     expect(rightPanelWrapper?.className).toContain('overflow-hidden');
+  });
+
+  it('renders startup chrome while critical boot is pending', async () => {
+    appBootstrapSnapshot = {
+      ...appBootstrapSnapshot,
+      phase: 'critical',
+      critical: false,
+      ready: false,
+    };
+    const { default: App } = await loadApp();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<App />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('.macro-app-shell')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="mock-skeleton"]').length).toBeGreaterThan(0);
+  });
+
+  it('renders a startup error instead of an infinite loader', async () => {
+    appBootstrapSnapshot = {
+      ...appBootstrapSnapshot,
+      phase: 'error',
+      critical: false,
+      ready: false,
+      startupError: {
+        message: 'Critical bootstrap failed.',
+        failedSteps: ['App Critical'],
+        details: 'boom',
+      },
+    };
+    const { default: App } = await loadApp();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<App />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('Macro could not finish booting.');
+    expect(container.textContent).toContain('Critical bootstrap failed.');
+    expect(container.textContent).toContain('App Critical');
   });
 });

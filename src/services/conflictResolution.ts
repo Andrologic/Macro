@@ -2,6 +2,10 @@ import type {
   PlanFinalizationNextAction,
   PlanReviewRepositoryResult,
 } from './architectGitFlowService';
+import type {
+  MergeWorkflowKind,
+  MergeWorkflowRepositoryResult,
+} from './mergeWorkflow';
 import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import type { MacroSyncNextAction } from './tauriIpc';
 
@@ -78,6 +82,26 @@ export const toPlanConflictResolutionEntries = (
   conflictFiles: repository.conflictFiles,
 }));
 
+export const toMergeWorkflowConflictResolutionEntries = (
+  repositories: MergeWorkflowRepositoryResult[]
+): ConflictResolutionEntry[] => repositories.map((repository) => ({
+  id: repository.id,
+  repoPath: repository.repoPath,
+  subtitle: `${repository.sourceBranchName} -> ${repository.targetBranchName}`,
+  worktreePath: null,
+  statusLabel: repository.blockingKind === 'repository_dirty'
+    ? 'Dirty'
+    : repository.blockingKind === 'merge_in_progress'
+      ? 'Merge in progress'
+      : repository.blockingKind === 'merge_conflict'
+        ? 'Conflict'
+        : 'Ready',
+  statusTone: repository.blockingReason ? 'danger' : 'success',
+  reason: repository.blockingReason,
+  nextStep: describePlanFinalizationNextStep(repository.nextAction),
+  conflictFiles: repository.conflictFiles,
+}));
+
 export const toMacroConflictResolutionEntries = (
   repositories: MetadataSyncRepositoryStatus[]
 ): ConflictResolutionEntry[] => repositories.map((repository) => ({
@@ -105,6 +129,33 @@ export const buildPlanFinalizationConflictAssistantPrompt = (params: {
   return [
     `I need help resolving Macro plan finalization blockers for "${params.planTitle}".`,
     'This flow is preflight-blocked. Do not start a merge automatically.',
+    'Resolve only the reported repository issues, keep history intact, and stay in the desktop local-first workflow.',
+    '',
+    'Blocked repositories:',
+    formatPromptEntries(entries),
+    '',
+    'Provide a short plan first, then run safe git commands to resolve the blockers and prepare a retry.',
+  ].join('\n');
+};
+
+export const buildMergeWorkflowConflictAssistantPrompt = (params: {
+  kind: MergeWorkflowKind;
+  title: string;
+  repositories: MergeWorkflowRepositoryResult[];
+}): string => {
+  const entries = toMergeWorkflowConflictResolutionEntries(params.repositories);
+  const intro =
+    params.kind === 'plan_finalization'
+      ? `I need help resolving Macro plan finalization blockers for "${params.title}".`
+      : `I need help resolving Macro merge blockers for task "${params.title}".`;
+  const workflowLine =
+    params.kind === 'plan_finalization'
+      ? 'This flow is preflight-blocked. Do not start a merge automatically.'
+      : 'This task is blocked during merge completion. Resolve only the reported merge blockers and keep the task on its current branches.';
+
+  return [
+    intro,
+    workflowLine,
     'Resolve only the reported repository issues, keep history intact, and stay in the desktop local-first workflow.',
     '',
     'Blocked repositories:',

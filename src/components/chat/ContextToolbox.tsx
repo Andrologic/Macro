@@ -212,7 +212,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     }
   };
 
-  const handlePaste = async () => {
+  const handlePaste = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (!text) return;
@@ -229,7 +229,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     } catch (error) {
       console.error('Failed to read clipboard:', error);
     }
-  };
+  }, [addCitation, ensureConversation, t]);
+
+  const handleUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleStartAddingUrl = useCallback(() => {
+    setIsAddingUrl(true);
+    setUrlError('');
+  }, []);
 
   const filteredSourceCitations = useMemo(() => {
     const query = sourceSearch.trim().toLowerCase();
@@ -367,16 +376,18 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
             <section>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.quickActions', 'Quick actions')}</h3>
               <div className="grid grid-cols-2 gap-2">
-                {[
-                  { icon: 'upload' as const, label: t('chat.contextToolbox.upload', 'Upload'), action: () => fileInputRef.current?.click() },
-                  { icon: 'link' as const, label: t('chat.contextToolbox.addUrl', 'Add URL'), action: () => { setIsAddingUrl(true); setUrlError(''); } },
-                  { icon: 'clipboard' as const, label: t('chat.contextToolbox.paste', 'Paste'), action: () => void handlePaste() },
-                ].map((item) => (
-                  <button key={item.label} onClick={item.action} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
-                    <Icon name={item.icon} size={14} className="text-muted-foreground" />
-                    <span className="truncate">{item.label}</span>
-                  </button>
-                ))}
+                <button onClick={handleUploadClick} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                  <Icon name="upload" size={14} className="text-muted-foreground" />
+                  <span className="truncate">{t('chat.contextToolbox.upload', 'Upload')}</span>
+                </button>
+                <button onClick={handleStartAddingUrl} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                  <Icon name="link" size={14} className="text-muted-foreground" />
+                  <span className="truncate">{t('chat.contextToolbox.addUrl', 'Add URL')}</span>
+                </button>
+                <button onClick={() => void handlePaste()} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                  <Icon name="clipboard" size={14} className="text-muted-foreground" />
+                  <span className="truncate">{t('chat.contextToolbox.paste', 'Paste')}</span>
+                </button>
                 <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground opacity-50 cursor-not-allowed min-w-0">
                   <Icon name="camera" size={14} className="text-muted-foreground" />
                   <span className="truncate">{t('chat.contextToolbox.screenshot', 'Screenshot')}</span>

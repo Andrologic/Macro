@@ -22,6 +22,7 @@ describe('fileChangesReviewScope', () => {
       {
         projectId: 'project-a',
         branchName: 'feature/example',
+        executionKind: 'worktree',
         worktreeKey: toBranchWorktreeKey('project-a', 'feature/example'),
         planBranchName: 'main',
       },

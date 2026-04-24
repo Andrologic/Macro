@@ -46,20 +46,18 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("need_list")).toBe(true);
     expect(policy.allowedToolIds.includes("need_get")).toBe(true);
     expect(policy.allowedToolIds.includes("need_update")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_delete")).toBe(false);
+    expect(policy.allowedToolIds.includes("need_delete")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_get")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_update")).toBe(true);
-    expect(policy.allowedToolIds.includes("strategy_delete")).toBe(false);
+    expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
     expect(policy.allowedToolIds.includes("need_add")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(true);
   });
 
-  it("adds destructive Architect tools only in full autonomy", () => {
-    const policy = getToolModePolicy("Architect", {
-      architectToolAutonomyProfile: "full",
-    });
+  it("always includes the full Architect chat action surface", () => {
+    const policy = getToolModePolicy("Architect");
 
     expect(policy.allowedToolIds.includes("need_delete")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
