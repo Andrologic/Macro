@@ -941,6 +941,8 @@ interface ChatStore {
     validProjectIds: string[],
   ) => void;
   initialize: () => Promise<void>;
+  initializeCritical: () => Promise<void>;
+  resumeAfterInitialize: () => Promise<void>;
 }
 
 interface TranscriptComparableMessage {
@@ -8155,7 +8157,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     },
 
-    initialize: async () => {
+    initializeCritical: async () => {
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
@@ -8186,8 +8188,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hydrationPromise = hydrateChatSnapshot();
         await hydrationPromise;
         hydrationPromise = null;
-
-        await get().ensureConversationForCurrentMode();
       } catch (error) {
         hydrationPromise = null;
         const normalized = toServiceError(error);
@@ -8216,6 +8216,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ensureProviderSelectionSync();
         ensureContextSelectionSync();
       }
+    },
+
+    resumeAfterInitialize: async () => {
+      try {
+        await get().ensureConversationForCurrentMode();
+      } catch (error) {
+        const normalized = toServiceError(error);
+        console.error("Failed to resume chat context:", normalized.message);
+        set({
+          restoreStatus: "error",
+          lastError: normalized.message,
+        });
+      }
+    },
+
+    initialize: async () => {
+      await get().initializeCritical();
+      await get().resumeAfterInitialize();
     },
   };
 });
