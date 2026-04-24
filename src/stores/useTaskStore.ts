@@ -1040,7 +1040,12 @@ interface TaskStore {
   taskCommandRuns: Record<string, TaskCommandRunState>;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
   initialize: () => Promise<void>;
-  refreshFromPlan: () => Promise<void>;
+  initializeCritical: () => Promise<void>;
+  resumeAfterInitialize: () => Promise<void>;
+  refreshFromPlan: (options?: {
+    restoreSelection?: boolean;
+    activateSelectedTask?: boolean;
+  }) => Promise<void>;
   activateTask: (taskId: string) => Promise<void>;
   createManualFeatureDraft: (params: {
     taskId: string;
@@ -1579,14 +1584,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   setTasks: (tasks) => set({ tasks }),
 
-  initialize: async () => {
+  initializeCritical: async () => {
     ensureAppSync();
     set({ isLoading: true, lastError: null });
-    await get().refreshFromPlan();
+    await get().refreshFromPlan({
+      restoreSelection: false,
+      activateSelectedTask: false,
+    });
     set({ isLoading: false });
   },
 
-  refreshFromPlan: async () => {
+  resumeAfterInitialize: async () => {
+    try {
+      await get().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: true,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+    }
+  },
+
+  initialize: async () => {
+    await get().initializeCritical();
+    await get().resumeAfterInitialize();
+  },
+
+  refreshFromPlan: async (options) => {
+    const restoreSelection = options?.restoreSelection !== false;
+    const activateSelectedTask = options?.activateSelectedTask !== false;
     try {
       const catalog = await services.listTasks();
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
@@ -1670,32 +1697,34 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         isLoading: false,
       });
 
-      const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore.getState();
-      const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
-      const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
-      if (selectedTaskIdFromApp && !tasks.some((task) => task.id === selectedTaskIdFromApp)) {
-        useAppStore.getState().setSelectedTask(null);
-      }
+      if (restoreSelection) {
+        const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore.getState();
+        const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+        const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
+        if (selectedTaskIdFromApp && !tasks.some((task) => task.id === selectedTaskIdFromApp)) {
+          useAppStore.getState().setSelectedTask(null);
+        }
 
-      const selectedTaskId = useAppStore.getState().selectedTaskId;
-      if (!selectedTaskId && scopedProjectIds.length > 0) {
-        try {
-          const contextKey = selectedGroupId || selectedProjectId;
-          const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
-          const candidateTaskId = context?.lastTaskId;
-          if (candidateTaskId) {
-            const candidateTask = tasks.find((task) => task.id === candidateTaskId);
-            if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
-              useAppStore.getState().setSelectedTask(candidateTaskId);
+        const selectedTaskId = useAppStore.getState().selectedTaskId;
+        if (!selectedTaskId && scopedProjectIds.length > 0) {
+          try {
+            const contextKey = selectedGroupId || selectedProjectId;
+            const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
+            const candidateTaskId = context?.lastTaskId;
+            if (candidateTaskId) {
+              const candidateTask = tasks.find((task) => task.id === candidateTaskId);
+              if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
+                useAppStore.getState().setSelectedTask(candidateTaskId);
+              }
             }
+          } catch {
+            // Ignore context restore failures here and keep fallback behavior.
           }
-        } catch {
-          // Ignore context restore failures here and keep fallback behavior.
         }
       }
 
       const selectedTaskAfterRestore = useAppStore.getState().selectedTaskId;
-      if (selectedTaskAfterRestore) {
+      if (activateSelectedTask && selectedTaskAfterRestore) {
         void get().activateTask(selectedTaskAfterRestore);
       }
     } catch (error) {

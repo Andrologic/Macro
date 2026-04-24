@@ -1270,6 +1270,8 @@ interface AppStore {
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
   initialize: () => Promise<void>;
+  initializeCritical: () => Promise<void>;
+  resumeAfterInitialize: () => Promise<void>;
 }
 
 interface CreateProjectData {
@@ -3527,10 +3529,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return undefined;
   },
 
-  initialize: async () => {
+  initializeCritical: async () => {
     set({ isLoading: true, lastError: null });
     try {
-      logProjectRegistryAction("started", { action: "initialize" });
+      logProjectRegistryAction("started", { action: "initializeCritical" });
       await purgeLegacyImplementExecutionModePreference();
       // Load persisted panel preferences
       const [
@@ -3587,7 +3589,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
         pruneLegacyRememberedProjects(macroEnabledProjects);
       let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
         null;
-      if (tauriIpc.isTauriAvailable()) {
+      let bootstrapPlan: Plan | null = null;
+      let bootstrapProjectGroups: ProjectGroup[] = [];
+      let bootstrapPlanNodes: PlanNode[] = [];
+      let bootstrapPredictedBranches: PredictedBranch[] = [];
+      let bootstrapErrorMessage: string | null = null;
+
+      try {
+        const bootstrap = await services.getAppBootstrap();
+        bootstrapPlan = bootstrap.plan;
+        bootstrapProjectGroups = bootstrap.projectGroups;
+        bootstrapPlanNodes = bootstrap.planNodes ?? [];
+        bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
+      } catch (bootstrapError) {
+        bootstrapErrorMessage = toServiceError(bootstrapError).message;
+        devLogger.info(
+          `[Init] workspace bootstrap failed before local metadata recovery: ${bootstrapErrorMessage}`,
+        );
+      }
+
+      if (bootstrapErrorMessage && tauriIpc.isTauriAvailable()) {
         try {
           const recoveryHints = buildMetadataRecoveryHints(
             prunedMacroEnabledProjects,
@@ -3595,22 +3616,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
           );
           const recoveryResult = await tauriIpc.workspaceRecoverMissingMetadata(
             {
-              attemptPull: true,
+              attemptPull: false,
               projects: recoveryHints,
             },
           );
+
+          const bootstrap = await services.getAppBootstrap();
+          bootstrapPlan = bootstrap.plan;
+          bootstrapProjectGroups = bootstrap.projectGroups;
+          bootstrapPlanNodes = bootstrap.planNodes ?? [];
+          bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
           metadataRecoveryReport =
             recoveryResult.status === "none" ? null : recoveryResult;
+          bootstrapErrorMessage = null;
         } catch (error) {
+          bootstrapErrorMessage = toServiceError(error).message;
           devLogger.info(
-            `[Init] @macro metadata recovery failed before bootstrap: ${toServiceError(error).message}`,
+            `[Init] local @macro metadata recovery failed before bootstrap: ${bootstrapErrorMessage}`,
           );
         }
       }
 
-      const { plan, projectGroups, planNodes, predictedBranches } =
-        await services.getAppBootstrap();
-      const prunedProjectGroups = pruneLegacyWorkspaceMocks(projectGroups);
+      const prunedProjectGroups = pruneLegacyWorkspaceMocks(
+        bootstrapProjectGroups,
+      );
 
       const sessionSelectedProjectId =
         sessionContext?.selectedProjectId ?? null;
@@ -3722,14 +3751,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({
         mode: resolvedMode,
         agentType: resolvedAgentType,
-        currentPlan: plan,
+        currentPlan: bootstrapPlan,
         projectGroups: resolvedProjectGroups,
         planNodes: filterPlanNodesForRegistry(
-          planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
+          bootstrapPlanNodes?.length
+            ? bootstrapPlanNodes
+            : derivePlanNodesFromPlan(bootstrapPlan),
           validProjectIds,
         ),
         predictedBranches: filterPredictedBranchesForRegistry(
-          predictedBranches ?? [],
+          bootstrapPredictedBranches ?? [],
           validProjectIds,
         ),
         selectedGroupId: resolvedGroupId,
@@ -3754,6 +3785,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         projectSwitchPolicy: storedProjectSwitchPolicy,
         isProjectSwitching: false,
         isLoading: false,
+        lastError: bootstrapErrorMessage
+          ? `Workspace metadata could not be loaded. Macro opened an empty shell: ${bootstrapErrorMessage}`
+          : null,
       });
 
       void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
@@ -3773,41 +3807,78 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ? resolvedFocusedProject.path
           : null,
       );
-      await persistSessionContext({
-        selectedGroupId: resolvedGroupId,
-        selectedProjectId: resolvedProjectId,
-        mode: resolvedMode,
-      });
-      await reconcileProjectRegistryDependencies({
-        projectGroups: resolvedProjectGroups,
-        selectedGroupId: resolvedGroupId,
-        selectedProjectId: resolvedProjectId,
-      });
       logProjectRegistryAction("succeeded", {
-        action: "initialize",
+        action: "initializeCritical",
         afterCount: countProjectsInRegistry(resolvedProjectGroups),
         repairApplied: normalizedRegistry.report.repaired,
-      });
-
-      if (
-        (resolvedGroupId || resolvedProjectId) &&
-        storedProjectSwitchPolicy === "resume_per_project"
-      ) {
-        await restoreProjectContext(resolvedGroupId || resolvedProjectId!);
-      }
-
-      await ensureAutoPlanForSelection({
-        groupId: useAppStore.getState().selectedGroupId,
-        projectId: useAppStore.getState().selectedProjectId,
       });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
       logProjectRegistryAction("failed", {
-        action: "initialize",
+        action: "initializeCritical",
         error: normalized.message,
       });
     }
+  },
+
+  resumeAfterInitialize: async () => {
+    const state = get();
+    try {
+      await persistSessionContext({
+        selectedGroupId: state.selectedGroupId,
+        selectedProjectId: state.selectedProjectId,
+        mode: state.mode,
+      });
+    } catch (error) {
+      devLogger.info(
+        `[Init] session context persistence failed after shell boot: ${toServiceError(error).message}`,
+      );
+    }
+
+    try {
+      await reconcileProjectRegistryDependencies({
+        projectGroups: get().projectGroups,
+        selectedGroupId: get().selectedGroupId,
+        selectedProjectId: get().selectedProjectId,
+      });
+    } catch (error) {
+      devLogger.info(
+        `[Init] project registry dependency reconciliation failed after shell boot: ${toServiceError(error).message}`,
+      );
+    }
+
+    try {
+      const current = get();
+      if (
+        (current.selectedGroupId || current.selectedProjectId) &&
+        current.projectSwitchPolicy === "resume_per_project"
+      ) {
+        await restoreProjectContext(
+          current.selectedGroupId || current.selectedProjectId!,
+        );
+      }
+    } catch (error) {
+      devLogger.info(
+        `[Init] project context restore failed after shell boot: ${toServiceError(error).message}`,
+      );
+    }
+
+    try {
+      await ensureAutoPlanForSelection({
+        groupId: useAppStore.getState().selectedGroupId,
+        projectId: useAppStore.getState().selectedProjectId,
+      });
+    } catch (error) {
+      devLogger.info(
+        `[Init] auto plan restore failed after shell boot: ${toServiceError(error).message}`,
+      );
+    }
+  },
+
+  initialize: async () => {
+    await get().initializeCritical();
+    await get().resumeAfterInitialize();
   },
 }));
 
