@@ -90,7 +90,7 @@ const gitMergeCheckMock = mock(async (_params: { repoPath: string }) => ({
   conflictFiles: [],
   hasChanges: true,
 }));
-const gitMergeMock = mock(async (_params: { repoPath: string }) => 'merge-ok');
+const gitMergeMock = mock(async (_params: { repoPath: string; branchName?: string; intoBranch?: string }) => 'merge-ok');
 const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
   branch: _params.branch || 'develop',
   remote: 'origin',
@@ -482,6 +482,65 @@ describe('architectGitFlowService', () => {
     ).toBe(false);
   });
 
+  it('uses typed release branches as plan integration branches and creates them from develop', async () => {
+    projectPaths.set('web', {
+      ...projectPaths.get('web')!,
+      gitFlowSettings: createGitFlowSettings({ releaseBranchTemplate: 'release/v{releaseSlug}' }),
+    });
+    currentPlan = {
+      ...buildPlan(),
+      planKind: 'release',
+      targetBranchesByProjectId: { web: 'main', api: 'main' },
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '0.2.0',
+        projects: {
+          web: {
+            projectId: 'web',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            proposedVersion: '0.2.0',
+            confirmedVersion: '0.2.0',
+            proposedSlug: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+          api: {
+            projectId: 'api',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            proposedVersion: '0.2.0',
+            confirmedVersion: '0.2.0',
+            proposedSlug: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+        },
+      },
+    };
+    gitBranchCreateMock.mockReset();
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop', 'main']));
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(gitBranchCreateMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repos/web', branchName: 'release/v0.2.0', fromRef: 'develop' },
+      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'release/v0.2.0' },
+      { repoPath: '/repos/api', branchName: 'release/v0.2.0', fromRef: 'develop' },
+      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', fromRef: 'release/v0.2.0' },
+    ]);
+    expect(result.plan.predictedBranches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId: 'web', parentBranch: 'release/v0.2.0' }),
+      expect.objectContaining({ projectId: 'api', parentBranch: 'release/v0.2.0' }),
+    ]));
+  });
+
   it('does not provision GitFlow branches for context-only repositories', async () => {
     projectPaths.set('docs', {
       id: 'docs',
@@ -867,6 +926,82 @@ describe('architectGitFlowService', () => {
         retainedWorktrees: [],
         cleanupError: null,
       },
+    ]);
+  });
+
+  it('finalizes release plans into main and backmerges main into develop', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      planKind: 'release',
+      targetBranchesByProjectId: { web: 'main', api: 'main' },
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '0.2.0',
+        projects: {
+          web: {
+            projectId: 'web',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            confirmedVersion: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+          api: {
+            projectId: 'api',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            confirmedVersion: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+        },
+      },
+    };
+    gitBranchListMock.mockImplementation(async (repoPath: string) => createGitBranches([
+      'develop',
+      'main',
+      'release/v0.2.0',
+      repoPath === '/repos/web' ? 'feature/checkout/checkout-web' : 'feature/checkout/checkout-api',
+    ]));
+
+    const result = await architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(result.repositories).toEqual([
+      {
+        projectId: 'web',
+        repoPath: '/repos/web',
+        planBranchName: 'release/v0.2.0',
+        baseBranchName: 'main',
+        backmergeBranchName: 'develop',
+        mergeOutput: 'merged:/repos/web',
+        backmergeOutput: 'merged:/repos/web',
+      },
+      {
+        projectId: 'api',
+        repoPath: '/repos/api',
+        planBranchName: 'release/v0.2.0',
+        baseBranchName: 'main',
+        backmergeBranchName: 'develop',
+        mergeOutput: undefined,
+        backmergeOutput: 'merged:/repos/api',
+      },
+    ]);
+    expect(gitCheckoutMock.mock.calls.map(([params]) => params)).toEqual(expect.arrayContaining([
+      { repoPath: '/repos/web', branchOrCommit: 'main', create: false },
+      { repoPath: '/repos/web', branchOrCommit: 'develop', create: false },
+      { repoPath: '/repos/api', branchOrCommit: 'main', create: false },
+      { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
+    ]));
+    expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repos/web', branchName: 'release/v0.2.0', intoBranch: 'main' },
+      { repoPath: '/repos/web', branchName: 'main', intoBranch: 'develop' },
+      { repoPath: '/repos/api', branchName: 'main', intoBranch: 'develop' },
     ]);
   });
 

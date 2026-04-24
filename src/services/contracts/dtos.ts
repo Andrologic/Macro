@@ -62,6 +62,16 @@ export interface ProjectDto {
   project: Project;
 }
 
+export interface DebugResetProjectReportDto {
+  projectId: string;
+  projectName: string;
+  removedRegistryEntry: boolean;
+  removedTaskWorktrees: number;
+  removedMetadataWorktree: boolean;
+  removedMacroBranch: boolean;
+  warnings: string[];
+}
+
 export interface FileContentDto {
   content: string;
   language: string;

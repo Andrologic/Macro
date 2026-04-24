@@ -1,4 +1,4 @@
-import type { PlanNode, PredictedBranch } from '../types';
+import type { PlanNode, PredictedBranch, ProjectGitFlowSettings } from '../types';
 import type { Need } from '../types';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
@@ -26,6 +26,14 @@ import {
   normalizeArchitectPlanIdList,
   normalizeArchitectPlanScope,
 } from './architectPlanScope';
+import {
+  getArchitectPlanKind,
+  normalizeArchitectPlanGitFlowMetadata,
+  normalizeArchitectPlanKind,
+  renderArchitectPlanIntegrationBranchName,
+  type ArchitectPlanGitFlowMetadata,
+  type ArchitectPlanKind,
+} from './architectPlanKinds';
 
 export type ArchitectPlanStatus =
   | 'draft'
@@ -68,6 +76,8 @@ export interface ArchitectPlanDeletionSnapshot {
 export interface ArchitectPlanManifest {
   schemaVersion: 3;
   planId: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
   status: ArchitectPlanStatus;
@@ -95,6 +105,8 @@ export interface ArchitectPlanRecord {
   title: string;
   label?: string;
   description: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   status: ArchitectPlanStatus;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
@@ -121,6 +133,8 @@ export interface ArchitectPlanSummary {
   title: string;
   label?: string;
   description: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   status: ArchitectPlanStatus;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
@@ -220,6 +234,42 @@ const resolveArchitectPlanServiceDependencies = (
           getAppState: options?.getAppState ?? getAppState,
         })),
   };
+};
+
+const createGitFlowMetadataNormalizationContext = async (
+  deps: ResolvedArchitectPlanServiceDependencies,
+  fallbackBaseBranch: string
+): Promise<{
+  getProjectSettings: (projectId: string) => Partial<ProjectGitFlowSettings> | null;
+  getDefaultBranches: (projectId: string) => { baseBranch: string; mainBranch: string };
+}> => {
+  try {
+    const appState = await deps.getAppState();
+    const projectById = new Map(
+      (appState.projectGroups || [])
+        .flatMap((group) => group.projects || [])
+        .map((project) => [project.id, project])
+    );
+
+    return {
+      getProjectSettings: (projectId) => projectById.get(projectId)?.gitFlowSettings ?? null,
+      getDefaultBranches: (projectId) => {
+        const settings = projectById.get(projectId)?.gitFlowSettings;
+        return {
+          baseBranch: settings?.baseBranch || fallbackBaseBranch,
+          mainBranch: settings?.mainBranch || 'main',
+        };
+      },
+    };
+  } catch {
+    return {
+      getProjectSettings: () => null,
+      getDefaultBranches: () => ({
+        baseBranch: fallbackBaseBranch,
+        mainBranch: 'main',
+      }),
+    };
+  }
 };
 
 const assertPlanCanBeArchived = (
@@ -632,6 +682,23 @@ const normalizeTargetBranchesByProjectId = (
   return normalized;
 };
 
+const mergeGitFlowTargetBranchesByProjectId = (
+  targetBranchesByProjectId: Record<string, string>,
+  gitFlowPlan: ArchitectPlanGitFlowMetadata | undefined,
+  projectIds: string[],
+  options?: { preferGitFlow?: boolean }
+): Record<string, string> => {
+  const merged = { ...targetBranchesByProjectId };
+  for (const projectId of projectIds) {
+    const metadataTarget = gitFlowPlan?.projects?.[projectId]?.targetBranch;
+    if (!metadataTarget) continue;
+    if (options?.preferGitFlow || !merged[projectId]) {
+      merged[projectId] = normalizeBranchName(metadataTarget, merged[projectId]);
+    }
+  }
+  return merged;
+};
+
 const hasMixedPlanTargetBranches = (targetBranchesByProjectId: Record<string, string>): boolean =>
   new Set(Object.values(targetBranchesByProjectId).filter((branchName) => branchName.trim().length > 0)).size > 1;
 
@@ -810,7 +877,23 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
     lines.push(`- Plan Label: ${plan.label}`);
   }
   lines.push(`- Plan Slug: ${plan.slug}`);
-  lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
+  lines.push(`- Plan Kind: ${getArchitectPlanKind(plan)}`);
+  const actionableProjectIds = getArchitectPlanActionableProjectIds(plan);
+  if (actionableProjectIds.length > 0) {
+    const integrationBranchesByProjectId = Object.fromEntries(
+      actionableProjectIds.map((projectId) => [
+        projectId,
+        renderArchitectPlanIntegrationBranchName({ plan, projectId }),
+      ])
+    );
+    const uniqueIntegrationBranches = Array.from(new Set(Object.values(integrationBranchesByProjectId)));
+    lines.push(`- Plan Integration Branch: ${uniqueIntegrationBranches.join(', ')}`);
+    for (const [projectId, branchName] of Object.entries(integrationBranchesByProjectId)) {
+      lines.push(`- Plan Integration Branch [${projectId}]: ${branchName}`);
+    }
+  } else {
+    lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
+  }
   lines.push(`- Target Code Branch: ${plan.targetBranch}`);
   if (plan.targetBranchesByProjectId && Object.keys(plan.targetBranchesByProjectId).length > 0) {
     lines.push(`- Mixed Target Branches: ${hasMixedPlanTargetBranches(plan.targetBranchesByProjectId) ? 'yes' : 'no'}`);
@@ -1181,6 +1264,8 @@ const buildPlanManifest = async (params: {
   return {
     schemaVersion: 3,
     planId: params.plan.id,
+    planKind: getArchitectPlanKind(params.plan),
+    gitFlowPlan: params.plan.gitFlowPlan,
     targetBranch: normalizeBranchName(params.plan.targetBranch),
     targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(params.plan),
     status: params.plan.status,
@@ -1423,12 +1508,20 @@ const sanitizeArchitectPlanRecord = (
   const normalizedId = sanitizeId(plan.id || safeId);
   const normalizedTitle = (plan.title || normalizedId).trim() || normalizedId;
   const normalizedSlug = slugifyPlanTitle((plan as Partial<ArchitectPlanRecord>).slug || normalizedTitle || safeId);
+  const normalizedPlanKind = normalizeArchitectPlanKind(plan.planKind || plan.gitFlowPlan?.planKind);
   const normalizedPlan: ArchitectPlanRecord = {
     ...plan,
     id: normalizedId,
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(plan.label),
+    planKind: normalizedPlanKind,
+    gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
+      planKind: normalizedPlanKind,
+      gitFlowPlan: plan.gitFlowPlan,
+      projectIds: normalizedProjectIds,
+      fallbackSlug: normalizedSlug,
+    }),
     targetBranch: normalizeBranchName(plan.targetBranch || normalized),
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
       plan.targetBranchesByProjectId,
@@ -1475,6 +1568,13 @@ const sanitizeArchitectPlanRecord = (
     ...normalizedPlan,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
+    planKind: normalizedPlanKind,
+    gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
+      planKind: normalizedPlanKind,
+      gitFlowPlan: normalizedPlan.gitFlowPlan,
+      projectIds: sanitizedProjects.projectIds,
+      fallbackSlug: normalizedPlan.slug,
+    }),
     contextProjectIds: sanitizedContextProjectIds,
     expectedProjectIds: normalizeArchitectPlanIdList(
       sanitizedProjects.projectIds,
@@ -1541,12 +1641,20 @@ const sanitizeArchitectPlanSummary = (
   const safeId = sanitizeId(summary.id);
   const normalizedTitle = (summary.title || safeId).trim() || safeId;
   const normalizedSlug = slugifyPlanTitle((summary as Partial<ArchitectPlanSummary>).slug || normalizedTitle || safeId);
+  const normalizedPlanKind = normalizeArchitectPlanKind(summary.planKind || summary.gitFlowPlan?.planKind);
   const normalizedSummary: ArchitectPlanSummary = {
     ...summary,
     id: safeId,
     slug: normalizedSlug,
     title: normalizedTitle,
     label: normalizePlanLabel(summary.label),
+    planKind: normalizedPlanKind,
+    gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
+      planKind: normalizedPlanKind,
+      gitFlowPlan: summary.gitFlowPlan,
+      projectIds,
+      fallbackSlug: normalizedSlug,
+    }),
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
       summary.targetBranchesByProjectId,
@@ -1592,6 +1700,13 @@ const sanitizeArchitectPlanSummary = (
     ...normalizedSummary,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
+    planKind: normalizedPlanKind,
+    gitFlowPlan: normalizeArchitectPlanGitFlowMetadata({
+      planKind: normalizedPlanKind,
+      gitFlowPlan: normalizedSummary.gitFlowPlan,
+      projectIds: sanitizedProjects.projectIds,
+      fallbackSlug: normalizedSummary.slug,
+    }),
     contextProjectIds: sanitizedContextProjectIds,
     expectedProjectIds: normalizeArchitectPlanIdList(
       sanitizedProjects.projectIds,
@@ -2416,6 +2531,8 @@ const toSummary = (
     title: plan.title,
     label: plan.label,
     description: plan.description,
+    planKind: getArchitectPlanKind(plan),
+    gitFlowPlan: plan.gitFlowPlan,
     status: plan.status,
     targetBranch: plan.targetBranch,
     conversationId: plan.conversationId,
@@ -2949,6 +3066,17 @@ const buildArchitectPlanActivationSnapshot = async (params: {
     resolvedActionableProjectIds,
     targetBranch
   );
+  const planKind = normalizeArchitectPlanKind(
+    planResult.plan.planKind ||
+      storedManifest?.planKind ||
+      storedManifest?.gitFlowPlan?.planKind
+  );
+  const gitFlowPlan = normalizeArchitectPlanGitFlowMetadata({
+    planKind,
+    gitFlowPlan: planResult.plan.gitFlowPlan || storedManifest?.gitFlowPlan,
+    projectIds: resolvedActionableProjectIds,
+    fallbackSlug: planResult.plan.slug,
+  });
   const updatedAt =
     typeof storedManifest?.updatedAt === 'string' && storedManifest.updatedAt.trim().length > 0
       ? storedManifest.updatedAt
@@ -2987,6 +3115,8 @@ const buildArchitectPlanActivationSnapshot = async (params: {
     chatMessageCount,
     plan: {
       ...planResult.plan,
+      planKind,
+      gitFlowPlan,
       targetBranch,
       targetBranchesByProjectId,
       expectedProjectIds,
@@ -3526,6 +3656,8 @@ export const createArchitectPlan = async (input: {
   label?: string;
   slug?: string;
   description?: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -3570,6 +3702,28 @@ export const createArchitectPlan = async (input: {
     registrySnapshot
   );
   const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
+  const planKind = normalizeArchitectPlanKind(input.planKind || input.gitFlowPlan?.planKind);
+  const gitFlowNormalizationContext = await createGitFlowMetadataNormalizationContext(
+    deps,
+    normalizedBranch
+  );
+  const normalizedGitFlowPlan = normalizeArchitectPlanGitFlowMetadata({
+    planKind,
+    gitFlowPlan: input.gitFlowPlan,
+    projectIds,
+    fallbackSlug: canonicalSlug,
+    ...gitFlowNormalizationContext,
+  });
+  const normalizedTargetBranchesByProjectId = mergeGitFlowTargetBranchesByProjectId(
+    normalizeTargetBranchesByProjectId(
+      input.targetBranchesByProjectId,
+      projectIds,
+      normalizedBranch
+    ),
+    normalizedGitFlowPlan,
+    projectIds,
+    { preferGitFlow: input.targetBranchesByProjectId === undefined }
+  );
 
   const planResult = sanitizeArchitectPlanRecord(normalizedBranch, planId, {
     id: planId,
@@ -3577,13 +3731,11 @@ export const createArchitectPlan = async (input: {
     title: planId,
     label: initialLabel,
     description: (input.description || '').trim(),
+    planKind,
+    gitFlowPlan: normalizedGitFlowPlan,
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
-    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
-      input.targetBranchesByProjectId,
-      projectIds,
-      normalizedBranch
-    ),
+    targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
     conversationId: input.conversationId,
     projectId: projectIds[0],
     projectIds,
@@ -3629,6 +3781,8 @@ export const updateArchitectPlan = async (input: {
   label?: string;
   slug?: string;
   description?: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
   conversationId?: string;
   status?: ArchitectPlanStatus;
   projectId?: string;
@@ -3711,6 +3865,32 @@ export const updateArchitectPlan = async (input: {
     registrySnapshot
   );
   const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
+  const planKind = normalizeArchitectPlanKind(
+    input.planKind || input.gitFlowPlan?.planKind || existing.planKind || existing.gitFlowPlan?.planKind
+  );
+  const gitFlowNormalizationContext = await createGitFlowMetadataNormalizationContext(
+    deps,
+    existing.targetBranch || normalizedBranch
+  );
+  const normalizedGitFlowPlan = normalizeArchitectPlanGitFlowMetadata({
+    planKind,
+    gitFlowPlan: input.gitFlowPlan !== undefined ? input.gitFlowPlan : existing.gitFlowPlan,
+    projectIds,
+    fallbackSlug: requestedSlug,
+    ...gitFlowNormalizationContext,
+  });
+  const normalizedTargetBranchesByProjectId = mergeGitFlowTargetBranchesByProjectId(
+    normalizeTargetBranchesByProjectId(
+      input.targetBranchesByProjectId !== undefined
+        ? input.targetBranchesByProjectId
+        : existing.targetBranchesByProjectId,
+      projectIds,
+      existing.targetBranch
+    ),
+    normalizedGitFlowPlan,
+    projectIds,
+    { preferGitFlow: input.targetBranchesByProjectId === undefined }
+  );
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
@@ -3720,15 +3900,11 @@ export const updateArchitectPlan = async (input: {
       ? (input.label !== undefined || input.title !== undefined ? requestedLabel : existing.label)
       : normalizePlanLabel(input.label) ?? existing.label,
     description: input.description !== undefined ? input.description.trim() : existing.description,
+    planKind,
+    gitFlowPlan: normalizedGitFlowPlan,
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
-    targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
-      input.targetBranchesByProjectId !== undefined
-        ? input.targetBranchesByProjectId
-        : existing.targetBranchesByProjectId,
-      projectIds,
-      existing.targetBranch
-    ),
+    targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
     projectId: projectIds[0],
     projectIds,
     contextProjectIds,

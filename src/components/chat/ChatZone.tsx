@@ -391,6 +391,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskId,
     projectGroups,
     activeArchitectPlanId,
+    activePlanContext,
     planNodes,
     predictedBranches,
   } = useAppStore(useShallow((state) => ({
@@ -402,6 +403,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskId: state.selectedTaskId,
     projectGroups: state.projectGroups,
     activeArchitectPlanId: state.activeArchitectPlanId,
+    activePlanContext: state.activePlanContext,
     planNodes: state.planNodes,
     predictedBranches: state.predictedBranches,
   })));
@@ -721,6 +723,31 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTask?.title,
     t,
   ]);
+
+  const architectEmptyHint = useMemo(() => {
+    if (mode !== 'Architect' || !activePlanContext) {
+      return t('chat.typeMessage');
+    }
+    if (activePlanContext.planKind === 'release') {
+      return t(
+        'architect.typedPlan.releaseEmptyHint',
+        'Describe what you want to ship. Macro will propose versions and repositories, then ask you to confirm.'
+      );
+    }
+    if (activePlanContext.planKind === 'hotfix') {
+      return t(
+        'architect.typedPlan.hotfixEmptyHint',
+        'Describe the production bug. Macro will infer the repositories, propose a hotfix slug and patch versions, then ask you to confirm.'
+      );
+    }
+    if (activePlanContext.planKind === 'bugfix') {
+      return t(
+        'architect.typedPlan.bugfixEmptyHint',
+        'Describe the bug. Macro will infer the repositories and propose a bugfix slug before asking you to confirm.'
+      );
+    }
+    return t('chat.typeMessage');
+  }, [activePlanContext, mode, t]);
 
   const activePlanNeedsCount = useMemo(() => {
     if (!activeArchitectPlanId) return 0;
@@ -1319,7 +1346,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </div>
                 <div>
                   {selectedConversationId ? (
-                    <p className="text-muted-foreground text-sm">{t('chat.typeMessage')}</p>
+                    <p className="text-muted-foreground text-sm">{architectEmptyHint}</p>
                   ) : mode === 'Implement' ? (
                     <p className="text-muted-foreground text-sm">
                       {selectedTask
