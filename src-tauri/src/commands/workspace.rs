@@ -5,10 +5,12 @@ use crate::db::repository;
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, ProjectAccessChangePreviewDto,
-    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
+    ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
+    DebugResetProjectReportDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
     ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
+    WorkspaceBootstrapDto,
+    WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
@@ -528,6 +530,32 @@ pub async fn workspace_remove_project(
 }
 
 #[tauri::command]
+pub async fn workspace_debug_reset_project(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    force: Option<bool>,
+) -> Result<DebugResetProjectReportDto> {
+    if !cfg!(debug_assertions) {
+        return Err(BackendError::Validation(
+            "Project debug reset is only available in debug builds.".to_string(),
+        ));
+    }
+
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::debug_reset_project(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        &project_id,
+        force.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn workspace_create_manual_feature_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
@@ -580,6 +608,29 @@ pub async fn workspace_finalize_manual_feature(
         &title,
         &description,
         &feature_slug,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_revert_manual_feature_to_draft(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    conversation_id: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::revert_manual_feature_to_draft(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        conversation_id.as_deref(),
+        title.as_deref(),
+        description.as_deref(),
     )
     .await
 }
@@ -666,4 +717,23 @@ pub async fn workspace_update_standalone_task_status(
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::update_standalone_task_status(&workspace_path, &metadata_root, &task_id, &status)
         .await
+}
+
+#[tauri::command]
+pub async fn workspace_update_manual_feature_merge_workflow(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::update_manual_feature_merge_workflow(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        merge_workflow,
+    )
+    .await
 }

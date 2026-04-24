@@ -3,11 +3,21 @@ import type {
   PlanNodeStatus,
   TaskStatus,
 } from '../types';
+import { isPlanFinalizationTaskSource } from './planFinalization';
+import {
+  resolveMergeWorkflowIndicatorState,
+  type MergeWorkflowIndicatorSource,
+} from './mergeWorkflow';
 
 export type TaskStatusIndicatorState =
   | 'idle_prompt'
   | 'awaiting_response'
   | 'running'
+  | 'plan_finalization'
+  | 'merging'
+  | 'merge_partial'
+  | 'merge_blocked'
+  | 'merge_failed'
   | 'in_review'
   | 'completed'
   | 'failed'
@@ -46,10 +56,21 @@ export const resolveRunningTaskIds = ({
 
 export const resolveTaskStatusIndicatorState = (
   status: TaskStatus,
-  isAssistantRunning: boolean
+  isAssistantRunning: boolean,
+  taskSource?: string | null,
+  mergeWorkflowRuntime?: MergeWorkflowIndicatorSource | null
 ): TaskStatusIndicatorState => {
+  const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
+
   if (isAssistantRunning) {
     return 'running';
+  }
+
+  const mergeWorkflowIndicatorState = resolveMergeWorkflowIndicatorState(
+    mergeWorkflowRuntime
+  );
+  if (mergeWorkflowIndicatorState) {
+    return mergeWorkflowIndicatorState;
   }
 
   switch (status) {
@@ -57,7 +78,7 @@ export const resolveTaskStatusIndicatorState = (
       return 'awaiting_response';
     case 'Pending':
     case 'InProgress':
-      return 'idle_prompt';
+      return isPlanFinalizationTask ? 'plan_finalization' : 'idle_prompt';
     case 'InReview':
       return 'in_review';
     case 'Completed':
@@ -67,7 +88,7 @@ export const resolveTaskStatusIndicatorState = (
     case 'Blocked':
       return 'blocked';
     default:
-      return 'idle_prompt';
+      return isPlanFinalizationTask ? 'plan_finalization' : 'idle_prompt';
   }
 };
 

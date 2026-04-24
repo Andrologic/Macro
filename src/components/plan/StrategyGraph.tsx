@@ -5,8 +5,13 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
+import { persistArchitectPlanStrategyPreview } from '../../services/architectPlanRuntimeService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { normalizeNodeProjectIds } from '../../services/implementTaskDerivation';
 import {
   applyStrategyMutationPreview,
@@ -27,6 +32,7 @@ import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { Skeleton } from '../shared/Skeleton';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { cn } from '../../utils/cn';
 import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
 import {
@@ -415,6 +421,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPredictedBranches,
     setStrategyMutationPreview,
     setMode,
+    openProjectModal,
     architectPlanSwitch,
   } = useAppStore(
     useShallow((state) => ({
@@ -430,6 +437,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       setPredictedBranches: state.setPredictedBranches,
       setStrategyMutationPreview: state.setStrategyMutationPreview,
       setMode: state.setMode,
+      openProjectModal: state.openProjectModal,
       architectPlanSwitch:
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
     }))
@@ -447,6 +455,16 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const [branchSearch, setBranchSearch] = useState('');
   const [branchStatusFilter, setBranchStatusFilter] = useState<'all' | PlanNodeStatus>('all');
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
   const [isModalPanning, setIsModalPanning] = useState(false);
@@ -497,13 +515,15 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         : null,
     [activePlanContext, strategyMutationPreview]
   );
+  const activePlanId = activePlanContext?.id ?? null;
+  const activePlanTargetBranch = activePlanContext?.targetBranch ?? null;
   const frozenNodeById = useMemo<Map<string, FrozenPlanNode>>(() => {
-    if (!activePlanContext?.id) {
+    if (!activePlanId) {
       return new Map<string, FrozenPlanNode>();
     }
     return buildFrozenPlanNodeMap({
       plan: {
-        id: activePlanContext.id,
+        id: activePlanId,
         nodes: planNodes,
       },
       tasks: tasks.map((task) => ({
@@ -512,19 +532,19 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         status: task.status,
       })),
     });
-  }, [activePlanContext?.id, planNodes, tasks]);
+  }, [activePlanId, planNodes, tasks]);
 
   const targetBranch = useMemo(() => {
-    if (activePlanContext?.targetBranch) {
+    if (activePlanTargetBranch) {
       try {
-        return resolveTargetBranch(activePlanContext.targetBranch);
+        return resolveTargetBranch(activePlanTargetBranch);
       } catch {
         return getGitFlowBaseBranch();
       }
     }
 
     return getGitFlowBaseBranch();
-  }, [activePlanContext?.targetBranch]);
+  }, [activePlanTargetBranch]);
 
   const getFrozenReasonLabel = useCallback(
     (reason: FrozenPlanNode['reason']): string => {
@@ -585,7 +605,30 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   const handleDiscardStrategyPreview = useCallback(() => {
     setStrategyMutationPreview(null);
-  }, [setStrategyMutationPreview]);
+    if (activePlanContext?.id) {
+      const projectIds = Array.from(
+        new Set([
+          ...planNodes.flatMap((node) => normalizeNodeProjectIds(node)),
+          ...predictedBranches.map((branch) => branch.projectId),
+        ])
+      );
+      void persistArchitectPlanStrategyPreview({
+        branchName: targetBranch,
+        plan: {
+          id: activePlanContext.id,
+          projectId: projectIds[0],
+          projectIds,
+        },
+        preview: null,
+      });
+    }
+  }, [
+    activePlanContext,
+    planNodes,
+    predictedBranches,
+    setStrategyMutationPreview,
+    targetBranch,
+  ]);
 
   const handleApplyStrategyPreview = useCallback(async () => {
     if (!activeStrategyMutationPreview || !activePlanContext) return;
@@ -610,6 +653,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
       });
       setStrategyMutationPreview(null);
+      await persistArchitectPlanStrategyPreview({
+        branchName: targetBranch,
+        plan: updatedPlan,
+        preview: null,
+      });
       await useTaskStore.getState().refreshFromPlan();
       notify.success(
         activeStrategyMutationPreview.autoProvisionBranches
@@ -626,6 +674,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPlanNodes,
     setPredictedBranches,
     setStrategyMutationPreview,
+    targetBranch,
   ]);
 
   const handleValidatePlan = async () => {
@@ -1271,7 +1320,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
-    if (!selectedProjectId && !selectedGroupId) {
+    if (isWorkspaceMissing) {
       return (
         <aside
           className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
@@ -1282,13 +1331,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               {t('architect.strategy', 'Strategy')}
             </h1>
           </div>
-          <div className="flex-1 text-center px-6 flex items-center justify-center">
-            <div>
-              <Icon name="git-branch" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-              <p className="text-muted-foreground text-sm">
-                {t('architect.selectProject', 'Select a project to view the strategy')}
-              </p>
-            </div>
+          <div className="flex-1">
+            <ProjectWorkspaceEmptyState
+              stateKind={workspaceState.kind}
+              onPrimaryAction={() => openProjectModal(null)}
+            />
           </div>
         </aside>
       );

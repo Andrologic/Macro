@@ -97,4 +97,24 @@ describe('TaskStatusIndicator', () => {
     expect(indicator?.getAttribute('data-task-status-indicator-layout')).toBe('graph');
     expect(indicator?.querySelector('.animate-spin')).not.toBeNull();
   });
+
+  it('renders the merge icon as animated while merging', async () => {
+    await act(async () => {
+      root?.render(
+        <TaskStatusIndicator
+          state="merging"
+          layout="compact"
+          className="text-amber-500"
+        />
+      );
+      await flushRender();
+    });
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="merging"]'
+    );
+
+    expect(indicator).not.toBeNull();
+    expect(indicator?.querySelector('.animate-spin')).not.toBeNull();
+  });
 });

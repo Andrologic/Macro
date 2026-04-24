@@ -94,6 +94,7 @@ export const collectRenderedPlanPredictedBranchDescriptors = (params: {
   getProjectGitFlowSettings?: (
     projectId: string,
   ) => ProjectGitFlowSettings | undefined;
+  getPlanIntegrationBranchName?: (projectId: string) => string;
 }): RenderedPlanPredictedBranchDescriptor[] => {
   const descriptors = new Map<string, RenderedPlanPredictedBranchDescriptor>();
 
@@ -119,10 +120,12 @@ export const collectRenderedPlanPredictedBranchDescriptors = (params: {
           featureSlug: branchIntent.branchSlug,
           settings,
         }),
-        parentBranch: renderPlanIntegrationBranchName({
-          planSlug: params.planSlug,
-          settings,
-        }),
+        parentBranch:
+          params.getPlanIntegrationBranchName?.(projectId) ||
+          renderPlanIntegrationBranchName({
+            planSlug: params.planSlug,
+            settings,
+          }),
       });
     });
   });

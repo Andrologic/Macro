@@ -10,8 +10,21 @@ import {
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
 } from './architectPlanService';
+import {
+  buildPlanFinalizationTaskId,
+  buildPlanFinalizationTaskTitle,
+  isPlanFinalizationTaskSource,
+  PLAN_FINALIZATION_TASK_DESCRIPTION,
+  PLAN_FINALIZATION_TASK_PREFIX,
+  shouldCreatePlanFinalizationTask,
+} from './planFinalization';
+import type {
+  MergeWorkflowSummary,
+  PersistedMergeWorkflowSession,
+} from './mergeWorkflowPersistence';
+import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 
-export type ImplementTaskSource = 'architect' | 'standalone';
+export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
 export interface ImplementTaskPlanSummary {
@@ -27,8 +40,6 @@ export interface ImplementTaskPlanSummary {
   taskCount: number;
   completedTaskCount: number;
   activeTaskCount: number;
-  inReviewTaskCount: number;
-  readyForValidation: boolean;
 }
 
 export interface CatalogedImplementTask extends DerivedImplementTask {
@@ -46,7 +57,13 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   archived_at: string | null;
   archive_reason: string | null;
   merged_at: string | null;
+  merge_workflow?: PersistedMergeWorkflowSession | null;
+  merge_workflow_summary?: MergeWorkflowSummary | null;
 }
+
+export const isPlanFinalizationTask = (
+  task: Pick<CatalogedImplementTask, 'task_source'>
+): boolean => isPlanFinalizationTaskSource(task.task_source);
 
 export interface ImplementTaskCatalog {
   tasks: CatalogedImplementTask[];
@@ -71,6 +88,74 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
     ...(projectId ? [projectId] : []),
   ]);
 
+const buildPlanFinalizationExecutionTargets = (
+  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId'>
+): TaskExecutionTarget[] => {
+  const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
+
+  return projectIds.map((projectId) => {
+    const targetBranchName = plan.targetBranchesByProjectId?.[projectId] || plan.targetBranch;
+    return {
+      projectId,
+      branchName: targetBranchName,
+      targetBranchName,
+      executionKind: 'repository_root',
+      worktreeKey: `${PLAN_FINALIZATION_TASK_PREFIX}${plan.projectId || projectId}:${projectId}`,
+    };
+  });
+};
+
+const buildPlanFinalizationTask = (
+  plan: ArchitectPlanRecord,
+  sequenceIndex: number
+): CatalogedImplementTask | null => {
+  const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
+  const projectId = projectIds[0];
+  if (!projectId) {
+    return null;
+  }
+
+  return {
+    id: buildPlanFinalizationTaskId(plan.id),
+    plan_id: plan.id,
+    project_id: projectId,
+    project_ids: projectIds,
+    context_project_ids: plan.contextProjectIds || [],
+    title: buildPlanFinalizationTaskTitle(plan),
+    description: PLAN_FINALIZATION_TASK_DESCRIPTION,
+    status: 'Pending',
+    dependencies: [],
+    estimated_changes: [],
+    assigned_branch: plan.targetBranch,
+    branch_name: plan.targetBranch,
+    branch_id: null,
+    branch_task_index: Number.MAX_SAFE_INTEGER,
+    blocked_by_task_ids: [],
+    blocked_by: [],
+    is_blocked: false,
+    is_ready: true,
+    needs_revalidation: false,
+    sequence_index: sequenceIndex,
+    execution_targets: buildPlanFinalizationExecutionTargets(plan),
+    task_source: 'plan_finalization',
+    plan_title: plan.title,
+    plan_status: plan.status,
+    plan_target_branch: plan.targetBranch,
+    plan_target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+    has_mixed_target_branches: planHasMixedTargetBranches(plan),
+    draft: false,
+    standalone_kind: 'legacy',
+    base_branch: plan.targetBranch,
+    feature_slug: null,
+    conversation_id: null,
+    archived_at: null,
+    archive_reason: null,
+    merged_at: null,
+    merge_workflow: null,
+    merge_workflow_summary: null,
+  };
+};
+
 const buildFallbackExecutionTargets = (
   projectIds: string[],
   branchName: string,
@@ -80,6 +165,7 @@ const buildFallbackExecutionTargets = (
     projectId,
     branchName,
     targetBranchName: targetBranchName || undefined,
+    executionKind: 'worktree',
     worktreeKey: toBranchWorktreeKey(projectId, branchName),
   }));
 };
@@ -119,6 +205,8 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       archived_at?: string | null;
       archive_reason?: string | null;
       merged_at?: string | null;
+      merge_workflow?: PersistedMergeWorkflowSession | null;
+      merge_workflow_summary?: MergeWorkflowSummary | null;
     };
     const isDraft = raw.draft === true;
     const assignedBranch =
@@ -155,6 +243,18 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       archived_at: typeof raw.archived_at === 'string' ? raw.archived_at : null,
       archive_reason: typeof raw.archive_reason === 'string' ? raw.archive_reason : null,
       merged_at: typeof raw.merged_at === 'string' ? raw.merged_at : null,
+      merge_workflow:
+        raw.merge_workflow && typeof raw.merge_workflow === 'object'
+          ? raw.merge_workflow
+          : null,
+      merge_workflow_summary:
+        raw.merge_workflow_summary && typeof raw.merge_workflow_summary === 'object'
+          ? raw.merge_workflow_summary
+          : summarizePersistedMergeWorkflowSession(
+              raw.merge_workflow && typeof raw.merge_workflow === 'object'
+                ? raw.merge_workflow
+                : null
+            ),
       task_source: 'standalone' as const,
       plan_title: null,
       plan_status: null,
@@ -213,30 +313,42 @@ export const deriveImplementTasksFromArchitectPlan = (
     predictedBranches: plan.predictedBranches || [],
     targetBranchesByProjectId,
   });
+  const nodeById = new Map(strategy.nodes.map((node) => [node.id, node]));
 
-  return strategy.tasks.map((task) => ({
-    ...task,
-    task_source: 'architect' as const,
-    plan_title: plan.title,
-    plan_status: plan.status,
-    plan_target_branch: plan.targetBranch,
-    plan_target_branches_by_project_id: targetBranchesByProjectId,
-    has_mixed_target_branches: planHasMixedTargetBranches(plan),
-    draft: false,
-    standalone_kind: 'legacy' as const,
-    base_branch: null,
-    feature_slug: null,
-    conversation_id: null,
-    archived_at: null,
-    archive_reason: null,
-    merged_at: null,
-  }));
+  return strategy.tasks.map((task) => {
+    const planNode = nodeById.get(task.id);
+    return {
+      ...task,
+      task_source: 'architect' as const,
+      context_project_ids: plan.contextProjectIds || [],
+      plan_title: plan.title,
+      plan_status: plan.status,
+      plan_target_branch: plan.targetBranch,
+      plan_target_branches_by_project_id: targetBranchesByProjectId,
+      has_mixed_target_branches: planHasMixedTargetBranches(plan),
+      draft: false,
+      standalone_kind: 'legacy' as const,
+      base_branch: null,
+      feature_slug: null,
+      conversation_id: null,
+      archived_at: typeof planNode?.archivedAt === 'string' ? planNode.archivedAt : null,
+      archive_reason: typeof planNode?.archiveReason === 'string' ? planNode.archiveReason : null,
+      merged_at: typeof planNode?.mergedAt === 'string' ? planNode.mergedAt : null,
+      merge_workflow: null,
+      merge_workflow_summary: null,
+    };
+  });
 };
 
 const sortCatalogTasks = (tasks: CatalogedImplementTask[]): CatalogedImplementTask[] => {
   return [...tasks].sort((left, right) => {
     if (left.task_source !== right.task_source) {
-      return left.task_source === 'architect' ? -1 : 1;
+      const taskSourceOrder: Record<ImplementTaskSource, number> = {
+        architect: 0,
+        plan_finalization: 1,
+        standalone: 2,
+      };
+      return taskSourceOrder[left.task_source] - taskSourceOrder[right.task_source];
     }
 
     if (left.plan_id !== right.plan_id) {
@@ -272,6 +384,31 @@ export const buildImplementTaskCatalog = (params: {
 }): ImplementTaskCatalog => {
   const executablePlans = params.plans.filter((plan) => isExecutableImplementPlanStatus(plan.status));
   const architectTasks = executablePlans.flatMap((plan) => deriveImplementTasksFromArchitectPlan(plan));
+  const architectTasksByPlanId = new Map<string, CatalogedImplementTask[]>();
+  architectTasks.forEach((task) => {
+    const planTasks = architectTasksByPlanId.get(task.plan_id) || [];
+    planTasks.push(task);
+    architectTasksByPlanId.set(task.plan_id, planTasks);
+  });
+  const planFinalizationTasks = executablePlans
+    .map((plan) => {
+      const planTasks = architectTasksByPlanId.get(plan.id) || [];
+      const completedTaskCount = planTasks.filter((task) => task.status === 'Completed').length;
+      if (!shouldCreatePlanFinalizationTask({
+        planStatus: plan.status,
+        taskCount: planTasks.length,
+        completedTaskCount,
+      })) {
+        return null;
+      }
+
+      const lastSequenceIndex = planTasks.reduce(
+        (maxValue, task) => Math.max(maxValue, task.sequence_index),
+        0
+      );
+      return buildPlanFinalizationTask(plan, lastSequenceIndex + 1);
+    })
+    .filter((task): task is CatalogedImplementTask => Boolean(task));
   const architectTaskIds = new Set(architectTasks.map((task) => task.id));
   const allKnownPlanIds = new Set(params.plans.map((plan) => plan.id));
 
@@ -296,7 +433,6 @@ export const buildImplementTaskCatalog = (params: {
       const activeTaskCount = planTasks.filter(
         (task) => task.status === 'InProgress' || task.status === 'AwaitingResponse'
       ).length;
-      const inReviewTaskCount = planTasks.filter((task) => task.status === 'InReview').length;
 
       return {
         id: plan.id,
@@ -316,8 +452,6 @@ export const buildImplementTaskCatalog = (params: {
         taskCount,
         completedTaskCount,
         activeTaskCount,
-        inReviewTaskCount,
-        readyForValidation: taskCount > 0 && completedTaskCount === taskCount,
       };
     })
     .filter((plan) => plan.taskCount > 0)
@@ -331,11 +465,11 @@ export const buildImplementTaskCatalog = (params: {
       return left.id.localeCompare(right.id);
     });
 
-  const tasks = sortCatalogTasks([...architectTasks, ...standaloneTasks]);
+  const tasks = sortCatalogTasks([...architectTasks, ...planFinalizationTasks, ...standaloneTasks]);
   let source: ImplementTaskCatalogSource = 'empty';
-  if (architectTasks.length > 0 && standaloneTasks.length > 0) {
+  if ((architectTasks.length > 0 || planFinalizationTasks.length > 0) && standaloneTasks.length > 0) {
     source = 'mixed';
-  } else if (architectTasks.length > 0) {
+  } else if (architectTasks.length > 0 || planFinalizationTasks.length > 0) {
     source = 'architect';
   } else if (standaloneTasks.length > 0) {
     source = 'fallback';

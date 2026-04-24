@@ -5,10 +5,8 @@ import {
 } from '../services/serviceRuntime';
 import {
   buildPlanFinalizationFailureState,
-  buildPlanFinalizationRefreshState,
-  buildPlanFinalizationSuccessState,
   toBlockedPlanFinalizationState,
-} from './taskStorePlanFinalizationState';
+} from '../services/planFinalization';
 import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
@@ -16,6 +14,35 @@ const actualTauriIpc = await import('../services/tauriIpc');
 
 let isolatedTaskStoreImportCounter = 0;
 let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }) => Promise<void>) | null = null;
+const gitWorktreeRemoveMock = mock(async () => ({
+  removed: true,
+  removedPath: '/repos/web/.macro/worktrees/task-1',
+}));
+const gitBranchListMock = mock(async () => ({
+  local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+  remote: [],
+  current: 'develop',
+}));
+const gitBranchDeleteMock = mock(async () => undefined);
+const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
+  id: 'task-1',
+  conversationId: 'conv-1',
+  draft: true,
+  title: 'New feature',
+  description: '',
+  status: 'Pending',
+  featureSlug: null,
+  branchName: null,
+  archivedAt: null,
+  archiveReason: null,
+  mergedAt: null,
+  baseBranch: 'develop',
+  projectIds: ['project-1'],
+  contextProjectIds: [],
+  executionTargets: [],
+  createdAt: '2026-04-01T00:00:00.000Z',
+  updatedAt: '2026-04-01T00:00:00.000Z',
+}));
 const workspaceUpdateStandaloneTaskStatusMock = mock(
   async (params: { taskId: string; status: string }) => {
     if (!updateStandaloneTaskStatusImpl) {
@@ -24,17 +51,55 @@ const workspaceUpdateStandaloneTaskStatusMock = mock(
     await updateStandaloneTaskStatusImpl(params);
   }
 );
+const syncTerminalDisplayMetadataMock = mock(async () => undefined);
+const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
+const commitManualFeatureMetadataMock = mock(async () => undefined);
+const removeManualFeatureMetadataMock = mock(async () => undefined);
+const appStoreState = {
+  selectedTaskId: null as string | null,
+  getProjectById: (_projectId: string) => null,
+  setSelectedTask: mock((_taskId: string | null) => undefined),
+};
 
 mock.module('../services/tauriIpc', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  gitWorktreeRemove: gitWorktreeRemoveMock,
+  gitBranchList: gitBranchListMock,
+  gitBranchDelete: gitBranchDeleteMock,
+  workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
 mock.module('../services/tauriIpc.ts', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  gitWorktreeRemove: gitWorktreeRemoveMock,
+  gitBranchList: gitBranchListMock,
+  gitBranchDelete: gitBranchDeleteMock,
+  workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
+}));
+
+mock.module('./useAppStore', () => ({
+  useAppStore: {
+    getState: () => appStoreState,
+    subscribe: () => () => undefined,
+  },
+}));
+
+mock.module('./useTerminalStore', () => ({
+  useTerminalStore: {
+    getState: () => ({
+      syncTerminalDisplayMetadata: syncTerminalDisplayMetadataMock,
+    }),
+  },
+}));
+
+mock.module('../services/manualFeatureMetadataService', () => ({
+  syncManualFeatureMetadataFromTask: syncManualFeatureMetadataFromTaskMock,
+  commitManualFeatureMetadata: commitManualFeatureMetadataMock,
+  removeManualFeatureMetadata: removeManualFeatureMetadataMock,
 }));
 
 const loadIsolatedTaskStore = async () => {
@@ -125,7 +190,7 @@ describe('clearPlanRuntimeStateSnapshot', () => {
   });
 });
 
-describe('taskStorePlanFinalizationState', () => {
+describe('planFinalization helpers', () => {
   it('maps a blocked finalization error into typed store state', () => {
     expect(toBlockedPlanFinalizationState(createBlockedFinalizationError())).toEqual({
       planId: 'plan-1',
@@ -138,27 +203,15 @@ describe('taskStorePlanFinalizationState', () => {
 
   it('builds failure state with blocker diagnostics', () => {
     expect(buildPlanFinalizationFailureState(createBlockedFinalizationError())).toEqual({
-      finalizingPlanId: null,
-      blockedPlanFinalization: {
-        planId: 'plan-1',
-        branchName: 'develop',
-        message: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+      lastError: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+      runtimePatch: {
+        phase: 'blocked',
+        taskStatus: 'Blocked',
         repositories: [blockedRepository],
         blockedRepositories: [blockedRepository],
+        message: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
+        lastLoadedAt: expect.any(String),
       },
-      lastError: 'Cannot finalize plan because /repos/api would conflict in: src/conflict.ts.',
-    });
-  });
-
-  it('clears blocker state on refresh and explicit retry success', () => {
-    expect(buildPlanFinalizationRefreshState()).toEqual({
-      blockedPlanFinalization: null,
-      lastError: null,
-    });
-    expect(buildPlanFinalizationSuccessState()).toEqual({
-      finalizingPlanId: null,
-      blockedPlanFinalization: null,
-      lastError: null,
     });
   });
 });
@@ -239,6 +292,16 @@ describe('getPlanActivationCandidateTask', () => {
 describe('useTaskStore optimistic AwaitingResponse transitions', () => {
   beforeEach(() => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+    gitBranchListMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    workspaceRevertManualFeatureToDraftMock.mockClear();
+    syncTerminalDisplayMetadataMock.mockClear();
+    syncManualFeatureMetadataFromTaskMock.mockClear();
+    commitManualFeatureMetadataMock.mockClear();
+    removeManualFeatureMetadataMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.setSelectedTask.mockClear();
     updateStandaloneTaskStatusImpl = null;
   });
 
@@ -307,6 +370,117 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
       'InProgress',
     );
     expect(useTaskStore.getState().lastError).toBe('Persistence failed');
+  });
+});
+
+describe('useTaskStore revertManualFeatureToDraft', () => {
+  beforeEach(() => {
+    gitWorktreeRemoveMock.mockClear();
+    gitBranchListMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    workspaceRevertManualFeatureToDraftMock.mockClear();
+    syncTerminalDisplayMetadataMock.mockClear();
+    syncManualFeatureMetadataFromTaskMock.mockClear();
+    appStoreState.selectedTaskId = null;
+  });
+
+  it('cleans standalone execution state and reverts the task to draft metadata', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [
+          buildStandaloneTask({
+            standalone_kind: 'manual_feature',
+            title: 'New feature',
+            description: '',
+            status: 'Pending',
+            draft: true,
+            feature_slug: null,
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            conversation_id: 'conv-1',
+            base_branch: 'develop',
+          }),
+        ],
+      });
+    });
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          standalone_kind: 'manual_feature',
+          title: 'Quick export',
+          description: 'Add a quick CSV export from the table.',
+          status: 'InProgress',
+          draft: false,
+          feature_slug: 'quick-export',
+          assigned_branch: 'feature/quick-export',
+          branch_name: 'feature/quick-export',
+          conversation_id: 'conv-1',
+          base_branch: 'develop',
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/quick-export',
+              worktreeKey: 'project-1::feature/quick-export',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/quick-export':
+          '/repos/web/.macro/worktrees/task-1',
+      },
+      activeBranchName: 'feature/quick-export',
+      activeRepositoryPath: '/repos/web/.macro/worktrees/task-1',
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().revertManualFeatureToDraft({
+      taskId: 'task-1',
+      conversationId: 'conv-1',
+      title: 'New feature',
+      description: '',
+    });
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'project-1::feature/quick-export',
+      force: true,
+      branchName: 'feature/quick-export',
+    });
+    expect(gitBranchListMock).toHaveBeenCalledWith('/repos/web');
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/quick-export',
+      force: true,
+    });
+    expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      conversationId: 'conv-1',
+      title: 'New feature',
+      description: '',
+    });
+    expect(syncTerminalDisplayMetadataMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+    });
+    expect(syncManualFeatureMetadataFromTaskMock).toHaveBeenCalled();
+    expect(useTaskStore.getState().branchWorktrees).toEqual({});
+    expect(useTaskStore.getState().activeBranchName).toBeNull();
+    expect(useTaskStore.getState().activeRepositoryPath).toBeNull();
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      draft: true,
+      title: 'New feature',
+      description: '',
+      status: 'Pending',
+      feature_slug: null,
+      branch_name: '',
+      assigned_branch: '',
+    });
   });
 });
 

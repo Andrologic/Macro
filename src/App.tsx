@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
 import { Header } from "./components/layout/Header";
-import { Toaster } from "./components/ui/Toaster";
 import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
@@ -11,6 +10,10 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { getPlatformChromeState } from "./utils/desktopPlatform";
 import { getTitleBarLayout } from "./components/layout/titleBarLayout";
 import { useShallow } from "zustand/react/shallow";
+import type {
+  AppBootstrapController,
+  AppBootstrapSnapshot,
+} from "./services/appBootstrap";
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
@@ -32,23 +35,22 @@ const Footer = lazy(() =>
     default: module.Footer,
   })),
 );
-
-interface AppBootstrapSnapshot {
-  critical: boolean;
-  high: boolean;
-  normal: boolean;
-  low: boolean;
-  ready: boolean;
-  errors: Record<string, string>;
-}
+const Toaster = lazy(() =>
+  import("./components/ui/Toaster").then((module) => ({
+    default: module.Toaster,
+  })),
+);
 
 const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
+  phase: "idle",
   critical: false,
   high: false,
   normal: false,
   low: false,
   ready: false,
   errors: {},
+  warnings: {},
+  startupError: null,
 };
 
 const FooterSkeleton: React.FC = () => (
@@ -56,6 +58,52 @@ const FooterSkeleton: React.FC = () => (
     className="h-8 shrink-0 border-t border-border bg-background/70"
     aria-hidden="true"
   />
+);
+
+const StartupScreen: React.FC = () => (
+  <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background">
+    <div className="flex flex-col items-center gap-4">
+      <Skeleton className="h-12 w-12 rounded-full" />
+      <Skeleton className="h-4 w-32" />
+    </div>
+  </div>
+);
+
+const StartupErrorScreen: React.FC<{
+  message: string;
+  failedSteps: string[];
+  details?: string;
+  onRetry: () => void;
+}> = ({ message, failedSteps, details, onRetry }) => (
+  <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background px-6 text-foreground">
+    <div className="w-full max-w-lg rounded-2xl border border-border bg-card/80 p-6 shadow-2xl">
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+        Startup interrupted
+      </p>
+      <h1 className="mt-3 text-2xl font-semibold">Macro could not finish booting.</h1>
+      <p className="mt-3 text-sm leading-6 text-muted-foreground">{message}</p>
+      {failedSteps.length > 0 && (
+        <div className="mt-4 rounded-xl border border-border bg-background/60 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Failed step{failedSteps.length > 1 ? "s" : ""}
+          </p>
+          <p className="mt-1 text-sm">{failedSteps.join(", ")}</p>
+        </div>
+      )}
+      {import.meta.env.DEV && details && (
+        <pre className="mt-4 max-h-40 overflow-auto rounded-xl bg-black/40 p-3 text-xs text-muted-foreground">
+          {details}
+        </pre>
+      )}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
+      >
+        Retry
+      </button>
+    </div>
+  </div>
 );
 
 // =============================================================================
@@ -87,6 +135,12 @@ const App: React.FC = () => {
   const [initStatus, setInitStatus] = useState<AppBootstrapSnapshot>(
     INITIAL_BOOTSTRAP_SNAPSHOT,
   );
+  const [bootstrapImportError, setBootstrapImportError] = useState<{
+    message: string;
+    details?: string;
+  } | null>(null);
+  const [bootstrapRetryKey, setBootstrapRetryKey] = useState(0);
+  const appBootstrapRef = useRef<AppBootstrapController | null>(null);
 
   const [
     isLeftOpen,
@@ -207,12 +261,14 @@ const App: React.FC = () => {
 
     void (async () => {
       try {
+        setBootstrapImportError(null);
         const { appBootstrap } = await import("./services/appBootstrap");
 
         if (cancelled) {
           return;
         }
 
+        appBootstrapRef.current = appBootstrap;
         setInitStatus(appBootstrap.getSnapshot());
         unsubscribe = appBootstrap.subscribe(() => {
           if (!cancelled) {
@@ -224,6 +280,16 @@ const App: React.FC = () => {
       } catch (error) {
         if (!cancelled) {
           console.error("Failed to initialize app bootstrap:", error);
+          setBootstrapImportError({
+            message:
+              error instanceof Error
+                ? error.message
+                : "Macro could not load its startup module.",
+            details:
+              error instanceof Error
+                ? error.stack || error.message
+                : String(error),
+          });
         }
       }
     })();
@@ -232,11 +298,37 @@ const App: React.FC = () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, []);
+  }, [bootstrapRetryKey]);
+
+  const handleStartupRetry = () => {
+    setBootstrapImportError(null);
+    setInitStatus(INITIAL_BOOTSTRAP_SNAPSHOT);
+    const controller = appBootstrapRef.current;
+    if (!controller) {
+      setBootstrapRetryKey((current) => current + 1);
+      return;
+    }
+
+    void controller.restart().catch((error) => {
+      console.error("Failed to restart app bootstrap:", error);
+      setBootstrapImportError({
+        message:
+          error instanceof Error
+            ? error.message
+            : "Macro could not restart its startup sequence.",
+        details:
+          error instanceof Error ? error.stack || error.message : String(error),
+      });
+    });
+  };
 
   const lastRecoveryToastKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!metadataRecoveryReport || metadataRecoveryReport.status === "none") {
+    if (
+      !initStatus.critical ||
+      !metadataRecoveryReport ||
+      metadataRecoveryReport.status === "none"
+    ) {
       return;
     }
 
@@ -295,7 +387,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [metadataRecoveryReport]);
+  }, [initStatus.critical, metadataRecoveryReport]);
 
   // ==========================================================================
   // RENDER
@@ -303,14 +395,22 @@ const App: React.FC = () => {
 
   // Show minimal loading state while critical initialization is pending
   if (!initStatus.critical) {
-    return (
-      <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 w-32" />
-        </div>
-      </div>
-    );
+    const startupError = bootstrapImportError || initStatus.startupError;
+    if (startupError) {
+      const failedSteps = initStatus.startupError
+        ? initStatus.startupError.failedSteps
+        : ["Bootstrap import"];
+      return (
+        <StartupErrorScreen
+          message={startupError.message}
+          failedSteps={failedSteps}
+          details={startupError.details}
+          onRetry={handleStartupRetry}
+        />
+      );
+    }
+
+    return <StartupScreen />;
   }
 
   return (
@@ -381,8 +481,9 @@ const App: React.FC = () => {
         <CodeFileViewerModal />
       </Suspense>
 
-      {/* Toast Notifications */}
-      <Toaster />
+      <Suspense fallback={null}>
+        <Toaster />
+      </Suspense>
     </div>
   );
 };

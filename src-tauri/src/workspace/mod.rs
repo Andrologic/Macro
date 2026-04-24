@@ -2,21 +2,23 @@ pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
 use crate::db::models::GitWorktreeRecord;
-use crate::git::detect_preferred_git_flow_branches;
 use crate::git::repo::get_status_options;
+use crate::git::{detect_preferred_git_flow_branches, GitState};
 use crate::git::MACRO_BRANCH_NAME;
 use chrono::Utc;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
 use metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto, PlanDto,
-    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
-    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
-    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
-    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
-    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
+    ManualFeatureMergeWorkflowDto, PlanDto,
+    DebugResetProjectReportDto, ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto,
+    ProjectAccessMigrationSummaryDto, ProjectDto, ProjectGitFlowDetectionDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
+    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
+    WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
+    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -1379,6 +1381,7 @@ pub async fn create_manual_feature_draft(
         project_ids: normalized_project_ids,
         context_project_ids: normalized_context_project_ids,
         execution_targets: Vec::new(),
+        merge_workflow: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -1434,18 +1437,19 @@ pub async fn finalize_manual_feature(
         ));
     }
 
-    let slug_used_by_other_feature = state
-        .manual_features
-        .iter()
-        .enumerate()
-        .any(|(index, candidate)| {
-            index != feature_index
-                && candidate
-                    .feature_slug
-                    .as_ref()
-                    .map(|value| value == &normalized_feature_slug)
-                    .unwrap_or(false)
-        });
+    let slug_used_by_other_feature =
+        state
+            .manual_features
+            .iter()
+            .enumerate()
+            .any(|(index, candidate)| {
+                index != feature_index
+                    && candidate
+                        .feature_slug
+                        .as_ref()
+                        .map(|value| value == &normalized_feature_slug)
+                        .unwrap_or(false)
+            });
     if slug_used_by_other_feature {
         return Err(BackendError::Validation(format!(
             "Standalone feature slug \"{}\" is already in use.",
@@ -1501,6 +1505,7 @@ pub async fn finalize_manual_feature(
     feature.merged_at = None;
     feature.base_branch = base_branch;
     feature.execution_targets = execution_targets;
+    feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
     if !state
         .reserved_standalone_feature_slugs
@@ -1526,6 +1531,85 @@ pub async fn finalize_manual_feature(
         .find(|candidate| candidate.id == task_id.trim())
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown manual feature id: {}", task_id)))
+}
+
+pub async fn revert_manual_feature_to_draft(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    conversation_id: Option<&str>,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    let feature_index = state
+        .manual_features
+        .iter()
+        .position(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
+        })?;
+
+    let previous_feature_slug = state.manual_features[feature_index]
+        .feature_slug
+        .as_ref()
+        .map(|value| slugify(value))
+        .filter(|value| !value.is_empty());
+
+    let feature = state
+        .manual_features
+        .get_mut(feature_index)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
+        })?;
+
+    if let Some(next_conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        feature.conversation_id = next_conversation_id.to_string();
+    }
+
+    feature.draft = true;
+    feature.title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("New feature")
+        .to_string();
+    feature.description = description.map(str::trim).unwrap_or("").to_string();
+    feature.status = "Pending".to_string();
+    feature.feature_slug = None;
+    feature.branch_name = None;
+    feature.archived_at = None;
+    feature.archive_reason = None;
+    feature.merged_at = None;
+    feature.execution_targets = Vec::new();
+    feature.merge_workflow = None;
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    if let Some(previous_feature_slug) = previous_feature_slug {
+        state
+            .reserved_standalone_feature_slugs
+            .retain(|value| slugify(value) != previous_feature_slug);
+    }
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "revert_manual_feature_to_draft",
+    )
+    .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
+        })
 }
 
 pub async fn delete_manual_feature_draft(
@@ -1800,6 +1884,49 @@ pub async fn update_standalone_task_status(
     )
     .await?;
     Ok(())
+}
+
+pub async fn update_manual_feature_merge_workflow(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+) -> Result<ManualFeatureDto> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let normalized_task_id = task_id.trim();
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })?;
+
+    feature.merge_workflow = merge_workflow;
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "update_manual_feature_merge_workflow",
+    )
+    .await?;
+
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Unknown manual feature id: {}",
+                normalized_task_id
+            ))
+        })
 }
 
 pub async fn create_project(
@@ -2756,6 +2883,57 @@ pub async fn remove_project(
     close_project(workspace_path, metadata_root, project_id).await
 }
 
+pub async fn debug_reset_project(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    git_state: GitState,
+    project_id: &str,
+    force: bool,
+) -> Result<DebugResetProjectReportDto> {
+    if !force {
+        return Err(BackendError::Validation(
+            "Debug project reset requires an explicit force confirmation.".to_string(),
+        ));
+    }
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = state
+        .project_groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    let project_path = resolve_project_path(workspace_path, &project.path);
+
+    let mut report = DebugResetProjectReportDto {
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        ..DebugResetProjectReportDto::default()
+    };
+
+    close_project(workspace_path, metadata_root, &project.id).await?;
+    report.removed_registry_entry = true;
+
+    match git_state.debug_reset_macro_project_artifacts(&project_path) {
+        Ok(reset) => {
+            report.removed_task_worktrees = reset.removed_task_worktrees;
+            report.removed_metadata_worktree = reset.removed_metadata_worktree;
+            report.removed_macro_branch = reset.removed_macro_branch;
+            report.warnings.extend(reset.warnings);
+        }
+        Err(error) => {
+            report.warnings.push(format!(
+                "Git cleanup was skipped or incomplete for '{}': {}",
+                project_path.display(),
+                error
+            ));
+        }
+    }
+
+    Ok(report)
+}
+
 fn merge_task_lists(mut legacy_tasks: Vec<Value>, manual_tasks: Vec<Value>) -> Vec<Value> {
     let mut merged = manual_tasks;
     merged.append(&mut legacy_tasks);
@@ -3001,6 +3179,11 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
     }
     if let Some(merged_at) = feature.merged_at.as_ref() {
         task.insert("merged_at".to_string(), Value::String(merged_at.clone()));
+    }
+    if let Some(merge_workflow) = feature.merge_workflow.as_ref() {
+        if let Ok(value) = serde_json::to_value(merge_workflow) {
+            task.insert("merge_workflow".to_string(), value);
+        }
     }
 
     if let Some(feature_slug) = feature.feature_slug.as_ref() {
@@ -4137,7 +4320,8 @@ fn is_valid_git_branch_name(branch_name: &str) -> bool {
 }
 
 fn render_plan_branch_name(settings: &ProjectGitFlowSettingsDto, plan_slug: &str) -> String {
-    let rendered = replace_template_tokens(&settings.plan_branch_template, &[("planSlug", plan_slug)]);
+    let rendered =
+        replace_template_tokens(&settings.plan_branch_template, &[("planSlug", plan_slug)]);
     normalize_branch_template(Some(rendered.as_str()), &format!("plan/{}", plan_slug))
 }
 
@@ -4156,9 +4340,7 @@ fn render_plan_feature_branch_name(
     )
 }
 
-fn validate_project_git_flow_settings_strict(
-    settings: &ProjectGitFlowSettingsDto,
-) -> Result<()> {
+fn validate_project_git_flow_settings_strict(settings: &ProjectGitFlowSettingsDto) -> Result<()> {
     let normalized = normalize_project_git_flow_settings(Some(settings));
     let mut errors = Vec::new();
 
@@ -4222,10 +4404,7 @@ fn validate_project_git_flow_settings_strict(
                     ));
                 }
                 if !is_valid_git_branch_name(&rendered) {
-                    errors.push(format!(
-                        "{} must render a valid Git branch name.",
-                        label
-                    ));
+                    errors.push(format!("{} must render a valid Git branch name.", label));
                 }
 
                 match regex.captures(&rendered) {
@@ -4261,7 +4440,10 @@ fn validate_project_git_flow_settings_strict(
         &normalized.feature_branch_template,
         &["planSlug", "featureSlug"],
         render_plan_feature_branch_name(&normalized, sample_plan_slug, sample_feature_slug),
-        &[("planSlug", sample_plan_slug), ("featureSlug", sample_feature_slug)],
+        &[
+            ("planSlug", sample_plan_slug),
+            ("featureSlug", sample_feature_slug),
+        ],
         &mut errors,
     );
     validate_round_trip(
@@ -4835,6 +5017,7 @@ mod tests {
                     worktree_key: "branch-project-web-quick-export".to_string(),
                     repo_path: Some("apps/web".to_string()),
                 }],
+                merge_workflow: None,
                 created_at: "2026-03-14T00:00:00.000Z".to_string(),
                 updated_at: "2026-03-14T00:00:00.000Z".to_string(),
             }],
@@ -5404,5 +5587,88 @@ mod tests {
         assert!(
             matches!(result, Err(BackendError::Validation(message)) if message.contains("Refresh and try again"))
         );
+    }
+
+    #[tokio::test]
+    async fn revert_manual_feature_to_draft_clears_generated_metadata_and_slug_reservation() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+
+        persist_sanitized_state(temp.path(), &metadata_root, state, "seed_workspace_state")
+            .await
+            .expect("seed workspace state");
+
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "manual-task-1",
+            "manual-conv",
+            &vec!["project-web".to_string()],
+            &Vec::new(),
+            Some("develop"),
+            None,
+            None,
+        )
+        .await
+        .expect("create draft");
+
+        finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "manual-task-1",
+            Some("manual-conv"),
+            "Quick export",
+            "Add a quick CSV export from the table.",
+            "quick-export",
+        )
+        .await
+        .expect("finalize draft");
+
+        let reverted = revert_manual_feature_to_draft(
+            temp.path(),
+            &metadata_root,
+            "manual-task-1",
+            Some("manual-conv"),
+            Some("New feature"),
+            Some(""),
+        )
+        .await
+        .expect("revert draft");
+
+        assert!(reverted.draft);
+        assert_eq!(reverted.title, "New feature");
+        assert_eq!(reverted.description, "");
+        assert_eq!(reverted.status, "Pending");
+        assert!(reverted.feature_slug.is_none());
+        assert!(reverted.branch_name.is_none());
+        assert!(reverted.execution_targets.is_empty());
+
+        let persisted_state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("load state");
+        assert!(!persisted_state
+            .reserved_standalone_feature_slugs
+            .iter()
+            .any(|value| value == "quick-export"));
     }
 }

@@ -6,6 +6,7 @@ import {
   deriveFallbackImplementTasks,
   taskMatchesProjectId,
 } from './implementTaskCatalog';
+import { buildPlanFinalizationTaskId } from './planFinalization';
 
 const makePlan = (
   overrides: Partial<ArchitectPlanRecord> & Pick<ArchitectPlanRecord, 'id' | 'title' | 'status'>
@@ -16,9 +17,11 @@ const makePlan = (
   description: overrides.description || '',
   status: overrides.status,
   targetBranch: overrides.targetBranch || 'develop',
+  targetBranchesByProjectId: overrides.targetBranchesByProjectId,
   conversationId: overrides.conversationId,
   projectId: overrides.projectId || 'web',
   projectIds: overrides.projectIds || ['web'],
+  contextProjectIds: overrides.contextProjectIds,
   createdAt: overrides.createdAt || '2026-03-07T00:00:00.000Z',
   updatedAt: overrides.updatedAt || '2026-03-07T00:00:00.000Z',
   nodes: overrides.nodes || [],
@@ -47,6 +50,7 @@ describe('buildImplementTaskCatalog', () => {
         status: 'validated',
         projectId: 'web',
         projectIds: ['web'],
+        contextProjectIds: ['docs'],
         nodes: [
           {
             id: 'task-a1',
@@ -156,16 +160,13 @@ describe('buildImplementTaskCatalog', () => {
       ['plan-a', 1],
       ['plan-b', 1],
     ]);
-    expect(catalog.plans.map((plan) => [plan.id, plan.readyForValidation])).toEqual([
-      ['plan-a', false],
-      ['plan-b', false],
-    ]);
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-a1',
       'task-b1',
       'standalone-1',
       'legacy-1',
     ]);
+    expect(catalog.tasks.find((task) => task.id === 'task-a1')?.context_project_ids).toEqual(['docs']);
 
     const architectTask = catalog.tasks.find((task) => task.id === 'task-b1');
     expect(architectTask?.task_source).toBe('architect');
@@ -273,6 +274,93 @@ describe('buildImplementTaskCatalog', () => {
       ['plan-a', 'develop'],
       ['plan-b', 'feature/payments'],
     ]);
+  });
+
+  it('creates a single synthetic plan finalization task when all architect tasks are completed', () => {
+    const completedPlan = makePlan({
+      id: 'plan-ready',
+      title: 'Checkout refresh',
+      status: 'in_progress',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web', 'api'],
+      targetBranchesByProjectId: {
+        web: 'develop',
+        api: 'integration',
+      },
+      nodes: [
+        {
+          id: 'task-ready-1',
+          title: 'Finish checkout UI',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          assignedBranch: 'checkout-ui',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-ready',
+          name: 'checkout-ui',
+          color: '#3b82f6',
+          parentBranch: 'plan/checkout-refresh',
+          projectId: 'web',
+          taskIds: ['task-ready-1'],
+          status: 'merged',
+        },
+      ],
+    });
+
+    const readyCatalog = buildImplementTaskCatalog({
+      plans: [completedPlan],
+      fallbackTasks: [],
+    });
+
+    expect(readyCatalog.plans).toHaveLength(1);
+    expect(readyCatalog.tasks.map((task) => task.id)).toEqual([
+      'task-ready-1',
+      buildPlanFinalizationTaskId('plan-ready'),
+    ]);
+
+    const finalizationTask = readyCatalog.tasks[1];
+    expect(finalizationTask?.task_source).toBe('plan_finalization');
+    expect(finalizationTask?.plan_id).toBe('plan-ready');
+    expect(finalizationTask?.status).toBe('Pending');
+    expect(finalizationTask?.assigned_branch).toBe('develop');
+    expect(finalizationTask?.execution_targets).toEqual([
+      {
+        projectId: 'web',
+        branchName: 'develop',
+        targetBranchName: 'develop',
+        executionKind: 'repository_root',
+        worktreeKey: 'plan-finalization:web:web',
+      },
+      {
+        projectId: 'api',
+        branchName: 'integration',
+        targetBranchName: 'integration',
+        executionKind: 'repository_root',
+        worktreeKey: 'plan-finalization:web:api',
+      },
+    ]);
+
+    const reopenedCatalog = buildImplementTaskCatalog({
+      plans: [
+        {
+          ...completedPlan,
+          nodes: [
+            {
+              ...completedPlan.nodes[0]!,
+              status: 'in-progress',
+            },
+          ],
+        },
+      ],
+      fallbackTasks: [],
+    });
+
+    expect(reopenedCatalog.tasks.map((task) => task.id)).toEqual(['task-ready-1']);
   });
 });
 

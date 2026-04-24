@@ -1,13 +1,13 @@
 import type { TaskExecutionTarget, TaskStatus } from '../types';
 
 export type ReviewRepositoryUiState =
-  | 'pending_review'
+  | 'pending_validation'
   | 'ready_to_commit'
   | 'committed'
   | 'no_changes';
 
 export type ReviewTaskNextAction =
-  | 'review_repository'
+  | 'validate_repository'
   | 'commit_repository'
   | 'complete_task'
   | 'complete_without_code_changes'
@@ -19,8 +19,8 @@ export interface ReviewRepositoryLike {
   repoPath: string;
   branchName: string;
   stats: {
-    total: number;
-    reviewed: number;
+    pendingVisibleFileCount: number;
+    validatedStagedFileCount: number;
   };
   commitState: 'idle' | 'committing' | 'committed' | 'no_changes';
 }
@@ -31,8 +31,10 @@ export interface ReviewRepositorySummary {
   repoPath: string;
   branchName: string;
   state: ReviewRepositoryUiState;
-  totalFiles: number;
-  reviewedFiles: number;
+  pendingVisibleFileCount: number;
+  validatedStagedFileCount: number;
+  hasPendingVisibleChanges: boolean;
+  hasValidatedStagedChanges: boolean;
   isSelected: boolean;
   isNextAction: boolean;
   isCommitting: boolean;
@@ -41,6 +43,10 @@ export interface ReviewRepositorySummary {
 export interface ReviewTaskSummary {
   repositoryCount: number;
   stateCounts: Record<ReviewRepositoryUiState, number>;
+  actionCounts: {
+    pending_validation: number;
+    ready_to_commit: number;
+  };
   repositories: ReviewRepositorySummary[];
   currentRepositoryId: string | null;
   nextRepositoryId: string | null;
@@ -68,18 +74,19 @@ export interface TaskRepositoryDescriptor {
   label: string;
 }
 
-const isActionableReviewState = (state: ReviewRepositoryUiState): boolean =>
-  state === 'pending_review' || state === 'ready_to_commit';
-
 const unique = (items: string[]): string[] => Array.from(new Set(items.filter((item) => item.trim().length > 0)));
 
 export const EMPTY_REVIEW_TASK_SUMMARY: ReviewTaskSummary = {
   repositoryCount: 0,
   stateCounts: {
-    pending_review: 0,
+    pending_validation: 0,
     ready_to_commit: 0,
     committed: 0,
     no_changes: 0,
+  },
+  actionCounts: {
+    pending_validation: 0,
+    ready_to_commit: 0,
   },
   repositories: [],
   currentRepositoryId: null,
@@ -97,14 +104,26 @@ export const getReviewRepositoryUiState = (
   if (repository.commitState === 'committed') {
     return 'committed';
   }
-  if (repository.commitState === 'no_changes' || repository.stats.total === 0) {
+  if (
+    repository.commitState === 'no_changes' ||
+    (repository.stats.pendingVisibleFileCount === 0 && repository.stats.validatedStagedFileCount === 0)
+  ) {
     return 'no_changes';
   }
-  if (repository.stats.reviewed >= repository.stats.total) {
+  if (repository.stats.pendingVisibleFileCount === 0 && repository.stats.validatedStagedFileCount > 0) {
     return 'ready_to_commit';
   }
-  return 'pending_review';
+  return 'pending_validation';
 };
+
+const hasPendingVisibleChanges = (repository: Pick<ReviewRepositoryLike, 'stats' | 'commitState'>): boolean =>
+  repository.commitState !== 'committed' &&
+  repository.commitState !== 'no_changes' &&
+  repository.stats.pendingVisibleFileCount > 0;
+
+const hasValidatedStagedChanges = (repository: Pick<ReviewRepositoryLike, 'stats' | 'commitState'>): boolean =>
+  repository.commitState !== 'committed' &&
+  repository.stats.validatedStagedFileCount > 0;
 
 export const selectReviewRepositoryId = (
   repositories: ReviewRepositoryLike[],
@@ -115,14 +134,17 @@ export const selectReviewRepositoryId = (
   }
 
   const actionableRepositories = repositories.filter((repository) =>
-    isActionableReviewState(getReviewRepositoryUiState(repository))
+    hasPendingVisibleChanges(repository) || hasValidatedStagedChanges(repository)
   );
 
   if (preferredRepositoryId) {
     const preferredRepository = repositories.find((repository) => repository.id === preferredRepositoryId);
     if (preferredRepository) {
-      const preferredState = getReviewRepositoryUiState(preferredRepository);
-      if (isActionableReviewState(preferredState) || actionableRepositories.length === 0) {
+      if (
+        hasPendingVisibleChanges(preferredRepository) ||
+        hasValidatedStagedChanges(preferredRepository) ||
+        actionableRepositories.length === 0
+      ) {
         return preferredRepository.id;
       }
     }
@@ -141,24 +163,30 @@ export const buildReviewTaskSummary = (
 
   const currentRepositoryId = selectReviewRepositoryId(repositories, selectedRepositoryId);
   const currentRepository = repositories.find((repository) => repository.id === currentRepositoryId) ?? null;
-  const currentRepositoryState = currentRepository ? getReviewRepositoryUiState(currentRepository) : null;
   const fallbackNextRepositoryId =
-    repositories.find((repository) => isActionableReviewState(getReviewRepositoryUiState(repository)))?.id ?? null;
+    repositories.find((repository) =>
+      hasPendingVisibleChanges(repository) || hasValidatedStagedChanges(repository)
+    )?.id ?? null;
   const nextRepositoryId =
-    currentRepository && currentRepositoryState && isActionableReviewState(currentRepositoryState)
+    currentRepository &&
+    (hasPendingVisibleChanges(currentRepository) || hasValidatedStagedChanges(currentRepository))
       ? currentRepository.id
       : fallbackNextRepositoryId;
 
   const repositoriesSummary = repositories.map((repository) => {
     const state = getReviewRepositoryUiState(repository);
+    const repositoryHasPendingVisibleChanges = hasPendingVisibleChanges(repository);
+    const repositoryHasValidatedStagedChanges = hasValidatedStagedChanges(repository);
     return {
       id: repository.id,
       projectId: repository.projectId,
       repoPath: repository.repoPath,
       branchName: repository.branchName,
       state,
-      totalFiles: repository.stats.total,
-      reviewedFiles: repository.stats.reviewed,
+      pendingVisibleFileCount: repository.stats.pendingVisibleFileCount,
+      validatedStagedFileCount: repository.stats.validatedStagedFileCount,
+      hasPendingVisibleChanges: repositoryHasPendingVisibleChanges,
+      hasValidatedStagedChanges: repositoryHasValidatedStagedChanges,
       isSelected: repository.id === currentRepositoryId,
       isNextAction: repository.id === nextRepositoryId,
       isCommitting: repository.commitState === 'committing',
@@ -171,15 +199,26 @@ export const buildReviewTaskSummary = (
       [repository.state]: counts[repository.state] + 1,
     }),
     {
-      pending_review: 0,
+      pending_validation: 0,
       ready_to_commit: 0,
       committed: 0,
       no_changes: 0,
     }
   );
 
+  const actionCounts = repositoriesSummary.reduce<ReviewTaskSummary['actionCounts']>(
+    (counts, repository) => ({
+      pending_validation: counts.pending_validation + (repository.hasPendingVisibleChanges ? 1 : 0),
+      ready_to_commit: counts.ready_to_commit + (repository.hasValidatedStagedChanges ? 1 : 0),
+    }),
+    {
+      pending_validation: 0,
+      ready_to_commit: 0,
+    }
+  );
+
   const hasCommittedRepositories = stateCounts.committed > 0;
-  const hasActionableRepositories = stateCounts.pending_review > 0 || stateCounts.ready_to_commit > 0;
+  const hasActionableRepositories = actionCounts.pending_validation > 0 || actionCounts.ready_to_commit > 0;
   const allRepositoriesResolved = repositoriesSummary.every(
     (repository) => repository.state === 'committed' || repository.state === 'no_changes'
   );
@@ -188,16 +227,16 @@ export const buildReviewTaskSummary = (
     repositoriesSummary.every((repository) => repository.state === 'no_changes');
 
   let nextAction: ReviewTaskNextAction = 'none';
-  if (currentRepository && currentRepositoryState === 'ready_to_commit') {
+  if (currentRepository && hasPendingVisibleChanges(currentRepository)) {
+    nextAction = 'validate_repository';
+  } else if (currentRepository && hasValidatedStagedChanges(currentRepository)) {
     nextAction = 'commit_repository';
-  } else if (currentRepository && currentRepositoryState === 'pending_review') {
-    nextAction = 'review_repository';
   } else if (fallbackNextRepositoryId) {
     const nextRepository = repositories.find((repository) => repository.id === fallbackNextRepositoryId) ?? null;
     nextAction =
-      nextRepository && getReviewRepositoryUiState(nextRepository) === 'ready_to_commit'
+      nextRepository && hasValidatedStagedChanges(nextRepository) && !hasPendingVisibleChanges(nextRepository)
         ? 'commit_repository'
-        : 'review_repository';
+        : 'validate_repository';
   } else if (allRepositoriesResolved && hasCommittedRepositories) {
     nextAction = 'complete_task';
   } else if (allRepositoriesResolved && allRepositoriesNoChanges) {
@@ -207,6 +246,7 @@ export const buildReviewTaskSummary = (
   return {
     repositoryCount: repositoriesSummary.length,
     stateCounts,
+    actionCounts,
     repositories: repositoriesSummary,
     currentRepositoryId,
     nextRepositoryId,

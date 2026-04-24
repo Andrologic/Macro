@@ -16,7 +16,12 @@ const sanitizeId = (value: string): string =>
     .replace(/^-+/, '')
     .replace(/-+$/, '') || `manual-feature-${Date.now()}`;
 
-const toMetadataRoot = (task: Pick<CatalogedImplementTask, 'id' | 'base_branch'>): string =>
+const toCanonicalMetadataRoot = (task: Pick<CatalogedImplementTask, 'id'>): string =>
+  `manual-features/${sanitizeId(task.id)}`;
+
+const toLegacyMetadataRoot = (
+  task: Pick<CatalogedImplementTask, 'id' | 'base_branch'>
+): string =>
   `branches/${normalizeBranchName(task.base_branch)}/manual-features/${sanitizeId(task.id)}`;
 
 const unique = (items: Array<string | null | undefined>): string[] =>
@@ -47,6 +52,34 @@ const resolveMetadataWorkspacePaths = (
     ...(task.execution_targets || []).map((target) => target.repoPath ?? null),
     ...projectIds.map((projectId) => appState.getProjectById(projectId)?.path ?? null),
   ]);
+};
+
+const deleteMetadataRootIfPresent = async (
+  metadataRoot: string,
+  workspacePath: string
+): Promise<void> => {
+  try {
+    const exists = await tauriIpc.fsExists(metadataRoot, {
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath,
+    });
+    if (!exists) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  try {
+    await tauriIpc.fsDelete({
+      path: metadataRoot,
+      recursive: true,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath,
+    });
+  } catch {
+    // Treat missing or concurrently removed legacy metadata as already cleaned up.
+  }
 };
 
 const buildTranscriptJsonl = async (conversationId: string | null): Promise<string> => {
@@ -127,12 +160,13 @@ const buildMetadataMarkdown = (
   >
 ): string => {
   const projectIds = getTaskProjectIds(task);
+  const executionTargets = task.execution_targets || [];
   const lines = [
     `# Manual Feature: ${task.title}`,
     '',
     `- Feature ID: ${task.id}`,
     `- Status: ${task.draft ? 'Draft' : task.status}`,
-    `- Base Branch: ${normalizeBranchName(task.base_branch)}`,
+    `- Base Branch (legacy snapshot): ${normalizeBranchName(task.base_branch)}`,
     `- Feature Branch: ${task.branch_name || 'Not created yet'}`,
     `- Feature Slug: ${task.feature_slug || 'pending'}`,
     `- Conversation ID: ${task.conversation_id || 'none'}`,
@@ -141,6 +175,20 @@ const buildMetadataMarkdown = (
     '## Description',
     task.description || 'No description provided.',
   ];
+
+  lines.push('', '## Execution Targets');
+  if (executionTargets.length === 0) {
+    lines.push('- None');
+  } else {
+    for (const target of executionTargets) {
+      const targetLabel = target.targetBranchName?.trim() || normalizeBranchName(task.base_branch);
+      const repoPathLabel = target.repoPath ? ` (${target.repoPath})` : '';
+      lines.push(
+        `- ${target.projectId}${repoPathLabel}: ${target.branchName} -> ${targetLabel}`
+      );
+    }
+  }
+
   return lines.join('\n');
 };
 
@@ -212,7 +260,8 @@ export const syncManualFeatureMetadataFromTask = async (
     return;
   }
 
-  const metadataRoot = toMetadataRoot(task);
+  const metadataRoot = toCanonicalMetadataRoot(task);
+  const legacyMetadataRoot = toLegacyMetadataRoot(task);
   const metadataJson = buildMetadataJson(task);
   const metadataMarkdown = buildMetadataMarkdown(task);
   const transcriptJsonl = await buildTranscriptJsonl(task.conversation_id ?? null);
@@ -243,6 +292,10 @@ export const syncManualFeatureMetadataFromTask = async (
         workspaceScope: METADATA_WORKSPACE_SCOPE,
         workspacePath,
       });
+
+      if (legacyMetadataRoot !== metadataRoot) {
+        await deleteMetadataRootIfPresent(legacyMetadataRoot, workspacePath);
+      }
     })
   );
 };
@@ -262,15 +315,16 @@ export const removeManualFeatureMetadata = async (
     return;
   }
 
-  const metadataRoot = toMetadataRoot(task);
+  const metadataRoots = Array.from(
+    new Set([toCanonicalMetadataRoot(task), toLegacyMetadataRoot(task)])
+  );
   await Promise.all(
-    workspacePaths.map((workspacePath) =>
-      tauriIpc.fsDelete({
-        path: metadataRoot,
-        recursive: true,
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
-        workspacePath,
-      })
-    )
+    workspacePaths.map(async (workspacePath) => {
+      await Promise.all(
+        metadataRoots.map((metadataRoot) =>
+          deleteMetadataRootIfPresent(metadataRoot, workspacePath)
+        )
+      );
+    })
   );
 };

@@ -8,7 +8,10 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
+      '.macro/**',
+      '.playwright-cli/**',
       '.vite/**',
+      '*.bun-build',
       'coverage/**',
       'src-tauri/target/**',
       'src-tauri/gen/**',

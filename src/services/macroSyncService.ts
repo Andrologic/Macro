@@ -6,7 +6,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { getProjectGroupByProjectId, getScopedProjectIds } from './globalProjects';
 import {
   getArchitectPlan,
-  getArchitectPlanProjectIds,
+  getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
   resolveTargetBranch,
   syncArchitectPlanChatFromConversation,
@@ -197,7 +197,7 @@ const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<Met
             repoPath: replica.repoPath as string,
             projectId: replica.projectId,
           }));
-        const projectTargets = getArchitectPlanProjectIds(plan)
+        const projectTargets = getArchitectPlanVisibleProjectIds(plan)
           .map((projectId) => ({
             repoPath: resolveProjectPath(appState, projectId) || '',
             projectId,

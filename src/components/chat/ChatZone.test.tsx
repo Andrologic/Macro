@@ -69,6 +69,25 @@ type MockChatState = {
       draftTextByStepId: Record<string, string>;
     }
   >;
+  pendingToolApprovalByConversationId: Record<
+    string,
+    {
+      conversationId: string;
+      assistantMessageId: string;
+      toolCallId: string;
+        toolId: string;
+        actionGroup: 'observe' | 'change' | 'escape';
+        riskLevel: 'strict' | 'balanced' | 'yolo';
+        isDestructive?: boolean;
+        summary: string;
+        detail?: string;
+        rememberKey: string;
+    }
+  >;
+  getPendingToolApproval: ReturnType<typeof mock>;
+  approvePendingToolApprovalOnce: ReturnType<typeof mock>;
+  approvePendingToolApprovalForConversation: ReturnType<typeof mock>;
+  denyPendingToolApproval: ReturnType<typeof mock>;
   getActiveQuestionnaire: ReturnType<typeof mock>;
   startQuestionnaireResponseEdit: ReturnType<typeof mock>;
   cancelQuestionnaireSession: ReturnType<typeof mock>;
@@ -137,6 +156,7 @@ type TaskState = {
     id: string;
     title: string;
     draft?: boolean;
+    task_source?: 'architect' | 'standalone';
     is_blocked?: boolean;
     status?: string;
     execution_targets?: Array<{ projectId: string }>;
@@ -148,6 +168,7 @@ type TaskState = {
     estimated_changes?: Array<{ operation: string; path: string }>;
     description?: string;
   }>;
+  getTaskById: (taskId: string) => TaskState['tasks'][number] | null;
   startTask: ReturnType<typeof mock>;
 };
 
@@ -251,6 +272,10 @@ const useTaskStore = createStoreHook(() => taskState, (nextState) => {
 
 const translationMock = {
   t: (key: string, fallbackOrOptions?: string | { defaultValue?: string }, maybeOptions?: { defaultValue?: string }) => {
+    const interpolate = (
+      template: string,
+      values?: Record<string, string | number | undefined>
+    ) => template.replace(/\{\{(\w+)\}\}/g, (_match, token) => String(values?.[token] ?? `{{${token}}}`));
     const explicitTranslations: Record<string, string> = {
       'chat.typeMessage': 'Type your message',
       'chat.stop': 'Stop',
@@ -260,7 +285,7 @@ const translationMock = {
       return explicitTranslations[key]!;
     }
     if (typeof fallbackOrOptions === 'string') {
-      return fallbackOrOptions;
+      return interpolate(fallbackOrOptions, maybeOptions as Record<string, string | number | undefined>);
     }
     return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
   },
@@ -268,6 +293,8 @@ const translationMock = {
 
 const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock((_content: string) => undefined);
+let composerEditorValue = '';
+let latestComposerProps: Record<string, unknown> | null = null;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -368,17 +395,35 @@ const loadChatZoneModule = async () => {
 
   mock.module('./composer/LazyComposerEditor', () => ({
     __esModule: true,
-    default: React.forwardRef((_props: Record<string, unknown>, ref: React.ForwardedRef<{
+    default: React.forwardRef((props: Record<string, unknown>, ref: React.ForwardedRef<{
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
     }>) => {
+      latestComposerProps = props;
       React.useImperativeHandle(ref, () => ({
-        getTextContent: () => '',
-        clear: () => undefined,
-        setText: () => undefined,
+        getTextContent: () => composerEditorValue,
+        clear: () => {
+          composerEditorValue = '';
+        },
+        setText: (value: string) => {
+          composerEditorValue = value;
+        },
       }));
-      return <div data-testid="composer-editor" />;
+      return (
+        <textarea
+          data-testid="composer-editor"
+          disabled={props.editable === false}
+          placeholder={typeof props.placeholder === 'string' ? props.placeholder : ''}
+          value={composerEditorValue}
+          onChange={(event) => {
+            composerEditorValue = event.target.value;
+            if (typeof props.onTextChange === 'function') {
+              props.onTextChange(event.target.value);
+            }
+          }}
+        />
+      );
     }),
   }));
 
@@ -440,6 +485,13 @@ const resetState = () => {
     getConversationMessages: (conversationId: string) =>
       chatState.messages.filter((message) => message.conversation_id === conversationId),
     questionnaireDraftsByConversationId: {},
+    pendingToolApprovalByConversationId: {},
+    getPendingToolApproval: mock((conversationId: string) =>
+      chatState.pendingToolApprovalByConversationId[conversationId] ?? null
+    ),
+    approvePendingToolApprovalOnce: mock(() => undefined),
+    approvePendingToolApprovalForConversation: mock(() => undefined),
+    denyPendingToolApproval: mock(() => undefined),
     getActiveQuestionnaire: mock(() => null),
     startQuestionnaireResponseEdit: mock(() => false),
     cancelQuestionnaireSession: mock(() => undefined),
@@ -482,8 +534,12 @@ const resetState = () => {
 
   taskState = {
     tasks: [],
+    getTaskById: (taskId: string) =>
+      taskState.tasks.find((task) => task.id === taskId) ?? null,
     startTask: mock(async () => undefined),
   };
+  composerEditorValue = '';
+  latestComposerProps = null;
 };
 
 describe('ChatZone', () => {
@@ -650,7 +706,7 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
   });
 
-  it('keeps implement kickoff manual when a task is selected with an empty conversation', async () => {
+  it('uses the bottom composer as the only kickoff input for planned tasks with an empty conversation', async () => {
     appState = {
       ...appState,
       mode: 'Implement',
@@ -663,6 +719,7 @@ describe('ChatZone', () => {
           id: 'task-1',
           title: 'Implement checkout',
           draft: false,
+          task_source: 'architect',
           is_blocked: false,
           status: 'Pending',
           execution_targets: [{ projectId: 'project-1' }],
@@ -683,8 +740,337 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Task briefing');
     expect(requireContainer().textContent).toContain('Start execution');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(false);
+    expect(composer?.getAttribute('placeholder')).toBe('Optional guidance for this task kickoff');
+    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('routes the first planned task composer send through the kickoff flow', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      composerEditorValue = 'Need to reuse checkout components.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const sendButton = requireContainer()
+      .querySelector('span[data-icon="arrow-up"]')
+      ?.closest('button') as HTMLButtonElement | null;
+    expect(sendButton).not.toBeNull();
+    expect(sendButton?.disabled).toBe(false);
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('DEVELOPER NOTES\nNeed to reuse checkout components.'),
+      taskId: 'task-1',
+    });
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer?.value).toBe('');
+  });
+
+  it('reuses the bottom composer text when clicking Start execution', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      composerEditorValue = 'Focus on a minimal diff.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const startExecutionButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Start execution')
+    );
+    expect(startExecutionButton).toBeDefined();
+
+    await act(async () => {
+      startExecutionButton?.click();
+    });
+
+    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('DEVELOPER NOTES\nFocus on a minimal diff.'),
+      taskId: 'task-1',
+    });
+  });
+
+  it('skips kickoff UI for standalone tasks with an empty conversation', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).not.toContain('Task briefing');
+    expect(requireContainer().textContent).not.toContain('Start execution');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(false);
+    expect(composer?.getAttribute('placeholder')).toBe('Type your message');
+  });
+
+  it('sends the first standalone task message directly from the composer', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+
+    await act(async () => {
+      composerEditorValue = 'Implement the standalone feature directly.';
+      const onTextChange = latestComposerProps?.onTextChange as
+        | ((value: string) => void)
+        | undefined;
+      onTextChange?.(composerEditorValue);
+    });
+
+    const sendButton = requireContainer()
+      .querySelector('span[data-icon="arrow-up"]')
+      ?.closest('button') as HTMLButtonElement | null;
+    expect(sendButton).not.toBeNull();
+    expect(sendButton?.disabled).toBe(false);
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: 'Implement the standalone feature directly.',
+      taskId: 'task-1',
+      images: [],
+    });
+    expect(taskState.startTask).not.toHaveBeenCalled();
+  });
+
+  it('shows the focused subproject name instead of a multi-repository count in the kickoff summary', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-2',
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Platform',
+          projects: [
+            { id: 'project-1', name: 'Web' },
+            { id: 'project-2', name: 'API' },
+            { id: 'project-3', name: 'Worker' },
+          ],
+        },
+      ],
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [
+            { projectId: 'project-1' },
+            { projectId: 'project-2' },
+            { projectId: 'project-3' },
+          ],
+          project_ids: ['project-1', 'project-2', 'project-3'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('API');
+    expect(requireContainer().textContent).not.toContain('3 repositories');
+  });
+
+  it('keeps a repository count in the kickoff summary when the scoped task still targets multiple repos', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Platform',
+          projects: [
+            { id: 'project-1', name: 'Web' },
+            { id: 'project-2', name: 'API' },
+            { id: 'project-3', name: 'Worker' },
+          ],
+        },
+      ],
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [
+            { projectId: 'project-1' },
+            { projectId: 'project-2' },
+            { projectId: 'project-3' },
+          ],
+          project_ids: ['project-1', 'project-2', 'project-3'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('3 repositories');
   });
 
   it('renders the active questionnaire in the footer and hides the standard composer', async () => {
@@ -722,6 +1108,125 @@ describe('ChatZone', () => {
     expect(choiceList?.className).toContain('flex-col');
     expect(stepPanel?.className).toContain('questionnaire-step-enter');
     expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+  });
+
+  it('renders the active tool approval footer and hides the standard composer', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'terminal_run',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: true,
+          summary: 'Run a terminal command',
+          detail: 'npm test',
+          rememberKey: 'terminal:npm test',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const footer = requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer?.textContent).toContain('Tool approval');
+    expect(footer?.textContent).toContain('Run a terminal command');
+    expect(footer?.textContent).toContain('System');
+    expect(footer?.textContent).not.toContain('terminal_run');
+    expect(footer?.textContent).toContain('Allow once');
+    expect(footer?.textContent).toContain('Allow for this conversation');
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+  });
+
+  it('forwards tool approval actions to the chat store', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'web_fetch',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: false,
+          summary: 'Fetch a web page',
+          detail: 'example.com',
+          rememberKey: 'domain:example.com',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const allowOnceButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Allow once')
+    );
+    const allowConversationButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Allow for this conversation')
+    );
+    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Refuse')
+    );
+
+    await act(async () => {
+      allowOnceButton?.click();
+      allowConversationButton?.click();
+      denyButton?.click();
+    });
+
+    expect(chatState.approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+    expect(chatState.approvePendingToolApprovalForConversation).toHaveBeenCalledWith('conv-1');
+    expect(chatState.denyPendingToolApproval).not.toHaveBeenCalled();
+  });
+
+  it('forwards tool denial confirmations to the chat store', async () => {
+    chatState = {
+      ...chatState,
+      pendingToolApprovalByConversationId: {
+        'conv-1': {
+          conversationId: 'conv-1',
+          assistantMessageId: 'msg-assistant-1',
+          toolCallId: 'tool-call-1',
+          toolId: 'web_fetch',
+          actionGroup: 'escape',
+          riskLevel: 'balanced',
+          isDestructive: false,
+          summary: 'Fetch a web page',
+          detail: 'example.com',
+          rememberKey: 'domain:example.com',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Refuse')
+    );
+
+    await act(async () => {
+      denyButton?.click();
+    });
+
+    const confirmDenyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Confirm denial')
+    );
+
+    await act(async () => {
+      confirmDenyButton?.click();
+    });
+
+    expect(chatState.denyPendingToolApproval).toHaveBeenCalledWith('conv-1', undefined);
   });
 
   it('submits the questionnaire when the user clicks a suggested answer', async () => {

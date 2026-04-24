@@ -8,6 +8,7 @@ import type {
   ProvidersDto,
   ModelsDto,
   ProjectDto,
+  DebugResetProjectReportDto,
   FileContentDto,
   ToolSettingsDto,
   MCPServerSettingsDto,
@@ -26,7 +27,6 @@ import type {
   ProjectGroup,
   ReasoningEffort,
   Task,
-  ToolTrace,
 } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
@@ -34,6 +34,7 @@ import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
 import { normalizeArchitectToolId } from '../architectToolNames';
 import { sendChat as sendChatFallback } from './mock';
 import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
+import { parseToolTracesJson } from '../toolTraceState';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
@@ -84,25 +85,6 @@ const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation 
   is_unread: false,
 });
 
-const parseToolTraces = (raw: string | null): ToolTrace[] | undefined => {
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return undefined;
-    const traces = parsed.filter(
-      (trace): trace is ToolTrace =>
-        !!trace &&
-        typeof trace === 'object' &&
-        typeof (trace as ToolTrace).tool_call_id === 'string' &&
-        typeof (trace as ToolTrace).tool_name === 'string' &&
-        ((trace as ToolTrace).status === 'running' || (trace as ToolTrace).status === 'done')
-    );
-    return traces.length > 0 ? traces : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   id: message.id,
   task_id: '',
@@ -110,7 +92,7 @@ const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   role: message.role === 'user' ? 'user' : 'assistant',
   content: message.content,
   timestamp: message.created_at,
-  tool_traces: parseToolTraces(message.tool_traces_json),
+  tool_traces: parseToolTracesJson(message.tool_traces_json),
   hidden_context: message.hidden_context ?? undefined,
   provider_input_items: tauriIpc.parseProviderInputItemsJson(message.provider_input_items_json),
   provider_turn_state: tauriIpc.parseProviderTurnStateJson(message.provider_turn_state_json),
@@ -468,6 +450,16 @@ export const removeProject = async (data: {
   return { projectGroups };
 };
 
+export const debugResetProject = async (data: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> => {
+  return tauriIpc.workspaceDebugResetProject({
+    projectId: data.projectId,
+    force: data.force,
+  });
+};
+
 export const closeProject = async (data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => {
@@ -567,6 +559,7 @@ export const provider: ServiceProvider = {
   archiveProject,
   removeProjectGroup,
   removeProject,
+  debugResetProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

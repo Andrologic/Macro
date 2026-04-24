@@ -4,7 +4,10 @@ import type {
   FrozenPlanNode,
   StrategyMutationPreview,
 } from './architectStrategyMutationGuard';
-import { getArchitectPlanProjectIds } from './architectPlanService';
+import {
+  getArchitectPlanActionableProjectIds,
+  getArchitectPlanVisibleProjectIds,
+} from './architectPlanService';
 import { getArchitectPlanDisplayName, isCanonicalArchitectPlan } from './architectPlanPresentation';
 
 export const ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION =
@@ -18,7 +21,16 @@ export const ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX =
 
 type ArchitectPlanListItem = Pick<
   ArchitectPlanSummary,
-  'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'targetBranch' | 'conversationId'
+  | 'id'
+  | 'slug'
+  | 'title'
+  | 'label'
+  | 'status'
+  | 'description'
+  | 'planKind'
+  | 'gitFlowPlan'
+  | 'targetBranch'
+  | 'conversationId'
 > & {
   nodeCount?: number;
 };
@@ -204,6 +216,8 @@ export const formatArchitectPlanListToolResult = (params: {
       label: plan.label ?? null,
       display_name: getArchitectPlanDisplayName(plan),
       status: plan.status,
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       description: cleanLine(plan.description) || '',
       target_branch: plan.targetBranch,
       node_count: plan.nodeCount ?? 0,
@@ -223,10 +237,15 @@ export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): str
       display_name: getArchitectPlanDisplayName(plan),
       is_canonical: isCanonicalArchitectPlan(plan),
       description: cleanLine(plan.description) || '',
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
       conversation_id: plan.conversationId ?? null,
-      project_ids: getArchitectPlanProjectIds(plan),
+      project_ids: getArchitectPlanActionableProjectIds(plan),
+      actionable_project_ids: getArchitectPlanActionableProjectIds(plan),
+      context_project_ids: plan.contextProjectIds || [],
+      visible_project_ids: getArchitectPlanVisibleProjectIds(plan),
       node_count: plan.nodes.length,
       branch_count: plan.predictedBranches.length,
       nodes: plan.nodes.map(summarizePlanNode),
@@ -247,6 +266,8 @@ export const formatArchitectPlanUpdateToolResult = (
       label: plan.label ?? null,
       display_name: getArchitectPlanDisplayName(plan),
       description: cleanLine(plan.description) || '',
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
       active: plan.id === activePlanId,

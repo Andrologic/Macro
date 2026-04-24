@@ -140,6 +140,8 @@ export const services = {
     callProviderMethod('removeProjectGroup', data),
   removeProject: (data: Parameters<ServiceProvider['removeProject']>[0]) =>
     callProviderMethod('removeProject', data),
+  debugResetProject: (data: Parameters<ServiceProvider['debugResetProject']>[0]) =>
+    callProviderMethod('debugResetProject', data),
   closeProject: (data: Parameters<ServiceProvider['closeProject']>[0]) =>
     callProviderMethod('closeProject', data),
   getToolSettings: () => callProviderMethod('getToolSettings'),

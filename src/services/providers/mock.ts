@@ -21,6 +21,7 @@ import type {
   ModelsDto,
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
+  DebugResetProjectReportDto,
   ProjectDto,
   ToolSettingsDto,
   MCPServerSettingsDto,
@@ -678,6 +679,24 @@ export const removeProject = async (data: {
   return closeProject(data);
 };
 
+export const debugResetProject = async (data: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> => {
+  await delay(DEFAULT_LATENCY_MS);
+  maybeFail(ERROR_RATE);
+  await closeProject({ projectId: data.projectId });
+  return {
+    projectId: data.projectId,
+    projectName: 'Mock Project',
+    removedRegistryEntry: true,
+    removedTaskWorktrees: data.force ? 1 : 0,
+    removedMetadataWorktree: false,
+    removedMacroBranch: false,
+    warnings: [],
+  };
+};
+
 export const closeProject = async (data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => {
@@ -740,6 +759,7 @@ export const provider: ServiceProvider = {
   archiveProject,
   removeProjectGroup,
   removeProject,
+  debugResetProject,
   closeProject,
   getToolSettings,
   updateToolSettings,
