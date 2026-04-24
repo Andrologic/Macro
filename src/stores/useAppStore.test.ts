@@ -448,6 +448,7 @@ const registerUseAppStoreMocks = async () => {
     getArchitectPlanNeeds: getArchitectPlanNeedsMock,
     getGitFlowBaseBranch: () => 'develop',
     getArchitectPlanProjectIds: collectPlanProjectIds,
+    getArchitectPlanVisibleProjectIds: collectPlanProjectIds,
     getArchitectPlanTargetBranchesByProjectId:
       resolvePlanTargetBranchesByProjectId,
     isArchitectPlanVisibleForScope: isPlanVisibleForScopedProjectIds,

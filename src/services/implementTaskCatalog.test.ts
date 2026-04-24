@@ -21,6 +21,7 @@ const makePlan = (
   conversationId: overrides.conversationId,
   projectId: overrides.projectId || 'web',
   projectIds: overrides.projectIds || ['web'],
+  contextProjectIds: overrides.contextProjectIds,
   createdAt: overrides.createdAt || '2026-03-07T00:00:00.000Z',
   updatedAt: overrides.updatedAt || '2026-03-07T00:00:00.000Z',
   nodes: overrides.nodes || [],
@@ -49,6 +50,7 @@ describe('buildImplementTaskCatalog', () => {
         status: 'validated',
         projectId: 'web',
         projectIds: ['web'],
+        contextProjectIds: ['docs'],
         nodes: [
           {
             id: 'task-a1',
@@ -164,6 +166,7 @@ describe('buildImplementTaskCatalog', () => {
       'standalone-1',
       'legacy-1',
     ]);
+    expect(catalog.tasks.find((task) => task.id === 'task-a1')?.context_project_ids).toEqual(['docs']);
 
     const architectTask = catalog.tasks.find((task) => task.id === 'task-b1');
     expect(architectTask?.task_source).toBe('architect');

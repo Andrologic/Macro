@@ -4,7 +4,10 @@ import type {
   FrozenPlanNode,
   StrategyMutationPreview,
 } from './architectStrategyMutationGuard';
-import { getArchitectPlanProjectIds } from './architectPlanService';
+import {
+  getArchitectPlanActionableProjectIds,
+  getArchitectPlanVisibleProjectIds,
+} from './architectPlanService';
 import { getArchitectPlanDisplayName, isCanonicalArchitectPlan } from './architectPlanPresentation';
 
 export const ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION =
@@ -226,7 +229,10 @@ export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): str
       status: plan.status,
       target_branch: plan.targetBranch,
       conversation_id: plan.conversationId ?? null,
-      project_ids: getArchitectPlanProjectIds(plan),
+      project_ids: getArchitectPlanActionableProjectIds(plan),
+      actionable_project_ids: getArchitectPlanActionableProjectIds(plan),
+      context_project_ids: plan.contextProjectIds || [],
+      visible_project_ids: getArchitectPlanVisibleProjectIds(plan),
       node_count: plan.nodes.length,
       branch_count: plan.predictedBranches.length,
       nodes: plan.nodes.map(summarizePlanNode),

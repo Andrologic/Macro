@@ -27,6 +27,7 @@ import {
   cleanupPlanBranches,
   mergeFeatureBranchIntoPlanBranch,
 } from '../services/architectGitFlowService';
+import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
 import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
 import {
   archiveArchitectPlan,
@@ -1073,6 +1074,11 @@ interface TaskStore {
   deleteTask: (taskId: string) => Promise<void>;
   reopenTask: (taskId: string) => Promise<void>;
   startTask: (taskId: string) => Promise<void>;
+  promoteTaskContextProjects: (
+    taskId: string,
+    projectIds: string[],
+    options?: { triggerTool?: string | null }
+  ) => Promise<{ task: CatalogedImplementTask; promotedProjectIds: string[] } | null>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
   runTaskCommands: (taskId: string) => Promise<TaskCommandRunResult | null>;
@@ -2424,6 +2430,94 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
+    }
+  },
+
+  promoteTaskContextProjects: async (taskId, projectIds, options) => {
+    set({ lastError: null });
+    assertTaskMutationRuntime('promoteTaskContextProjects');
+
+    const task = get().getTaskById(taskId);
+    if (!task) {
+      const message = tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId });
+      set({ lastError: message });
+      throw toServiceError(message);
+    }
+    if (task.task_source !== 'architect' || !task.plan_id || !task.plan_target_branch) {
+      const message = tTask(
+        'implement.errors.contextPromotionUnsupportedTask',
+        'Context promotion is only available for Architect tasks.'
+      );
+      set({ lastError: message });
+      throw toServiceError(message);
+    }
+
+    try {
+      const promotion = await promoteArchitectTaskContextProjects({
+        branchName: resolveTargetBranch(task.plan_target_branch),
+        planId: task.plan_id,
+        taskId: task.id,
+        projectIds,
+        triggerTool: options?.triggerTool ?? null,
+      });
+
+      await get().refreshFromPlan();
+      const updatedTask = get().getTaskById(task.id);
+      if (!updatedTask) {
+        throw toServiceError(
+          tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId: task.id })
+        );
+      }
+
+      if (promotion.promotedProjectIds.length === 0) {
+        return {
+          task: updatedTask,
+          promotedProjectIds: [],
+        };
+      }
+
+      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+        updatedTask,
+        get().branchWorktrees
+      );
+      const appState = useAppStore.getState();
+      const promotedProjectIdSet = new Set(promotion.promotedProjectIds);
+      const primaryTarget =
+        preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
+        preparedTargets.find((target) => promotedProjectIdSet.has(target.projectId)) ||
+        preparedTargets[0];
+      const primaryWorktree = primaryTarget?.worktreePath || null;
+
+      set((state) => ({
+        branchWorktrees: {
+          ...state.branchWorktrees,
+          ...createdWorktrees,
+        },
+        activeBranchName: updatedTask.assigned_branch,
+        activeRepositoryPath: primaryWorktree,
+        missingBaseBranchIssue: null,
+        lastError: null,
+      }));
+      await syncWorkspaceRoot(primaryWorktree);
+
+      if (updatedTask.status !== 'InProgress') {
+        await get().setTaskStatus(updatedTask.id, 'InProgress');
+        await get().refreshFromPlan();
+      }
+
+      return {
+        task: get().getTaskById(updatedTask.id) ?? updatedTask,
+        promotedProjectIds: promotion.promotedProjectIds,
+      };
+    } catch (error) {
+      try {
+        await get().refreshFromPlan();
+      } catch {
+        // Keep the original promotion/provisioning failure as the user-facing error.
+      }
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message });
+      throw normalized;
     }
   },
 
