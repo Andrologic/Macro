@@ -36,12 +36,14 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "need_list",
         "need_get",
         "need_update",
+        "need_delete",
         "strategy_generate",
         "plan_list",
         "plan_get",
         "plan_update",
         "strategy_get",
         "strategy_update",
+        "strategy_delete",
     ]
 }
 

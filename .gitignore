@@ -1,5 +1,6 @@
 .macro
 .codex
+.playwright-cli/
 
 # Logs
 logs
@@ -52,3 +53,13 @@ src-tauri/macro.db
 # Local AI keys
 public/ai-keys.local.json
 dev/ai-keys.local.json
+
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.p8
+*.p12
+*.key

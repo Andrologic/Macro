@@ -32,6 +32,7 @@ export const getFileChangesExecutionTargets = (
   return [{
     projectId: task.project_id,
     branchName: task.assigned_branch,
+    executionKind: 'worktree',
     worktreeKey: toBranchWorktreeKey(task.project_id, task.assigned_branch),
     planBranchName:
       task.task_source === 'standalone' ? getGitFlowBaseBranch?.() : undefined,

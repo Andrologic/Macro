@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   getTitleBarLayout,
 } from './titleBarLayout';
+const actualDesktopPlatform = await import('../../utils/desktopPlatform');
 
 type TauriWindowState = {
   isAvailable: boolean;
@@ -27,6 +28,7 @@ mock.module('../../hooks/useTauriWindow', () => ({
 }));
 
 mock.module('../../utils/desktopPlatform', () => ({
+  ...actualDesktopPlatform,
   getPlatformChromeState: () => chromeState,
 }));
 

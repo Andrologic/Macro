@@ -219,8 +219,11 @@ describe('useProviderStore secret resolution', () => {
 
     await providerStore.useProviderStore.getState().initialize();
 
+    expect(loadPreferenceMock).not.toHaveBeenCalled();
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBeNull();
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBeNull();
   });
 
   it('clears cached secret metadata when the key is removed', async () => {
@@ -420,6 +423,65 @@ describe('useProviderStore secret resolution', () => {
 
     providerStore.useProviderStore.getState().selectModel('gpt-5-pro');
 
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-5-pro');
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('high');
+  });
+
+  it('commits a restored selection atomically and normalizes the reasoning effort', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5-pro',
+            name: 'GPT-5 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['high'],
+            defaultReasoningEffort: 'high',
+          },
+        ],
+      },
+      selectedProviderId: null,
+      selectedModelId: null,
+      selectedReasoningEffort: null,
+    });
+
+    const committed = await providerStore.useProviderStore.getState().commitRestoredSelection({
+      providerId: 'provider-openai',
+      modelId: 'gpt-5-pro',
+      reasoningEffort: 'xhigh',
+    });
+
+    expect(committed).toEqual({
+      providerId: 'provider-openai',
+      modelId: 'gpt-5-pro',
+      reasoningEffort: 'high',
+    });
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBe('provider-openai');
     expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-5-pro');
     expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('high');
   });

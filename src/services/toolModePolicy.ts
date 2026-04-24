@@ -1,8 +1,6 @@
 import type { AppMode } from "../types";
 import {
-  DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE,
   getArchitectChatActionToolIds,
-  type ArchitectToolAutonomyProfile,
 } from "./architectToolSurface";
 
 export interface ToolModePolicy {
@@ -57,23 +55,15 @@ const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
   ...WORKSPACE_WRITE_TOOLS,
 ] as const;
 
-interface ToolModePolicyOptions {
-  architectToolAutonomyProfile?: ArchitectToolAutonomyProfile;
-}
-
 export const getToolModePolicy = (
   mode: AppMode,
-  options?: ToolModePolicyOptions,
 ): ToolModePolicy => {
   if (mode === "Architect") {
     return {
       allowedToolIds: [
         ...ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS,
         ...GIT_READ_TOOLS,
-        ...getArchitectChatActionToolIds(
-          options?.architectToolAutonomyProfile ??
-            DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE,
-        ),
+        ...getArchitectChatActionToolIds(),
       ],
       enforceMacroOnlyWrites: true,
     };

@@ -23,6 +23,7 @@ import type {
   ProviderTurnState,
   ToolTrace,
 } from "../types";
+import { parseToolTracesJson as parseSerializedToolTracesJson } from "./toolTraceState";
 
 // ============ Types ============
 
@@ -179,6 +180,12 @@ export interface GitMergeCheckDto {
 }
 
 export interface GitFilePairDto {
+  headExists: boolean;
+  headContent: string;
+  indexExists: boolean;
+  indexContent: string;
+  worktreeExists: boolean;
+  worktreeContent: string;
   originalContent: string;
   modifiedContent: string;
 }
@@ -456,23 +463,7 @@ export const parseProviderTurnStateJson = (
 };
 
 export const parseToolTracesJson = (raw: string | null): ToolTrace[] | undefined => {
-  if (!raw) return undefined;
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return undefined;
-    const traces = parsed.filter(
-      (trace): trace is ToolTrace =>
-        !!trace &&
-        typeof trace === "object" &&
-        typeof (trace as ToolTrace).tool_call_id === "string" &&
-        typeof (trace as ToolTrace).tool_name === "string" &&
-        ((trace as ToolTrace).status === "running" || (trace as ToolTrace).status === "done"),
-    );
-    return traces.length > 0 ? traces : undefined;
-  } catch {
-    return undefined;
-  }
+  return parseSerializedToolTracesJson(raw);
 };
 
 export interface AiStreamErrorEvent {
@@ -635,6 +626,31 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   repoPath?: string | null;
 }
 
+export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
+  id: string;
+  projectId: string;
+  repoPath: string;
+  sourceBranchName: string;
+  targetBranchName: string;
+  state: string;
+  hadChangesAtStart?: boolean;
+  mergeAppliedAt?: string | null;
+  blockingKind?: string | null;
+  blockingReason?: string | null;
+  conflictFiles?: string[];
+}
+
+export interface WorkspaceManualFeatureMergeWorkflowDto {
+  kind: string;
+  phase: string;
+  taskStatus: string;
+  startedAt: string;
+  updatedAt: string;
+  lastLoadedAt?: string | null;
+  message?: string | null;
+  repositories: WorkspaceManualFeatureMergeWorkflowRepositoryDto[];
+}
+
 export interface WorkspaceManualFeatureDto {
   id: string;
   conversationId: string;
@@ -651,6 +667,7 @@ export interface WorkspaceManualFeatureDto {
   projectIds: string[];
   contextProjectIds: string[];
   executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
+  mergeWorkflow?: WorkspaceManualFeatureMergeWorkflowDto | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1329,10 +1346,12 @@ export async function gitAdd(params: {
 export async function gitRestorePaths(params: {
   repoPath: string;
   paths: string[];
+  target?: "worktree" | "staged_and_worktree";
 }): Promise<void> {
   return invoke("git_restore_paths", {
     repoPath: params.repoPath,
     paths: params.paths,
+    target: params.target ?? null,
   });
 }
 
@@ -1732,6 +1751,26 @@ export async function workspaceRemoveProject(params: {
   });
 }
 
+export interface DebugResetProjectReportDto {
+  projectId: string;
+  projectName: string;
+  removedRegistryEntry: boolean;
+  removedTaskWorktrees: number;
+  removedMetadataWorktree: boolean;
+  removedMacroBranch: boolean;
+  warnings: string[];
+}
+
+export async function workspaceDebugResetProject(params: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> {
+  return invoke<DebugResetProjectReportDto>("workspace_debug_reset_project", {
+    projectId: params.projectId,
+    force: params.force,
+  });
+}
+
 export async function workspaceCloseProject(params: {
   projectId: string;
 }): Promise<ProjectGroup[]> {
@@ -1805,6 +1844,23 @@ export async function workspaceFinalizeManualFeature(params: {
   );
 }
 
+export async function workspaceRevertManualFeatureToDraft(params: {
+  taskId: string;
+  conversationId?: string | null;
+  title?: string | null;
+  description?: string | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>(
+    "workspace_revert_manual_feature_to_draft",
+    {
+      taskId: params.taskId,
+      conversationId: params.conversationId ?? null,
+      title: params.title ?? null,
+      description: params.description ?? null,
+    },
+  );
+}
+
 export async function workspaceDeleteManualFeatureDraft(
   taskId: string,
 ): Promise<void> {
@@ -1855,6 +1911,19 @@ export async function workspaceUpdateStandaloneTaskStatus(params: {
     taskId: params.taskId,
     status: params.status,
   });
+}
+
+export async function workspaceUpdateManualFeatureMergeWorkflow(params: {
+  taskId: string;
+  mergeWorkflow?: WorkspaceManualFeatureMergeWorkflowDto | null;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>(
+    'workspace_update_manual_feature_merge_workflow',
+    {
+      taskId: params.taskId,
+      mergeWorkflow: params.mergeWorkflow ?? null,
+    }
+  );
 }
 
 // ============ Provider Models ============
@@ -2238,10 +2307,17 @@ export async function terminalCloseTab(tabId: string): Promise<void> {
  * Check if we're running in Tauri
  */
 export function isTauriAvailable(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    ("__TAURI__" in window || "__TAURI_INTERNALS__" in window)
-  );
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const tauriWindow = window as Window & {
+    __TAURI_INTERNALS__?: {
+      invoke?: unknown;
+    } | null;
+  };
+
+  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
 }
 
 /**

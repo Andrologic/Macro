@@ -6,13 +6,13 @@
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";
-import type { AppMode } from "../types";
+import type { AppMode, ToolRiskLevel } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
-  DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE,
-  type ArchitectToolAutonomyProfile,
-} from './architectToolSurface';
+  DEFAULT_TOOL_RISK_LEVEL,
+  TOOL_RISK_LEVELS,
+} from './toolSecurityPolicy';
 
 // Preference keys
 export const PREF_KEYS = {
@@ -52,7 +52,7 @@ export const PREF_KEYS = {
   PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
-  ARCHITECT_TOOL_AUTONOMY_PROFILE: "architectToolAutonomyProfile",
+  TOOL_RISK_LEVEL: "toolRiskLevel",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
@@ -80,13 +80,11 @@ export const PREF_KEYS = {
   PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
 } as const;
 
-export type { ArchitectToolAutonomyProfile } from './architectToolSurface';
-
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
 
 const DEFAULT_MODE_PROMPTS = {
   [PREF_KEYS.PROMPT_ARCHITECT]:
-    "You are the Architect AI. Your job is to analyze the user's project, capture requirements on the active plan, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. All `need_*` tools operate on the active plan only. Use them to add, inspect, list, and refine needs instead of only describing requirements in plain text.\n3. In guarded autonomy, destructive tools are not available. In full autonomy, `need_delete` and `strategy_delete` may be used only when explicitly requested and only with `confirm=true`.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. The Architect chat surface includes `plan_list`, `plan_get`, and `plan_update`, but plan lifecycle actions stay UI-only in this iteration.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch, and each new plan integrates on a plan branch rendered from that profile. Planned work branches are rendered per subproject from the logical plan slug plus each node's logical `featureSlug`. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `plan_slug` and `featureSlug`; concrete Git branch names are derived later from each subproject's settings.\n11. A node is not the same thing as a branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same logical branch. Split into multiple branches only when the work can run in parallel.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
+    "You are the Architect AI. Your job is to analyze the user's project, capture requirements on the active plan, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. All `need_*` tools operate on the active plan only. Use them to add, inspect, list, and refine needs instead of only describing requirements in plain text.\n3. Respect the current Macro tool security level. Some tools may require approval or be unavailable, and destructive Architect actions such as `need_delete` and `strategy_delete` still require `confirm=true` when they are allowed.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. The Architect chat surface includes `plan_list`, `plan_get`, and `plan_update`, but plan lifecycle actions stay UI-only in this iteration.\n7. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. If a plan must be created, selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope/GitFlow metadata for typed plans. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each subproject GitFlow profile defines a development target branch plus a main branch. Feature plans integrate on a rendered plan branch; Release, Hotfix, and Bugfix plans integrate on rendered release/hotfix/bugfix branches. Planned work branches are rendered per subproject from the logical plan slug plus each node's logical `featureSlug` and merge into that plan integration branch. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `plan_slug` and `featureSlug`; concrete Git branch names are derived later from each subproject's settings.\n11. A node is not the same thing as a branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same logical branch. Split into multiple branches only when the work can run in parallel.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_update.label` or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.",
   [PREF_KEYS.PROMPT_IMPLEMENT]:
     "You are the Implementer. Follow the tasks to implement the specific feature.",
   [PREF_KEYS.PROMPT_CHAT]:
@@ -210,9 +208,11 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
-    version: 1,
+    version: 2,
     modeSelections: {},
     conversationSelections: {},
+    providerSelectionsByConversationId: {},
+    providerSelectionsByMode: {},
   },
   [PREF_KEYS.PROMPT_ARCHITECT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_ARCHITECT],
   [PREF_KEYS.PROMPT_IMPLEMENT]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_IMPLEMENT],
@@ -220,8 +220,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
-  [PREF_KEYS.ARCHITECT_TOOL_AUTONOMY_PROFILE]:
-    DEFAULT_ARCHITECT_TOOL_AUTONOMY_PROFILE satisfies ArchitectToolAutonomyProfile,
+  [PREF_KEYS.TOOL_RISK_LEVEL]:
+    DEFAULT_TOOL_RISK_LEVEL satisfies ToolRiskLevel,
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
@@ -229,7 +229,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
   [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: 'feature/{featureSlug}',
-  [PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE]: 'release/{releaseSlug}',
+  [PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE]: 'release/v{releaseSlug}',
   [PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE]: 'hotfix/{hotfixSlug}',
   [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: 'bugfix/{bugfixSlug}',
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
@@ -254,6 +254,24 @@ let storeInstance: Store | null = null;
 let initPromise: Promise<Store> | null = null;
 const debouncedSaveTimers = new Map<PrefKey, ReturnType<typeof setTimeout>>();
 const LEGACY_IMPLEMENT_EXECUTION_MODE_KEY = "implementExecutionMode";
+const LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY =
+  "architectToolAutonomyProfile";
+
+const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
+  typeof value === "string" &&
+  (TOOL_RISK_LEVELS as readonly string[]).includes(value);
+
+const migrateLegacyArchitectToolAutonomyProfile = (
+  value: unknown,
+): ToolRiskLevel | null => {
+  if (value === "guarded") {
+    return "strict";
+  }
+  if (value === "full") {
+    return "balanced";
+  }
+  return null;
+};
 
 /**
  * Check if running in Tauri environment
@@ -299,6 +317,39 @@ const removePersistedPreferenceKey = async (key: string): Promise<void> => {
 export async function purgeLegacyImplementExecutionModePreference(): Promise<void> {
   await removePersistedPreferenceKey(LEGACY_IMPLEMENT_EXECUTION_MODE_KEY);
 }
+
+const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
+  ToolRiskLevel | null
+> => {
+  try {
+    const localValue = localStorage.getItem(
+      `macro_${LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY}`
+    );
+    if (localValue !== null) {
+      const migrated = migrateLegacyArchitectToolAutonomyProfile(
+        JSON.parse(localValue)
+      );
+      if (migrated) {
+        return migrated;
+      }
+    }
+
+    const store = await getStore();
+    if (store) {
+      const persisted = await store.get<unknown>(
+        LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY
+      );
+      return migrateLegacyArchitectToolAutonomyProfile(persisted);
+    }
+  } catch (error) {
+    console.error(
+      "Failed to load legacy architect autonomy preference:",
+      error
+    );
+  }
+
+  return null;
+};
 
 /**
  * Save a preference value
@@ -348,13 +399,34 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
   try {
     const localValue = localStorage.getItem(localStorageKey);
     if (localValue) {
-      return JSON.parse(localValue) as T;
+      const parsed = JSON.parse(localValue) as T;
+      if (key !== PREF_KEYS.TOOL_RISK_LEVEL || isToolRiskLevel(parsed)) {
+        return parsed;
+      }
     }
 
     const store = await getStore();
     if (store) {
       const value = await store.get<T>(key);
-      return value !== null && value !== undefined ? value : defaultValue;
+      if (
+        value !== null &&
+        value !== undefined &&
+        (key !== PREF_KEYS.TOOL_RISK_LEVEL || isToolRiskLevel(value))
+      ) {
+        return value;
+      }
+    }
+
+    if (key === PREF_KEYS.TOOL_RISK_LEVEL) {
+      const migratedValue =
+        await loadLegacyArchitectToolAutonomyProfilePreference();
+      if (migratedValue && isToolRiskLevel(migratedValue)) {
+        await savePreference(PREF_KEYS.TOOL_RISK_LEVEL, migratedValue);
+        await removePersistedPreferenceKey(
+          LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY
+        );
+        return migratedValue as T;
+      }
     }
 
     return defaultValue;

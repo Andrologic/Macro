@@ -19,6 +19,7 @@ import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
+import { isDevelopmentBuild } from '../../utils/devLogger';
 import type { Project, ProjectGroup } from '../../types';
 import {
   getEmptyProjectOpenSelection,
@@ -216,6 +217,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     renameProject,
     removeProjectGroup,
     removeProject,
+    debugResetProject,
     openProjectModal,
     openProjectGitFlowModal,
   } = useAppStore();
@@ -229,6 +231,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   const [removeTarget, setRemoveTarget] = useState<
     { type: 'group'; group: ProjectGroup } | { type: 'project'; project: Project } | null
   >(null);
+  const [debugResetTarget, setDebugResetTarget] = useState<Project | null>(null);
   const [isSubmittingConfirm, setIsSubmittingConfirm] = useState(false);
   const [busyOpenActionByProjectId, setBusyOpenActionByProjectId] = useState<
     Record<string, ProjectOpenAction | null>
@@ -421,6 +424,36 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     }
   };
 
+  const handleDebugResetProject = async (project: Project) => {
+    try {
+      setIsSubmittingConfirm(true);
+      const report = await debugResetProject(project.id);
+      setMenuState(null);
+      setDebugResetTarget(null);
+      notify.success(t('projects.debugResetSuccess', 'Macro data reset for {{name}}', {
+        name: report.projectName || project.name,
+      }), {
+        description: t(
+          'projects.debugResetSuccessDescription',
+          '{{worktreeCount}} Macro worktree(s) removed. Shared @macro metadata was preserved.',
+          {
+            worktreeCount: report.removedTaskWorktrees,
+          }
+        ),
+      });
+      if (report.warnings.length > 0) {
+        notify.warning(t('projects.debugResetWarning', 'Reset completed with warnings'), {
+          description: report.warnings.slice(0, 2).join('\n'),
+        });
+      }
+    } catch (error) {
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
+      notify.error(message);
+    } finally {
+      setIsSubmittingConfirm(false);
+    }
+  };
+
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
@@ -559,6 +592,25 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                   <Icon name="x" size={12} />
                   {t('projects.removeFromMacro', 'Retirer de Macro')}
                 </button>
+                {isDevelopmentBuild && (
+                  <>
+                    <div className="my-1 h-px bg-border" />
+                    <button
+                      onClick={() => {
+                        if (!projectManagementDisabled) {
+                          setDebugResetTarget(menuState.project);
+                          setMenuState(null);
+                        }
+                      }}
+                      disabled={projectManagementDisabled}
+                      title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      <Icon name="x" size={12} />
+                      {t('projects.debugResetMacroData', 'Reset Macro data')}
+                    </button>
+                  </>
+                )}
               </>
             )}
           </div>,
@@ -620,7 +672,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                     <div
                       className={cn(
                         'flex items-center justify-between px-3 py-2.5 cursor-pointer transition-colors relative',
-                        isGroupSelected ? 'bg-primary/10' : 'bg-card hover:bg-accent/50'
+                        'bg-transparent'
                       )}
                     >
                       <div
@@ -814,6 +866,35 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           }
         }}
       />
+      <ConfirmPromptModal
+        isOpen={!!debugResetTarget}
+        title={t('projects.debugResetTitle', 'Reset Macro data')}
+        description={t(
+          'projects.debugResetPrompt',
+          'This debug-only action removes this subproject from Macro and deletes its local Macro task worktrees. It preserves the shared @macro metadata branch/worktree, never deletes your source code or remote branches, but uncommitted changes inside Macro worktrees will be lost.'
+        )}
+        confirmLabel={t('projects.debugResetConfirm', 'Reset Macro data')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error"
+        isSubmitting={isSubmittingConfirm}
+        onCancel={() => {
+          if (!isSubmittingConfirm) {
+            setDebugResetTarget(null);
+          }
+        }}
+        onConfirm={() => {
+          if (debugResetTarget) {
+            void handleDebugResetProject(debugResetTarget);
+          }
+        }}
+      >
+        {debugResetTarget && (
+          <div className="rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {debugResetTarget.name}
+            {debugResetTarget.path ? ` · ${debugResetTarget.path}` : ''}
+          </div>
+        )}
+      </ConfirmPromptModal>
       {projectMenuPortal}
     </div>
   );

@@ -13,14 +13,26 @@ let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
+let virtualListRowKeys: Array<Array<string | number>> = [];
 
 const registerVirtualListMock = () => {
   mock.module('../../hooks/useVirtualList', () => ({
-    useVirtualList: ({ items }: { items: unknown[] }) => ({
+    useVirtualList: ({
+      items,
+      getItemKey,
+    }: {
+      items: unknown[];
+      getItemKey?: (item: unknown, index: number) => string | number;
+    }) => {
+      const rowKeys = items.map((item, index) =>
+        getItemKey ? getItemKey(item, index) : index
+      );
+      virtualListRowKeys.push(rowKeys);
+      return {
       parentRef: { current: null },
       virtualItems: items.map((item, index) => ({
         index,
-        key: index,
+        key: rowKeys[index] ?? index,
         size: 112,
         start: index * 120,
         item,
@@ -29,7 +41,8 @@ const registerVirtualListMock = () => {
       scrollToIndex: () => undefined,
       scrollToEnd: () => undefined,
       measureElement: () => undefined,
-    }),
+      };
+    },
     useVirtualMessages: (messages: unknown[]) => ({
       parentRef: { current: null },
       virtualItems: messages.map((item, index) => ({
@@ -50,6 +63,7 @@ const registerVirtualListMock = () => {
 const loadTaskQueueModules = async () => {
   importCounter += 1;
   mock.restore();
+  virtualListRowKeys = [];
   registerVirtualListMock();
 
   const appStoreModule = await import(
@@ -113,6 +127,53 @@ const makeProject = (id: string, path: string, name: string) => ({
   },
 });
 
+const makeTask = (
+  id: string,
+  status: TaskStatus,
+  overrides: Record<string, unknown> = {}
+) => ({
+  id,
+  title: `Task ${id}`,
+  description: `Description for ${id}`,
+  status,
+  task_source: 'standalone' as const,
+  draft: false,
+  archived_at: null,
+  archive_reason: null,
+  merged_at: null,
+  project_id: 'project-1',
+  project_ids: ['project-1'],
+  assigned_branch: `feature/${id}`,
+  branch_name: `feature/${id}`,
+  branch_id: null,
+  branch_task_index: 0,
+  sequence_index: 0,
+  execution_targets: [
+    {
+      projectId: 'project-1',
+      branchName: `feature/${id}`,
+      worktreeKey: `project-1::feature/${id}`,
+    },
+  ],
+  blocked_by: [],
+  blocked_by_task_ids: [],
+  dependencies: [],
+  is_blocked: false,
+  is_ready: status !== 'Completed' && status !== 'Failed' && status !== 'Blocked',
+  needs_revalidation: false,
+  plan_id: '',
+  plan_title: null,
+  plan_status: null,
+  plan_target_branch: null,
+  plan_target_branches_by_project_id: null,
+  has_mixed_target_branches: false,
+  standalone_kind: 'legacy' as const,
+  base_branch: 'develop',
+  feature_slug: id,
+  conversation_id: `conversation-${id}`,
+  ...overrides,
+});
+
 describe('TaskQueue', () => {
   let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
   let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
@@ -122,6 +183,16 @@ describe('TaskQueue', () => {
   let root: Root | null = null;
 
   const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+    seedTasks([makeTask('task-1', taskStatus, {
+      title: 'Render task status indicator',
+      description: 'Check the status marker',
+      task_source: 'architect',
+      plan_id: 'plan-1',
+      plan_title: 'Plan One',
+    })], options);
+  };
+
+  const seedTasks = (tasks: Array<Record<string, unknown>>, options?: { isStreaming?: boolean }) => {
     const conversationRuntimeById = options?.isStreaming
       ? {
           'conversation-1': {
@@ -151,29 +222,10 @@ describe('TaskQueue', () => {
 
     useTaskStore.setState({
       ...useTaskStore.getState(),
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Render task status indicator',
-          description: 'Check the status marker',
-          status: taskStatus,
-          task_source: 'architect',
-          draft: false,
-          archived_at: null,
-          project_id: 'project-1',
-          project_ids: ['project-1'],
-          assigned_branch: 'feature/task-status',
-          blocked_by: [],
-          dependencies: [],
-          is_blocked: false,
-          plan_id: 'plan-1',
-          plan_title: 'Plan One',
-        },
-      ] as never,
+      tasks: tasks as never,
       planSummaries: [],
       hasStandaloneTasks: false,
       publishedStandaloneTasks: {},
-      finalizingPlanId: null,
       taskCommandRuns: {},
       missingBaseBranchIssue: null,
       lastError: null,
@@ -197,6 +249,33 @@ describe('TaskQueue', () => {
       currentTaskId: null,
     });
   };
+
+  const getLastVirtualListKeys = () =>
+    virtualListRowKeys[virtualListRowKeys.length - 1] ?? [];
+
+  const getSectionSummaries = () =>
+    Array.from(document.body.querySelectorAll('h2')).map((heading) => ({
+      title: heading.textContent?.trim(),
+      count: heading.parentElement?.querySelector('span')?.textContent?.trim(),
+    }));
+
+  const getTaskCardFooter = () =>
+    document.body.querySelector('[data-task-card-footer="true"]');
+
+  const getTaskCard = () =>
+    document.body.querySelector('[role="button"][tabindex="0"]');
+
+  const getTaskCardProgressLabel = () =>
+    document.body.querySelector('[data-task-card-progress-label="true"]');
+
+  const getTaskCardNextAction = () =>
+    document.body.querySelector('[data-task-card-next-action="true"]');
+
+  const getTaskContextBadges = () =>
+    Array.from(document.body.querySelectorAll('[data-task-context-badge]')).map((badge) => ({
+      key: badge.getAttribute('data-task-context-badge'),
+      text: badge.textContent?.replace(/\s+/g, ' ').trim(),
+    }));
 
   beforeEach(async () => {
     await loadTaskQueueModules();
@@ -245,7 +324,7 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
-    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('pt-1');
+    expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
   });
 
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
@@ -281,6 +360,374 @@ describe('TaskQueue', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
     ).not.toBeNull();
+  });
+
+  it('renders the architect plan badge in the task footer', async () => {
+    seedTasks([
+      makeTask('architect-1', 'Pending', {
+        title: 'Architect task',
+        task_source: 'architect',
+        plan_id: '1710000000000',
+        plan_title: '1710000000000',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: '1710000000000',
+          slug: '1710000000000',
+          title: '1710000000000',
+          label: 'Checkout refresh',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'plan', text: 'Checkout refresh' },
+    ]);
+  });
+
+  it('renders the standalone badge without a plan badge for independent tasks', async () => {
+    seedTasks([
+      makeTask('standalone-1', 'Pending', {
+        title: 'Standalone task',
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'standalone', text: 'Standalone' },
+    ]);
+    expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
+  });
+
+  it('renders the synthetic plan finalization task without the legacy ready-for-validation callout and excludes it from progress', async () => {
+    seedTasks([
+      makeTask('architect-complete-1', 'Completed', {
+        title: 'Architect task',
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_title: 'Checkout refresh',
+        sequence_index: 0,
+      }),
+      makeTask('plan-finalization:plan-1', 'Pending', {
+        title: 'Finalize plan: Checkout refresh',
+        description: 'Merge the plan branch into the configured development branches or archive the plan.',
+        task_source: 'plan_finalization',
+        plan_id: 'plan-1',
+        plan_title: 'Checkout refresh',
+        assigned_branch: 'develop',
+        branch_name: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'develop',
+            targetBranchName: 'develop',
+            executionKind: 'repository_root',
+            worktreeKey: 'plan-finalization:project-1:project-1',
+          },
+        ],
+        sequence_index: 1,
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('Plan ready for validation');
+    expect(document.body.textContent).toContain('1/1');
+    expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
+      .toContain('Plan finalization');
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="plan_finalization"]')
+    ).not.toBeNull();
+  });
+
+  it('keeps the footer visible for standalone draft tasks even without a description', async () => {
+    seedTasks([
+      makeTask('draft-standalone-1', 'Pending', {
+        title: 'Draft standalone task',
+        description: '',
+        draft: true,
+        standalone_kind: 'manual_feature',
+        assigned_branch: '',
+        branch_name: '',
+        execution_targets: [],
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const taskCard = getTaskCard();
+
+    expect(taskCard?.querySelector('p')).toBeNull();
+    expect(taskCard?.getAttribute('data-task-card-variant')).toBe('compact-draft');
+    expect(taskCard?.className).toContain('h-[96px]');
+    expect(getTaskCardFooter()).not.toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'standalone', text: 'Standalone' },
+      { key: 'draft', text: 'Draft' },
+    ]);
+  });
+
+  it('keeps the default card height for drafts that include a description', async () => {
+    seedTasks([
+      makeTask('draft-standalone-1', 'Pending', {
+        title: 'Draft standalone task',
+        description: 'Describe the feature before kickoff',
+        draft: true,
+        standalone_kind: 'manual_feature',
+        assigned_branch: '',
+        branch_name: '',
+        execution_targets: [],
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const taskCard = getTaskCard();
+    const description = taskCard?.querySelector('p');
+
+    expect(taskCard?.getAttribute('data-task-card-variant')).toBe('default');
+    expect(taskCard?.className).toContain('h-[112px]');
+    expect(description?.textContent).toBe('Describe the feature before kickoff');
+  });
+
+  it('renders merge partial progress from the live merge workflow runtime', async () => {
+    seedTasks([
+      makeTask('task-1', 'Blocked', {
+        title: 'Merge blocked task',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': {
+          taskId: 'task-1',
+          kind: 'task_completion',
+          phase: 'partial',
+          taskStatus: 'Blocked',
+          review: null,
+          repositories: [
+            {
+              id: 'repo-a',
+              projectId: 'project-1',
+              repoPath: '/tmp/project-1',
+              sourceBranchName: 'feature/task-1',
+              targetBranchName: 'develop',
+              progressState: 'merged',
+              hadChangesAtStart: true,
+              mergeAppliedAt: '2026-04-23T09:00:00.000Z',
+              isClean: true,
+              hasChanges: true,
+              mergeable: true,
+              conflictFiles: [],
+              mergeInProgress: false,
+              diff: '',
+              checkStatus: 'passed',
+              blockingKind: null,
+              nextAction: null,
+              blockingReason: null,
+            },
+            {
+              id: 'repo-b',
+              projectId: 'project-1',
+              repoPath: '/tmp/project-1',
+              sourceBranchName: 'feature/task-1',
+              targetBranchName: 'develop',
+              progressState: 'blocked',
+              hadChangesAtStart: true,
+              mergeAppliedAt: null,
+              isClean: false,
+              hasChanges: true,
+              mergeable: false,
+              conflictFiles: ['src/conflict.ts'],
+              mergeInProgress: false,
+              diff: '',
+              checkStatus: 'failed',
+              blockingKind: 'merge_conflict',
+              nextAction: 'resolve_conflicts',
+              blockingReason: 'Conflict',
+            },
+          ],
+          blockedRepositories: [],
+          message: 'Conflict',
+          lastLoadedAt: null,
+        },
+      } as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
+    ).not.toBeNull();
+    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardNextAction()?.textContent).toBe(
+      'Next: resolve remaining merge blockers'
+    );
+  });
+
+  it('renders merge partial progress from the persisted task summary after reload', async () => {
+    seedTasks([
+      makeTask('task-1', 'Blocked', {
+        title: 'Persisted merge partial task',
+        merge_workflow_summary: {
+          kind: 'task_completion',
+          phase: 'partial',
+          taskStatus: 'Blocked',
+          repositoryCount: 2,
+          mergedRepositoryCount: 1,
+          blockedRepositoryCount: 0,
+          unresolvedRepositoryCount: 1,
+          updatedAt: '2026-04-23T09:00:00.000Z',
+          message: null,
+        },
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_partial"]')
+    ).not.toBeNull();
+    expect(getTaskCardProgressLabel()?.textContent).toBe('1 merged, 1 remaining');
+    expect(getTaskCardNextAction()?.textContent).toBe(
+      'Next: continue merge for remaining repositories'
+    );
+  });
+
+  it('keeps virtual row keys stable when draft and blocked sections are inserted', async () => {
+    seedTasks([
+      makeTask('ready-1', 'Pending', {
+        title: 'Ready task',
+        sequence_index: 1,
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Ready tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:ready',
+      'task:ready-1',
+    ]);
+
+    await act(async () => {
+      useTaskStore.setState({
+        ...useTaskStore.getState(),
+        tasks: [
+          makeTask('draft-1', 'Pending', {
+            title: 'Draft feature',
+            description: '',
+            draft: true,
+            standalone_kind: 'manual_feature',
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            sequence_index: 0,
+          }),
+          makeTask('ready-1', 'Pending', {
+            title: 'Ready task',
+            sequence_index: 1,
+          }),
+        ] as never,
+      });
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Draft features', count: '1' },
+      { title: 'Ready tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:drafts',
+      'task:draft-1',
+      'section:ready',
+      'task:ready-1',
+    ]);
+
+    await act(async () => {
+      useTaskStore.setState({
+        ...useTaskStore.getState(),
+        tasks: [
+          makeTask('draft-1', 'Pending', {
+            title: 'Draft feature',
+            description: '',
+            draft: true,
+            standalone_kind: 'manual_feature',
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            sequence_index: 0,
+          }),
+          makeTask('ready-1', 'Blocked', {
+            title: 'Blocked task',
+            is_blocked: true,
+            blocked_by: ['Draft feature'],
+            sequence_index: 1,
+          }),
+          makeTask('done-1', 'Completed', {
+            title: 'Completed task',
+            sequence_index: 2,
+          }),
+        ] as never,
+      });
+      await flushRender();
+    });
+
+    expect(getSectionSummaries()).toEqual([
+      { title: 'Draft features', count: '1' },
+      { title: 'Ready tasks', count: '0' },
+      { title: 'Blocked tasks', count: '1' },
+      { title: 'Completed tasks', count: '1' },
+    ]);
+    expect(getLastVirtualListKeys()).toEqual([
+      'section:drafts',
+      'task:draft-1',
+      'section:ready',
+      'section:blocked',
+      'task:ready-1',
+      'section:completed',
+      'task:done-1',
+    ]);
   });
 
 });

@@ -3,6 +3,7 @@ import type {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
   CommitsDto,
+  DebugResetProjectReportDto,
   ConversationsDto,
   FileContentDto,
   GitTreeDto,
@@ -129,6 +130,10 @@ export interface ServiceProvider {
   removeProject: (data: {
     projectId: string;
   }) => Promise<{ projectGroups: ProjectGroup[] }>;
+  debugResetProject: (data: {
+    projectId: string;
+    force: boolean;
+  }) => Promise<DebugResetProjectReportDto>;
   closeProject: (data: {
     projectId: string;
   }) => Promise<{ projectGroups: ProjectGroup[] }>;
