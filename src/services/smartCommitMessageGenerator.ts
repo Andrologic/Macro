@@ -159,12 +159,60 @@ const parseGeneratedCommitMessages = (
   }
 };
 
-const buildPromptPayload = (input: GenerateSmartCommitMessagesInput): string => {
-  const payload = JSON.stringify(input, null, 2);
-  if (payload.length <= MAX_PROMPT_JSON_CHARS) {
-    return payload;
+const buildPromptPayloadCandidate = (
+  input: GenerateSmartCommitMessagesInput,
+  options: {
+    maxFilesPerRepository: number;
+    maxSummaryChars: number;
+    maxStagedPathsPerRepository: number;
   }
-  return `${payload.slice(0, MAX_PROMPT_JSON_CHARS)}\n...TRUNCATED`;
+): string => JSON.stringify({
+  task: input.task,
+  repositories: input.repositories.map((repository) => ({
+    repositoryId: repository.repositoryId,
+    projectId: repository.projectId,
+    projectName: repository.projectName,
+    branchName: repository.branchName,
+    additions: repository.additions,
+    deletions: repository.deletions,
+    stagedPaths: repository.stagedPaths.slice(0, options.maxStagedPathsPerRepository),
+    omittedStagedPathCount: Math.max(
+      0,
+      repository.stagedPaths.length - options.maxStagedPathsPerRepository
+    ),
+    files: repository.files.slice(0, options.maxFilesPerRepository).map((file) => ({
+      path: file.path,
+      summary: file.summary.slice(0, options.maxSummaryChars),
+    })),
+    omittedFileContextCount: Math.max(
+      0,
+      repository.files.length - options.maxFilesPerRepository
+    ),
+  })),
+}, null, 2);
+
+const buildPromptPayload = (input: GenerateSmartCommitMessagesInput): string => {
+  const candidates = [
+    { maxFilesPerRepository: 40, maxSummaryChars: 800, maxStagedPathsPerRepository: 120 },
+    { maxFilesPerRepository: 20, maxSummaryChars: 400, maxStagedPathsPerRepository: 80 },
+    { maxFilesPerRepository: 10, maxSummaryChars: 220, maxStagedPathsPerRepository: 50 },
+    { maxFilesPerRepository: 4, maxSummaryChars: 120, maxStagedPathsPerRepository: 30 },
+    { maxFilesPerRepository: 0, maxSummaryChars: 0, maxStagedPathsPerRepository: 20 },
+  ];
+
+  for (const candidate of candidates) {
+    const payload = buildPromptPayloadCandidate(input, candidate);
+    if (payload.length <= MAX_PROMPT_JSON_CHARS) {
+      return payload;
+    }
+  }
+
+  // Preserve every repository id even in extreme cases; validation requires one message per repo.
+  return buildPromptPayloadCandidate(input, {
+    maxFilesPerRepository: 0,
+    maxSummaryChars: 0,
+    maxStagedPathsPerRepository: 5,
+  });
 };
 
 export const formatGeneratedCommitMessageForRepository = (
