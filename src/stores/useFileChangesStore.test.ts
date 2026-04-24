@@ -275,6 +275,15 @@ const gitCommitMock = mock(async ({ repoPath }: { repoPath: string }) => {
   stagedFiles[repoPath] = {};
   return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
 });
+const generateCommitMessagesMock = mock(async (input: {
+  repositories: Array<{ repositoryId: string }>;
+}) => ({
+  title: 'feat: implement multi repo flow',
+  repositories: input.repositories.map((repository) => ({
+    repositoryId: repository.repositoryId,
+    body: `Update ${repository.repositoryId}.`,
+  })),
+}));
 
 const tasksById = {
   'task-1': {
@@ -470,6 +479,7 @@ describe('useFileChangesStore', () => {
     gitRestorePathsMock.mockClear();
     gitAddMock.mockClear();
     gitCommitMock.mockClear();
+    generateCommitMessagesMock.mockClear();
     setTaskStatusMock.mockClear();
 
     useFileChangesStore = createFileChangesStore({
@@ -487,6 +497,7 @@ describe('useFileChangesStore', () => {
       getAppState: () => appStoreState,
       getTaskState: () => taskStoreState,
       setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
     });
 
     useFileChangesStore.getState().resetReviewState();
@@ -921,6 +932,119 @@ describe('useFileChangesStore', () => {
     expect(secondCommit.taskCompleted).toBe(false);
     expect(secondCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('validates pending changes across all task repositories', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageAllTaskChanges();
+
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+    });
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      paths: ['README.md'],
+    });
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.pending_validation).toBe(0);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.ready_to_commit).toBe(2);
+  });
+
+  it('commits all ready task repositories with one logical action', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(result.commits.map((commit) => commit.committedRepositoryId)).toEqual([
+      repositoryIdA,
+      repositoryIdB,
+    ]);
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      message: `feat: implement multi repo flow\n\nUpdate ${repositoryIdA}.`,
+      stageAll: false,
+    });
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      message: `feat: implement multi repo flow\n\nUpdate ${repositoryIdB}.`,
+      stageAll: false,
+    });
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(1);
+    expect(useFileChangesStore.getState().executionRecords[repositoryIdA]?.projectId).toBe('project-a');
+    expect(useFileChangesStore.getState().executionRecords[repositoryIdB]?.projectId).toBe('project-b');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps successful commits when a later repository commit fails', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    gitCommitMock.mockImplementationOnce(async ({ repoPath }: { repoPath: string }) => {
+      stagedFiles[repoPath] = {};
+      return 'hash-a';
+    });
+    gitCommitMock.mockImplementationOnce(async () => {
+      throw new Error('Commit rejected');
+    });
+
+    await expect(
+      store.commitAllReadyTaskRepositories()
+    ).rejects.toThrow('project-b: Commit rejected');
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.executionRecords[repositoryIdA]?.projectId).toBe('project-a');
+    expect(nextState.executionRecords[repositoryIdB]).toBeUndefined();
+    expect(nextState.getRepository(repositoryIdB)?.lastError).toBe('Commit rejected');
+  });
+
+  it('retries generated commit messages before creating commits', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('invalid json');
+    });
+    generateCommitMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('missing repo');
+    });
+    generateCommitMessagesMock.mockImplementationOnce(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => ({
+      title: 'feat: recover generated messages',
+      repositories: input.repositories.map((repository) => ({
+        repositoryId: repository.repositoryId,
+        body: `Recovered ${repository.repositoryId}.`,
+      })),
+    }));
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not create commits when generated commit messages keep failing', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementation(async () => {
+      throw new Error('model unavailable');
+    });
+
+    await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow('model unavailable');
+
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).not.toHaveBeenCalled();
   });
 
   it('does not change the task status when only the focused subproject is resolved', async () => {

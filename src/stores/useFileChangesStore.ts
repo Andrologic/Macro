@@ -24,6 +24,13 @@ import {
 } from '../services/fileChangesReviewScope';
 import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
+import {
+  SmartCommitMessageGenerationError,
+  formatGeneratedCommitMessageForRepository,
+  generateSmartCommitMessages,
+  type GeneratedCommitMessages,
+  type GenerateSmartCommitMessagesInput,
+} from '../services/smartCommitMessageGenerator';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -99,6 +106,14 @@ export interface CommitTaskChangesResult {
   repositories: TaskCompletionRepositoryRecord[];
 }
 
+export interface CommitTaskRepositoriesResult {
+  taskId: string;
+  taskCompleted: boolean;
+  taskStatus: TaskStatus | null;
+  commits: CommitTaskChangesResult[];
+  repositories: TaskCompletionRepositoryRecord[];
+}
+
 interface SelectedDiffTarget {
   repositoryId: string;
   changeId: string;
@@ -135,6 +150,7 @@ interface FileChangesProjectRef {
 interface FileChangesTaskLike {
   id: string;
   title: string;
+  description?: string | null;
   status: TaskStatus;
   task_source: 'architect' | 'mixed' | 'fallback' | 'empty' | 'standalone' | 'plan_finalization';
   project_id?: string | null;
@@ -189,6 +205,7 @@ export interface FileChangesStoreDependencies {
   getAppState: () => FileChangesAppState;
   getTaskState: () => FileChangesTaskStoreState;
   setTaskState: FileChangesSetTaskState;
+  generateCommitMessages: (input: GenerateSmartCommitMessagesInput) => Promise<GeneratedCommitMessages>;
 }
 
 const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies => ({
@@ -197,6 +214,7 @@ const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies 
   getAppState: () => useAppStore.getState(),
   getTaskState: () => useTaskStore.getState(),
   setTaskState: (partial) => useTaskStore.setState(partial),
+  generateCommitMessages: generateSmartCommitMessages,
 });
 
 const resolveReviewRepositoryIntegrationBranch = (
@@ -335,6 +353,101 @@ const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): Revi
   additions: changes.reduce((sum, change) => sum + change.additions, 0),
   deletions: changes.reduce((sum, change) => sum + change.deletions, 0),
 });
+
+const MAX_COMMIT_FILE_SUMMARY_CHARS = 1200;
+const SMART_COMMIT_MESSAGE_GENERATION_ATTEMPTS = 3;
+
+const summarizeLineChanges = (before: string, after: string): string => {
+  if (before === after) {
+    return 'No textual difference detected.';
+  }
+
+  const beforeLines = before.split('\n');
+  const afterLines = after.split('\n');
+  const maxLines = Math.max(beforeLines.length, afterLines.length);
+  const snippets: string[] = [];
+
+  for (let index = 0; index < maxLines && snippets.join('\n').length < MAX_COMMIT_FILE_SUMMARY_CHARS; index += 1) {
+    const beforeLine = beforeLines[index] ?? '';
+    const afterLine = afterLines[index] ?? '';
+    if (beforeLine === afterLine) {
+      continue;
+    }
+    if (beforeLine) {
+      snippets.push(`- ${beforeLine}`);
+    }
+    if (afterLine) {
+      snippets.push(`+ ${afterLine}`);
+    }
+  }
+
+  return snippets.join('\n').slice(0, MAX_COMMIT_FILE_SUMMARY_CHARS) || 'Binary or metadata-only change.';
+};
+
+const buildSmartCommitMessageInput = async (
+  deps: FileChangesStoreDependencies,
+  task: FileChangesTaskLike,
+  repositories: ReviewRepositoryState[]
+): Promise<GenerateSmartCommitMessagesInput> => {
+  const appState = deps.getAppState();
+
+  return {
+    task: {
+      id: task.id,
+      title: task.title,
+      description: task.description ?? null,
+    },
+    repositories: await Promise.all(repositories.map(async (repository) => {
+      const project = appState.getProjectById(repository.projectId);
+      const files = await Promise.all(repository.stagedPaths.map(async (path) => {
+        try {
+          const pair = await deps.tauri.gitReadFilePair({
+            repoPath: repository.worktreePath,
+            path,
+          });
+          return {
+            path,
+            summary: summarizeLineChanges(pair.headContent ?? '', pair.indexContent ?? ''),
+          };
+        } catch {
+          return {
+            path,
+            summary: 'Unable to inspect staged file content; summarize from the path.',
+          };
+        }
+      }));
+
+      return {
+        repositoryId: repository.id,
+        projectId: repository.projectId,
+        projectName: project?.name ?? null,
+        branchName: repository.branchName,
+        stagedPaths: repository.stagedPaths,
+        additions: repository.stats.additions,
+        deletions: repository.stats.deletions,
+        files,
+      };
+    })),
+  };
+};
+
+const generateCommitMessagesWithRetry = async (
+  deps: FileChangesStoreDependencies,
+  input: GenerateSmartCommitMessagesInput
+): Promise<GeneratedCommitMessages> => {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < SMART_COMMIT_MESSAGE_GENERATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await deps.generateCommitMessages(input);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const message = toServiceError(lastError).message ||
+    tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
+  throw new SmartCommitMessageGenerationError(message);
+};
 
 const updateChangeEntry = (
   changes: FileChangeEntry[],
@@ -760,6 +873,7 @@ interface FileChangesState {
   diffModalSession: FileDiffModalSession | null;
   isDiffModalOpen: boolean;
   isLoading: boolean;
+  isGeneratingCommitMessages: boolean;
   isCommitting: boolean;
   lastError: string | null;
   lastCommitHash: string | null;
@@ -772,12 +886,14 @@ interface FileChangesState {
   closeDiffModal: () => void;
   stageChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
   stageAllChanges: (repositoryId?: string) => Promise<void>;
+  stageAllTaskChanges: () => Promise<void>;
   revertChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
   updateRightDraft: (content: string) => void;
   resetRightDraft: () => void;
   saveRightDraft: () => Promise<void>;
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
   commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
+  commitAllReadyTaskRepositories: () => Promise<CommitTaskRepositoriesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;
   getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
   getSelectedRepository: () => ReviewRepositoryState | undefined;
@@ -912,6 +1028,7 @@ export const createFileChangesStore = (
     diffModalSession: null,
     isDiffModalOpen: false,
     isLoading: false,
+    isGeneratingCommitMessages: false,
     isCommitting: false,
     lastError: null,
     lastCommitHash: null,
@@ -1137,6 +1254,7 @@ export const createFileChangesStore = (
       diffModalSession: null,
       isDiffModalOpen: false,
       isLoading: false,
+      isGeneratingCommitMessages: false,
       isCommitting: false,
       lastError: null,
       lastCommitHash: null,
@@ -1284,6 +1402,30 @@ export const createFileChangesStore = (
     const repository = get().getRepository(targetRepositoryId);
     if (!repository) return;
     await get().stageChanges(targetRepositoryId, repository.changes.map((change) => change.id));
+  },
+
+  stageAllTaskChanges: async () => {
+    const targetRepositoryIds = get().repositories
+      .filter((repository) =>
+        repository.commitState === 'idle' &&
+        repository.stats.pendingVisibleFileCount > 0 &&
+        repository.changes.length > 0
+      )
+      .map((repository) => repository.id);
+
+    for (const repositoryId of targetRepositoryIds) {
+      const repository = get().getRepository(repositoryId);
+      if (
+        !repository ||
+        repository.commitState !== 'idle' ||
+        repository.stats.pendingVisibleFileCount === 0 ||
+        repository.changes.length === 0
+      ) {
+        continue;
+      }
+
+      await get().stageAllChanges(repositoryId);
+    }
   },
 
   revertChanges: async (repositoryId, changeIds) => {
@@ -1674,6 +1816,94 @@ export const createFileChangesStore = (
       }));
       throw error;
     }
+  },
+
+  commitAllReadyTaskRepositories: async () => {
+    const task = ensureReviewTask(deps);
+
+    const targetRepositories = get().repositories
+      .filter((repository) =>
+        repository.commitState === 'idle' &&
+        repository.stats.validatedStagedFileCount > 0 &&
+        repository.stagedPaths.length > 0
+      );
+    const targetRepositoryIds = targetRepositories.map((repository) => repository.id);
+
+    if (targetRepositoryIds.length === 0) {
+      throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
+    }
+
+    set({ isGeneratingCommitMessages: true, lastError: null });
+    let generatedMessages: GeneratedCommitMessages;
+    try {
+      generatedMessages = await generateCommitMessagesWithRetry(
+        deps,
+        await buildSmartCommitMessageInput(deps, task, targetRepositories)
+      );
+    } catch (error) {
+      const messageText = toServiceError(error).message ||
+        tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
+      set({
+        isGeneratingCommitMessages: false,
+        lastError: messageText,
+      });
+      throw error;
+    } finally {
+      set({ isGeneratingCommitMessages: false });
+    }
+
+    const commits: CommitTaskChangesResult[] = [];
+
+    for (const repositoryId of targetRepositoryIds) {
+      const repository = get().getRepository(repositoryId);
+      if (
+        !repository ||
+        repository.commitState !== 'idle' ||
+        repository.stats.validatedStagedFileCount === 0 ||
+        repository.stagedPaths.length === 0
+      ) {
+        continue;
+      }
+
+      const repositoryMessage = formatGeneratedCommitMessageForRepository(generatedMessages, repositoryId);
+
+      try {
+        const result = await get().commitStagedChanges(repositoryId, repositoryMessage);
+        commits.push(result);
+      } catch (error) {
+        const messageText = toServiceError(error).message;
+        const repositoryLabel = repository.projectId || repository.repoPath || repositoryId;
+        throw new Error(
+          tChanges(
+            'implement.errors.repositoryCommitFailed',
+            '{{repository}}: {{message}}',
+            {
+              repository: repositoryLabel,
+              message: messageText || tChanges('implement.commitFailed', 'Failed to commit changes'),
+            }
+          )
+        );
+      }
+    }
+
+    if (commits.length === 0) {
+      throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
+    }
+
+    const currentState = get();
+    const repositories = currentState.repositories.map((repository) =>
+      currentState.executionRecords[repository.id] ||
+      buildCompletionRepositoryRecord(deps, task, repository)
+    );
+    const lastCommit = commits[commits.length - 1];
+
+    return {
+      taskId: task.id,
+      taskCompleted: false,
+      taskStatus: lastCommit?.taskStatus ?? deps.getTaskState().getTaskById(task.id)?.status ?? null,
+      commits,
+      repositories,
+    };
   },
 
   setCommitMessageDraft: (repositoryId, message) => {
