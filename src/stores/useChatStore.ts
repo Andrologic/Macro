@@ -110,6 +110,10 @@ import {
   getProjectGroupByProjectId,
   getScopedActionableProjectIds,
 } from "../services/globalProjects";
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from "../services/projectWorkspaceState";
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
 import { resolveProjectExecutionContext } from "../services/projectExecutionContext";
 import { parseMessageQuickReplies } from "../services/chatQuickReplies";
@@ -3758,6 +3762,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (mode === "Architect") {
+      if (!selectedGroupId && !selectedProjectId) {
+        return false;
+      }
+
       if (selectedGroupId) {
         return (
           getConversationGroupId(conversation) === selectedGroupId &&
@@ -6212,6 +6220,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let { mode, selectedGroupId, selectedProjectId, selectedTaskId } =
       appState;
     let state = get();
+    const architectWorkspaceState =
+      mode === "Architect"
+        ? resolveProjectWorkspaceState({
+            projectGroups: appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+          })
+        : null;
+
+    if (
+      mode === "Architect" &&
+      architectWorkspaceState &&
+      isProjectWorkspaceMissing(architectWorkspaceState)
+    ) {
+      return null;
+    }
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
       const architectResolutionStartedAt = Date.now();

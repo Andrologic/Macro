@@ -8,6 +8,8 @@ interface ProjectWorkspaceEmptyStateProps {
   stateKind: Extract<ProjectWorkspaceStateKind, 'noProjectAvailable' | 'noProjectSelected'>;
   className?: string;
   compact?: boolean;
+  variant?: 'primary' | 'secondary';
+  panelKind?: 'needs' | 'strategy' | 'tasks' | 'changes' | 'generic';
   onPrimaryAction?: () => void;
 }
 
@@ -15,10 +17,20 @@ export const ProjectWorkspaceEmptyState: React.FC<ProjectWorkspaceEmptyStateProp
   stateKind,
   className,
   compact = false,
+  variant = 'primary',
+  panelKind = 'generic',
   onPrimaryAction,
 }) => {
   const { t } = useTranslation();
   const isNoProjectAvailable = stateKind === 'noProjectAvailable';
+  const isSecondary = variant === 'secondary';
+  const secondaryCopy = {
+    needs: t('project.emptyWorkspaceNeedsPanel', 'Les besoins seront disponibles après l’ajout d’un projet.'),
+    strategy: t('project.emptyWorkspaceStrategyPanel', 'La stratégie sera disponible après l’ajout d’un projet.'),
+    tasks: t('project.emptyWorkspaceTasksPanel', 'Les tâches seront disponibles après l’ajout d’un projet.'),
+    changes: t('project.emptyWorkspaceChangesPanel', 'Les changements seront disponibles après l’ajout d’un projet.'),
+    generic: t('project.emptyWorkspaceSecondary', 'Ce panneau sera disponible après l’ajout d’un projet.'),
+  }[panelKind];
 
   return (
     <div
@@ -28,32 +40,46 @@ export const ProjectWorkspaceEmptyState: React.FC<ProjectWorkspaceEmptyStateProp
         className
       )}
     >
-      <div className="max-w-sm">
+      <div className={cn(isSecondary ? 'max-w-[240px]' : 'max-w-sm')}>
         <div
           className={cn(
-            'mx-auto mb-4 flex items-center justify-center rounded-2xl border border-border bg-card/70',
-            compact ? 'h-12 w-12' : 'h-16 w-16'
+            'mx-auto flex items-center justify-center rounded-2xl border border-border bg-card/70',
+            isSecondary
+              ? 'mb-3 h-10 w-10 rounded-xl'
+              : compact
+                ? 'mb-4 h-12 w-12'
+                : 'mb-4 h-16 w-16'
           )}
         >
-          <Icon name="layers" size={compact ? 20 : 26} className="text-primary" />
+          <Icon
+            name={isSecondary ? 'lock' : 'layers'}
+            size={isSecondary ? 16 : compact ? 20 : 26}
+            className={isSecondary ? 'text-muted-foreground' : 'text-primary'}
+          />
         </div>
-        <h3 className="text-sm font-semibold text-foreground">
-          {isNoProjectAvailable
-            ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
-            : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')}
-        </h3>
-        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          {isNoProjectAvailable
-            ? t(
-                'project.emptyWorkspaceBody',
-                'Architect et Implement ont besoin d’un sous-projet pour créer des plans, des tâches, des branches et des worktrees.'
-              )
-            : t(
-                'project.noProjectSelectedBody',
-                'Choisissez un projet existant ou ajoutez un sous-projet pour débloquer les actions Macro.'
-              )}
-        </p>
-        {onPrimaryAction && (
+        {isSecondary ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">{secondaryCopy}</p>
+        ) : (
+          <>
+            <h3 className="text-sm font-semibold text-foreground">
+              {isNoProjectAvailable
+                ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
+                : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')}
+            </h3>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {isNoProjectAvailable
+                ? t(
+                    'project.emptyWorkspaceBody',
+                    'Architect et Implement ont besoin d’un projet pour créer des plans, des tâches, des branches et des worktrees.'
+                  )
+                : t(
+                    'project.noProjectSelectedBody',
+                    'Choisissez un projet existant ou ajoutez-en un pour débloquer les actions Macro.'
+                  )}
+            </p>
+          </>
+        )}
+        {!isSecondary && onPrimaryAction && (
           <button
             type="button"
             onClick={onPrimaryAction}
@@ -61,8 +87,8 @@ export const ProjectWorkspaceEmptyState: React.FC<ProjectWorkspaceEmptyStateProp
           >
             <Icon name="plus" size={12} />
             {isNoProjectAvailable
-              ? t('project.addSubproject', 'Add subproject')
-              : t('project.addOrSelectSubproject', 'Add subproject')}
+              ? t('project.addProject', 'Add project')
+              : t('project.addOrSelectProject', 'Add project')}
           </button>
         )}
       </div>
