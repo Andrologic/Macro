@@ -3643,21 +3643,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, the plan lifecycle remains UI-only for this iteration. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active`; ask the user to use the plan selector instead.",
       );
       systemInstructions.push(
-        "In Architect mode, `plan_update` may only change the optional label/title alias, description, and the logical plan slug while the plan is still a mutable draft. Never use it to change plan status or activate a plan.",
+        "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope/GitFlow metadata for typed plans. Never use it to change plan status or activate a plan.",
       );
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       systemInstructions.push(
-        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. The Architect AI should propose `plan_slug` and `featureSlug` values, not raw git branch names. Integration branches and feature branches are rendered later from each subproject GitFlow profile. Multiple sequential nodes may share the same `featureSlug` when they stay on the same branch.",
+        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. Feature plans integrate on rendered `plan/*` branches. Release, Hotfix, and Bugfix plans integrate on rendered `release/*`, `hotfix/*`, or `bugfix/*` branches. The Architect AI should propose `plan_slug` and per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each subproject GitFlow profile and merge into the plan integration branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same branch.",
       );
       systemInstructions.push(
         "A plan node is not the same thing as a branch. Reuse the same `featureSlug` for sequential work that stays on one logical branch, and create separate `featureSlug` values only for work that can proceed in parallel.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
+        const planKind = activePlanContext.planKind || "feature";
+        const typedPlanInstruction =
+          planKind === "release"
+            ? "This is a Release plan. First inspect likely version files and relevant repositories, then use the question tool to confirm per-repository versions and actionable repositories before generating the stabilization checklist. Do not create tags or GitHub releases."
+            : planKind === "hotfix"
+              ? "This is a Hotfix plan. Ask the user to describe the production bug if they have not already done so. Then inspect from the main-branch mindset, infer affected repositories, propose a concise hotfix slug and patch versions per repository, and use the question tool to confirm scope/version/slug before generating the fix checklist."
+              : planKind === "bugfix"
+                ? "This is a Bugfix plan. Ask the user to describe the bug if they have not already done so. Then inspect from the development-branch mindset, infer affected repositories, propose a concise bugfix slug, and use the question tool to confirm scope/slug before generating the fix checklist."
+                : "This is a Feature plan. Keep the existing lightweight planning flow; do not force an initial questionnaire unless a clarification is blocking.";
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". Use plan_update.label (or title as legacy alias) for the optional display label. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
+          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
         );
       }
     }

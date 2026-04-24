@@ -326,6 +326,23 @@ const getAppBootstrapMock = mock(async () => ({
   planNodes: bootstrapPlanNodes,
   predictedBranches: bootstrapPredictedBranches,
 }));
+const debugResetProjectMock = mock(async (data: { projectId: string }) => {
+  bootstrapProjectGroups = bootstrapProjectGroups
+    .map((group) => ({
+      ...group,
+      projects: group.projects.filter((project) => project.id !== data.projectId),
+    }))
+    .filter((group) => group.projects.length > 0);
+  return {
+    projectId: data.projectId,
+    projectName: data.projectId,
+    removedRegistryEntry: true,
+    removedTaskWorktrees: 1,
+    removedMetadataWorktree: false,
+    removedMacroBranch: false,
+    warnings: [],
+  };
+});
 const workspaceRecoverMissingMetadataMock = mock(async () => ({
   status: 'none',
   restoredCommit: null,
@@ -370,6 +387,9 @@ const upsertLocalProjectContextStateMock = mock(
 const getLocalProjectContextStateMock = mock(async (projectId: string) =>
   projectContexts.get(projectId) ?? null
 );
+const deleteLocalProjectContextStateMock = mock(async (projectId: string) => {
+  projectContexts.delete(projectId);
+});
 const upsertLocalSessionContextStateMock = mock(async (input: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
@@ -419,11 +439,13 @@ const registerUseAppStoreMocks = async () => {
   mock.module('../services', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      debugResetProject: debugResetProjectMock,
     },
   }));
   mock.module('../services/index.ts', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      debugResetProject: debugResetProjectMock,
     },
   }));
 
@@ -443,6 +465,7 @@ const registerUseAppStoreMocks = async () => {
     getLocalSessionContextState: async () => sessionContext,
     getProjectSwitchPolicy: async () => projectSwitchPolicy,
     reconcileLocalProjectRegistryState: async () => undefined,
+    deleteLocalProjectContextState: deleteLocalProjectContextStateMock,
     setProjectSwitchPolicy: async () => undefined,
     upsertLocalProjectContextState: upsertLocalProjectContextStateMock,
     upsertLocalSessionContextState: upsertLocalSessionContextStateMock,
@@ -528,6 +551,24 @@ describe('useAppStore architect plan resolution', () => {
       planNodes: bootstrapPlanNodes,
       predictedBranches: bootstrapPredictedBranches,
     }));
+    debugResetProjectMock.mockClear();
+    debugResetProjectMock.mockImplementation(async (data: { projectId: string }) => {
+      bootstrapProjectGroups = bootstrapProjectGroups
+        .map((group) => ({
+          ...group,
+          projects: group.projects.filter((project) => project.id !== data.projectId),
+        }))
+        .filter((group) => group.projects.length > 0);
+      return {
+        projectId: data.projectId,
+        projectName: data.projectId,
+        removedRegistryEntry: true,
+        removedTaskWorktrees: 1,
+        removedMetadataWorktree: false,
+        removedMacroBranch: false,
+        warnings: [],
+      };
+    });
     workspaceRecoverMissingMetadataMock.mockClear();
     workspaceRecoverMissingMetadataMock.mockImplementation(async () => ({
       status: 'none',
@@ -537,6 +578,7 @@ describe('useAppStore architect plan resolution', () => {
     ensureProjectGroupPlanMock.mockClear();
     consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
+    deleteLocalProjectContextStateMock.mockClear();
     upsertLocalSessionContextStateMock.mockClear();
     needsStoreState.beginArchitectPlanSwitch.mockClear();
     needsStoreState.hydrateNeedsForPlan.mockClear();
@@ -643,6 +685,78 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().lastError).toContain(
       'Macro opened an empty shell',
     );
+  });
+
+  it('debug-resets the selected project without surfacing a registry repair banner', async () => {
+    projectContexts.set('project-1', buildProjectContext({ projectId: 'project-1' }));
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Implement',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1',
+      projectRegistryRepairSummary: null,
+    });
+
+    await useAppStore.getState().debugResetProject('project-1');
+
+    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedProjectId).toBe('project-2');
+    expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
+    expect(projectContexts.has('project-1')).toBe(false);
+    expect(deleteLocalProjectContextStateMock.mock.calls).toHaveLength(1);
+    expect(sessionContext?.selectedProjectId).toBe('project-2');
+  });
+
+  it('debug-resets a non-selected project while preserving the current valid focus', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Implement',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-2',
+      projectRegistryRepairSummary: null,
+    });
+
+    await useAppStore.getState().debugResetProject('project-1');
+
+    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedProjectId).toBe('project-2');
+    expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
+    expect(sessionContext?.selectedProjectId).toBe('project-2');
+  });
+
+  it('debug-resets the last project into an empty clean selection', async () => {
+    bootstrapProjectGroups = [
+      buildProjectGroup({
+        projects: [
+          {
+            id: 'project-only',
+            name: 'Only',
+            path: '/repos/only',
+            gitFlowSettings: { baseBranch: 'develop' },
+          },
+        ],
+      }),
+    ];
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Implement',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-only',
+      projectRegistryRepairSummary: null,
+    });
+
+    await useAppStore.getState().debugResetProject('project-only');
+
+    expect(useAppStore.getState().projectGroups).toEqual([]);
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
+    expect(useAppStore.getState().selectedProjectId).toBeNull();
+    expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
+    expect(sessionContext?.selectedProjectId).toBeNull();
   });
 
   it('hydrates the remembered plan when entering Architect mode', async () => {

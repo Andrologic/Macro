@@ -15,6 +15,10 @@ import type {
   ArchitectPlanRecord,
   ArchitectPlanSummary,
 } from "./architectPlanService";
+import type {
+  ArchitectPlanGitFlowMetadata,
+  ArchitectPlanKind,
+} from "./architectPlanKinds";
 import {
   hasPersistedArchitectStrategy,
 } from "./architectPlanService";
@@ -163,11 +167,14 @@ interface ArchitectToolUpdatePlanInput {
   label?: string;
   slug?: string;
   description?: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
   status?: ArchitectPlanRecord["status"];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   projectId?: string;
   projectIds?: string[];
+  contextProjectIds?: string[];
   targetBranchesByProjectId?: Record<string, string>;
   setActive?: boolean;
 }
@@ -1304,6 +1311,35 @@ export const handleArchitectToolCall = async (
         : typeof args.plan_slug === "string"
           ? args.plan_slug.trim()
           : undefined;
+    const projectIds = Array.isArray(args.project_ids)
+      ? args.project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : undefined;
+    const contextProjectIds = Array.isArray(args.context_project_ids)
+      ? args.context_project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : undefined;
+    const gitFlowPlan =
+      args.git_flow && typeof args.git_flow === "object" && !Array.isArray(args.git_flow)
+        ? (args.git_flow as Partial<ArchitectPlanGitFlowMetadata>)
+        : undefined;
+    const targetBranchesByProjectId =
+      gitFlowPlan?.projects && typeof gitFlowPlan.projects === "object"
+        ? Object.fromEntries(
+            Object.entries(gitFlowPlan.projects)
+              .map(([projectId, metadata]) => [
+                projectId,
+                typeof metadata?.targetBranch === "string"
+                  ? metadata.targetBranch.trim()
+                  : "",
+              ])
+              .filter(([, branchName]) => branchName.length > 0)
+          )
+        : undefined;
     const shouldPassTitleAlias =
       titleAlias !== undefined &&
       (!isCanonicalPlan ||
@@ -1319,6 +1355,13 @@ export const handleArchitectToolCall = async (
       (requestedLabelChange || requestedTitleAliasChange)
     ) {
       return "plan_update cannot rename a plan after strategy has been created. Only description and mutable draft slug updates remain allowed.";
+    }
+
+    if (
+      hasPersistedArchitectStrategy(existingPlan) &&
+      (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
+    ) {
+      return "plan_update cannot change plan scope or GitFlow metadata after strategy has been created.";
     }
 
     if (
@@ -1339,6 +1382,17 @@ export const handleArchitectToolCall = async (
       ...(slug !== undefined ? { slug } : {}),
       ...(typeof args.description === "string"
         ? { description: args.description }
+        : {}),
+      ...(projectIds !== undefined ? { projectIds } : {}),
+      ...(contextProjectIds !== undefined ? { contextProjectIds } : {}),
+      ...(gitFlowPlan !== undefined
+        ? {
+            planKind: existingPlan.planKind,
+            gitFlowPlan,
+            ...(targetBranchesByProjectId
+              ? { targetBranchesByProjectId }
+              : {}),
+          }
         : {}),
     });
 

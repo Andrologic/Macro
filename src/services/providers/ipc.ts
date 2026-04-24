@@ -8,6 +8,7 @@ import type {
   ProvidersDto,
   ModelsDto,
   ProjectDto,
+  DebugResetProjectReportDto,
   FileContentDto,
   ToolSettingsDto,
   MCPServerSettingsDto,
@@ -449,6 +450,16 @@ export const removeProject = async (data: {
   return { projectGroups };
 };
 
+export const debugResetProject = async (data: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> => {
+  return tauriIpc.workspaceDebugResetProject({
+    projectId: data.projectId,
+    force: data.force,
+  });
+};
+
 export const closeProject = async (data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => {
@@ -548,6 +559,7 @@ export const provider: ServiceProvider = {
   archiveProject,
   removeProjectGroup,
   removeProject,
+  debugResetProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

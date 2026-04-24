@@ -436,6 +436,7 @@ pub fn run() {
             commands::workspace::workspace_remove_project_group,
             commands::workspace::workspace_remove_project,
             commands::workspace::workspace_close_project,
+            commands::workspace::workspace_debug_reset_project,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
             commands::workspace::workspace_revert_manual_feature_to_draft,

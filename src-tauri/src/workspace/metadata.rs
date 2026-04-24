@@ -89,6 +89,24 @@ pub struct WorkspaceMetadataRecoveryReportDto {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DebugResetProjectReportDto {
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "projectName")]
+    pub project_name: String,
+    #[serde(rename = "removedRegistryEntry")]
+    pub removed_registry_entry: bool,
+    #[serde(rename = "removedTaskWorktrees")]
+    pub removed_task_worktrees: usize,
+    #[serde(rename = "removedMetadataWorktree")]
+    pub removed_metadata_worktree: bool,
+    #[serde(rename = "removedMacroBranch")]
+    pub removed_macro_branch: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceTaskPlanSummaryDto {
     pub id: String,

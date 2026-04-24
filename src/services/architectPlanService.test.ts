@@ -449,6 +449,67 @@ describe('architectPlanService', () => {
     ]);
   });
 
+  it('normalizes typed GitFlow metadata with project-specific branch settings', async () => {
+    const deps = {
+      tauri: {
+        ...actualTauriIpc,
+        isTauriAvailable: () => false,
+      } as any,
+      getAppState: async () => ({
+        projectGroups: [
+          {
+            id: 'workspace',
+            name: 'Workspace',
+            projects: [
+              {
+                id: 'mobile',
+                name: 'Mobile',
+                path: '/repos/mobile',
+                gitFlowSettings: {
+                  baseBranch: 'dev',
+                  mainBranch: 'stable',
+                  releaseBranchTemplate: 'ship/v{releaseSlug}',
+                },
+              },
+            ],
+          },
+        ],
+      }) as any,
+    };
+
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000015',
+      slug: 'release-2-0-0',
+      planKind: 'release',
+      projectIds: ['mobile'],
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '2.0.0',
+        projects: {
+          mobile: {
+            projectId: 'mobile',
+            sourceBranch: '',
+            integrationBranch: '',
+            targetBranch: '',
+            proposedVersion: '2.0.0',
+          },
+        },
+      },
+    }, deps);
+
+    expect(created.planKind).toBe('release');
+    expect(created.targetBranchesByProjectId?.mobile).toBe('stable');
+    expect(created.gitFlowPlan?.projects.mobile).toMatchObject({
+      sourceBranch: 'dev',
+      integrationBranch: 'ship/v2.0.0',
+      targetBranch: 'stable',
+      backmergeBranch: 'dev',
+      proposedVersion: '2.0.0',
+    });
+  });
+
   it('hydrates legacy expected-only scope without letting stale expected ids expand modern plans', async () => {
     const legacyExpectedOnlyPlan: ArchitectPlanRecord = {
       id: 'legacy-expected-only',
