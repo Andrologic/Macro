@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
-import { describePlanFinalizationNextStep } from '../../services/conflictResolution';
 import { toServiceError } from '../../services/contracts/errors';
 import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
+import { presentGitFlowBlockingIssue } from '../../services/degradedErrorPresentation';
 
 interface MergeWorkflowTaskPanelProps {
   task: ImplementTask;
@@ -81,6 +82,18 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       repositories[0] ??
       null,
     [repositories, selectedRepositoryId]
+  );
+  const selectedRepositoryBlockingPresentation = useMemo(
+    () =>
+      selectedRepository?.blockingReason
+        ? presentGitFlowBlockingIssue({
+            blockingKind: selectedRepository.blockingKind,
+            reason: selectedRepository.blockingReason,
+            repoPath: selectedRepository.repoPath,
+            conflictFiles: selectedRepository.conflictFiles,
+          })
+        : null,
+    [selectedRepository]
   );
 
   const handleMerge = async () => {
@@ -322,15 +335,15 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                     </span>
                   )}
                 </div>
-                {selectedRepository.blockingReason && (
-                  <div className="text-sm text-red-500">
-                    {selectedRepository.blockingReason}
-                  </div>
-                )}
-                {selectedRepository.nextAction && (
-                  <div className="text-xs text-muted-foreground">
-                    {describePlanFinalizationNextStep(selectedRepository.nextAction)}
-                  </div>
+                {selectedRepositoryBlockingPresentation && (
+                  <ActionableErrorCallout
+                    presentation={selectedRepositoryBlockingPresentation}
+                    actionLabel={t('implement.resolveAutomatically', 'Resolve automatically')}
+                    onAction={() => void handleResolveAutomatically()}
+                    secondaryActionLabel={t('implement.retryMerge', 'Retry merge')}
+                    onSecondaryAction={() => void handleRetryMerge()}
+                    compact
+                  />
                 )}
               </div>
 

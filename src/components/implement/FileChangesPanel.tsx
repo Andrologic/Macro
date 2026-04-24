@@ -35,6 +35,11 @@ import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
+import {
+  presentServiceError,
+  presentWorktreeError,
+} from '../../services/degradedErrorPresentation';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -583,6 +588,16 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const mappingError = currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree'
     ? currentTaskLoadMessage
     : null;
+  const mappingErrorPresentation = mappingError
+    ? presentWorktreeError(mappingError, {
+        fallbackBody: mappingError,
+      })
+    : null;
+  const displayErrorPresentation = displayError
+    ? presentServiceError(displayError, {
+        fallbackBody: displayError,
+      })
+    : null;
   const handleCommit = async () => {
     if (isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
     setCommitMessageGenerationError(null);
@@ -808,8 +823,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </div>
         )}
         {!isLoading && mappingError && (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-            {mappingError}
+          <div className="px-4 py-6">
+            {mappingErrorPresentation ? (
+              <ActionableErrorCallout
+                presentation={mappingErrorPresentation}
+                actionLabel={t('common.retry', 'Retry')}
+                onAction={() => void loadCurrentChanges()}
+                compact
+              />
+            ) : (
+              <div className="text-center text-sm text-muted-foreground">{mappingError}</div>
+            )}
           </div>
         )}
         {!isLoading && !mappingError && !displayError && outOfScopeMessage && (
@@ -818,8 +842,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </div>
         )}
         {!isLoading && displayError && (
-          <div className="px-4 py-8 text-center text-sm text-destructive">
-            {displayError}
+          <div className="px-4 py-6">
+            {displayErrorPresentation ? (
+              <ActionableErrorCallout
+                presentation={displayErrorPresentation}
+                actionLabel={t('common.retry', 'Retry')}
+                onAction={() => void loadCurrentChanges()}
+                compact
+              />
+            ) : (
+              <div className="text-center text-sm text-destructive">{displayError}</div>
+            )}
           </div>
         )}
         {!isLoading && !mappingError && !displayError && !outOfScopeMessage && repositories.length === 0 && (
@@ -840,6 +873,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             );
           const folderTree = buildFolderTree(repository.changes || []);
           const repositoryError = normalizeCommitErrorMessage(repository.lastError || '', translate);
+          const repositoryErrorPresentation = repositoryError
+            ? presentServiceError(repositoryError, {
+                repoPath: repository.repoPath,
+                projectId: repository.projectId,
+                fallbackBody: repositoryError,
+              })
+            : null;
           const repositoryName = getRepositoryDisplayName(repository, project?.name);
           const repositoryHasPendingValidation =
             repository.commitState === 'idle' && repository.stats.pendingVisibleFileCount > 0;
@@ -924,8 +964,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 <div className="ml-3 mr-3 mb-3">
                   <div className="max-h-[320px] overflow-y-auto py-1">
                     {repositoryError && (
-                      <div className="px-2 py-8 text-center text-sm text-destructive">
-                        {repositoryError}
+                      <div className="px-2 py-3">
+                        {repositoryErrorPresentation ? (
+                          <ActionableErrorCallout
+                            presentation={repositoryErrorPresentation}
+                            actionLabel={t('common.retry', 'Retry')}
+                            onAction={() => void loadCurrentChanges({ silent: true })}
+                            compact
+                          />
+                        ) : (
+                          <div className="text-center text-sm text-destructive">{repositoryError}</div>
+                        )}
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'committed' && (
