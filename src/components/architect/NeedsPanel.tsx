@@ -12,6 +12,11 @@ import {
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
 } from '../../services/architectPlanPresentation';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface NeedsPanelProps {
   className?: string;
@@ -63,13 +68,32 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       selectedNeedId: state.selectedNeedId,
     }))
   );
-  const { activeArchitectPlanId, architectPlanSwitch } = useAppStore(
+  const {
+    activeArchitectPlanId,
+    architectPlanSwitch,
+    projectGroups,
+    selectedGroupId,
+    selectedProjectId,
+  } = useAppStore(
     useShallow((state) => ({
       activeArchitectPlanId: state.activeArchitectPlanId,
       architectPlanSwitch:
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
+      projectGroups: state.projectGroups,
+      selectedGroupId: state.selectedGroupId,
+      selectedProjectId: state.selectedProjectId,
     }))
   );
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');
   const isResolvingActivePlan =
     architectPlanSwitch.status === 'resolving' &&
@@ -89,9 +113,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
     if (isResolvingActivePlan) {
       return [];
     }
+    if (isWorkspaceMissing) return [];
     if (!activeArchitectPlanId) return [];
     return needs.filter((need) => need.planId === activeArchitectPlanId);
-  }, [activeArchitectPlanId, isResolvingActivePlan, needs]);
+  }, [activeArchitectPlanId, isResolvingActivePlan, isWorkspaceMissing, needs]);
 
   const filteredNeeds = useMemo(() => {
     if (filter === 'all') return scopedNeeds;
@@ -111,6 +136,18 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       data: need,
     });
   };
+
+  if (isWorkspaceMissing) {
+    return (
+      <aside className={cn("h-full w-full bg-card border-r border-border flex items-center justify-center", className)}>
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          variant="secondary"
+          panelKind="needs"
+        />
+      </aside>
+    );
+  }
 
   if (isResolvingActivePlan && !isResolvingBlankPlan) {
     return (

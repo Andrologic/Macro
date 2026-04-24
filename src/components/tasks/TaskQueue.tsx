@@ -576,7 +576,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId,
     projectGroups,
     openProjectGitFlowModal,
-    openProjectModal,
     setSelectedProject,
     setSelectedTask,
   } = useAppStore(useShallow((state) => ({
@@ -585,7 +584,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId: state.selectedTaskId,
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
-    openProjectModal: state.openProjectModal,
     setSelectedProject: state.setSelectedProject,
     setSelectedTask: state.setSelectedTask,
   })));
@@ -785,7 +783,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (isWorkspaceMissing) {
       notify.error(
         workspaceState.kind === 'noProjectAvailable'
-          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
       );
       return;
@@ -1550,7 +1548,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       <aside className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}>
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
-          onPrimaryAction={() => openProjectModal(null)}
+          variant="secondary"
+          panelKind="tasks"
         />
       </aside>
     );

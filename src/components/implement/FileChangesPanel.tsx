@@ -341,7 +341,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskId,
     projectGroups,
     getProjectById,
-    openProjectModal,
   } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
@@ -715,7 +714,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       >
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
-          onPrimaryAction={() => openProjectModal(null)}
+          variant="secondary"
+          panelKind="changes"
         />
       </aside>
     );

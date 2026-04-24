@@ -130,7 +130,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setPredictedBranches,
     setActivePlanContext,
     activateArchitectPlan,
-    openProjectModal,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -491,7 +490,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     try {
       if (isWorkspaceMissing) {
         const message = workspaceState.kind === 'noProjectAvailable'
-          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.');
         setError(message);
         notify.error(message);
@@ -930,7 +929,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     title={
                       isWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
-                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                         : isReadOnlyOnlyScope
                         ? t(
@@ -1001,10 +1000,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               <ProjectWorkspaceEmptyState
                 stateKind={workspaceState.kind}
                 compact
-                onPrimaryAction={() => {
-                  setIsOpen(false);
-                  openProjectModal(null);
-                }}
+                variant="secondary"
               />
             )}
 
