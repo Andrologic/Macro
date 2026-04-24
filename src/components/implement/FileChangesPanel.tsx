@@ -20,6 +20,10 @@ import { toServiceError } from '../../services/contracts/errors';
 import {
   areAllFileChangesRepositoriesResolved,
 } from '../../services/fileChangesReviewScope';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
 import { isSmartCommitMessageGenerationError } from '../../services/smartCommitMessageGenerator';
@@ -30,6 +34,7 @@ import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -330,7 +335,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     String(t(key, { defaultValue: fallback, ...(options || {}) }));
   const serviceRuntimeCapabilities = getServiceRuntimeCapabilities();
   const isReadOnlyRemoteMode = !serviceRuntimeCapabilities.taskMutation;
-  const { selectedGroupId, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
+  const {
+    selectedGroupId,
+    selectedProjectId,
+    selectedTaskId,
+    projectGroups,
+    getProjectById,
+    openProjectModal,
+  } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
   );
@@ -377,7 +389,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     commitAllReadyTaskRepositories,
     getOverallStats,
   } = useFileChangesStore();
-  const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
 
@@ -683,7 +705,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     revert: t('implement.revertAction', 'Revert'),
   };
 
-  if (!hasRepositoryScope) {
+  if (isWorkspaceMissing) {
     return (
       <aside
         className={cn(
@@ -691,12 +713,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           className
         )}
       >
-        <div className="text-center px-6">
-          <Icon name="folder-git-2" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a project to view changes')}
-          </p>
-        </div>
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          onPrimaryAction={() => openProjectModal(null)}
+        />
       </aside>
     );
   }

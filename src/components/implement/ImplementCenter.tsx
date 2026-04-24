@@ -9,6 +9,10 @@ import { useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { useTaskStore } from '../../stores/useTaskStore';
 import TerminalPanel from '../terminal/TerminalPanel';
 
@@ -50,6 +54,16 @@ export const ImplementCenter: React.FC = () => {
       }),
     [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
   );
+  const workspaceState = React.useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const hasAnyTabForSelectedTask = React.useMemo(
     () =>
       terminalScope
@@ -96,6 +110,10 @@ export const ImplementCenter: React.FC = () => {
         'terminal.manualDraftUnavailable',
         'Send a first message to name this feature and initialize its terminal.'
       )
+    : isWorkspaceMissing
+      ? workspaceState.kind === 'noProjectAvailable'
+        ? t('terminal.addSubprojectToOpen', 'Ajoutez un sous-projet pour ouvrir un terminal.')
+        : t('terminal.selectProjectToOpen', 'Sélectionnez un projet pour ouvrir un terminal.')
     : !selectedTask
       ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
       : t('terminal.title', 'Terminal');
