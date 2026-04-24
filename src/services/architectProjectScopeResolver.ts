@@ -385,15 +385,24 @@ export const inferArchitectPlanProjectScope = async (params: {
     return Boolean(project && !project.isReadOnly);
   });
 
+  const existingContextProjectIds = unique(params.activePlan.contextProjectIds || []);
   const inferredContextProjectIds = unique(
-    candidates
-      .map((project) => project.id)
-      .filter((projectId) => !actionableProjectIds.includes(projectId))
+    scoredProjects
+      .filter((entry) => {
+        if (actionableProjectIds.includes(entry.project.id)) {
+          return false;
+        }
+        if (existingContextProjectIds.includes(entry.project.id)) {
+          return true;
+        }
+        return entry.score > 0;
+      })
+      .map((entry) => entry.project.id)
   );
 
   const contextProjectIds = shouldPreserveScopeAdditively(params.activePlan.status)
     ? unique([
-        ...(params.activePlan.contextProjectIds || []),
+        ...existingContextProjectIds,
         ...inferredContextProjectIds,
       ]).filter((projectId) => !actionableProjectIds.includes(projectId))
     : inferredContextProjectIds;
@@ -416,7 +425,7 @@ export const inferArchitectPlanProjectScope = async (params: {
         projectId,
         ((params.activePlan.contextProjectIds || []).includes(projectId) && shouldPreserveScopeAdditively(params.activePlan.status))
           ? 'Preserved as existing context for this plan.'
-          : DEFAULT_CONTEXT_REASON,
+          : explicitReason || DEFAULT_CONTEXT_REASON,
       ] as const;
     })
   );

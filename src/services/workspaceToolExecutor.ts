@@ -750,6 +750,79 @@ const hasExplicitProjectTarget = (
   return Boolean(findProjectByAbsolutePath(rawPath, candidates));
 };
 
+const resolveExplicitProjectTargetId = (
+  rawPath: string,
+  args: ToolArgs,
+  candidates: ProjectWorkspaceCandidate[],
+): string | null => {
+  const explicitProjectId = getExplicitToolProjectId(args, candidates);
+  if (explicitProjectId) {
+    return explicitProjectId;
+  }
+
+  if (rawPath && !isAbsolutePath(rawPath)) {
+    const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+    if (prefixedMatch) {
+      return prefixedMatch.projectId;
+    }
+  }
+
+  if (rawPath && isAbsolutePath(rawPath)) {
+    return findProjectByAbsolutePath(rawPath, candidates)?.id ?? null;
+  }
+
+  return null;
+};
+
+export const resolveExplicitMutatingToolProjectTargets = (
+  toolName: string,
+  args: ToolArgs,
+  options: ExecuteWorkspaceToolOptions,
+): string[] => {
+  if (!isMutatingWorkspaceTool(toolName)) {
+    return [];
+  }
+
+  const candidates = getProjectWorkspaceCandidates(options);
+  const addProjectId = (projectIds: Set<string>, projectId?: string | null) => {
+    const trimmed = typeof projectId === "string" ? projectId.trim() : "";
+    if (trimmed) {
+      projectIds.add(trimmed);
+    }
+  };
+
+  if (toolName === "terminal_create_session") {
+    const explicitProjectId = getExplicitToolProjectId(args, candidates);
+    return explicitProjectId ? [explicitProjectId] : [];
+  }
+
+  if (toolName === "apply_patch") {
+    const patchText = toString(args.patch_text);
+    if (!patchText) {
+      return [];
+    }
+
+    const projectIds = new Set<string>();
+    try {
+      for (const operation of parseApplyPatch(patchText)) {
+        addProjectId(
+          projectIds,
+          resolveExplicitProjectTargetId(operation.path, args, candidates),
+        );
+      }
+    } catch {
+      return [];
+    }
+    return Array.from(projectIds);
+  }
+
+  const rawPath = sanitizePathInput(
+    isGitTool(toolName) ? toString(args.repo_path) : toString(args.path),
+  );
+  const projectId = resolveExplicitProjectTargetId(rawPath, args, candidates);
+  return projectId ? [projectId] : [];
+};
+
 const buildReadOnlyToolError = (
   toolName: string,
   candidate: ProjectWorkspaceCandidate,

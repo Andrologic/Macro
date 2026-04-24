@@ -134,7 +134,7 @@ export const resolveProjectExecutionContext = (
     null;
 
   const globalProject = getGlobalProjectById(projectGroups, inferredGroupId);
-  const focusedProjectId =
+  const candidateFocusedProjectId =
     selectedProjectId ||
     cleanString(executionTarget?.projectId) ||
     conversationProjectId ||
@@ -147,19 +147,35 @@ export const resolveProjectExecutionContext = (
         )?.id
       : null) ||
     null;
+  const hasTaskScope = taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
   const scopedProjectIds = uniqueStrings([
-    ...(taskProjectIds.length > 0 ? taskProjectIds : []),
-    ...taskContextProjectIds,
-    ...(globalProject?.subProjectIds || []),
-    conversationProjectId,
-    focusedProjectId,
+    ...(hasTaskScope
+      ? [...taskProjectIds, ...taskContextProjectIds]
+      : [
+          ...(globalProject?.subProjectIds || []),
+          conversationProjectId,
+          candidateFocusedProjectId,
+        ]),
   ]);
-  const actionableProjectIds = scopedProjectIds.filter((scopedProjectId) =>
-    isProjectActionable(projectById.get(scopedProjectId) || null)
-  );
-  const contextProjectIds = scopedProjectIds.filter((scopedProjectId) =>
-    isProjectReadOnly(projectById.get(scopedProjectId) || null)
-  );
+  const focusedProjectId = candidateFocusedProjectId && scopedProjectIds.includes(candidateFocusedProjectId)
+    ? candidateFocusedProjectId
+    : cleanString(executionTarget?.projectId) ||
+      cleanString(task?.project_id) ||
+      scopedProjectIds[0] ||
+      null;
+  const actionableProjectIds = hasTaskScope
+    ? taskProjectIds.filter((scopedProjectId) =>
+        isProjectActionable(projectById.get(scopedProjectId) || null)
+      )
+    : scopedProjectIds.filter((scopedProjectId) =>
+        isProjectActionable(projectById.get(scopedProjectId) || null)
+      );
+  const actionableProjectIdSet = new Set(actionableProjectIds);
+  const contextProjectIds = hasTaskScope
+    ? taskContextProjectIds.filter((scopedProjectId) => !actionableProjectIdSet.has(scopedProjectId))
+    : scopedProjectIds.filter((scopedProjectId) =>
+        isProjectReadOnly(projectById.get(scopedProjectId) || null)
+      );
 
   const projectId =
     cleanString(executionTarget?.projectId) ||
@@ -233,6 +249,12 @@ export const resolveProjectExecutionContext = (
           });
           return mounts;
         }, []);
+  const scopedProjectMounts = hasTaskScope
+    ? fallbackProjectMounts.map((mount) => ({
+        ...mount,
+        isReadOnly: contextProjectIds.includes(mount.projectId) || mount.isReadOnly,
+      }))
+    : fallbackProjectMounts;
   const virtualRootEnabled = Boolean(inferredGroupId && fallbackProjectMounts.length > 0);
 
   return {
@@ -241,7 +263,7 @@ export const resolveProjectExecutionContext = (
     projectIds: scopedProjectIds,
     actionableProjectIds,
     contextProjectIds,
-    projectMounts: fallbackProjectMounts,
+    projectMounts: scopedProjectMounts,
     focusedProjectId,
     virtualRootEnabled,
     workspacePathsByProjectId,

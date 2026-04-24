@@ -320,6 +320,7 @@ export const deriveImplementTasksFromArchitectPlan = (
     return {
       ...task,
       task_source: 'architect' as const,
+      context_project_ids: plan.contextProjectIds || [],
       plan_title: plan.title,
       plan_status: plan.status,
       plan_target_branch: plan.targetBranch,

@@ -128,7 +128,7 @@ const tauriStub = {
 };
 
 describe('inferArchitectPlanProjectScope', () => {
-  it('infers actionable mobile and backend repos while keeping web as context', async () => {
+  it('infers actionable mobile and backend repos while leaving explicitly excluded web out of scope', async () => {
     const scope = await inferArchitectPlanProjectScope({
       activePlan: {
         status: 'draft',
@@ -152,11 +152,11 @@ describe('inferArchitectPlanProjectScope', () => {
     });
 
     expect(scope.actionableProjectIds).toEqual(['mobile', 'backend']);
-    expect(scope.contextProjectIds).toEqual(['web']);
-    expect(scope.expectedProjectIds).toEqual(['mobile', 'backend', 'web']);
+    expect(scope.contextProjectIds).toEqual([]);
+    expect(scope.expectedProjectIds).toEqual(['mobile', 'backend']);
     expect(scope.reasonsByProjectId.mobile).toContain('plan brief');
     expect(scope.reasonsByProjectId.backend).toContain('plan brief');
-    expect(scope.reasonsByProjectId.web).toContain('code reading');
+    expect(scope.reasonsByProjectId.web).toBeUndefined();
   });
 
   it('preserves existing actionable and context scope additively after validation', async () => {
