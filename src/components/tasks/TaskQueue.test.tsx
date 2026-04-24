@@ -327,6 +327,24 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
   });
 
+  it('keeps task workspace errors visible with a retry action', async () => {
+    seedStores('Pending');
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError:
+        'Cannot create a task worktree for feature/demo because that branch is still checked out in the primary repository and has uncommitted changes',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).toContain('Commit, stash, or discard');
+    expect(document.body.textContent).toContain('Retry');
+  });
+
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
     seedStores('AwaitingResponse');
 
