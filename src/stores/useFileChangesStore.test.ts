@@ -271,11 +271,12 @@ const gitAddMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: s
     delete currentFiles[repoPath][path];
   }
 });
-const gitCommitMock = mock(async ({ repoPath }: { repoPath: string }) => {
+const commitRepository = async ({ repoPath }: { repoPath: string }) => {
   stagedFiles[repoPath] = {};
   return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
-});
-const generateCommitMessagesMock = mock(async (input: {
+};
+
+const buildGeneratedCommitMessages = async (input: {
   repositories: Array<{ repositoryId: string }>;
 }) => ({
   title: 'feat: implement multi repo flow',
@@ -283,7 +284,10 @@ const generateCommitMessagesMock = mock(async (input: {
     repositoryId: repository.repositoryId,
     body: `Update ${repository.repositoryId}.`,
   })),
-}));
+});
+
+const gitCommitMock = mock(commitRepository);
+const generateCommitMessagesMock = mock(buildGeneratedCommitMessages);
 
 const tasksById = {
   'task-1': {
@@ -479,7 +483,9 @@ describe('useFileChangesStore', () => {
     gitRestorePathsMock.mockClear();
     gitAddMock.mockClear();
     gitCommitMock.mockClear();
+    gitCommitMock.mockImplementation(commitRepository);
     generateCommitMessagesMock.mockClear();
+    generateCommitMessagesMock.mockImplementation(buildGeneratedCommitMessages);
     setTaskStatusMock.mockClear();
 
     useFileChangesStore = createFileChangesStore({
@@ -1045,6 +1051,7 @@ describe('useFileChangesStore', () => {
 
     expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
     expect(gitCommitMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().lastError).toBeNull();
   });
 
   it('does not change the task status when only the focused subproject is resolved', async () => {

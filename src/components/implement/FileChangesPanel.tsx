@@ -541,12 +541,16 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     reviewSummary.actionCounts.ready_to_commit === 0 &&
     hasTaskCommittedRepositories;
   const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
-  const validateChangesDisabledReason = t(
-    'implement.noRemainingChangesToValidate',
-    'No remaining unstaged changes to validate.'
-  );
+  const validateChangesDisabledReason = isGeneratingCommitMessages
+    ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+    : t(
+        'implement.noRemainingChangesToValidate',
+        'No remaining unstaged changes to validate.'
+      );
   const isCommitDisabled = isCommitting || isGeneratingCommitMessages || !hasReadyToCommit;
-  const commitDisabledReason = t('implement.noValidatedChangesToCommit', 'Validate changes before commit.');
+  const commitDisabledReason = isGeneratingCommitMessages
+    ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+    : t('implement.noValidatedChangesToCommit', 'Validate changes before commit.');
 
   const displayError = normalizeCommitErrorMessage(
     lastError || '',
