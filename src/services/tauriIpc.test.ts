@@ -172,6 +172,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
     await tauriIpc.workspaceArchiveProject({ projectId: "project-1" });
     await tauriIpc.workspaceRemoveProjectGroup({ groupId: "group-1" });
     await tauriIpc.workspaceRemoveProject({ projectId: "project-1" });
+    await tauriIpc.workspaceDebugResetProject({ projectId: "project-1", force: true });
     await tauriIpc.workspaceCloseProject({ projectId: "project-1" });
 
     expect(invokeCalls).toEqual([
@@ -234,6 +235,13 @@ describe("tauriIpc executeWorkspaceTool", () => {
         command: "workspace_remove_project",
         payload: {
           projectId: "project-1",
+        },
+      },
+      {
+        command: "workspace_debug_reset_project",
+        payload: {
+          projectId: "project-1",
+          force: true,
         },
       },
       {

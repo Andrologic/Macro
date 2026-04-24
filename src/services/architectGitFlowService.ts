@@ -19,6 +19,12 @@ import {
 import {
   renderGitFlowBranchName,
 } from './architectGitNaming';
+import {
+  getArchitectPlanKind,
+  getPlanKindBackmergeBranch,
+  getPlanKindSourceBranch,
+  renderArchitectPlanIntegrationBranchName,
+} from './architectPlanKinds';
 import { toServiceError } from './contracts/errors';
 import { getPlanNodeBranchIntent, getPredictedBranchIntentKey, type WorkBranchIntent } from './gitFlowBranchIntents';
 import {
@@ -36,13 +42,13 @@ const getProjectGitFlowSettings = (
 ): ProjectGitFlowSettings | undefined => getProjectById(projectId)?.gitFlowSettings ?? undefined;
 
 const renderPlanBranchNameForProject = (params: {
-  planSlug: string;
+  plan: Pick<ArchitectPlanRecord, 'slug' | 'title' | 'planKind' | 'gitFlowPlan'>;
   projectId: string;
   getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
 }): string =>
-  renderGitFlowBranchName({
-    branchType: 'plan',
-    planSlug: params.planSlug,
+  renderArchitectPlanIntegrationBranchName({
+    plan: params.plan,
+    projectId: params.projectId,
     settings: getProjectGitFlowSettings(params.getProjectById, params.projectId),
   });
 
@@ -63,6 +69,35 @@ const resolvePlanProjectBaseBranchName = (
   plan: ArchitectPlanRecord,
   projectId: string
 ): string => getArchitectPlanTargetBranchForProject(plan, projectId);
+
+const resolvePlanProjectSourceBranchName = (
+  plan: ArchitectPlanRecord,
+  projectId: string,
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined
+): string => {
+  const project = getProjectById(projectId);
+  const settings = project?.gitFlowSettings;
+  return plan.gitFlowPlan?.projects?.[projectId]?.sourceBranch ||
+    getPlanKindSourceBranch({
+      planKind: getArchitectPlanKind(plan),
+      baseBranch: settings?.baseBranch || getArchitectPlanTargetBranchForProject(plan, projectId),
+      mainBranch: settings?.mainBranch || 'main',
+    });
+};
+
+const resolvePlanProjectBackmergeBranchName = (
+  plan: ArchitectPlanRecord,
+  projectId: string,
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined
+): string | null => {
+  const project = getProjectById(projectId);
+  const settings = project?.gitFlowSettings;
+  return plan.gitFlowPlan?.projects?.[projectId]?.backmergeBranch ??
+    getPlanKindBackmergeBranch({
+      planKind: getArchitectPlanKind(plan),
+      baseBranch: settings?.baseBranch || 'develop',
+    });
+};
 
 const resolveBranchSourceRef = (
   branches: ArchitectGitFlowGitBranches,
@@ -91,6 +126,12 @@ const buildPredictedBranchesForProjectPlan = (params: {
     planSlug: params.plan.slug || params.plan.title,
     getProjectGitFlowSettings: (projectId) =>
       getProjectGitFlowSettings(params.getProjectById, projectId),
+    getPlanIntegrationBranchName: (projectId) =>
+      renderPlanBranchNameForProject({
+        plan: params.plan,
+        projectId,
+        getProjectById: params.getProjectById,
+      }),
   });
 
   const existingByKey = new Map(
@@ -183,7 +224,9 @@ export interface FinalizedPlanRepositoryResult {
   repoPath: string;
   planBranchName: string;
   baseBranchName: string;
+  backmergeBranchName?: string | null;
   mergeOutput?: string;
+  backmergeOutput?: string;
 }
 
 export interface PlanReviewTaskSummary {
@@ -812,7 +855,7 @@ export const createArchitectGitFlowService = (
 
     return repositories.map((repository) => {
       const planBranchName = renderPlanBranchNameForProject({
-        planSlug: plan.slug || plan.title,
+        plan,
         projectId: repository.projectId,
         getProjectById: deps.getAppState().getProjectById,
       });
@@ -999,7 +1042,7 @@ export const createArchitectGitFlowService = (
     return Promise.all(
       repositories.map(async (repository) => {
         const repositoryPlanBranchName = renderPlanBranchNameForProject({
-          planSlug: params.plan.slug || params.plan.title,
+          plan: params.plan,
           projectId: repository.projectId,
           getProjectById: deps.getAppState().getProjectById,
         });
@@ -1098,7 +1141,7 @@ export const createArchitectGitFlowService = (
       const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
       return {
         planBranchName: renderPlanBranchNameForProject({
-          planSlug: plan.slug || plan.title,
+          plan,
           projectId: plan.projectId || plan.projectIds?.[0] || 'project',
           getProjectById: deps.getAppState().getProjectById,
         }),
@@ -1121,17 +1164,21 @@ export const createArchitectGitFlowService = (
       const createdFeatureBranches: string[] = [];
       const existingFeatureBranches: string[] = [];
       const repositoryPlanBranchName = renderPlanBranchNameForProject({
-        planSlug: plan.slug || plan.title,
+        plan,
         projectId: repository.projectId,
         getProjectById: deps.getAppState().getProjectById,
       });
-      const repositoryBaseBranchName = resolvePlanProjectBaseBranchName(plan, repository.projectId);
+      const repositorySourceBranchName = resolvePlanProjectSourceBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById
+      );
 
       let createdPlanBranch = false;
       if (!localBranchNames.has(repositoryPlanBranchName)) {
         const fromRef = resolveBranchSourceRef(
           branches,
-          repositoryBaseBranchName,
+          repositorySourceBranchName,
           deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
         );
         await deps.tauri.gitBranchCreate({
@@ -1170,7 +1217,7 @@ export const createArchitectGitFlowService = (
 
     return {
       planBranchName: results[0]?.planBranchName || renderPlanBranchNameForProject({
-        planSlug: plan.slug || plan.title,
+        plan,
         projectId: plan.projectId || plan.projectIds?.[0] || 'project',
         getProjectById: deps.getAppState().getProjectById,
       }),
@@ -1350,6 +1397,28 @@ export const createArchitectGitFlowService = (
           intoBranch: repository.baseBranchName,
         })
         : undefined;
+      const backmergeBranchName = resolvePlanProjectBackmergeBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById
+      );
+      let backmergeOutput: string | undefined;
+      if (backmergeBranchName) {
+        await deps.tauri.gitCheckout({
+          repoPath: repository.repoPath,
+          branchOrCommit: backmergeBranchName,
+          create: false,
+        });
+        await deps.tauri.gitPull({
+          repoPath: repository.repoPath,
+          branch: backmergeBranchName,
+        });
+        backmergeOutput = await deps.tauri.gitMerge({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          intoBranch: backmergeBranchName,
+        });
+      }
 
       finalizedRepositories.push({
         projectId: repository.projectId,
@@ -1357,6 +1426,12 @@ export const createArchitectGitFlowService = (
         planBranchName: repository.planBranchName,
         baseBranchName: repository.baseBranchName,
         mergeOutput,
+        ...(backmergeBranchName
+          ? {
+              backmergeBranchName,
+              backmergeOutput,
+            }
+          : {}),
       });
     }
 

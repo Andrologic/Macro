@@ -2,8 +2,8 @@ pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
 use crate::db::models::GitWorktreeRecord;
-use crate::git::detect_preferred_git_flow_branches;
 use crate::git::repo::get_status_options;
+use crate::git::{detect_preferred_git_flow_branches, GitState};
 use crate::git::MACRO_BRANCH_NAME;
 use chrono::Utc;
 use git2::{
@@ -12,12 +12,13 @@ use git2::{
 use metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
     ManualFeatureMergeWorkflowDto, PlanDto,
-    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
-    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
-    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
-    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
-    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
-    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    DebugResetProjectReportDto, ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto,
+    ProjectAccessMigrationSummaryDto, ProjectDto, ProjectGitFlowDetectionDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
+    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
+    WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
+    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -2880,6 +2881,57 @@ pub async fn remove_project(
     project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
     close_project(workspace_path, metadata_root, project_id).await
+}
+
+pub async fn debug_reset_project(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    git_state: GitState,
+    project_id: &str,
+    force: bool,
+) -> Result<DebugResetProjectReportDto> {
+    if !force {
+        return Err(BackendError::Validation(
+            "Debug project reset requires an explicit force confirmation.".to_string(),
+        ));
+    }
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = state
+        .project_groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    let project_path = resolve_project_path(workspace_path, &project.path);
+
+    let mut report = DebugResetProjectReportDto {
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        ..DebugResetProjectReportDto::default()
+    };
+
+    close_project(workspace_path, metadata_root, &project.id).await?;
+    report.removed_registry_entry = true;
+
+    match git_state.debug_reset_macro_project_artifacts(&project_path) {
+        Ok(reset) => {
+            report.removed_task_worktrees = reset.removed_task_worktrees;
+            report.removed_metadata_worktree = reset.removed_metadata_worktree;
+            report.removed_macro_branch = reset.removed_macro_branch;
+            report.warnings.extend(reset.warnings);
+        }
+        Err(error) => {
+            report.warnings.push(format!(
+                "Git cleanup was skipped or incomplete for '{}': {}",
+                project_path.display(),
+                error
+            ));
+        }
+    }
+
+    Ok(report)
 }
 
 fn merge_task_lists(mut legacy_tasks: Vec<Value>, manual_tasks: Vec<Value>) -> Vec<Value> {

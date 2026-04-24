@@ -46,6 +46,10 @@ import {
   persistArchitectPlanStrategyPreview,
   readArchitectPlanRuntime,
 } from "../services/architectPlanRuntimeService";
+import type {
+  ArchitectPlanGitFlowMetadata,
+  ArchitectPlanKind,
+} from "../services/architectPlanKinds";
 import type { StrategyMutationPreview } from "../services/architectStrategyMutationGuard";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
@@ -76,6 +80,7 @@ import {
   countProjectsInRegistry,
   formatProjectRegistryRepairSummary,
   normalizeProjectRegistry,
+  type ProjectRegistryRepairReport,
   resolveCanonicalProject,
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
@@ -142,6 +147,8 @@ export interface ArchitectPlanContext {
   title: string;
   label?: string;
   description: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   status: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
@@ -183,6 +190,8 @@ const buildArchitectPlanContext = (
         | "title"
         | "label"
         | "description"
+        | "planKind"
+        | "gitFlowPlan"
         | "status"
         | "targetBranch"
         | "targetBranchesByProjectId"
@@ -194,6 +203,8 @@ const buildArchitectPlanContext = (
         | "title"
         | "label"
         | "description"
+        | "planKind"
+        | "gitFlowPlan"
         | "status"
         | "targetBranch"
         | "targetBranchesByProjectId"
@@ -204,6 +215,8 @@ const buildArchitectPlanContext = (
   title: plan.title,
   label: plan.label,
   description: plan.description,
+  planKind: plan.planKind,
+  gitFlowPlan: plan.gitFlowPlan,
   status: plan.status,
   targetBranch: plan.targetBranch,
   targetBranchesByProjectId: plan.targetBranchesByProjectId,
@@ -220,6 +233,8 @@ const summarizeArchitectPlanRecord = (
   title: plan.title,
   label: plan.label,
   description: plan.description,
+  planKind: plan.planKind,
+  gitFlowPlan: plan.gitFlowPlan,
   status: plan.status,
   targetBranch: plan.targetBranch,
   targetBranchesByProjectId: plan.targetBranchesByProjectId,
@@ -341,6 +356,28 @@ const collectProjectRegistryIds = (groups: ProjectGroup[]) => ({
     group.projects.map((project) => project.id),
   ),
 });
+
+const isSelectionOnlyProjectRegistryRepair = (
+  report: ProjectRegistryRepairReport,
+): boolean =>
+  report.repaired &&
+  report.duplicatePathsRemoved === 0 &&
+  report.emptyGroupsRemoved === 0 &&
+  report.removedSyntheticGroups === 0 &&
+  report.removedSyntheticProjects === 0 &&
+  report.removedGroupIds.length === 0 &&
+  report.removedProjectIds.length === 0 &&
+  Boolean(report.deadSelectedGroupId || report.deadSelectedProjectId);
+
+const formatProjectRegistryRepairSummaryForUser = (
+  report: ProjectRegistryRepairReport,
+  options: { suppressSelectionOnly?: boolean } = {},
+): string | null => {
+  if (options.suppressSelectionOnly && isSelectionOnlyProjectRegistryRepair(report)) {
+    return null;
+  }
+  return formatProjectRegistryRepairSummary(report);
+};
 
 const filterPlanNodesForRegistry = (
   planNodes: PlanNode[],
@@ -1207,6 +1244,15 @@ interface AppStore {
   ) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
+  debugResetProject: (projectId: string) => Promise<{
+    projectId: string;
+    projectName: string;
+    removedRegistryEntry: boolean;
+    removedTaskWorktrees: number;
+    removedMetadataWorktree: boolean;
+    removedMacroBranch: boolean;
+    warnings: string[];
+  }>;
   getProjectById: (id: string) => Project | undefined;
   setEnabledModes: (modes: AppMode[]) => void;
   setUiZoomMode: (mode: UiZoomMode) => void;
@@ -2920,6 +2966,232 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ isLoading: false, lastError: normalized.message });
       logProjectRegistryAction("failed", {
         action: "remove_project",
+        projectId,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
+  debugResetProject: async (projectId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const resetProject = previousState.getProjectById(projectId) ?? null;
+      logProjectRegistryAction("started", {
+        action: "debug_reset_project",
+        projectId,
+        beforeCount: countProjectsInRegistry(previousState.projectGroups),
+      });
+      const preflightSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: previousState.selectedGroupId,
+        selectedProjectId: previousState.selectedProjectId,
+      });
+      const canonicalProject = resolveCanonicalProject(
+        preflightSnapshot.normalizedRegistry.projectGroups,
+        resetProject,
+      );
+
+      if (!canonicalProject) {
+        throw {
+          code: "PROJECT_NOT_FOUND",
+          message: "Subproject no longer exists in Macro.",
+        };
+      }
+
+      const canonicalProjectGroupId =
+        getProjectGroupByProjectId(
+          preflightSnapshot.normalizedRegistry.projectGroups,
+          canonicalProject.id,
+        )?.id ?? null;
+      const registryAfterReset = preflightSnapshot.normalizedRegistry.projectGroups
+        .map((group) => ({
+          ...group,
+          projects: group.projects.filter(
+            (project) => project.id !== canonicalProject.id,
+          ),
+        }))
+        .filter((group) => group.projects.length > 0);
+      const allProjectsAfterReset = registryAfterReset.flatMap(
+        (group) => group.projects,
+      );
+      const previousSelectedProjectStillValid = Boolean(
+        previousState.selectedProjectId &&
+          allProjectsAfterReset.some(
+            (project) => project.id === previousState.selectedProjectId,
+          ),
+      );
+      const previousSelectedGroupStillValid = Boolean(
+        previousState.selectedGroupId &&
+          registryAfterReset.some(
+            (group) => group.id === previousState.selectedGroupId,
+          ),
+      );
+      const sameGroupFallbackProject = canonicalProjectGroupId
+        ? (registryAfterReset
+            .find((group) => group.id === canonicalProjectGroupId)
+            ?.projects[0] ?? null)
+        : null;
+      const firstFallbackGroup = registryAfterReset[0] ?? null;
+      const firstFallbackProject = firstFallbackGroup?.projects[0] ?? null;
+      const nextSelection =
+        previousSelectedProjectStillValid && previousState.selectedProjectId
+          ? {
+              selectedGroupId:
+                getProjectGroupByProjectId(
+                  registryAfterReset,
+                  previousState.selectedProjectId,
+                )?.id ?? previousState.selectedGroupId,
+              selectedProjectId: previousState.selectedProjectId,
+            }
+          : previousSelectedGroupStillValid &&
+              previousState.selectedProjectId !== canonicalProject.id
+            ? {
+                selectedGroupId: previousState.selectedGroupId,
+                selectedProjectId: null,
+              }
+            : sameGroupFallbackProject
+              ? {
+                  selectedGroupId: canonicalProjectGroupId,
+                  selectedProjectId: sameGroupFallbackProject.id,
+                }
+              : firstFallbackProject
+                ? {
+                    selectedGroupId: firstFallbackGroup?.id ?? null,
+                    selectedProjectId: firstFallbackProject.id,
+                  }
+                : {
+                    selectedGroupId: null,
+                    selectedProjectId: null,
+                  };
+
+      const resetReport = await services.debugResetProject({
+        projectId: canonicalProject.id,
+        force: true,
+      });
+      const postMutationSnapshot = await loadProjectRegistrySnapshot({
+        selectedGroupId: nextSelection.selectedGroupId,
+        selectedProjectId: nextSelection.selectedProjectId,
+      });
+      const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
+      const didResetProjectInActiveGroup =
+        canonicalProjectGroupId === previousState.selectedGroupId;
+      const nextRecentProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.recentProjects.filter(
+          (project) => project.projectId !== canonicalProject.id,
+        ),
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+        normalizedRegistry.projectGroups,
+        previousState.macroEnabledProjects.filter(
+          (project) => project.projectId !== canonicalProject.id,
+        ),
+      );
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry.projectGroups,
+      );
+
+      set({
+        currentPlan: postMutationSnapshot.plan,
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        selectedTaskId: didResetProjectInActiveGroup
+          ? null
+          : previousState.selectedTaskId,
+        activeArchitectPlanId: didResetProjectInActiveGroup
+          ? null
+          : previousState.activeArchitectPlanId,
+        architectPlanSwitch: didResetProjectInActiveGroup
+          ? idleArchitectPlanSwitchState()
+          : previousState.architectPlanSwitch,
+        activePlanContext: didResetProjectInActiveGroup
+          ? null
+          : previousState.activePlanContext,
+        planNodes: didResetProjectInActiveGroup
+          ? []
+          : filterPlanNodesForRegistry(
+              postMutationSnapshot.planNodes.length
+                ? postMutationSnapshot.planNodes
+                : derivePlanNodesFromPlan(postMutationSnapshot.plan),
+              validProjectIds,
+            ),
+        predictedBranches: didResetProjectInActiveGroup
+          ? []
+          : filterPredictedBranchesForRegistry(
+              postMutationSnapshot.predictedBranches,
+              validProjectIds,
+            ),
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummaryForUser(
+          normalizedRegistry.report,
+          { suppressSelectionOnly: true },
+        ),
+        isLoading: false,
+        lastError: null,
+      });
+
+      const nextFocusedProject = normalizedRegistry.selectedProjectId
+        ? (normalizedRegistry.projectGroups
+            .flatMap((group) => group.projects)
+            .find(
+              (project) => project.id === normalizedRegistry.selectedProjectId,
+            ) ?? null)
+        : null;
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+        normalizedRegistry.selectedGroupId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        normalizedRegistry.selectedProjectId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_OPEN_PROJECT_PATH,
+        nextFocusedProject?.path &&
+          shouldPersistProjectPath(nextFocusedProject.path)
+          ? nextFocusedProject.path
+          : null,
+      );
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
+      await localProjectContext.deleteLocalProjectContextState(canonicalProject.id);
+      await persistSessionContext({
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+        mode: previousState.mode,
+      });
+      await reconcileProjectRegistryDependencies({
+        projectGroups: normalizedRegistry.projectGroups,
+        selectedGroupId: normalizedRegistry.selectedGroupId,
+        selectedProjectId: normalizedRegistry.selectedProjectId,
+      });
+
+      logProjectRegistryAction("succeeded", {
+        action: "debug_reset_project",
+        projectId: canonicalProject.id,
+        requestedProjectId: projectId,
+        canonicalized: canonicalProject.id !== projectId,
+        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
+        removedTaskWorktrees: resetReport.removedTaskWorktrees,
+        removedMetadataWorktree: resetReport.removedMetadataWorktree,
+        removedMacroBranch: resetReport.removedMacroBranch,
+        warningCount: resetReport.warnings.length,
+        repairApplied: normalizedRegistry.report.repaired,
+      });
+      return resetReport;
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction("failed", {
+        action: "debug_reset_project",
         projectId,
         error: normalized.message,
         code: normalized.code,

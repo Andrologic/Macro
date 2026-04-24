@@ -21,7 +21,16 @@ export const ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX =
 
 type ArchitectPlanListItem = Pick<
   ArchitectPlanSummary,
-  'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'targetBranch' | 'conversationId'
+  | 'id'
+  | 'slug'
+  | 'title'
+  | 'label'
+  | 'status'
+  | 'description'
+  | 'planKind'
+  | 'gitFlowPlan'
+  | 'targetBranch'
+  | 'conversationId'
 > & {
   nodeCount?: number;
 };
@@ -207,6 +216,8 @@ export const formatArchitectPlanListToolResult = (params: {
       label: plan.label ?? null,
       display_name: getArchitectPlanDisplayName(plan),
       status: plan.status,
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       description: cleanLine(plan.description) || '',
       target_branch: plan.targetBranch,
       node_count: plan.nodeCount ?? 0,
@@ -226,6 +237,8 @@ export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): str
       display_name: getArchitectPlanDisplayName(plan),
       is_canonical: isCanonicalArchitectPlan(plan),
       description: cleanLine(plan.description) || '',
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
       conversation_id: plan.conversationId ?? null,
@@ -253,6 +266,8 @@ export const formatArchitectPlanUpdateToolResult = (
       label: plan.label ?? null,
       display_name: getArchitectPlanDisplayName(plan),
       description: cleanLine(plan.description) || '',
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
       active: plan.id === activePlanId,

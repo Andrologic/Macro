@@ -8,6 +8,7 @@ import {
 } from './architectPlanService';
 import { provisionPlanBranches, type ProvisionPlanBranchesResult } from './architectGitFlowService';
 import { getPredictedBranchIntentKey } from './gitFlowBranchIntents';
+import { renderArchitectPlanIntegrationBranchName } from './architectPlanKinds';
 
 interface ArchitectScopePromotionAppState {
   projectGroups: ProjectGroup[];
@@ -55,7 +56,7 @@ const createStablePredictedBranchId = (projectId: string, branchKey: string): st
     .replace(/[^a-z0-9]+/g, '-')}`;
 
 const buildPredictedBranchesForPromotedScope = (params: {
-  plan: Pick<ArchitectPlanRecord, 'slug' | 'title' | 'predictedBranches'>;
+  plan: Pick<ArchitectPlanRecord, 'slug' | 'title' | 'planKind' | 'gitFlowPlan' | 'predictedBranches'>;
   nodes: PlanNode[];
   getProjectById: (projectId: string) => Project | undefined;
 }): PredictedBranch[] => {
@@ -65,6 +66,12 @@ const buildPredictedBranchesForPromotedScope = (params: {
     planSlug,
     getProjectGitFlowSettings: (projectId) =>
       getProjectGitFlowSettings(params.getProjectById, projectId),
+    getPlanIntegrationBranchName: (projectId) =>
+      renderArchitectPlanIntegrationBranchName({
+        plan: params.plan,
+        projectId,
+        settings: getProjectGitFlowSettings(params.getProjectById, projectId),
+      }),
   });
   const existingByKey = new Map(
     (params.plan.predictedBranches || []).map((branch) => [

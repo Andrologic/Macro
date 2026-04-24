@@ -10,6 +10,7 @@ import type {
   MessagesDto,
   ModelsDto,
   ProjectDto,
+  DebugResetProjectReportDto,
   ProvidersDto,
   TaskCatalogDto,
   ToolSettingsDto,
@@ -196,6 +197,11 @@ export const removeProject = async (_data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('removeProject');
 
+export const debugResetProject = async (_data: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> => remoteUnsupported('debugResetProject');
+
 export const closeProject = async (_data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('closeProject');
@@ -240,6 +246,7 @@ export const provider: ServiceProvider = {
   archiveProject,
   removeProjectGroup,
   removeProject,
+  debugResetProject,
   closeProject,
   getToolSettings,
   updateToolSettings,

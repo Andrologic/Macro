@@ -56,7 +56,7 @@ const buildTemplatePreview = (settings: ProjectGitFlowSettings) => ({
   }),
   releaseBranch: renderGitFlowBranchName({
     branchType: 'release',
-    branchSlug: 'v1.5.0',
+    branchSlug: '1.5.0',
     settings,
   }),
   hotfixBranch: renderGitFlowBranchName({
@@ -623,7 +623,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               t('projects.gitFlowReleaseTemplate', 'Release branch template'),
               settings.releaseBranchTemplate,
               'releaseBranchTemplate',
-              'release/{releaseSlug}'
+              'release/v{releaseSlug}'
             )}
             {renderInput(
               t('projects.gitFlowHotfixTemplate', 'Hotfix branch template'),
