@@ -18,6 +18,7 @@ import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import { getGlobalProjectById, getSubProjectsForGroup } from '../../services/globalProjects';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
+import { presentMetadataSyncIssue } from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
 
 type FooterSyncAction = 'fetch' | 'pull' | 'push';
@@ -440,6 +441,16 @@ export const Footer: React.FC = () => {
     }));
     return toMacroConflictResolutionEntries(repositories);
   }, [footerMetadataSync, macroSnapshot, scopeProjects]);
+  const metadataSyncPresentation = useMemo(
+    () =>
+      presentMetadataSyncIssue({
+        reason: footerMetadataSync.reason,
+        nextAction: footerMetadataSync.nextAction,
+        error: footerMetadataSync.error,
+        repoPath: macroSnapshot?.worktree_path || null,
+      }),
+    [footerMetadataSync.error, footerMetadataSync.nextAction, footerMetadataSync.reason, macroSnapshot?.worktree_path]
+  );
 
   const openAiConflictAssistant = async () => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -562,9 +573,16 @@ export const Footer: React.FC = () => {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {footerMetadataSync.state === 'conflict' && (
-              <Button size="sm" variant="error" className="h-6 px-2 text-[11px]" onClick={() => setShowConflictModal(true)}>
-                {t('footer.sync.resolve', 'Resolve')}
+            {footerMetadataSync.state !== 'clean' && (
+              <Button
+                size="sm"
+                variant={footerMetadataSync.state === 'conflict' || footerMetadataSync.state === 'failed' ? 'error' : 'secondary'}
+                className="h-6 px-2 text-[11px]"
+                onClick={() => setShowConflictModal(true)}
+              >
+                {footerMetadataSync.state === 'conflict'
+                  ? t('footer.sync.resolve', 'Resolve')
+                  : t('footer.sync.review', 'Review')}
               </Button>
             )}
             <Button
@@ -589,10 +607,10 @@ export const Footer: React.FC = () => {
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowConflictModal(false)} />
           <div className="relative w-full max-w-3xl rounded-xl border border-border bg-card p-4 shadow-2xl">
             <ConflictResolutionPanel
-              title={t('footer.sync.macroConflictTitle', '@macro sync conflict')}
-              description={t('footer.sync.macroConflictDescription', 'Resolve the reported metadata blockers, then retry the same sync step.')}
+              title={metadataSyncPresentation.title}
+              description={metadataSyncPresentation.nextStep || metadataSyncPresentation.body}
               repositories={macroConflictEntries}
-              error={footerMetadataSync.error}
+              error={metadataSyncPresentation.technicalDetails}
               retryLabel={t('footer.sync.retrySync', 'Retry sync')}
               retryDisabled={Boolean(syncAction)}
               retryLoading={Boolean(syncAction) || isRefreshing}

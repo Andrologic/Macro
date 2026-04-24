@@ -185,6 +185,12 @@
     font-family: inherit;
   }
 
+  @media (min-width: 601px) {
+    [data-sonner-toaster].macro-toaster[data-x-position='right'] {
+      right: calc(var(--offset-right) - 34px);
+    }
+  }
+
   [data-sonner-toaster].macro-toaster [data-sonner-toast] {
     -webkit-user-select: none;
     user-select: none;

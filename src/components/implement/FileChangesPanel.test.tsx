@@ -170,7 +170,7 @@ describe('FileChangesPanel', () => {
   const seedStores = (
     repository: ReviewRepositoryState,
     options: {
-      loadState?: 'ready' | 'out_of_scope';
+      loadState?: 'ready' | 'out_of_scope' | 'awaiting_worktree' | 'invalid_mapping';
       loadMessage?: string | null;
       taskOverrides?: Record<string, unknown>;
       taskStoreOverrides?: Record<string, unknown>;
@@ -246,9 +246,9 @@ describe('FileChangesPanel', () => {
     loadCurrentChangesMock = mock(async () => undefined);
     useFileChangesStore.setState({
       ...useFileChangesStore.getState(),
-      repositories: options.loadState === 'out_of_scope' ? [] : [repository],
-      selectedRepositoryId: options.loadState === 'out_of_scope' ? null : repository.id,
-      reviewSummary: options.loadState === 'out_of_scope'
+      repositories: options.loadState && options.loadState !== 'ready' ? [] : [repository],
+      selectedRepositoryId: options.loadState && options.loadState !== 'ready' ? null : repository.id,
+      reviewSummary: options.loadState && options.loadState !== 'ready'
         ? buildReviewTaskSummary([], null)
         : buildReviewTaskSummary([repository], repository.id),
       currentTaskLoadState: options.loadState ?? 'ready',
@@ -740,6 +740,23 @@ describe('FileChangesPanel', () => {
 
     expect(document.body.textContent).toContain('This task has no changes in Project One.');
     expect(document.body.textContent).not.toContain('No pending file changes for this task yet.');
+  });
+
+  it('renders an actionable callout when the task worktree is not ready', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'awaiting_worktree',
+      loadMessage:
+        'Cannot create a task worktree for feature/demo because that branch is still checked out in the primary repository and has uncommitted changes',
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).toContain('Commit, stash, or discard');
+    expect(document.body.textContent).toContain('Retry');
   });
 
   it('reloads repository changes when the focused subproject changes', async () => {
