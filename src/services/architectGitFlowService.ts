@@ -502,7 +502,6 @@ const getPlanProjectIds = (plan: ArchitectPlanRecord): string[] => {
   const nodeProjectIds = (plan.nodes || []).flatMap((node) => normalizeNodeProjectIds(node));
   const branchProjectIds = (plan.predictedBranches || []).map((branch) => branch.projectId).filter(Boolean);
   return Array.from(new Set([
-    ...(plan.expectedProjectIds || []),
     ...(plan.projectIds || []),
     ...(plan.projectId ? [plan.projectId] : []),
     ...nodeProjectIds,

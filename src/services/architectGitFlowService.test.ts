@@ -482,6 +482,36 @@ describe('architectGitFlowService', () => {
     ).toBe(false);
   });
 
+  it('does not provision GitFlow branches for context-only repositories', async () => {
+    projectPaths.set('docs', {
+      id: 'docs',
+      name: 'Docs',
+      mountName: 'docs',
+      path: '/repos/docs',
+    });
+    currentPlan = {
+      ...buildPlan(),
+      contextProjectIds: ['docs'],
+      expectedProjectIds: ['web', 'api', 'docs'],
+    };
+    gitBranchCreateMock.mockReset();
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(gitBranchCreateMock.mock.calls.map(([params]) => params.repoPath)).toEqual([
+      '/repos/web',
+      '/repos/web',
+      '/repos/api',
+      '/repos/api',
+    ]);
+    expect(result.provision.repositories.map((repository) => repository.projectId)).toEqual(['web', 'api']);
+    expect(updateArchitectPlanMock.mock.calls.at(-1)?.[0].projectIds).toEqual(['web', 'api']);
+  });
+
   it('surfaces repository blocking state in the plan review', async () => {
     gitStatusMock.mockImplementation(async (repoPath: string) => {
       if (worktreeStatusByPath.has(repoPath)) {

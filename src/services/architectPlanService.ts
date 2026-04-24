@@ -20,6 +20,12 @@ import {
   type ValidProjectRegistrySnapshot,
 } from './validProjectRegistry';
 import { getRegisteredAppState } from './appStateRuntime';
+import {
+  getArchitectPlanActionableProjectIdsFromScope,
+  getArchitectPlanVisibleProjectIdsFromScope,
+  normalizeArchitectPlanIdList,
+  normalizeArchitectPlanScope,
+} from './architectPlanScope';
 
 export type ArchitectPlanStatus =
   | 'draft'
@@ -248,10 +254,9 @@ const planRecordFromActivationSummary = (
   summary: ArchitectPlanSummary,
   branchName: string
 ): ArchitectPlanRecord => {
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    summary.expectedProjectIds,
-    getArchitectPlanProjectIds(summary)
-  );
+  const scope = normalizeArchitectPlanScope(summary, {
+    useExpectedAsActionableFallback: true,
+  });
 
   return {
     id: summary.id,
@@ -263,14 +268,14 @@ const planRecordFromActivationSummary = (
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: summary.targetBranchesByProjectId,
     conversationId: summary.conversationId,
-    projectId: summary.projectId,
-    projectIds: summary.projectIds,
-    contextProjectIds: summary.contextProjectIds,
+    projectId: scope.actionableProjectIds[0],
+    projectIds: scope.actionableProjectIds,
+    contextProjectIds: scope.contextProjectIds,
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
     nodes: [],
     predictedBranches: [],
-    expectedProjectIds,
+    expectedProjectIds: scope.expectedProjectIds,
     availableProjectIds: summary.availableProjectIds,
     missingProjectIds: summary.missingProjectIds,
     replicationState: summary.replicationState,
@@ -309,6 +314,15 @@ type ArchitectPlanProjectRef = Pick<
   ArchitectPlanSummary,
   'projectId' | 'projectIds' | 'expectedProjectIds' | 'contextProjectIds'
 >;
+
+type ArchitectPlanTargetBranchRef = Pick<
+  ArchitectPlanRecord,
+  'projectId' | 'projectIds' | 'targetBranch'
+> & {
+  contextProjectIds?: string[];
+  expectedProjectIds?: string[];
+  targetBranchesByProjectId?: Record<string, string>;
+};
 
 interface ArchitectPlanIndex {
   version: 2 | 3;
@@ -664,11 +678,18 @@ const parseJsonLines = (raw: string): ArchitectPlanChatMessage[] =>
       }
     });
 
+export const getArchitectPlanActionableProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
+  getArchitectPlanActionableProjectIdsFromScope(plan, {
+    useExpectedAsActionableFallback: true,
+  });
+
+export const getArchitectPlanVisibleProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
+  getArchitectPlanVisibleProjectIdsFromScope(plan, {
+    useExpectedAsActionableFallback: true,
+  });
+
 export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
-  normalizeExpectedProjectIds(
-    (plan as ArchitectPlanSummary & { expectedProjectIds?: string[] }).expectedProjectIds,
-    normalizeProjectIds(plan.projectIds, plan.projectId)
-  );
+  getArchitectPlanVisibleProjectIds(plan);
 
 export const isArchitectPlanVisibleForScope = (
   plan: ArchitectPlanProjectRef,
@@ -678,7 +699,7 @@ export const isArchitectPlanVisibleForScope = (
     return true;
   }
 
-  const planProjectIds = getArchitectPlanProjectIds(plan);
+  const planProjectIds = getArchitectPlanVisibleProjectIds(plan);
   if (planProjectIds.length === 0) {
     return false;
   }
@@ -688,36 +709,27 @@ export const isArchitectPlanVisibleForScope = (
 };
 
 export const getArchitectPlanTargetBranchesByProjectId = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
-    targetBranchesByProjectId?: Record<string, string>;
-    expectedProjectIds?: string[];
-  }
+  plan: ArchitectPlanTargetBranchRef
 ): Record<string, string> =>
   normalizeTargetBranchesByProjectId(
     plan.targetBranchesByProjectId,
-    getArchitectPlanProjectIds(plan),
+    getArchitectPlanActionableProjectIds(plan),
     plan.targetBranch
   );
 
 export const getArchitectPlanTargetBranchForProject = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
-    targetBranchesByProjectId?: Record<string, string>;
-    expectedProjectIds?: string[];
-  },
+  plan: ArchitectPlanTargetBranchRef,
   projectId?: string | null
 ): string => {
   const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
   if (projectId && targetBranchesByProjectId[projectId]) {
     return targetBranchesByProjectId[projectId];
   }
-  return targetBranchesByProjectId[getArchitectPlanProjectIds(plan)[0] || ''] || plan.targetBranch;
+  return targetBranchesByProjectId[getArchitectPlanActionableProjectIds(plan)[0] || ''] || plan.targetBranch;
 };
 
 export const planHasMixedTargetBranches = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch'> & {
-    targetBranchesByProjectId?: Record<string, string>;
-    expectedProjectIds?: string[];
-  }
+  plan: ArchitectPlanTargetBranchRef
 ): boolean => hasMixedPlanTargetBranches(getArchitectPlanTargetBranchesByProjectId(plan));
 
 export const planMatchesProjectId = (
@@ -732,7 +744,7 @@ export const resolvePlanProjectContextId = (
   plan: ArchitectPlanProjectRef,
   preferredProjectId?: string | null
 ): string | null => {
-  const projectIds = getArchitectPlanProjectIds(plan);
+  const projectIds = getArchitectPlanVisibleProjectIds(plan);
   if (preferredProjectId && projectIds.includes(preferredProjectId)) {
     return preferredProjectId;
   }
@@ -950,8 +962,38 @@ const buildScopeKey = (source: ArchitectMetadataScope['source'], repoPath: strin
   return `${source}:${projectId || 'none'}`;
 };
 
-const dedupeScopes = (scopes: ArchitectMetadataScope[]): ArchitectMetadataScope[] =>
-  Array.from(new Map(scopes.map((scope) => [scope.scopeKey, scope])).values());
+const dedupeScopes = (scopes: ArchitectMetadataScope[]): ArchitectMetadataScope[] => {
+  const deduped = new Map<string, ArchitectMetadataScope>();
+  for (const scope of scopes) {
+    if (!deduped.has(scope.scopeKey)) {
+      deduped.set(scope.scopeKey, scope);
+    }
+  }
+  return Array.from(deduped.values());
+};
+
+const resolveScopeProjectId = (
+  scope: ArchitectMetadataScope,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null
+): string | null => {
+  const explicitProjectId = typeof scope.projectId === 'string' ? scope.projectId.trim() : '';
+  if (explicitProjectId) {
+    return explicitProjectId;
+  }
+
+  const normalizedRepoPath = normalizeRepoPath(scope.repoPath);
+  if (!normalizedRepoPath || !registrySnapshot?.repoPathByProjectId) {
+    return null;
+  }
+
+  for (const [projectId, repoPath] of registrySnapshot.repoPathByProjectId.entries()) {
+    if (normalizeRepoPath(repoPath) === normalizedRepoPath) {
+      return projectId;
+    }
+  }
+
+  return null;
+};
 
 const getProjectMetadataScopes = (
   registrySnapshot: ValidProjectRegistrySnapshot,
@@ -1131,33 +1173,35 @@ const buildPlanManifest = async (params: {
   chatMessages: ArchitectPlanChatMessage[];
   registrySnapshot?: ValidProjectRegistrySnapshot | null;
   deps?: ResolvedArchitectPlanServiceDependencies;
-}): Promise<ArchitectPlanManifest> => ({
-  schemaVersion: 3,
-  planId: params.plan.id,
-  targetBranch: normalizeBranchName(params.plan.targetBranch),
-  targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(params.plan),
-  status: params.plan.status,
-  expectedProjectIds: normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
-  contextProjectIds: normalizeContextProjectIds(
-    params.plan.contextProjectIds,
-    params.plan.projectIds,
-    params.registrySnapshot
-  ),
-  participants: await loadParticipantSnapshots(
-    normalizeExpectedProjectIds(params.plan.expectedProjectIds, params.plan.projectIds),
-    params.registrySnapshot,
-    params.deps
-  ),
-  revision:
-    typeof params.plan.revision === 'number' && Number.isFinite(params.plan.revision) && params.plan.revision > 0
-      ? Math.floor(params.plan.revision)
-      : 1,
-  updatedAt: params.plan.updatedAt,
-  contentHashes: buildPlanContentHashes(params.plan, params.needs, params.chatMessages),
-  needCount: params.needs.length,
-  conversation: buildPlanConversationSnapshot(params.plan, params.chatMessages),
-  deletion: params.plan.status === 'deleted' ? { deletedAt: params.plan.updatedAt } : null,
-});
+}): Promise<ArchitectPlanManifest> => {
+  const scope = normalizeArchitectPlanScope(params.plan, {
+    useExpectedAsActionableFallback: true,
+  });
+
+  return {
+    schemaVersion: 3,
+    planId: params.plan.id,
+    targetBranch: normalizeBranchName(params.plan.targetBranch),
+    targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(params.plan),
+    status: params.plan.status,
+    expectedProjectIds: scope.expectedProjectIds,
+    contextProjectIds: scope.contextProjectIds,
+    participants: await loadParticipantSnapshots(
+      scope.expectedProjectIds,
+      params.registrySnapshot,
+      params.deps
+    ),
+    revision:
+      typeof params.plan.revision === 'number' && Number.isFinite(params.plan.revision) && params.plan.revision > 0
+        ? Math.floor(params.plan.revision)
+        : 1,
+    updatedAt: params.plan.updatedAt,
+    contentHashes: buildPlanContentHashes(params.plan, params.needs, params.chatMessages),
+    needCount: params.needs.length,
+    conversation: buildPlanConversationSnapshot(params.plan, params.chatMessages),
+    deletion: params.plan.status === 'deleted' ? { deletedAt: params.plan.updatedAt } : null,
+  };
+};
 
 interface SanitizedArchitectPlanResult {
   plan: ArchitectPlanRecord | null;
@@ -1361,15 +1405,21 @@ const sanitizeArchitectPlanRecord = (
   const normalizedPredictedBranches = normalizePlanPredictedBranches(
     Array.isArray(plan.predictedBranches) ? plan.predictedBranches : []
   );
-  const normalizedProjectIds = resolvePlanProjectIds({
+  const rawActionableProjectIds = resolvePlanProjectIds({
     projectIds: plan.projectIds,
     projectId: plan.projectId,
     nodes: normalizedNodes,
     predictedBranches: normalizedPredictedBranches,
   });
-  const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? normalizedProjectIds.filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
-    : [];
+  const normalizedScope = normalizeArchitectPlanScope({
+    projectId: rawActionableProjectIds[0],
+    projectIds: rawActionableProjectIds,
+    contextProjectIds: plan.contextProjectIds,
+    expectedProjectIds: plan.expectedProjectIds,
+  }, {
+    useExpectedAsActionableFallback: true,
+  });
+  const normalizedProjectIds = normalizedScope.actionableProjectIds;
   const normalizedId = sanitizeId(plan.id || safeId);
   const normalizedTitle = (plan.title || normalizedId).trim() || normalizedId;
   const normalizedSlug = slugifyPlanTitle((plan as Partial<ArchitectPlanRecord>).slug || normalizedTitle || safeId);
@@ -1386,13 +1436,9 @@ const sanitizeArchitectPlanRecord = (
       plan.targetBranch || normalized
     ),
     projectId: normalizedProjectIds[0],
-    projectIds: normalizedProjectIds,
-    contextProjectIds: normalizeContextProjectIds(
-      [...(plan.contextProjectIds || []), ...migratedContextProjectIds],
-      normalizedProjectIds,
-      registrySnapshot
-    ),
-    expectedProjectIds: normalizeExpectedProjectIds(plan.expectedProjectIds, normalizedProjectIds),
+    projectIds: normalizedScope.actionableProjectIds,
+    contextProjectIds: normalizedScope.contextProjectIds,
+    expectedProjectIds: normalizedScope.expectedProjectIds,
     revision:
       typeof plan.revision === 'number' && Number.isFinite(plan.revision) && plan.revision > 0
         ? Math.floor(plan.revision)
@@ -1416,23 +1462,24 @@ const sanitizeArchitectPlanRecord = (
     normalizedPlan.projectId,
     registrySnapshot
   );
-  const sanitizedExpectedProjectIds = sanitizeProjectIdsForRegistry(
-    normalizedPlan.expectedProjectIds,
-    undefined,
+  const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
+    ? (normalizedPlan.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    : [];
+  const sanitizedContextProjectIds = normalizeContextProjectIds(
+    [...(normalizedPlan.contextProjectIds || []), ...migratedContextProjectIds],
+    sanitizedProjects.projectIds,
     registrySnapshot
-  ).projectIds;
+  );
 
   const sanitizedPlan: ArchitectPlanRecord = {
     ...normalizedPlan,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
-    contextProjectIds: normalizeContextProjectIds(
-      normalizedPlan.contextProjectIds,
+    contextProjectIds: sanitizedContextProjectIds,
+    expectedProjectIds: normalizeArchitectPlanIdList(
       sanitizedProjects.projectIds,
-      registrySnapshot
+      sanitizedContextProjectIds
     ),
-    expectedProjectIds:
-      sanitizedExpectedProjectIds.length > 0 ? sanitizedExpectedProjectIds : sanitizedProjects.projectIds,
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
       normalizedPlan.targetBranchesByProjectId,
       sanitizedProjects.projectIds,
@@ -1481,10 +1528,16 @@ const sanitizeArchitectPlanSummary = (
   }
 ): SanitizedArchitectPlanSummaryResult => {
   const normalized = normalizeBranchName(branchName);
-  const projectIds = resolvePlanProjectIds(summary);
-  const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? projectIds.filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
-    : [];
+  const rawActionableProjectIds = resolvePlanProjectIds(summary);
+  const normalizedScope = normalizeArchitectPlanScope({
+    projectId: rawActionableProjectIds[0],
+    projectIds: rawActionableProjectIds,
+    contextProjectIds: summary.contextProjectIds,
+    expectedProjectIds: summary.expectedProjectIds,
+  }, {
+    useExpectedAsActionableFallback: true,
+  });
+  const projectIds = normalizedScope.actionableProjectIds;
   const safeId = sanitizeId(summary.id);
   const normalizedTitle = (summary.title || safeId).trim() || safeId;
   const normalizedSlug = slugifyPlanTitle((summary as Partial<ArchitectPlanSummary>).slug || normalizedTitle || safeId);
@@ -1500,14 +1553,10 @@ const sanitizeArchitectPlanSummary = (
       projectIds,
       summary.targetBranch || branchName
     ),
-    projectId: projectIds[0],
-    projectIds,
-    contextProjectIds: normalizeContextProjectIds(
-      [...(summary.contextProjectIds || []), ...migratedContextProjectIds],
-      projectIds,
-      registrySnapshot
-    ),
-    expectedProjectIds: normalizeExpectedProjectIds(summary.expectedProjectIds, projectIds),
+    projectId: normalizedScope.actionableProjectIds[0],
+    projectIds: normalizedScope.actionableProjectIds,
+    contextProjectIds: normalizedScope.contextProjectIds,
+    expectedProjectIds: normalizedScope.expectedProjectIds,
     revision:
       typeof summary.revision === 'number' && Number.isFinite(summary.revision) && summary.revision > 0
         ? Math.floor(summary.revision)
@@ -1531,22 +1580,23 @@ const sanitizeArchitectPlanSummary = (
     normalizedSummary.projectId,
     registrySnapshot
   );
-  const sanitizedExpectedProjectIds = sanitizeProjectIdsForRegistry(
-    normalizedSummary.expectedProjectIds,
-    undefined,
+  const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
+    ? (normalizedSummary.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    : [];
+  const sanitizedContextProjectIds = normalizeContextProjectIds(
+    [...(normalizedSummary.contextProjectIds || []), ...migratedContextProjectIds],
+    sanitizedProjects.projectIds,
     registrySnapshot
-  ).projectIds;
+  );
   const sanitizedSummary: ArchitectPlanSummary = {
     ...normalizedSummary,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
-    contextProjectIds: normalizeContextProjectIds(
-      normalizedSummary.contextProjectIds,
+    contextProjectIds: sanitizedContextProjectIds,
+    expectedProjectIds: normalizeArchitectPlanIdList(
       sanitizedProjects.projectIds,
-      registrySnapshot
+      sanitizedContextProjectIds
     ),
-    expectedProjectIds:
-      sanitizedExpectedProjectIds.length > 0 ? sanitizedExpectedProjectIds : sanitizedProjects.projectIds,
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
       normalizedSummary.targetBranchesByProjectId,
       sanitizedProjects.projectIds,
@@ -2097,6 +2147,14 @@ const readPlanManifestAtScope = async (params: {
     return fallbackManifest;
   }
 
+  const actionableProjectIds = getArchitectPlanActionableProjectIds(params.plan);
+  const contextProjectIds = normalizeContextProjectIds(
+    parsed.contextProjectIds ?? fallbackManifest.contextProjectIds,
+    actionableProjectIds,
+    params.registrySnapshot
+  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(actionableProjectIds, contextProjectIds);
+
   return {
     ...fallbackManifest,
     ...parsed,
@@ -2105,16 +2163,12 @@ const readPlanManifestAtScope = async (params: {
     targetBranch: normalized,
     targetBranchesByProjectId: normalizeTargetBranchesByProjectId(
       parsed.targetBranchesByProjectId,
-      fallbackManifest.expectedProjectIds,
+      actionableProjectIds,
       normalized
     ),
     status: params.plan.status,
-    expectedProjectIds: normalizeExpectedProjectIds(parsed.expectedProjectIds, fallbackManifest.expectedProjectIds),
-    contextProjectIds: normalizeContextProjectIds(
-      parsed.contextProjectIds ?? fallbackManifest.contextProjectIds,
-      fallbackManifest.expectedProjectIds,
-      params.registrySnapshot
-    ),
+    expectedProjectIds,
+    contextProjectIds,
     participants: Array.isArray(parsed.participants) ? parsed.participants : fallbackManifest.participants,
     revision:
       typeof parsed.revision === 'number' && Number.isFinite(parsed.revision) && parsed.revision > 0
@@ -2351,27 +2405,33 @@ const toSummary = (
     needCount?: number;
     chatMessageCount?: number;
   }
-): ArchitectPlanSummary => ({
-  id: plan.id,
-  slug: plan.slug,
-  title: plan.title,
-  label: plan.label,
-  description: plan.description,
-  status: plan.status,
-  targetBranch: plan.targetBranch,
-  conversationId: plan.conversationId,
-  projectId: plan.projectId,
-  projectIds: resolvePlanProjectIds(plan),
-  contextProjectIds: normalizeContextProjectIds(plan.contextProjectIds, resolvePlanProjectIds(plan)),
-  expectedProjectIds: normalizeExpectedProjectIds(plan.expectedProjectIds, resolvePlanProjectIds(plan)),
-  createdAt: plan.createdAt,
-  updatedAt: plan.updatedAt,
-  revision: typeof plan.revision === 'number' ? plan.revision : 1,
-  nodeCount: plan.nodes.length,
-  predictedBranchCount: plan.predictedBranches.length,
-  needCount: options?.needCount,
-  chatMessageCount: options?.chatMessageCount,
-});
+): ArchitectPlanSummary => {
+  const projectIds = resolvePlanProjectIds(plan);
+  const contextProjectIds = normalizeContextProjectIds(plan.contextProjectIds, projectIds);
+  const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
+
+  return {
+    id: plan.id,
+    slug: plan.slug,
+    title: plan.title,
+    label: plan.label,
+    description: plan.description,
+    status: plan.status,
+    targetBranch: plan.targetBranch,
+    conversationId: plan.conversationId,
+    projectId: plan.projectId,
+    projectIds,
+    contextProjectIds,
+    expectedProjectIds,
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+    revision: typeof plan.revision === 'number' ? plan.revision : 1,
+    nodeCount: plan.nodes.length,
+    predictedBranchCount: plan.predictedBranches.length,
+    needCount: options?.needCount,
+    chatMessageCount: options?.chatMessageCount,
+  };
+};
 
 const upsertSummary = (summaries: ArchitectPlanSummary[], summary: ArchitectPlanSummary): ArchitectPlanSummary[] => {
   const found = summaries.some((item) => item.id === summary.id);
@@ -2390,13 +2450,13 @@ const mergePlanSummaries = (
       repoPath: scope.repoPath,
     }))
   ).summary;
-  const projectIds = Array.from(
-    new Set(entries.flatMap(({ summary }) => resolvePlanProjectIds(summary)))
+  const projectIds = resolvePlanProjectIds(canonicalEntry);
+  const contextProjectIds = normalizeContextProjectIds(
+    canonicalEntry.contextProjectIds,
+    projectIds,
+    registrySnapshot
   );
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    canonicalEntry.expectedProjectIds,
-    projectIds
-  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
   const availableProjectIds = Array.from(
     new Set(
       entries
@@ -2632,10 +2692,8 @@ const loadPlanReplicaSet = async (
         scope,
         plan: {
           ...planResult.plan,
-          expectedProjectIds: normalizeExpectedProjectIds(
-            manifest.expectedProjectIds,
-            planResult.plan.expectedProjectIds ?? resolvePlanProjectIds(planResult.plan)
-          ),
+          contextProjectIds: manifest.contextProjectIds,
+          expectedProjectIds: manifest.expectedProjectIds,
           revision: manifest.revision,
         },
         needs,
@@ -2659,11 +2717,21 @@ const loadPlanReplicaSet = async (
     snapshotDiagnostics.flatMap((snapshot) => snapshot.removedInvalidProjectIds)
   );
 
-  const projectIds = Array.from(new Set(snapshots.flatMap((snapshot) => resolvePlanProjectIds(snapshot.plan))));
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    snapshots.flatMap((snapshot) => snapshot.manifest.expectedProjectIds),
-    projectIds
+  const canonical = pickCanonicalReplica(
+    snapshots.map((snapshot) => ({
+      ...snapshot,
+      updatedAt: snapshot.plan.updatedAt,
+      repoPath: snapshot.scope.repoPath,
+    })),
+    'newest'
   );
+  const projectIds = getArchitectPlanActionableProjectIds(canonical.plan);
+  const contextProjectIds = normalizeContextProjectIds(
+    canonical.plan.contextProjectIds,
+    projectIds,
+    resolvedRegistrySnapshot
+  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
   const expectedScopes = dedupeScopes([
     ...(await resolveMetadataScopes(
       expectedProjectIds,
@@ -2677,28 +2745,30 @@ const loadPlanReplicaSet = async (
   const availableProjectIds = Array.from(
     new Set(
       snapshots.flatMap((snapshot) => {
-        if (snapshot.scope.source === 'local' && expectedProjectIds.length > 0) {
+        if (
+          snapshot.scope.source === 'local' &&
+          expectedProjectIds.length > 0 &&
+          !resolvedRegistrySnapshot?.hasRegisteredProjects
+        ) {
           return expectedProjectIds;
         }
 
-        const candidates = normalizeExpectedProjectIds(
-          [snapshot.scope.projectId, snapshot.plan.projectId].filter(
-            (projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0
-          ),
-          resolvePlanProjectIds(snapshot.plan)
-        );
-        return candidates.filter((projectId) => expectedProjectIds.includes(projectId));
+        const scopedProjectId = resolveScopeProjectId(snapshot.scope, resolvedRegistrySnapshot) || '';
+        return scopedProjectId && expectedProjectIds.includes(scopedProjectId)
+          ? [scopedProjectId]
+          : [];
       })
     )
   );
   const missingProjectIds = expectedProjectIds.filter((projectId) => !availableProjectIds.includes(projectId));
 
   const missingReplicas = expectedScopes
-    .filter((scope) =>
-      Boolean(scope.projectId) &&
-      missingProjectIds.includes(scope.projectId as string) &&
-      !snapshots.some((snapshot) => snapshot.scope.scopeKey === scope.scopeKey)
-    )
+    .filter((scope) => {
+      const scopeProjectId = resolveScopeProjectId(scope, resolvedRegistrySnapshot);
+      return Boolean(scopeProjectId) &&
+        missingProjectIds.includes(scopeProjectId as string) &&
+        !snapshots.some((snapshot) => snapshot.scope.scopeKey === scope.scopeKey);
+    })
     .map((scope) => toReplicaDescriptor(scope, null, true));
 
   const hasContentDivergence =
@@ -2784,14 +2854,6 @@ const loadPlanReplicaSet = async (
     }
   }
 
-  const canonical = pickCanonicalReplica(
-    snapshots.map((snapshot) => ({
-      ...snapshot,
-      updatedAt: snapshot.plan.updatedAt,
-      repoPath: snapshot.scope.repoPath,
-    })),
-    'newest'
-  );
   const replicationState: ArchitectPlanReplicationState =
     canonical.plan.status === 'deleted'
       ? 'deleted'
@@ -2808,6 +2870,7 @@ const loadPlanReplicaSet = async (
         ...canonical.plan,
         projectId: projectIds[0],
         projectIds,
+        contextProjectIds,
         expectedProjectIds,
         availableProjectIds,
         missingProjectIds,
@@ -2860,20 +2923,21 @@ const buildArchitectPlanActivationSnapshot = async (params: {
     params.planId
   );
   const fallbackProjectIds = params.summary
-    ? getArchitectPlanProjectIds(params.summary)
+    ? getArchitectPlanActionableProjectIds(params.summary)
     : resolvePlanProjectIds(planResult.plan);
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    Array.isArray(storedManifest?.expectedProjectIds)
-      ? storedManifest.expectedProjectIds
-      : planResult.plan.expectedProjectIds,
-    fallbackProjectIds
-  );
+  const actionableProjectIds = normalizeProjectIds(planResult.plan.projectIds, planResult.plan.projectId);
+  const resolvedActionableProjectIds =
+    actionableProjectIds.length > 0 ? actionableProjectIds : fallbackProjectIds;
   const contextProjectIds = normalizeContextProjectIds(
     Array.isArray(storedManifest?.contextProjectIds)
       ? storedManifest.contextProjectIds
       : planResult.plan.contextProjectIds,
-    expectedProjectIds,
+    resolvedActionableProjectIds,
     params.registrySnapshot
+  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(
+    resolvedActionableProjectIds,
+    contextProjectIds
   );
   const targetBranch = normalizeBranchName(
     typeof storedManifest?.targetBranch === 'string'
@@ -2882,7 +2946,7 @@ const buildArchitectPlanActivationSnapshot = async (params: {
   );
   const targetBranchesByProjectId = normalizeTargetBranchesByProjectId(
     storedManifest?.targetBranchesByProjectId,
-    expectedProjectIds,
+    resolvedActionableProjectIds,
     targetBranch
   );
   const updatedAt =
@@ -3015,7 +3079,7 @@ const loadArchitectPlanActivationPayloadImpl = async (
         options.scopedProjectIdsHint?.length
           ? options.scopedProjectIdsHint
           : summary
-            ? getArchitectPlanProjectIds(summary)
+            ? getArchitectPlanVisibleProjectIds(summary)
             : []
       )
         .map((projectId) => projectId.trim())
@@ -3056,25 +3120,25 @@ const loadArchitectPlanActivationPayloadImpl = async (
     })),
     'newest'
   );
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    canonicalSnapshot.expectedProjectIds,
-    resolvePlanProjectIds(canonicalSnapshot.plan)
-  );
+  const scope = normalizeArchitectPlanScope(canonicalSnapshot.plan, {
+    useExpectedAsActionableFallback: true,
+  });
+  const expectedProjectIds = scope.expectedProjectIds;
   const availableProjectIds = Array.from(
     new Set(
       snapshots.flatMap((snapshot) => {
-        if (snapshot.scope.source === 'local' && expectedProjectIds.length > 0) {
+        if (
+          snapshot.scope.source === 'local' &&
+          expectedProjectIds.length > 0 &&
+          !registrySnapshot?.hasRegisteredProjects
+        ) {
           return expectedProjectIds;
         }
 
-        const candidates = normalizeExpectedProjectIds(
-          [snapshot.scope.projectId, snapshot.plan.projectId].filter(
-            (projectId): projectId is string =>
-              typeof projectId === 'string' && projectId.trim().length > 0
-          ),
-          resolvePlanProjectIds(snapshot.plan)
-        );
-        return candidates.filter((projectId) => expectedProjectIds.includes(projectId));
+        const scopedProjectId = resolveScopeProjectId(snapshot.scope, registrySnapshot) || '';
+        return scopedProjectId && expectedProjectIds.includes(scopedProjectId)
+          ? [scopedProjectId]
+          : [];
       })
     )
   );
@@ -3083,11 +3147,9 @@ const loadArchitectPlanActivationPayloadImpl = async (
   );
   const plan = {
     ...canonicalSnapshot.plan,
-    projectId: availableProjectIds[0] ?? canonicalSnapshot.plan.projectId,
-    projectIds:
-      canonicalSnapshot.plan.projectIds && canonicalSnapshot.plan.projectIds.length > 0
-        ? canonicalSnapshot.plan.projectIds
-        : expectedProjectIds,
+    projectId: scope.actionableProjectIds[0] ?? canonicalSnapshot.plan.projectId,
+    projectIds: scope.actionableProjectIds,
+    contextProjectIds: scope.contextProjectIds,
     expectedProjectIds,
     availableProjectIds,
     missingProjectIds,
@@ -3507,10 +3569,7 @@ export const createArchitectPlan = async (input: {
     projectIds,
     registrySnapshot
   );
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    registrySnapshot?.actionableProjectIds,
-    projectIds
-  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
 
   const planResult = sanitizeArchitectPlanRecord(normalizedBranch, planId, {
     id: planId,
@@ -3651,10 +3710,7 @@ export const updateArchitectPlan = async (input: {
     projectIds,
     registrySnapshot
   );
-  const expectedProjectIds = normalizeExpectedProjectIds(
-    input.expectedProjectIds !== undefined ? input.expectedProjectIds : existing.expectedProjectIds,
-    projectIds
-  );
+  const expectedProjectIds = normalizeArchitectPlanIdList(projectIds, contextProjectIds);
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
