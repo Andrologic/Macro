@@ -182,6 +182,31 @@ describe('FileChangesPanel', () => {
       selectedGroupId: 'group-1',
       selectedProjectId: null,
       selectedTaskId: 'task-1',
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project One',
+          isOpen: true,
+          projects: [
+            {
+              id: 'project-1',
+              name: 'Project One',
+              mountName: 'project-one',
+              path: '/tmp/repo-1',
+              isReadOnly: false,
+              created_at: '2026-04-08T00:00:00.000Z',
+              status: 'active',
+              metadata: {
+                description: '',
+                tags: [],
+                team_members: [],
+                api_contracts: [],
+                dependencies: [],
+              },
+            },
+          ],
+        },
+      ],
       getProjectById: () => ({
         id: 'project-1',
         name: 'Project One',

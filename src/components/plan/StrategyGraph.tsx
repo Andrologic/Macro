@@ -421,7 +421,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPredictedBranches,
     setStrategyMutationPreview,
     setMode,
-    openProjectModal,
     architectPlanSwitch,
   } = useAppStore(
     useShallow((state) => ({
@@ -437,7 +436,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       setPredictedBranches: state.setPredictedBranches,
       setStrategyMutationPreview: state.setStrategyMutationPreview,
       setMode: state.setMode,
-      openProjectModal: state.openProjectModal,
       architectPlanSwitch:
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
     }))
@@ -1295,6 +1293,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     </svg>
   );
 
+  if (isWorkspaceMissing) {
+    return (
+      <aside
+        className={cn("h-full w-full bg-card border-l border-border flex items-center justify-center", className)}
+      >
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          variant="secondary"
+          panelKind="strategy"
+        />
+      </aside>
+    );
+  }
+
   if (showResolvingSkeleton) {
     return (
       <aside
@@ -1320,27 +1332,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
-    if (isWorkspaceMissing) {
-      return (
-        <aside
-          className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
-        >
-          <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
-            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Icon name="git-branch" size={16} className="text-primary" />
-              {t('architect.strategy', 'Strategy')}
-            </h1>
-          </div>
-          <div className="flex-1">
-            <ProjectWorkspaceEmptyState
-              stateKind={workspaceState.kind}
-              onPrimaryAction={() => openProjectModal(null)}
-            />
-          </div>
-        </aside>
-      );
-    }
-
     return (
       <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
         <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
