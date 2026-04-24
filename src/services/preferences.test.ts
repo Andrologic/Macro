@@ -64,4 +64,16 @@ describe('preferences legacy cleanup', () => {
     expect(storeDeleteMock).toHaveBeenCalledWith('implementExecutionMode');
     expect(storeSaveMock).toHaveBeenCalledTimes(1);
   });
+
+  it('migrates the legacy architect autonomy preference to the new tool risk level', async () => {
+    localStorage.setItem('macro_architectToolAutonomyProfile', JSON.stringify('full'));
+
+    const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
+
+    const value = await loadPreference(PREF_KEYS.TOOL_RISK_LEVEL);
+
+    expect(value).toBe('balanced');
+    expect(localStorage.getItem('macro_toolRiskLevel')).toBe(JSON.stringify('balanced'));
+    expect(localStorage.getItem('macro_architectToolAutonomyProfile')).toBeNull();
+  });
 });

@@ -423,8 +423,9 @@ const buildExecutionTargets = (
       projectId,
       branchName,
       targetBranchName: targetBranchesByProjectId?.[projectId],
+      executionKind: 'worktree',
       worktreeKey: toBranchWorktreeKey(projectId, branchName),
-      planBranchName: planBranchName || predictedBranch?.parentBranch || undefined,
+      planBranchName: predictedBranch?.parentBranch || planBranchName || undefined,
       predictedBranchId: predictedBranch?.id ?? null,
     };
   });

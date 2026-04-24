@@ -423,6 +423,7 @@ describe('architectPlanService', () => {
 
     expect(created.projectIds).toEqual(['web']);
     expect(created.contextProjectIds).toEqual(['docs']);
+    expect(created.expectedProjectIds).toEqual(['web', 'docs']);
 
     const updated = await service.updateArchitectPlan({
       branchName,
@@ -433,12 +434,12 @@ describe('architectPlanService', () => {
     });
 
     expect(updated.projectIds).toEqual(['web', 'api']);
-    expect(updated.expectedProjectIds).toEqual(['web', 'api']);
+    expect(updated.expectedProjectIds).toEqual(['web', 'api', 'docs', 'storybook']);
     expect(updated.contextProjectIds).toEqual(['docs', 'storybook']);
 
     const reloaded = await service.getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web', 'api']);
-    expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
+    expect(reloaded?.expectedProjectIds).toEqual(['web', 'api', 'docs', 'storybook']);
     expect(reloaded?.contextProjectIds).toEqual(['docs', 'storybook']);
 
     const listed = await service.listArchitectPlans(branchName, true, true);
@@ -446,6 +447,106 @@ describe('architectPlanService', () => {
       'docs',
       'storybook',
     ]);
+  });
+
+  it('normalizes typed GitFlow metadata with project-specific branch settings', async () => {
+    const deps = {
+      tauri: {
+        ...actualTauriIpc,
+        isTauriAvailable: () => false,
+      } as any,
+      getAppState: async () => ({
+        projectGroups: [
+          {
+            id: 'workspace',
+            name: 'Workspace',
+            projects: [
+              {
+                id: 'mobile',
+                name: 'Mobile',
+                path: '/repos/mobile',
+                gitFlowSettings: {
+                  baseBranch: 'dev',
+                  mainBranch: 'stable',
+                  releaseBranchTemplate: 'ship/v{releaseSlug}',
+                },
+              },
+            ],
+          },
+        ],
+      }) as any,
+    };
+
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000015',
+      slug: 'release-2-0-0',
+      planKind: 'release',
+      projectIds: ['mobile'],
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '2.0.0',
+        projects: {
+          mobile: {
+            projectId: 'mobile',
+            sourceBranch: '',
+            integrationBranch: '',
+            targetBranch: '',
+            proposedVersion: '2.0.0',
+          },
+        },
+      },
+    }, deps);
+
+    expect(created.planKind).toBe('release');
+    expect(created.targetBranchesByProjectId?.mobile).toBe('stable');
+    expect(created.gitFlowPlan?.projects.mobile).toMatchObject({
+      sourceBranch: 'dev',
+      integrationBranch: 'ship/v2.0.0',
+      targetBranch: 'stable',
+      backmergeBranch: 'dev',
+      proposedVersion: '2.0.0',
+    });
+  });
+
+  it('hydrates legacy expected-only scope without letting stale expected ids expand modern plans', async () => {
+    const legacyExpectedOnlyPlan: ArchitectPlanRecord = {
+      id: 'legacy-expected-only',
+      slug: 'legacy-expected-only',
+      title: 'Legacy expected only',
+      description: 'Old plan with no projectIds field.',
+      status: 'draft',
+      targetBranch: branchName,
+      contextProjectIds: ['docs'],
+      expectedProjectIds: ['web', 'docs'],
+      createdAt: '2026-03-19T00:00:00.000Z',
+      updatedAt: '2026-03-19T00:00:00.000Z',
+      nodes: [],
+      predictedBranches: [],
+    };
+    seedLegacyPlan(storage, legacyExpectedOnlyPlan);
+
+    const hydratedLegacy = await service.getArchitectPlan(branchName, legacyExpectedOnlyPlan.id);
+    expect(hydratedLegacy?.projectIds).toEqual(['web']);
+    expect(hydratedLegacy?.contextProjectIds).toEqual(['docs']);
+    expect(hydratedLegacy?.expectedProjectIds).toEqual(['web', 'docs']);
+
+    const staleExpectedPlan: ArchitectPlanRecord = {
+      ...legacyExpectedOnlyPlan,
+      id: 'stale-expected-modern',
+      slug: 'stale-expected-modern',
+      title: 'Stale expected modern',
+      projectId: 'web',
+      projectIds: ['web'],
+      expectedProjectIds: ['web', 'docs', 'storybook'],
+    };
+    seedLegacyPlan(storage, staleExpectedPlan);
+
+    const hydratedModern = await service.getArchitectPlan(branchName, staleExpectedPlan.id);
+    expect(hydratedModern?.projectIds).toEqual(['web']);
+    expect(hydratedModern?.contextProjectIds).toEqual(['docs']);
+    expect(hydratedModern?.expectedProjectIds).toEqual(['web', 'docs']);
   });
 
   it('preserves legacy title rename behavior and uses stored slugs for branch naming', async () => {

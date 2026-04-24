@@ -16,15 +16,25 @@ import {
   getServiceRuntimeCapabilities,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../../services';
+import { toServiceError } from '../../services/contracts/errors';
 import {
   areAllFileChangesRepositoriesResolved,
 } from '../../services/fileChangesReviewScope';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
+import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
+import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
+import { isSmartCommitMessageGenerationError } from '../../services/smartCommitMessageGenerator';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -54,7 +64,7 @@ const STATUS_MARKERS: Record<string, string> = {
 };
 
 const REVIEW_STATE_CLASSES: Record<ReviewRepositoryUiState, string> = {
-  pending_review: 'bg-primary/10 text-primary',
+  pending_validation: 'bg-primary/10 text-primary',
   ready_to_commit: 'bg-secondary text-secondary-foreground',
   committed: 'bg-muted text-muted-foreground',
   no_changes: 'bg-muted text-muted-foreground',
@@ -81,15 +91,6 @@ const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
       'Some staged files do not belong to this task. Unstage them first.'
     );
   }
-  if (value.includes('review all file changes')) {
-    return t('implement.commitNeedsValidation', 'Validate all file changes before committing this task.');
-  }
-  if (value.includes('must be in review before commit')) {
-    return t(
-      'implement.commitRequiresValidationStage',
-      'Task must be in validation before commit.'
-    );
-  }
   return raw;
 };
 
@@ -99,32 +100,28 @@ interface FolderTreeItemProps {
   depth: number;
   selectedChangeId: string | null;
   onFileClick: (changeId: string) => void;
-  onSetReviewedState: (changeIds: string[], reviewed: boolean) => void;
+  onStageChanges: (changeIds: string[]) => void;
   onRevert: (changeIds: string[], scopeLabel: string, requiresConfirm: boolean) => void;
   labels: {
+    staged: string;
     validate: string;
-    invalidate: string;
     revert: string;
   };
 }
 
 interface ScopeActionRailProps {
-  allReviewed: boolean;
   onValidate: () => void;
-  onInvalidate: () => void;
   onRevert?: () => void;
   labels: {
+    staged: string;
     validate: string;
-    invalidate: string;
     revert: string;
   };
   className?: string;
 }
 
 const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
-  allReviewed,
   onValidate,
-  onInvalidate,
   onRevert,
   labels,
   className,
@@ -136,54 +133,35 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
       className
     )}
   >
-    {allReviewed ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 px-0"
+      title={labels.validate}
+      aria-label={labels.validate}
+      onClick={(event) => {
+        event.stopPropagation();
+        onValidate();
+      }}
+    >
+      <Icon name="check" size={14} />
+    </Button>
+    {onRevert && (
       <Button
         type="button"
         variant="ghost"
         size="sm"
         className="h-7 w-7 px-0"
-        title={labels.invalidate}
-        aria-label={labels.invalidate}
+        title={labels.revert}
+        aria-label={labels.revert}
         onClick={(event) => {
           event.stopPropagation();
-          onInvalidate();
+          onRevert();
         }}
       >
-        <Icon name="x" size={14} />
+        <Icon name="undo-2" size={14} />
       </Button>
-    ) : (
-      <>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 w-7 px-0"
-          title={labels.validate}
-          aria-label={labels.validate}
-          onClick={(event) => {
-            event.stopPropagation();
-            onValidate();
-          }}
-        >
-          <Icon name="check" size={14} />
-        </Button>
-        {onRevert && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 px-0"
-            title={labels.revert}
-            aria-label={labels.revert}
-            onClick={(event) => {
-              event.stopPropagation();
-          onRevert();
-            }}
-          >
-            <Icon name="undo-2" size={14} />
-          </Button>
-        )}
-      </>
     )}
   </div>
 );
@@ -194,12 +172,12 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   depth,
   selectedChangeId,
   onFileClick,
-  onSetReviewedState,
+  onStageChanges,
   onRevert,
   labels,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
-  const hasPendingValidation = node.hasPendingReview;
+  const hasPendingValidation = node.hasPendingVisibleChanges;
 
   if (node.type === 'folder') {
     return (
@@ -228,9 +206,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
             )}
           </button>
           <ScopeActionRail
-            allReviewed={node.allReviewed}
-            onValidate={() => onSetReviewedState(node.changeIds, true)}
-            onInvalidate={() => onSetReviewedState(node.changeIds, false)}
+            onValidate={() => onStageChanges(node.changeIds)}
             onRevert={() => onRevert(node.changeIds, node.path, true)}
             labels={labels}
             className="rounded-r"
@@ -246,7 +222,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 depth={depth + 1}
                 selectedChangeId={selectedChangeId}
                 onFileClick={onFileClick}
-                onSetReviewedState={onSetReviewedState}
+                onStageChanges={onStageChanges}
                 onRevert={onRevert}
                 labels={labels}
               />
@@ -268,9 +244,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
         'group relative rounded-lg transition-all overflow-hidden',
         isSelected
           ? 'bg-primary/[0.035]'
-          : change.reviewed
-            ? 'hover:bg-accent/40'
-            : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
+          : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
       )}
       style={{ marginLeft: `${depth * 12}px` }}
     >
@@ -290,11 +264,14 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
 
         <span className="text-sm text-foreground truncate flex-1 text-left">{node.name}</span>
 
-        {!change.reviewed && (
-          <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
-        )}
+        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
 
         <div className="flex items-center gap-1 text-[11px] shrink-0 opacity-60 transition-opacity group-hover:opacity-0">
+          {change.hasValidatedStage && (
+            <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+              {labels.staged}
+            </span>
+          )}
           {change.additions > 0 && (
             <span className="text-primary font-mono">+{change.additions}</span>
           )}
@@ -304,9 +281,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
         </div>
       </button>
       <ScopeActionRail
-        allReviewed={change.reviewed}
-        onValidate={() => onSetReviewedState([change.id], true)}
-        onInvalidate={() => onSetReviewedState([change.id], false)}
+        onValidate={() => onStageChanges([change.id])}
         onRevert={() => onRevert([change.id], change.path, false)}
         labels={labels}
         className="rounded-r-lg"
@@ -329,7 +304,17 @@ const renderRepositoryState = (
   if (repositorySummary?.state === 'no_changes') {
     return t('implement.repositoryNoChanges', 'No changes');
   }
-  if (repositorySummary?.state === 'ready_to_commit') {
+  if (repositorySummary?.hasPendingVisibleChanges && repositorySummary?.hasValidatedStagedChanges) {
+    return t(
+      'implement.repositoryPendingAndReady',
+      '{{pending}} pending, {{validated}} ready',
+      {
+        pending: repositorySummary.pendingVisibleFileCount,
+        validated: repositorySummary.validatedStagedFileCount,
+      }
+    );
+  }
+  if (repositorySummary?.hasValidatedStagedChanges) {
     return t('implement.repositoryReadyToCommit', 'Ready to commit');
   }
   if (repository.commitState === 'committed') {
@@ -338,9 +323,9 @@ const renderRepositoryState = (
   if (repository.commitState === 'no_changes') {
     return t('implement.repositoryNoChanges', 'No changes');
   }
-  return t('implement.repositoryValidationProgress', '{{validated}}/{{total}} validated', {
-    validated: repository.stats.reviewed,
-    total: repository.stats.total,
+  return t('implement.repositoryValidationProgress', '{{pending}} pending', {
+    pending: repository.stats.pendingVisibleFileCount,
+    total: repository.stats.pendingVisibleFileCount,
   });
 };
 
@@ -350,9 +335,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     String(t(key, { defaultValue: fallback, ...(options || {}) }));
   const serviceRuntimeCapabilities = getServiceRuntimeCapabilities();
   const isReadOnlyRemoteMode = !serviceRuntimeCapabilities.taskMutation;
-  const { selectedGroupId, selectedProjectId, selectedTaskId, getProjectById } = useAppStore();
+  const {
+    selectedGroupId,
+    selectedProjectId,
+    selectedTaskId,
+    projectGroups,
+    getProjectById,
+    openProjectModal,
+  } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
+  );
+  const currentMergeWorkflowRuntime = useTaskStore((state) =>
+    selectedTaskId ? state.getMergeWorkflowRuntime(selectedTaskId) : null
   );
   const selectedTaskWorktreeKey = useTaskStore((state) => {
     if (!selectedTaskId) return '';
@@ -362,7 +357,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       .map((target) => `${target.worktreeKey}:${state.branchWorktrees[target.worktreeKey] ?? ''}`)
       .join('|');
   });
-  const startReview = useTaskStore((state) => state.startReview);
   const finishTask = useTaskStore((state) => state.finishTask);
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
@@ -370,6 +364,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     changeIds: string[];
     scopeLabel: string;
   } | null>(null);
+  const [commitMessageGenerationError, setCommitMessageGenerationError] = useState<string | null>(null);
   const {
     repositories,
     reviewSummary,
@@ -379,6 +374,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedDiffTarget,
     isDiffModalOpen,
     isLoading,
+    isGeneratingCommitMessages,
     isCommitting,
     lastError,
     executionRecords,
@@ -387,21 +383,32 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectRepository,
     openDiffModal,
     closeDiffModal,
-    setReviewedState,
-    markAllAsReviewed,
+    stageChanges,
+    stageAllTaskChanges,
     revertChanges,
-    commitReviewedChanges,
-    setCommitMessageDraft,
+    commitAllReadyTaskRepositories,
     getOverallStats,
   } = useFileChangesStore();
-  const hasRepositoryScope = Boolean(selectedGroupId || selectedProjectId);
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
+  const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
+  const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
 
   useEffect(() => {
     if (isReadOnlyRemoteMode) {
       resetReviewState();
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
       resetReviewState();
       return;
     }
@@ -414,6 +421,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
+    hasActiveMergeWorkflow,
+    isPlanFinalizationTask,
     resetReviewState,
     selectedGroupId,
     selectedProjectId,
@@ -426,7 +435,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isReadOnlyRemoteMode) {
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId) {
+    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
       return;
     }
     if (isDiffModalOpen) {
@@ -493,8 +502,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     };
   }, [
     hasRepositoryScope,
+    hasActiveMergeWorkflow,
     isCommitting,
     isDiffModalOpen,
+    isPlanFinalizationTask,
     loadCurrentChanges,
     selectedGroupId,
     selectedProjectId,
@@ -522,14 +533,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     [reviewSummary.repositories]
   );
   const overallStats = getOverallStats();
-  const progressPercent = overallStats.total > 0 ? (overallStats.reviewed / overallStats.total) * 100 : 0;
-  const isValidationStage = currentTask?.status === 'InReview';
-  const canStartValidationStage = currentTask?.status === 'InProgress' || currentTask?.status === 'AwaitingResponse';
-  const hasPendingValidation = reviewSummary.stateCounts.pending_review > 0;
-  const hasReadyToCommit = reviewSummary.stateCounts.ready_to_commit > 0;
-  const hasAnyChangesToValidate = repositories.some(
-    (repository) => repository.stats.total > 0 && repository.commitState !== 'committed'
-  );
+  const actionableFileCount =
+    overallStats.pendingVisibleFileCount + overallStats.validatedStagedFileCount;
+  const progressPercent = actionableFileCount > 0
+    ? (overallStats.validatedStagedFileCount / actionableFileCount) * 100
+    : 0;
+  const hasPendingValidation = reviewSummary.actionCounts.pending_validation > 0;
+  const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
+  const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
     currentTask &&
       areAllFileChangesRepositoriesResolved({
@@ -543,37 +554,24 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     reviewSummary.hasCommittedRepositories || Object.keys(executionRecords).length > 0;
   const canFinishTask =
     !isCommitting &&
+    !isGeneratingCommitMessages &&
     currentTask !== null &&
     !currentTask.draft &&
     currentTask.status !== 'Completed' &&
     allTaskRepositoriesResolved &&
-    reviewSummary.stateCounts.pending_review === 0 &&
-    reviewSummary.stateCounts.ready_to_commit === 0 &&
+    reviewSummary.actionCounts.pending_validation === 0 &&
+    reviewSummary.actionCounts.ready_to_commit === 0 &&
     hasTaskCommittedRepositories;
-  const nextValidationRepositoryId =
-    (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.state === 'pending_review'
-      ? selectedRepositoryId
-      : reviewSummary.repositories.find((repository) => repository.state === 'pending_review')?.id) || null;
-  const nextCommitRepositoryId =
-    (selectedRepositoryId && repositorySummaryById.get(selectedRepositoryId)?.state === 'ready_to_commit'
-      ? selectedRepositoryId
-      : reviewSummary.repositories.find((repository) => repository.state === 'ready_to_commit')?.id) || null;
-  const nextValidationRepository = nextValidationRepositoryId
-    ? repositories.find((repository) => repository.id === nextValidationRepositoryId) ?? null
-    : null;
-  const nextCommitRepository = nextCommitRepositoryId
-    ? repositories.find((repository) => repository.id === nextCommitRepositoryId) ?? null
-    : null;
-  const showValidateChangesButton = canStartValidationStage || isValidationStage;
-  const isValidateChangesDisabled =
-    isCommitting ||
-    (isValidationStage ? !hasPendingValidation : !hasAnyChangesToValidate);
-  const validateChangesDisabledReason = isValidationStage
-    ? t('implement.noRemainingChangesToValidate', 'No remaining changes to validate.')
-    : t('implement.noChangesToValidate', 'No changes to validate.');
-  const isCommitDisabled = isCommitting || !isValidationStage || !hasReadyToCommit;
-  const commitDisabledReason = !isValidationStage
-    ? t('implement.commitRequiresValidationStage', 'Task must be in validation before commit.')
+  const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
+  const validateChangesDisabledReason = isGeneratingCommitMessages
+    ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+    : t(
+        'implement.noRemainingChangesToValidate',
+        'No remaining unstaged changes to validate.'
+      );
+  const isCommitDisabled = isCommitting || isGeneratingCommitMessages || !hasReadyToCommit;
+  const commitDisabledReason = isGeneratingCommitMessages
+    ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
     : t('implement.noValidatedChangesToCommit', 'Validate changes before commit.');
 
   const displayError = normalizeCommitErrorMessage(
@@ -587,19 +585,25 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     ? currentTaskLoadMessage
     : null;
   const handleCommit = async () => {
-    if (isCommitting || !nextCommitRepository) return;
-    const commitMessage = nextCommitRepository.commitMessageDraft;
-    setCommitMessageDraft(nextCommitRepository.id, commitMessage);
+    if (isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
+    setCommitMessageGenerationError(null);
 
     try {
-      const result = await commitReviewedChanges(nextCommitRepository.id, commitMessage);
+      const result = await commitAllReadyTaskRepositories();
       notify.success(
-        t('implement.repositoryCommitSuccess', 'Committed {{hash}} for this repository.', {
-          hash: result.hash,
+        t('implement.taskRepositoriesCommitSuccess', 'Created commits for {{count}} repository(ies).', {
+          count: result.commits.length,
         })
       );
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
+      const messageText = toServiceError(error).message;
+      if (isSmartCommitMessageGenerationError(error)) {
+        setCommitMessageGenerationError(
+          messageText ||
+            t('implement.commitMessageGenerationFailed', 'Could not generate commit messages.')
+        );
+        return;
+      }
       notify.error(
         normalizeCommitErrorMessage(
           messageText || t('implement.commitFailed', 'Failed to commit changes'),
@@ -609,26 +613,30 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
   };
 
-  const handleStartReview = async () => {
-    if (!currentTask || isCommitting) return;
-    if (isReadOnlyRemoteMode) {
-      notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
-      return;
-    }
+  const handleValidateChanges = async () => {
+    if (!hasPendingValidation) return;
     try {
-      await startReview(currentTask.id);
-      await loadCurrentChanges();
-      notify.success(t('implement.validationStarted', 'Task moved to validation'));
+      await stageAllTaskChanges();
+      notify.success(t('implement.validateChangesSuccess', 'Changes validated and staged.'));
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
-      notify.error(messageText || t('implement.validationStartFailed', 'Failed to start validation'));
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.validateChangesFailed', 'Failed to validate and stage changes.')
+      );
     }
   };
 
-  const handleValidateChanges = () => {
-    if (!nextValidationRepository) return;
-    selectRepository(nextValidationRepository.id);
-    markAllAsReviewed(nextValidationRepository.id);
+  const handleStageScope = async (repositoryId: string, changeIds: string[]) => {
+    if (changeIds.length === 0) return;
+    try {
+      await stageChanges(repositoryId, changeIds);
+      notify.success(t('implement.validateChangesSuccess', 'Changes validated and staged.'));
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.validateChangesFailed', 'Failed to validate and stage changes.')
+      );
+    }
   };
 
   const handleRevert = async (repositoryId: string, changeIds: string[]) => {
@@ -641,23 +649,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       await revertChanges(repositoryId, changeIds);
       notify.success(t('implement.revertSuccess', 'Changes reverted.'));
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
+      const messageText = toServiceError(error).message;
       notify.error(messageText || t('implement.revertFailed', 'Failed to revert changes.'));
     }
   };
 
   const handleOpenCommit = () => {
-    if (!nextCommitRepository) return;
     if (isReadOnlyRemoteMode) {
       notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
       return;
     }
-    selectRepository(nextCommitRepository.id);
     void handleCommit();
   };
 
   const handleFinishTask = async () => {
-    if (!currentTask || isCommitting) return;
+    if (!currentTask || isCommitting || isGeneratingCommitMessages) return;
     try {
       await finishTask(currentTask.id);
       resetReviewState();
@@ -665,18 +671,41 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         category: 'task_completed',
       });
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error);
-      notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
+      const nextRuntime = useTaskStore.getState().getMergeWorkflowRuntime(currentTask.id);
+      const nextViewState = resolveMergeWorkflowViewState(nextRuntime, {
+        canArchive: currentTask.task_source === 'plan_finalization',
+      });
+      if (!nextViewState.isBlocked && !nextViewState.isFailed) {
+        const messageText = toServiceError(error).message;
+        notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
+      }
     }
   };
+  const primaryAction = canFinishTask
+    ? {
+        onClick: () => void handleFinishTask(),
+        disabled: isGeneratingCommitMessages,
+        title: undefined,
+        icon: 'git-merge' as const,
+        label: t('implement.finishTask', 'Finish task'),
+      }
+    : {
+        onClick: handleOpenCommit,
+        disabled: isCommitDisabled,
+        title: isCommitDisabled ? commitDisabledReason : undefined,
+        icon: 'git-commit' as const,
+        label: isGeneratingCommitMessages
+          ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+          : t('implement.commitChangesGeneric', 'Commit'),
+      };
 
   const actionLabels = {
+    staged: t('implement.stagedBadge', 'Staged'),
     validate: t('implement.validateAction', 'Validate'),
-    invalidate: t('implement.invalidateAction', 'Invalidate'),
     revert: t('implement.revertAction', 'Revert'),
   };
 
-  if (!hasRepositoryScope) {
+  if (isWorkspaceMissing) {
     return (
       <aside
         className={cn(
@@ -684,12 +713,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           className
         )}
       >
-        <div className="text-center px-6">
-          <Icon name="folder-git-2" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a project to view changes')}
-          </p>
-        </div>
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          onPrimaryAction={() => openProjectModal(null)}
+        />
       </aside>
     );
   }
@@ -736,6 +763,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     );
   }
 
+  if (currentTask && (isPlanFinalizationTask || currentMergeWorkflowRuntime)) {
+    return <MergeWorkflowTaskPanel task={currentTask} className={className} />;
+  }
+
   return (
     <aside className={cn('h-full w-full bg-card border-l border-border flex flex-col', className)}>
       <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
@@ -754,10 +785,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             />
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
-            {t('implement.overallValidatedCountCompact', '{{validated}}/{{total}}', {
-              validated: overallStats.reviewed,
-              total: overallStats.total,
-            })}
+            {overallStats.validatedStagedFileCount > 0 && overallStats.pendingVisibleFileCount > 0
+              ? t('implement.overallPendingAndReadyCompact', '{{ready}} ready, {{pending}} pending', {
+                  ready: overallStats.validatedStagedFileCount,
+                  pending: overallStats.pendingVisibleFileCount,
+                })
+              : overallStats.validatedStagedFileCount > 0
+                ? t('implement.overallReadyCompact', '{{ready}} ready', {
+                    ready: overallStats.validatedStagedFileCount,
+                  })
+                : t('implement.overallPendingCompact', '{{pending}} pending', {
+                    pending: overallStats.pendingVisibleFileCount,
+                  })}
           </span>
         </div>
       </div>
@@ -802,7 +841,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           const folderTree = buildFolderTree(repository.changes || []);
           const repositoryError = normalizeCommitErrorMessage(repository.lastError || '', translate);
           const repositoryName = getRepositoryDisplayName(repository, project?.name);
-          const repositoryHasPendingValidation = repository.commitState === 'idle' && repository.stats.reviewed < repository.stats.total;
+          const repositoryHasPendingValidation =
+            repository.commitState === 'idle' && repository.stats.pendingVisibleFileCount > 0;
           const repositoryChangeIds = repository.changes.map((change) => change.id);
           return (
             <section
@@ -868,9 +908,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 </div>
                 {repository.commitState === 'idle' && repositoryChangeIds.length > 0 && (
                   <ScopeActionRail
-                    allReviewed={repository.stats.reviewed === repository.stats.total}
-                    onValidate={() => setReviewedState(repository.id, repositoryChangeIds, true)}
-                    onInvalidate={() => setReviewedState(repository.id, repositoryChangeIds, false)}
+                    onValidate={() => void handleStageScope(repository.id, repositoryChangeIds)}
                     onRevert={() => setPendingRevertScope({
                       repositoryId: repository.id,
                       changeIds: repositoryChangeIds,
@@ -900,9 +938,23 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
                       </div>
                     )}
+                    {!repositoryError && repository.commitState === 'idle' && repository.stats.validatedStagedFileCount > 0 && (
+                      <div className="px-2 pb-2 text-xs text-muted-foreground">
+                        {t(
+                          'implement.repositoryStagedSummary',
+                          '{{count}} validated file(s) staged and ready to commit.',
+                          { count: repository.stats.validatedStagedFileCount }
+                        )}
+                      </div>
+                    )}
                     {!repositoryError && repository.commitState === 'idle' && folderTree.length === 0 && (
                       <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                        {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
+                        {repository.stats.validatedStagedFileCount > 0
+                          ? t(
+                              'implement.repositoryOnlyStagedChanges',
+                              'All visible changes are already validated. Commit when you are ready.'
+                            )
+                          : t('implement.noPendingChanges', 'No pending file changes for this repository.')}
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'idle' && folderTree.map((node) => (
@@ -916,9 +968,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                           selectRepository(repository.id);
                           openDiffModal(repository.id, changeId);
                         }}
-                        onSetReviewedState={(changeIds, reviewed) => {
+                        onStageChanges={(changeIds) => {
                           selectRepository(repository.id);
-                          setReviewedState(repository.id, changeIds, reviewed);
+                          void handleStageScope(repository.id, changeIds);
                         }}
                         onRevert={(changeIds, scopeLabel, requiresConfirm) => {
                           selectRepository(repository.id);
@@ -947,13 +999,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       <div className="p-3 border-t border-border shrink-0 space-y-2">
         {showValidateChangesButton && (
           <button
-            onClick={() => {
-              if (isValidationStage) {
-                handleValidateChanges();
-                return;
-              }
-              void handleStartReview();
-            }}
+            onClick={handleValidateChanges}
             disabled={isValidateChangesDisabled}
             title={isValidateChangesDisabled ? validateChangesDisabledReason : undefined}
             className={cn(
@@ -968,28 +1014,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </button>
         )}
         <button
-          onClick={handleOpenCommit}
-          disabled={isCommitDisabled}
-          title={isCommitDisabled ? commitDisabledReason : undefined}
+          onClick={primaryAction.onClick}
+          disabled={primaryAction.disabled}
+          title={primaryAction.title}
           className={cn(
             'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-            isCommitDisabled
+            primaryAction.disabled
               ? 'bg-muted text-muted-foreground cursor-not-allowed'
               : 'bg-primary text-primary-foreground hover:bg-primary/90'
           )}
         >
-          <Icon name="git-commit" size={14} />
-          {t('implement.commitChangesGeneric', 'Commit')}
+          <Icon name={primaryAction.icon} size={14} />
+          {primaryAction.label}
         </button>
-        {canFinishTask && (
-          <button
-            onClick={() => void handleFinishTask()}
-            className="w-full py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex items-center justify-center gap-2"
-          >
-            <Icon name="git-merge" size={14} />
-            {t('implement.finishTask', 'Finish task')}
-          </button>
-        )}
       </div>
 
       {isDiffModalOpen && selectedDiffTarget && (
@@ -1017,6 +1054,27 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             void handleRevert(scope.repositoryId, scope.changeIds);
           }}
         />
+      )}
+
+      {commitMessageGenerationError && (
+        <ConfirmPromptModal
+          isOpen={true}
+          title={t('implement.commitMessageGenerationTitle', 'Couldn’t generate commit messages')}
+          description={t(
+            'implement.commitMessageGenerationDescription',
+            'Macro could not prepare the commit messages. You can retry generation or cancel without creating commits.'
+          )}
+          confirmLabel={t('common.retry', 'Retry')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          isSubmitting={isGeneratingCommitMessages}
+          onCancel={() => setCommitMessageGenerationError(null)}
+          onConfirm={() => {
+            setCommitMessageGenerationError(null);
+            void handleCommit();
+          }}
+        >
+          <p className="text-xs text-muted-foreground">{commitMessageGenerationError}</p>
+        </ConfirmPromptModal>
       )}
     </aside>
   );

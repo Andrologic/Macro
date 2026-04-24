@@ -11,15 +11,26 @@ import {
   type ImplementTask,
 } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
-import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
+import {
+  getArchitectPlanDisplayName,
+  getArchitectPlanPrimaryName,
+} from '../../services/architectPlanPresentation';
 import { getGitFlowBaseBranch } from '../../services/architectPlanService';
-import { taskMatchesProjectId } from '../../services/implementTaskCatalog';
+import {
+  isPlanFinalizationTask,
+  taskMatchesProjectId,
+} from '../../services/implementTaskCatalog';
+import { shouldIncludeTaskInImplementationProgress } from '../../services/planFinalization';
 import {
   getProjectGroupByProjectId,
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import {
   getTaskRepositoryDescriptors,
   type ReviewRepositoryUiState,
@@ -36,16 +47,22 @@ import {
   resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
+import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
+import {
+  resolveTaskMergeWorkflowNextActionLabel,
+  resolveTaskMergeWorkflowPresentationState,
+  resolveTaskMergeWorkflowProgressLabel,
+} from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
-import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface TaskQueueProps {
   className?: string;
@@ -164,13 +181,30 @@ interface TaskActionDescriptor {
   destructive?: boolean;
 }
 
+type TaskContextBadgeTone = 'default' | 'draft';
+
+interface TaskContextBadgeDescriptor {
+  key: 'plan' | 'plan_finalization' | 'standalone' | 'draft';
+  label: string;
+  icon?: IconName;
+  tone?: TaskContextBadgeTone;
+}
+
+const taskContextBadgeToneClassName: Record<TaskContextBadgeTone, string> = {
+  default: 'border-border/70 bg-background/40 text-muted-foreground',
+  draft: 'border-amber-500/20 bg-amber-500/10 text-amber-500',
+};
+
 interface TaskItemProps {
   task: ImplementTask;
+  mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null;
+  multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
   planLabel: string;
   isAssistantRunning: boolean;
   taskCommandRunStatus: 'running' | 'cancelling' | null;
   canRunTaskCommands: boolean;
+  showRunTaskCommands: boolean;
   runTaskCommandsTitle?: string;
   onSelect: () => void;
   onRunTaskCommands: () => void;
@@ -181,11 +215,14 @@ interface TaskItemProps {
 
 const TaskItem: React.FC<TaskItemProps> = ({
   task,
+  mergeWorkflowRuntime,
+  multiRepoPresentation,
   isSelected,
   planLabel,
   isAssistantRunning,
   taskCommandRunStatus,
   canRunTaskCommands,
+  showRunTaskCommands,
   runTaskCommandsTitle,
   onSelect,
   onRunTaskCommands,
@@ -198,11 +235,65 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const [menuPosition, setMenuPosition] = useState<TaskMenuPosition | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
-  const showPlanLabel = task.task_source === 'architect' && planLabel.trim().length > 0;
+  const trimmedPlanLabel = planLabel.trim();
+  const contextBadges: TaskContextBadgeDescriptor[] = [];
+  if (task.task_source === 'architect' && trimmedPlanLabel.length > 0) {
+    contextBadges.push({
+      key: 'plan',
+      label: trimmedPlanLabel,
+      icon: 'layers',
+    });
+  }
+  if (task.task_source === 'plan_finalization') {
+    contextBadges.push({
+      key: 'plan_finalization',
+      label: t('implement.planFinalizationBadge', 'Plan finalization'),
+      icon: 'git-merge',
+    });
+  }
+  if (task.task_source === 'standalone') {
+    contextBadges.push({
+      key: 'standalone',
+      label: t('implement.standaloneBadge', 'Standalone'),
+      icon: 'layers',
+    });
+  }
+  if (task.draft) {
+    contextBadges.push({
+      key: 'draft',
+      label: t('common.draft', 'Draft'),
+      tone: 'draft',
+    });
+  }
+  const isCompactDraftFeatureCard =
+    task.draft &&
+    task.standalone_kind === 'manual_feature' &&
+    task.description.trim().length === 0;
   const status = isAssistantRunning
     ? { color: 'text-amber-500', bgColor: 'bg-amber-500/10' }
     : statusConfig[task.status] || statusConfig.Pending;
-  const indicatorState = resolveTaskStatusIndicatorState(task.status, isAssistantRunning);
+  const mergeWorkflowPresentation = useMemo(
+    () =>
+      resolveTaskMergeWorkflowPresentationState(
+        mergeWorkflowRuntime,
+        task.merge_workflow_summary ?? null
+      ),
+    [mergeWorkflowRuntime, task.merge_workflow_summary]
+  );
+  const indicatorState = resolveTaskStatusIndicatorState(
+    task.status,
+    isAssistantRunning,
+    task.task_source,
+    mergeWorkflowPresentation
+  );
+  const showMergeWorkflowPresentation = Boolean(
+    multiRepoPresentation &&
+      mergeWorkflowPresentation &&
+      (indicatorState === 'merging' ||
+        indicatorState === 'merge_partial' ||
+        indicatorState === 'merge_blocked' ||
+        indicatorState === 'merge_failed')
+  );
   const lockTooltip = task.is_blocked
     ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
       tasks: task.blocked_by.join(', '),
@@ -265,6 +356,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     <div
       role="button"
       tabIndex={0}
+      data-task-card-variant={isCompactDraftFeatureCard ? 'compact-draft' : 'default'}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -273,32 +365,35 @@ const TaskItem: React.FC<TaskItemProps> = ({
         }
       }}
       className={cn(
-        'relative h-[112px] w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
+        'relative w-full overflow-visible rounded-xl border text-left transition-all duration-200 group cursor-pointer',
+        isCompactDraftFeatureCard ? 'h-[96px]' : 'h-[112px]',
         isSelected
           ? 'border-primary/30 bg-primary/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
       <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
-        <button
-          ref={menuButtonRef}
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            const nextValue = !showMenu;
-            setMenuPosition(
-              nextValue
-                ? getTaskMenuPosition(event.currentTarget, actions.length)
-                : null
-            );
-            setShowMenu(nextValue);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          title={t('implement.taskActions', 'Task actions')}
-        >
-          <Icon name="more-vertical" size={13} />
-        </button>
+        {actions.length > 0 && (
+          <button
+            ref={menuButtonRef}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              const nextValue = !showMenu;
+              setMenuPosition(
+                nextValue
+                  ? getTaskMenuPosition(event.currentTarget, actions.length)
+                  : null
+              );
+              setShowMenu(nextValue);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={t('implement.taskActions', 'Task actions')}
+          >
+            <Icon name="more-vertical" size={13} />
+          </button>
+        )}
 
         <div className="flex items-center gap-2.5">
           <div className="relative shrink-0 group/lock">
@@ -326,16 +421,47 @@ const TaskItem: React.FC<TaskItemProps> = ({
         </div>
 
         <div className="min-h-0 space-y-1">
-          {task.description && (
+          {showMergeWorkflowPresentation ? (
+            <>
+              <p
+                data-task-card-progress-label="true"
+                className="truncate text-[12px] font-medium leading-[1.05rem] text-foreground/85"
+              >
+                {multiRepoPresentation?.progressLabel}
+              </p>
+              <p
+                data-task-card-next-action="true"
+                className="truncate text-[11px] leading-[1rem] text-muted-foreground"
+              >
+                {multiRepoPresentation?.nextActionLabel}
+              </p>
+            </>
+          ) : !isCompactDraftFeatureCard && task.description ? (
             <p className="line-clamp-2 text-[13px] leading-[1.15rem] text-muted-foreground">
               {task.description}
             </p>
-          )}
+          ) : null}
+        </div>
 
-          {showPlanLabel && (
-            <div className="inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground">
-              <Icon name="layers" size={10} />
-              <span className="truncate">{planLabel}</span>
+        <div className="min-w-0 self-end pr-10">
+          {contextBadges.length > 0 && (
+            <div
+              data-task-card-footer="true"
+              className="flex min-w-0 items-center gap-1.5 overflow-hidden"
+            >
+              {contextBadges.map((badge) => (
+                <span
+                  key={badge.key}
+                  data-task-context-badge={badge.key}
+                  className={cn(
+                    'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
+                    taskContextBadgeToneClassName[badge.tone ?? 'default']
+                  )}
+                >
+                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0" />}
+                  <span className="truncate">{badge.label}</span>
+                </span>
+              ))}
             </div>
           )}
         </div>
@@ -367,7 +493,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               className={taskCommandRunStatus === 'cancelling' ? 'animate-spin' : undefined}
             />
           </button>
-        ) : (
+        ) : showRunTaskCommands ? (
           <button
             type="button"
             onClick={(event) => {
@@ -386,7 +512,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           >
             <Icon name="play" size={13} />
           </button>
-        )}
+        ) : null}
       </div>
 
       {showMenu && menuPosition && typeof document !== 'undefined'
@@ -450,6 +576,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId,
     projectGroups,
     openProjectGitFlowModal,
+    openProjectModal,
     setSelectedProject,
     setSelectedTask,
   } = useAppStore(useShallow((state) => ({
@@ -458,6 +585,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId: state.selectedTaskId,
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
+    openProjectModal: state.openProjectModal,
     setSelectedProject: state.setSelectedProject,
     setSelectedTask: state.setSelectedTask,
   })));
@@ -478,7 +606,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     planSummaries,
     hasStandaloneTasks,
     publishedStandaloneTasks,
-    finalizingPlanId,
     activateTask,
     createManualFeatureDraft,
     renameTask,
@@ -487,6 +614,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     deleteTask,
     reopenTask,
     taskCommandRuns,
+    mergeWorkflowRuntimeByTaskId,
     runTaskCommands,
     cancelTaskCommands,
     missingBaseBranchIssue,
@@ -498,7 +626,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     planSummaries: state.planSummaries,
     hasStandaloneTasks: state.hasStandaloneTasks,
     publishedStandaloneTasks: state.publishedStandaloneTasks,
-    finalizingPlanId: state.finalizingPlanId,
     activateTask: state.activateTask,
     createManualFeatureDraft: state.createManualFeatureDraft,
     renameTask: state.renameTask,
@@ -507,6 +634,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     deleteTask: state.deleteTask,
     reopenTask: state.reopenTask,
     taskCommandRuns: state.taskCommandRuns,
+    mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
     runTaskCommands: state.runTaskCommands,
     cancelTaskCommands: state.cancelTaskCommands,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
@@ -521,7 +649,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
   const [showArchived, setShowArchived] = useState(false);
-  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
   const [taskCommandModal, setTaskCommandModal] = useState<{
@@ -655,6 +782,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
 
+    if (isWorkspaceMissing) {
+      notify.error(
+        workspaceState.kind === 'noProjectAvailable'
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+      );
+      return;
+    }
+
     if (pendingTaskId || !selectedGroupId) return;
     const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
     const actionableProjectIds =
@@ -718,12 +854,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     task: ImplementTask,
     reviewSummary: ReviewTaskSummary | null
   ): MultiRepoTaskPresentation | null => {
+    const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
+    const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
+      mergeWorkflowRuntime,
+      task.merge_workflow_summary ?? null
+    );
     const repositoryDescriptors = getTaskRepositoryDescriptors(
       task,
       (projectId) => getProjectById(projectId) ?? null
     );
 
-    if (repositoryDescriptors.length <= 1) {
+    if (repositoryDescriptors.length <= 1 && !mergeWorkflowPresentation) {
       return null;
     }
 
@@ -762,7 +903,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     });
     let nextActionLabel = t('implement.taskNextActionStart', 'Next: start implementation');
 
-    if (reviewSummary && task.status === 'InReview') {
+    if (mergeWorkflowPresentation) {
+      progressLabel = resolveTaskMergeWorkflowProgressLabel(
+        mergeWorkflowPresentation,
+        t
+      );
+      nextActionLabel = resolveTaskMergeWorkflowNextActionLabel(
+        mergeWorkflowPresentation,
+        t,
+        {
+          isPlanFinalizationTask: isPlanFinalizationTask(task),
+        }
+      );
+    } else if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
       progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
         resolved: resolvedCount,
@@ -773,7 +926,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         nextActionLabel = t('implement.taskNextActionCommitRepository', 'Next: commit {{repository}}', {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });
-      } else if (reviewSummary.nextAction === 'review_repository' && nextRepositoryDescriptor) {
+      } else if (reviewSummary.nextAction === 'validate_repository' && nextRepositoryDescriptor) {
         nextActionLabel = t('implement.taskNextActionValidateRepository', 'Next: validate {{repository}}', {
           repository: repositoryLabelForSummary(nextRepositoryDescriptor),
         });
@@ -812,7 +965,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       progressLabel,
       nextActionLabel,
     };
-  }, [getProjectById, t]);
+  }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
   const scopedProjectIds = useMemo(
     () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
@@ -826,6 +979,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const workspaceState = resolveProjectWorkspaceState({
+    projectGroups,
+    selectedGroupId,
+    selectedProjectId,
+  });
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const scopedReadOnlyProjects = useMemo(
     () =>
       scopedReadOnlyProjectIds
@@ -875,21 +1034,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ])
     );
   }, [availablePlanSummaries]);
+  const planPrimaryNamesById = useMemo(() => {
+    return new Map(
+      availablePlanSummaries.map((plan) => [
+        plan.id,
+        getArchitectPlanPrimaryName(plan),
+      ])
+    );
+  }, [availablePlanSummaries]);
 
   const hasScopedStandaloneTasks = useMemo(() => {
     if (!hasStandaloneTasks) return false;
     return scopedTasks.some((task) => task.task_source === 'standalone');
   }, [hasStandaloneTasks, scopedTasks]);
-  const readyPlanSummaries = useMemo(
-    () => availablePlanSummaries.filter((plan) => plan.readyForValidation),
-    [availablePlanSummaries]
-  );
-  const visibleReadyPlans = useMemo(() => {
-    if (planFilter !== ALL_PLANS_FILTER && planFilter !== STANDALONE_FILTER) {
-      return readyPlanSummaries.filter((plan) => plan.id === planFilter);
-    }
-    return readyPlanSummaries;
-  }, [planFilter, readyPlanSummaries]);
 
   useEffect(() => {
     if (planFilter === ALL_PLANS_FILTER) return;
@@ -913,7 +1070,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return standalonePlanLabel;
     }
 
-    return planLabelsById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
+    return planPrimaryNamesById.get(task.plan_id) || task.plan_title || standalonePlanLabel;
   };
 
   const getTaskCommandProjectIds = (task: ImplementTask): string[] => {
@@ -927,6 +1084,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const canRunTaskCommandsForTask = (task: ImplementTask): boolean =>
+    !isPlanFinalizationTask(task) &&
     !taskCommandsDisabled &&
     !isManualDraftPendingInitialization(task) &&
     !task.draft &&
@@ -1092,6 +1250,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
+    if (isPlanFinalizationTask(task)) {
+      return [];
+    }
+
     const capabilities = getTaskLifecycleCapabilities(
       task,
       publishedStandaloneTasks[task.id] ?? false
@@ -1352,6 +1514,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     showArchived,
     t,
   ]);
+  const getTaskListRowKey = useCallback((row: TaskListRow) => row.id, []);
   const {
     parentRef: taskListRef,
     virtualItems: virtualTaskRows,
@@ -1359,6 +1522,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     measureElement: measureTaskRow,
   } = useVirtualList({
     items: taskListRows,
+    getItemKey: getTaskListRowKey,
     estimateSize: 112,
     overscan: 8,
     dynamicHeight: true,
@@ -1366,7 +1530,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   });
 
   const progressTasks = useMemo(
-    () => filteredTasks.filter((task) => !task.draft && !task.archived_at),
+    () => filteredTasks.filter((task) => shouldIncludeTaskInImplementationProgress(task)),
     [filteredTasks]
   );
   const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
@@ -1381,15 +1545,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [conversationRuntimeById, conversations]
   );
 
-  if (!selectedGroupId) {
+  if (isWorkspaceMissing) {
     return (
       <aside className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}>
-        <div className="text-center px-6">
-          <Icon name="list-todo" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a project to view tasks')}
-          </p>
-        </div>
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          onPrimaryAction={() => openProjectModal(null)}
+        />
       </aside>
     );
   }
@@ -1524,64 +1686,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             style={{ width: `${progressPercent}%` }}
           />
         </div>
-        {visibleReadyPlans.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {visibleReadyPlans.map((plan) => (
-              <div
-                key={plan.id}
-                className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2"
-              >
-                {(() => {
-                  const effectiveTargetBranch =
-                    (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
-                  const targetSummary = plan.hasMixedTargetBranches
-                    ? selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]
-                      ? t('implement.mixedTargetsForProject', 'Mixed targets · this repo: {{branchName}}', {
-                        branchName: effectiveTargetBranch,
-                      })
-                      : t('implement.mixedTargets', 'Mixed targets')
-                    : t('implement.singleTarget', 'Target: {{branchName}}', {
-                      branchName: effectiveTargetBranch,
-                    });
-                  return (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-emerald-500">
-                      {t('implement.planReadyForValidation', 'Plan ready for validation')}
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {planLabelsById.get(plan.id) || plan.title}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-emerald-200/80 truncate">
-                      {targetSummary}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setPlanReviewTarget({
-                      planId: plan.id,
-                      branchName: plan.targetBranch,
-                    })}
-                    disabled={Boolean(finalizingPlanId)}
-                    className={cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                      finalizingPlanId
-                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                        : 'bg-emerald-500 text-white hover:bg-emerald-600'
-                    )}
-                  >
-                    <Icon name={finalizingPlanId === plan.id ? 'loader' : 'git-merge'} size={12} className={finalizingPlanId === plan.id ? 'animate-spin' : undefined} />
-                    {finalizingPlanId === plan.id
-                      ? t('implement.finalizingPlan', 'Finalizing...')
-                      : t('implement.finalizePlan', 'Finalize plan')}
-                  </button>
-                </div>
-                  );
-                })()}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       <div ref={taskListRef} className="flex-1 overflow-y-auto">
@@ -1603,17 +1707,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 const row = virtualRow.item;
                 return (
                   <div
-                    key={row.id}
+                    key={virtualRow.key}
                     ref={measureTaskRow}
                     data-index={virtualRow.index}
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${virtualRow.start}px)` }}
                   >
                     {row.kind === 'section' ? (
-                      <div className="flex items-center justify-between px-1 pb-1 pt-1">
+                      <div className="flex h-7 items-center justify-between gap-3 px-1">
                         <h2
                           className={cn(
-                            'text-xs font-semibold uppercase tracking-wide',
+                            'truncate whitespace-nowrap text-xs font-semibold uppercase tracking-wide',
                             row.tone === 'draft'
                               ? 'text-sky-400'
                               : row.tone === 'success'
@@ -1623,16 +1727,21 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         >
                           {row.title}
                         </h2>
-                        <span className="text-xs text-muted-foreground">{row.count}</span>
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                          {row.count}
+                        </span>
                       </div>
                     ) : (
                       <MemoizedTaskItem
                         task={row.task}
+                        mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
+                        multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}
                         taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                         canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
+                        showRunTaskCommands={!isPlanFinalizationTask(row.task)}
                         runTaskCommandsTitle={getRunTaskCommandsTitle(row.task)}
                         onSelect={() => void activateTask(row.task.id)}
                         onRunTaskCommands={() => void handleRunTaskCommands(row.task)}
@@ -1648,15 +1757,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           </div>
         )}
       </div>
-
-      {planReviewTarget && (
-        <PlanReviewModal
-          isOpen
-          branchName={planReviewTarget.branchName}
-          planId={planReviewTarget.planId}
-          onClose={() => setPlanReviewTarget(null)}
-        />
-      )}
 
       {taskCommandModal && (
         <TaskProjectCommandsModal

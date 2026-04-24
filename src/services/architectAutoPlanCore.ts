@@ -30,7 +30,7 @@ export interface ArchitectAutoPlanDependencies {
   getArchitectPlanChatMessages: (branchName: string, planId: string) => Promise<Array<unknown>>;
   getArchitectPlanEditableName: (plan: ArchitectPlanNamingShape) => string;
   getArchitectPlanNeeds: (branchName: string, planId: string) => Promise<Need[]>;
-  getArchitectPlanProjectIds: (
+  getArchitectPlanVisibleProjectIds: (
     plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>
   ) => string[];
   getNextDefaultNewPlanLabel: (plans: ArchitectPlanSummary[]) => string;
@@ -187,11 +187,11 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     plan.chatMessageCount === 0;
 
   const getBlankScopeSignature = (plan: ArchitectPlanSummary): string => {
-    const actionableProjectIds = normalizePlanIdList(
-      plan.expectedProjectIds && plan.expectedProjectIds.length > 0
-        ? plan.expectedProjectIds
-        : deps.getArchitectPlanProjectIds(plan)
-    );
+    const explicitActionableProjectIds = normalizePlanIdList(plan.projectIds);
+    const actionableProjectIds =
+      explicitActionableProjectIds.length > 0
+        ? explicitActionableProjectIds
+        : normalizePlanIdList(deps.getArchitectPlanVisibleProjectIds(plan));
     const contextProjectIds = normalizePlanIdList(plan.contextProjectIds);
     const targetBranchesByProjectId = Object.fromEntries(
       actionableProjectIds.map((projectId) => [
@@ -318,28 +318,25 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   ): Promise<ResolvedBlankPlanResult> => {
     const mergedProjectIds = mergeProjectIds(
       reusableBlankPlan.projectIds,
-      reusableBlankPlan.expectedProjectIds,
       params.scopedProjectIds
     );
     const mergedContextProjectIds = mergeProjectIds(
       reusableBlankPlan.contextProjectIds,
       params.contextProjectIds
     );
+    const mergedExpectedProjectIds = mergeProjectIds(mergedProjectIds, mergedContextProjectIds);
 
     if (
       !coversScope(reusableBlankPlan.projectIds || [], params.scopedProjectIds) ||
-      !coversScope(
-        reusableBlankPlan.expectedProjectIds || reusableBlankPlan.projectIds || [],
-        params.scopedProjectIds
-      ) ||
-      !coversScope(reusableBlankPlan.contextProjectIds || [], params.contextProjectIds || [])
+      !coversScope(reusableBlankPlan.contextProjectIds || [], params.contextProjectIds || []) ||
+      !coversScope(reusableBlankPlan.expectedProjectIds || [], mergedExpectedProjectIds)
     ) {
       const expandedPlan = await deps.updateArchitectPlan({
         branchName: params.branchName,
         planId: reusableBlankPlan.id,
         projectIds: mergedProjectIds,
         contextProjectIds: mergedContextProjectIds,
-        expectedProjectIds: mergedProjectIds,
+        expectedProjectIds: mergedExpectedProjectIds,
         targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
       });
       return {

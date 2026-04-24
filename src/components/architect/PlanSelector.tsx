@@ -2,9 +2,11 @@
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
+  createArchitectPlan,
   getArchitectPlan,
-  getArchitectPlanProjectIds,
+  getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
+  getGitFlowMainBranch,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
@@ -17,17 +19,30 @@ import {
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
 import {
+  getPlanKindBackmergeBranch,
+  getPlanKindSourceBranch,
+  getPlanKindTargetBranch,
+  normalizeVersionSlug,
+  type ArchitectPlanGitFlowMetadata,
+  type ArchitectPlanKind,
+} from '../../services/architectPlanKinds';
+import { detectProjectVersions } from '../../services/architectPlanVersionDetection';
+import {
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { notify } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
-import { PlanReviewModal } from '../plan/PlanReviewModal';
 import { cn } from '../../utils/cn';
 import { formatDate } from '../../i18n/format';
 import {
@@ -77,6 +92,8 @@ const summarizeArchitectPlanRecord = (
   title: plan.title,
   label: plan.label,
   description: plan.description,
+  planKind: plan.planKind,
+  gitFlowPlan: plan.gitFlowPlan,
   status: plan.status,
   targetBranch: plan.targetBranch,
   targetBranchesByProjectId: plan.targetBranchesByProjectId,
@@ -113,6 +130,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setPredictedBranches,
     setActivePlanContext,
     activateArchitectPlan,
+    openProjectModal,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -123,7 +141,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [planToDelete, setPlanToDelete] = useState<ArchitectPlanSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [planReviewTarget, setPlanReviewTarget] = useState<{ planId: string; branchName: string } | null>(null);
+  const [showCreateKinds, setShowCreateKinds] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
@@ -155,6 +173,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const scopedReadOnlyProjects = useMemo(
     () =>
       contextProjectIds
@@ -164,8 +192,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   );
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
-  const readyPlanSummaries = useTaskStore((state) => state.planSummaries);
-
   const displayedActivePlanTitle = useMemo(() => {
     if (activePlanContext && activePlanContext.id === activePlanId) {
       return getArchitectPlanPrimaryName(activePlanContext);
@@ -379,6 +405,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       setActivePlanId(planId);
       setIsOpen(false);
+      setShowCreateKinds(false);
     } catch (activationError) {
       if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
         return;
@@ -393,10 +420,84 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const handleCreatePlan = async () => {
+  const bumpPatchVersion = (version: string | null): string | null => {
+    const normalized = normalizeVersionSlug(version);
+    if (!normalized) return null;
+    const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(normalized);
+    if (!match) return normalized;
+    return `${match[1]}.${match[2]}.${Number(match[3]) + 1}${match[4] || ''}`;
+  };
+
+  const buildTypedPlanGitFlowMetadata = async (
+    planKind: Exclude<ArchitectPlanKind, 'feature'>,
+    projectIds: string[],
+    fallbackBranchSlug: string,
+  ): Promise<{
+    targetBranchesByProjectId: Record<string, string>;
+    gitFlowPlan: ArchitectPlanGitFlowMetadata;
+  }> => {
+    const projects = projectIds
+      .map((projectId) => getProjectById(projectId))
+      .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
+    const detectedVersions = new Map(
+      (await detectProjectVersions(projects)).map((result) => [result.projectId, result.version])
+    );
+    const targetBranchesByProjectId: Record<string, string> = {};
+    const gitFlowProjects: ArchitectPlanGitFlowMetadata['projects'] = {};
+
+    for (const projectId of projectIds) {
+      const project = getProjectById(projectId);
+      const baseBranch = project?.gitFlowSettings?.baseBranch || getGitFlowBaseBranch();
+      const mainBranch = project?.gitFlowSettings?.mainBranch || getGitFlowMainBranch();
+      const detectedVersion = detectedVersions.get(projectId) || null;
+      const proposedVersion =
+        planKind === 'hotfix'
+          ? bumpPatchVersion(detectedVersion)
+          : planKind === 'release'
+            ? detectedVersion
+            : null;
+      const sourceBranch = getPlanKindSourceBranch({ planKind, baseBranch, mainBranch });
+      const targetBranchName = getPlanKindTargetBranch({ planKind, baseBranch, mainBranch });
+      const backmergeBranch = getPlanKindBackmergeBranch({ planKind, baseBranch });
+      targetBranchesByProjectId[projectId] = targetBranchName;
+      gitFlowProjects[projectId] = {
+        projectId,
+        sourceBranch,
+        integrationBranch: '',
+        targetBranch: targetBranchName,
+        backmergeBranch,
+        proposedVersion,
+        confirmedVersion: null,
+        proposedSlug: proposedVersion || fallbackBranchSlug,
+        confirmedSlug: null,
+      };
+    }
+
+    return {
+      targetBranchesByProjectId,
+      gitFlowPlan: {
+        version: 1,
+        planKind,
+        slug: fallbackBranchSlug,
+        projects: gitFlowProjects,
+      },
+    };
+  };
+
+  const handleCreatePlan = async (planKind: ArchitectPlanKind = 'feature') => {
     setFormError(null);
+    setShowCreateKinds(false);
     setIsLoading(true);
     try {
+      if (isWorkspaceMissing) {
+        const message = workspaceState.kind === 'noProjectAvailable'
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.');
+        setError(message);
+        notify.error(message);
+        return;
+      }
+
       if (scopedActionableProjectIds.length === 0) {
         const message = t(
           'implement.manualFeatureMissingProjects',
@@ -407,37 +508,83 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
 
-      const ensuredBlankPlan = await ensureScopedBlankPlan({
-        branchName: targetBranch,
-        scopedProjectIds: scopedActionableProjectIds,
-        contextProjectIds,
-        trigger: 'explicit_create',
-      });
-      if (ensuredBlankPlan) {
-        await loadPlans(false);
-        await activatePlan(
-          ensuredBlankPlan.plan.id,
-          summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
-        );
-        if (ensuredBlankPlan.action === 'reused_blank') {
-          notify.info(
-            t(
-              'architect.planSelector.toastBlankPlanReady',
-              'A blank new plan is already ready. Send the first message to name it.'
-            )
+      if (planKind === 'feature') {
+        const ensuredBlankPlan = await ensureScopedBlankPlan({
+          branchName: targetBranch,
+          scopedProjectIds: scopedActionableProjectIds,
+          contextProjectIds,
+          trigger: 'explicit_create',
+        });
+        if (ensuredBlankPlan) {
+          await loadPlans(false);
+          await activatePlan(
+            ensuredBlankPlan.plan.id,
+            summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
           );
-        } else if (ensuredBlankPlan.action === 'expanded_blank') {
-          notify.info(
-            t(
-              'architect.planSelector.toastBlankPlanExpanded',
-              'Reused the existing blank new plan and updated its scope. Send the first message to name it.'
-            )
-          );
+          if (ensuredBlankPlan.action === 'reused_blank') {
+            notify.info(
+              t(
+                'architect.planSelector.toastBlankPlanReady',
+                'A blank new plan is already ready. Send the first message to name it.'
+              )
+            );
+          } else if (ensuredBlankPlan.action === 'expanded_blank') {
+            notify.info(
+              t(
+                'architect.planSelector.toastBlankPlanExpanded',
+                'Reused the existing blank new plan and updated its scope. Send the first message to name it.'
+              )
+            );
+          }
+          return;
         }
+      } else {
+        const labelByKind: Record<Exclude<ArchitectPlanKind, 'feature'>, string> = {
+          release: t('architect.planSelector.releasePlanLabel', 'New Release Plan'),
+          hotfix: t('architect.planSelector.hotfixPlanLabel', 'New Hotfix Plan'),
+          bugfix: t('architect.planSelector.bugfixPlanLabel', 'New Bugfix Plan'),
+        };
+        const dateSlug = new Date().toISOString().slice(0, 10);
+        const slugBase = `${planKind}-${dateSlug}`;
+        const typedMetadata = await buildTypedPlanGitFlowMetadata(
+          planKind,
+          scopedActionableProjectIds,
+          dateSlug,
+        );
+        const createdPlan = await createArchitectPlan({
+          branchName: targetBranch,
+          label: labelByKind[planKind],
+          slug: slugBase,
+          description:
+            planKind === 'release'
+              ? t(
+                  'architect.planSelector.releasePlanDescription',
+                  'Release workflow draft. Confirm versions and repositories in chat, then generate the stabilization checklist.'
+                )
+              : t(
+                  'architect.planSelector.bugPlanDescription',
+                  'Bug workflow draft. Describe the bug(s) in chat so Macro can infer the affected repositories.'
+                ),
+          planKind,
+          gitFlowPlan: typedMetadata.gitFlowPlan,
+          projectId: scopedActionableProjectIds[0],
+          projectIds: scopedActionableProjectIds,
+          contextProjectIds,
+          targetBranchesByProjectId: typedMetadata.targetBranchesByProjectId,
+          status: 'draft',
+          setActive: true,
+        });
+        await loadPlans(false);
+        await activatePlan(createdPlan.id, summarizeArchitectPlanRecord(createdPlan));
+        notify.success(
+          planKind === 'release'
+            ? t('architect.planSelector.releasePlanReady', 'Release plan ready. Macro will ask for versions and repositories in chat.')
+            : t('architect.planSelector.bugPlanReady', 'Plan ready. Describe the bug in chat so Macro can map the affected repositories.')
+        );
         return;
       }
     } catch (err) {
-      if (openReplicaRepair(err, () => handleCreatePlan())) {
+      if (openReplicaRepair(err, () => handleCreatePlan(planKind))) {
         return;
       }
       const message = resolveOperationMessage(
@@ -692,6 +839,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           plan.title === activePlanContext.title &&
           plan.label === activePlanContext.label &&
           plan.description === activePlanContext.description &&
+          plan.planKind === activePlanContext.planKind &&
+          plan.gitFlowPlan === activePlanContext.gitFlowPlan &&
           plan.status === nextStatus
         ) {
           return plan;
@@ -703,6 +852,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           title: activePlanContext.title,
           label: activePlanContext.label,
           description: activePlanContext.description,
+          planKind: activePlanContext.planKind,
+          gitFlowPlan: activePlanContext.gitFlowPlan,
           status: nextStatus,
           updatedAt: new Date().toISOString(),
         };
@@ -721,6 +872,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!rootRef.current) return;
       if (event.target instanceof Node && !rootRef.current.contains(event.target)) {
         setIsOpen(false);
+        setShowCreateKinds(false);
       }
     };
     document.addEventListener('mousedown', onDocumentMouseDown);
@@ -730,7 +882,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   return (
     <div ref={rootRef} className={cn('relative', className)}>
       <button
-        onClick={() => setIsOpen((current) => !current)}
+        onClick={() => {
+          const nextIsOpen = !isOpen;
+          setIsOpen(nextIsOpen);
+          if (!nextIsOpen) setShowCreateKinds(false);
+        }}
         className="h-8 px-2.5 rounded-md border border-border bg-background/60 hover:bg-accent text-xs flex items-center gap-2"
       >
         <Icon name="list" size={13} className="text-primary" />
@@ -741,7 +897,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-[440px] rounded-xl border border-border bg-popover shadow-2xl overflow-hidden z-30">
+        <div className="absolute right-0 z-[80] mt-2 w-[440px] rounded-xl border border-border bg-popover shadow-2xl overflow-visible">
           <div className="px-3 py-2 border-b border-border bg-card/60">
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs font-semibold text-foreground shrink-0">
@@ -767,27 +923,56 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       : t('architect.planSelector.showArchived', 'Show archived')}
                   </span>
                 </button>
-                <button
-                  onClick={() => void handleCreatePlan()}
-                  disabled={isReadOnlyOnlyScope}
-                  title={
-                    isReadOnlyOnlyScope
-                      ? t(
-                          'architect.planSelector.readOnlyOnlyAction',
-                          'At least one editable repository is required to create a plan.'
-                        )
-                      : undefined
-                  }
-                  className={cn(
-                    'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
-                    isReadOnlyOnlyScope
-                      ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
-                      : 'border-border hover:bg-accent'
+                <div className="relative">
+                  <button
+                    onClick={() => setShowCreateKinds((current) => !current)}
+                    disabled={isReadOnlyOnlyScope || isWorkspaceMissing}
+                    title={
+                      isWorkspaceMissing
+                        ? workspaceState.kind === 'noProjectAvailable'
+                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                        : isReadOnlyOnlyScope
+                        ? t(
+                            'architect.planSelector.readOnlyOnlyAction',
+                            'At least one editable repository is required to create a plan.'
+                          )
+                        : undefined
+                    }
+                    className={cn(
+                      'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
+                      isReadOnlyOnlyScope || isWorkspaceMissing
+                        ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
+                        : 'border-border hover:bg-accent'
+                    )}
+                  >
+                    <Icon name="plus" size={12} />
+                    {t('architect.planSelector.create', 'Create')}
+                  </button>
+                  {showCreateKinds && !isReadOnlyOnlyScope && !isWorkspaceMissing && (
+                    <div className="absolute right-0 top-8 z-[90] w-56 rounded-lg border border-border bg-popover shadow-xl p-1">
+                      {([
+                        ['feature', 'sparkles', t('architect.planSelector.kindFeature', 'Feature'), t('architect.planSelector.kindFeatureHelp', 'Build something new.')] as const,
+                        ['release', 'flag', t('architect.planSelector.kindRelease', 'Release'), t('architect.planSelector.kindReleaseHelp', 'Stabilize and ship.')] as const,
+                        ['hotfix', 'zap', t('architect.planSelector.kindHotfix', 'Hotfix'), t('architect.planSelector.kindHotfixHelp', 'Patch production quickly.')] as const,
+                        ['bugfix', 'tool', t('architect.planSelector.kindBugfix', 'Bugfix'), t('architect.planSelector.kindBugfixHelp', 'Fix a normal bug.')] as const,
+                      ] satisfies Array<readonly [ArchitectPlanKind, React.ComponentProps<typeof Icon>['name'], string, string]>).map(([kind, icon, label, help]) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => void handleCreatePlan(kind)}
+                          className="w-full rounded-md px-2.5 py-2 text-left hover:bg-accent transition-colors flex items-start gap-2"
+                        >
+                          <Icon name={icon} size={13} className="mt-0.5 text-primary" />
+                          <span className="min-w-0">
+                            <span className="block text-xs font-medium text-foreground">{label}</span>
+                            <span className="block text-[11px] text-muted-foreground">{help}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                   )}
-                >
-                  <Icon name="plus" size={12} />
-                  {t('architect.planSelector.create', 'Create')}
-                </button>
+                </div>
                 <button
                   onClick={() => void loadPlans(false)}
                   className="h-7 shrink-0 px-2 rounded-md text-xs border border-border hover:bg-accent flex items-center gap-1.5"
@@ -812,7 +997,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && isReadOnlyOnlyScope && (
+            {!error && !isLoading && isWorkspaceMissing && (
+              <ProjectWorkspaceEmptyState
+                stateKind={workspaceState.kind}
+                compact
+                onPrimaryAction={() => {
+                  setIsOpen(false);
+                  openProjectModal(null);
+                }}
+              />
+            )}
+
+            {!error && !isLoading && !isWorkspaceMissing && isReadOnlyOnlyScope && (
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-4">
                 <div className="text-sm font-medium text-amber-100">
                   {t(
@@ -839,7 +1035,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && !isReadOnlyOnlyScope && plans.length === 0 && (
+            {!error && !isLoading && !isWorkspaceMissing && !isReadOnlyOnlyScope && plans.length === 0 && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
                 {t('architect.planSelector.empty', 'No plans yet.')}
               </div>
@@ -852,9 +1048,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isUnavailable = plan.status === 'deleted';
               const isMissingProjects = plan.replicationState === 'missing_projects';
               const missingCount = plan.missingProjectIds?.length ?? 0;
-              const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanProjectIds(plan).length;
+              const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanVisibleProjectIds(plan).length;
               const availableCount = expectedCount - missingCount;
-              const readyPlan = readyPlanSummaries.find((candidate) => candidate.id === plan.id && candidate.readyForValidation);
               const isCanonicalPlan = isCanonicalArchitectPlan(plan);
               const primaryName = getArchitectPlanPrimaryName(plan);
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
@@ -925,29 +1120,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
                         {t(`architect.status.${plan.status}`, plan.status)}
                       </span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!readyPlan) return;
-                          setPlanReviewTarget({
-                            planId: readyPlan.id,
-                            branchName: readyPlan.targetBranch,
-                          });
-                        }}
-                        disabled={!readyPlan}
-                        className={cn(
-                          'w-6 h-6 rounded border flex items-center justify-center',
-                          readyPlan
-                            ? 'border-emerald-500/30 hover:bg-emerald-500/10'
-                            : 'border-border/50 opacity-40 cursor-not-allowed'
-                        )}
-                        title={readyPlan
-                          ? t('implement.planReadyForValidation', 'Plan ready for validation')
-                          : t('implement.finalizePlanUnavailable', 'Complete all tasks to review this plan')}
-                      >
-                        <Icon name="git-merge" size={11} className={readyPlan ? 'text-emerald-500' : 'text-muted-foreground'} />
-                      </button>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -1104,18 +1276,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           }}
           isLoading={formLoading}
           error={formError}
-        />
-      )}
-
-      {planReviewTarget && (
-        <PlanReviewModal
-          isOpen
-          branchName={planReviewTarget.branchName}
-          planId={planReviewTarget.planId}
-          onClose={() => setPlanReviewTarget(null)}
-          onFinalized={() => {
-            void loadPlans(false);
-          }}
         />
       )}
 

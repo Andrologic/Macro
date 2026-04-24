@@ -15,9 +15,14 @@ import type {
   ArchitectPlanRecord,
   ArchitectPlanSummary,
 } from "./architectPlanService";
+import type {
+  ArchitectPlanGitFlowMetadata,
+  ArchitectPlanKind,
+} from "./architectPlanKinds";
 import {
   hasPersistedArchitectStrategy,
 } from "./architectPlanService";
+import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
 import {
   formatArchitectNeedAddToolResult,
@@ -55,7 +60,6 @@ import {
   getFocusedProjectForGroup,
   getScopedActionableProjectIds,
 } from "./globalProjects";
-import type { ArchitectToolAutonomyProfile } from "./architectToolSurface";
 
 const strategyMutationRepairAttempts = new Map<string, number>();
 
@@ -163,11 +167,14 @@ interface ArchitectToolUpdatePlanInput {
   label?: string;
   slug?: string;
   description?: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
   status?: ArchitectPlanRecord["status"];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   projectId?: string;
   projectIds?: string[];
+  contextProjectIds?: string[];
   targetBranchesByProjectId?: Record<string, string>;
   setActive?: boolean;
 }
@@ -222,7 +229,6 @@ interface ArchitectToolRuntimeDependencies {
   assistantMessageId: string;
   toolName: string;
   args: Record<string, unknown>;
-  autonomyProfile: ArchitectToolAutonomyProfile;
   planService: ArchitectToolPlanService;
   strategyService: ArchitectToolStrategyService;
   getAppState: () => ArchitectToolAppState;
@@ -856,6 +862,11 @@ const executeStrategyMutation = async (params: {
     (strategyMutationRepairAttempts.get(repairAttemptKey) || 0) > 0;
 
   params.getAppState().setStrategyMutationPreview(null);
+  await persistArchitectPlanStrategyPreview({
+    branchName: params.targetBranch,
+    plan: params.activePlan,
+    preview: null,
+  });
 
   const preview = params.strategyService.prepareStrategyMutationPreview({
     source: params.source,
@@ -882,6 +893,11 @@ const executeStrategyMutation = async (params: {
 
     if (preview.requiresPreview) {
       params.getAppState().setStrategyMutationPreview(preview);
+      await persistArchitectPlanStrategyPreview({
+        branchName: params.targetBranch,
+        plan: params.activePlan,
+        preview,
+      });
       return {
         outcome: "preview_staged",
         preview,
@@ -896,6 +912,11 @@ const executeStrategyMutation = async (params: {
       params.strategyService.guardDeps,
     );
     params.getAppState().setStrategyMutationPreview(null);
+    await persistArchitectPlanStrategyPreview({
+      branchName: params.targetBranch,
+      plan,
+      preview: null,
+    });
     await hydratePlanContext({
       targetBranch: params.targetBranch,
       planId: plan.id,
@@ -921,6 +942,11 @@ const executeStrategyMutation = async (params: {
 
   strategyMutationRepairAttempts.delete(repairAttemptKey);
   params.getAppState().setStrategyMutationPreview(preview);
+  await persistArchitectPlanStrategyPreview({
+    branchName: params.targetBranch,
+    plan: params.activePlan,
+    preview,
+  });
   return {
     outcome: "blocked",
     preview,
@@ -946,7 +972,6 @@ export const handleArchitectToolCall = async (
     toolName,
     args,
     assistantMessageId,
-    autonomyProfile,
     planService,
     strategyService,
   } = params;
@@ -1187,9 +1212,6 @@ export const handleArchitectToolCall = async (
     if (!activePlanId) {
       return "Cannot need_delete without an active plan. Create or select a plan first.";
     }
-    if (autonomyProfile !== "full") {
-      return "need_delete is unavailable while Architect autonomy is guarded. Switch the Architect tool autonomy profile to full in Settings to allow deletions.";
-    }
 
     const needId = typeof args.need_id === "string" ? args.need_id.trim() : "";
     if (!needId) {
@@ -1289,6 +1311,35 @@ export const handleArchitectToolCall = async (
         : typeof args.plan_slug === "string"
           ? args.plan_slug.trim()
           : undefined;
+    const projectIds = Array.isArray(args.project_ids)
+      ? args.project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : undefined;
+    const contextProjectIds = Array.isArray(args.context_project_ids)
+      ? args.context_project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : undefined;
+    const gitFlowPlan =
+      args.git_flow && typeof args.git_flow === "object" && !Array.isArray(args.git_flow)
+        ? (args.git_flow as Partial<ArchitectPlanGitFlowMetadata>)
+        : undefined;
+    const targetBranchesByProjectId =
+      gitFlowPlan?.projects && typeof gitFlowPlan.projects === "object"
+        ? Object.fromEntries(
+            Object.entries(gitFlowPlan.projects)
+              .map(([projectId, metadata]) => [
+                projectId,
+                typeof metadata?.targetBranch === "string"
+                  ? metadata.targetBranch.trim()
+                  : "",
+              ])
+              .filter(([, branchName]) => branchName.length > 0)
+          )
+        : undefined;
     const shouldPassTitleAlias =
       titleAlias !== undefined &&
       (!isCanonicalPlan ||
@@ -1304,6 +1355,13 @@ export const handleArchitectToolCall = async (
       (requestedLabelChange || requestedTitleAliasChange)
     ) {
       return "plan_update cannot rename a plan after strategy has been created. Only description and mutable draft slug updates remain allowed.";
+    }
+
+    if (
+      hasPersistedArchitectStrategy(existingPlan) &&
+      (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
+    ) {
+      return "plan_update cannot change plan scope or GitFlow metadata after strategy has been created.";
     }
 
     if (
@@ -1324,6 +1382,17 @@ export const handleArchitectToolCall = async (
       ...(slug !== undefined ? { slug } : {}),
       ...(typeof args.description === "string"
         ? { description: args.description }
+        : {}),
+      ...(projectIds !== undefined ? { projectIds } : {}),
+      ...(contextProjectIds !== undefined ? { contextProjectIds } : {}),
+      ...(gitFlowPlan !== undefined
+        ? {
+            planKind: existingPlan.planKind,
+            gitFlowPlan,
+            ...(targetBranchesByProjectId
+              ? { targetBranchesByProjectId }
+              : {}),
+          }
         : {}),
     });
 
@@ -1715,9 +1784,6 @@ export const handleArchitectToolCall = async (
     const activePlanId = resolveActivePlanId(appState);
     if (!activePlanId) {
       return "Cannot delete strategy without an active plan. Create or select a plan first.";
-    }
-    if (autonomyProfile !== "full") {
-      return "strategy_delete is unavailable while Architect autonomy is guarded. Switch the Architect tool autonomy profile to full in Settings to allow destructive strategy changes.";
     }
 
     if (args.confirm !== true) {

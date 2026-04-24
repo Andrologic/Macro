@@ -16,7 +16,7 @@ const defaultSettings: ArchitectGitNamingSettings = {
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
   standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
-  releaseBranchTemplate: 'release/{releaseSlug}',
+  releaseBranchTemplate: 'release/v{releaseSlug}',
   hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
   bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
   syncTargetBeforeFinish: true,
@@ -92,7 +92,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       }),
       releaseBranch: renderGitFlowBranchName({
         branchType: 'release',
-        branchSlug: 'v1.5.0',
+        branchSlug: '1.5.0',
         settings,
       }),
       hotfixBranch: renderGitFlowBranchName({
@@ -240,7 +240,7 @@ export const ArchitectGitFlowView: React.FC = () => {
             value={settings.releaseBranchTemplate}
             onChange={(event) => setSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="release/{releaseSlug}"
+            placeholder="release/v{releaseSlug}"
           />
         </div>
 

@@ -107,6 +107,9 @@ export default defineConfig(({ command }) => {
         output: {
           // Manual chunks for optimal code splitting
           manualChunks: {
+            // Core React runtime shared by every route
+            'react-vendor': ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'],
+
             // State management
             'state-vendor': ['zustand', 'jotai'],
 

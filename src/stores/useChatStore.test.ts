@@ -34,6 +34,23 @@ const createLocalStorageMock = (): LocalStorageMock => {
 const originalWindow = globalThis.window;
 const originalLocalStorage = globalThis.localStorage;
 
+const DEFAULT_PROVIDER_CONFIGS = [
+  {
+    id: 'provider-1',
+    name: 'Local',
+    providerType: 'openai',
+    isEnabled: true,
+    isLocal: true,
+    hasStoredApiKey: false,
+    apiKeyLoaded: true,
+    apiKey: '',
+  },
+];
+
+const DEFAULT_MODELS_BY_PROVIDER = {
+  'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true }],
+} as Record<string, Array<{ id: string; name: string; isEnabled: boolean }>>;
+
 const projectGroups: ProjectGroup[] = [
   {
     id: 'group-1',
@@ -172,21 +189,13 @@ const appState = {
 };
 
 const providerState = {
-  providerConfigs: [
-    {
-      id: 'provider-1',
-      name: 'Local',
-      providerType: 'openai',
-      isEnabled: true,
-      isLocal: true,
-      hasStoredApiKey: false,
-      apiKeyLoaded: true,
-      apiKey: '',
-    },
-  ],
-  modelsByProvider: {
-    'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true }],
-  } as Record<string, Array<{ id: string; name: string; isEnabled: boolean }>>,
+  providerConfigs: DEFAULT_PROVIDER_CONFIGS.map((provider) => ({ ...provider })),
+  modelsByProvider: Object.fromEntries(
+    Object.entries(DEFAULT_MODELS_BY_PROVIDER).map(([providerId, models]) => [
+      providerId,
+      models.map((model) => ({ ...model })),
+    ]),
+  ) as Record<string, Array<{ id: string; name: string; isEnabled: boolean }>>,
   selectedProviderId: 'provider-1' as string | null,
   selectedModelId: 'model-1' as string | null,
   selectedReasoningEffort: null as string | null,
@@ -196,14 +205,23 @@ const providerState = {
   selectedSupportsNativeToolCalling: () => false,
   markReasoningUnsupportedForModel: mock(() => undefined),
   markProviderReachable: mock(() => undefined),
+  commitRestoredSelection: undefined as unknown as ReturnType<typeof mock>,
   selectModel: mock((modelId: string) => {
+    const previousState = cloneProviderState();
     providerState.selectedModelId = modelId;
+    emitProviderStoreUpdate(previousState);
   }),
   selectReasoningEffort: mock((effort: string | null) => {
+    const previousState = cloneProviderState();
     providerState.selectedReasoningEffort = effort;
+    emitProviderStoreUpdate(previousState);
   }),
   selectProvider: mock((providerId: string) => {
+    const previousState = cloneProviderState();
     providerState.selectedProviderId = providerId;
+    providerState.selectedModelId = null;
+    providerState.selectedReasoningEffort = null;
+    emitProviderStoreUpdate(previousState);
   }),
 };
 
@@ -267,12 +285,86 @@ const toolsStoreState = {
   loadSettings: mock(async () => undefined),
 };
 
+const providerStoreSubscribers = new Set<
+  (
+    nextState: typeof providerState,
+    previousState: typeof providerState,
+  ) => void
+>();
+
+const cloneProviderState = () => ({
+  ...providerState,
+  providerConfigs: providerState.providerConfigs.map((provider) => ({ ...provider })),
+  modelsByProvider: Object.fromEntries(
+    Object.entries(providerState.modelsByProvider).map(([providerId, models]) => [
+      providerId,
+      models.map((model) => ({ ...model })),
+    ]),
+  ),
+});
+
+const createCommitRestoredSelectionMock = () =>
+  mock(
+    async (
+      selection: {
+        providerId: string;
+        modelId?: string | null;
+        reasoningEffort?: string | null;
+      },
+      options?: { isActive?: () => boolean }
+    ) => {
+      if (options?.isActive && !options.isActive()) {
+        return null;
+      }
+
+      const models = providerState.modelsByProvider[selection.providerId] ?? [];
+      const resolvedModelId =
+        selection.modelId && models.some((model) => model.id === selection.modelId && model.isEnabled !== false)
+          ? selection.modelId
+          : models.find((model) => model.isEnabled !== false)?.id ?? null;
+      if (!resolvedModelId) {
+        return null;
+      }
+
+      const previousState = cloneProviderState();
+      providerState.selectedProviderId = selection.providerId;
+      providerState.selectedModelId = resolvedModelId;
+      providerState.selectedReasoningEffort = selection.reasoningEffort ?? null;
+      emitProviderStoreUpdate(previousState);
+
+      return {
+        providerId: selection.providerId,
+        modelId: resolvedModelId,
+        reasoningEffort: selection.reasoningEffort ?? null,
+      };
+    }
+  );
+
+providerState.commitRestoredSelection = createCommitRestoredSelectionMock();
+
+const emitProviderStoreUpdate = (previousState: typeof providerState) => {
+  const nextState = cloneProviderState();
+  providerStoreSubscribers.forEach((listener) => listener(nextState, previousState));
+};
+
 const useProviderStoreMock = {
   getState: () => providerState,
   setState: (patch: Partial<typeof providerState>) => {
+    const previousState = cloneProviderState();
     Object.assign(providerState, patch);
+    emitProviderStoreUpdate(previousState);
   },
-  subscribe: () => () => undefined,
+  subscribe: (
+    listener: (
+      nextState: typeof providerState,
+      previousState: typeof providerState,
+    ) => void,
+  ) => {
+    providerStoreSubscribers.add(listener);
+    return () => {
+      providerStoreSubscribers.delete(listener);
+    };
+  },
 };
 
 const taskStoreSubscribers = new Set<
@@ -348,6 +440,29 @@ const taskStoreState = {
     );
     emitTaskStoreUpdate(previousTasks);
   }),
+  revertManualFeatureToDraft: mock(async (params: {
+    taskId: string;
+    title?: string | null;
+    description?: string | null;
+  }) => {
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+      task.id === params.taskId
+        ? {
+            ...task,
+            title: params.title ?? 'New feature',
+            description: params.description ?? '',
+            draft: true,
+            feature_slug: null,
+            assigned_branch: '',
+            branch_name: '',
+            execution_targets: [],
+            status: 'Pending',
+          }
+        : task
+    );
+    emitTaskStoreUpdate(previousTasks);
+  }),
   startTask: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
@@ -383,6 +498,54 @@ const taskStoreState = {
         : task
     );
     emitTaskStoreUpdate(previousTasks);
+  }),
+  promoteTaskContextProjects: mock(async (taskId: string, projectIds: string[]) => {
+    const promotedProjectIds = Array.from(new Set(projectIds));
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) => {
+      if (task.id !== taskId) {
+        return task;
+      }
+      const existingProjectIds = Array.isArray(task.project_ids) ? task.project_ids : [];
+      const existingContextProjectIds = Array.isArray(task.context_project_ids)
+        ? task.context_project_ids
+        : [];
+      const existingExecutionTargets = Array.isArray(task.execution_targets)
+        ? task.execution_targets
+        : [];
+      const existingTargetProjectIds = new Set(
+        existingExecutionTargets
+          .map((target) =>
+            target && typeof target === 'object' && 'projectId' in target
+              ? (target as { projectId?: unknown }).projectId
+              : null
+          )
+          .filter((projectId): projectId is string => typeof projectId === 'string' && projectId.length > 0)
+      );
+      return {
+        ...task,
+        status: 'InProgress',
+        project_ids: Array.from(new Set([...existingProjectIds, ...promotedProjectIds])),
+        context_project_ids: existingContextProjectIds.filter(
+          (projectId) => !promotedProjectIds.includes(projectId)
+        ),
+        execution_targets: [
+          ...existingExecutionTargets,
+          ...promotedProjectIds
+            .filter((projectId) => !existingTargetProjectIds.has(projectId))
+            .map((projectId) => ({
+              projectId,
+              branchName: 'feature/implement-checkout',
+              worktreeKey: `task-1-${projectId}`,
+            })),
+        ],
+      };
+    });
+    emitTaskStoreUpdate(previousTasks);
+    return {
+      task: taskStoreState.getTaskById(taskId),
+      promotedProjectIds,
+    };
   }),
   deleteManualFeatureDraft: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;
@@ -629,7 +792,26 @@ const gitBranchListMock = mock(async (repoPath: string) => (
 ));
 const dbGetConversationCompactionStateMock = mock(async () => null);
 const dbUpsertConversationCompactionStateMock = mock(async () => undefined);
+let dbConversationCounter = 0;
 let dbMessageCounter = 0;
+const createConversationMock = mock(async (params?: {
+  title?: string;
+  scopeMode?: AppMode;
+  taskId?: string | null;
+  groupId?: string | null;
+  projectId?: string | null;
+}) => ({
+  id: `db-conversation-${++dbConversationCounter}`,
+  title: params?.title ?? 'New Conversation',
+  description: '',
+  scope_mode: params?.scopeMode ?? 'Chat',
+  task_id: params?.taskId ?? null,
+  group_id: params?.groupId ?? null,
+  project_id: params?.projectId ?? null,
+  last_message: '',
+  message_count: 0,
+  updated_at: '2026-03-19T00:00:00.000Z',
+}));
 const createMessageMock = mock(
   async (
     conversationId: string,
@@ -681,6 +863,26 @@ const terminalCreateSessionFromChatMock = mock(
         : 'C:/repos/web/.macro/worktrees/task-1'),
     status: 'idle',
     last_command: null,
+    output: '',
+    exit_code: null,
+    timed_out: false,
+    updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
+const terminalRunCommandFromChatMock = mock(
+  async ({
+    sessionId,
+    command,
+    timeoutMs,
+  }: {
+    sessionId: string;
+    command: string;
+    timeoutMs?: number | null;
+  }) => ({
+    id: sessionId,
+    command,
+    timeout_ms: timeoutMs ?? null,
+    status: 'idle',
     output: '',
     exit_code: null,
     timed_out: false,
@@ -836,6 +1038,7 @@ const registerUseChatStoreMocks = async () => {
       getState: () => ({
         addTerminalLine: () => undefined,
         createSession: terminalCreateSessionFromChatMock,
+        runCommand: terminalRunCommandFromChatMock,
       }),
     },
   }));
@@ -856,6 +1059,15 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/workspaceToolExecutor', () => ({
     executeWorkspaceTool: mock(async () => undefined),
+    resolveExplicitMutatingToolProjectTargets: mock((toolName: string, args: Record<string, unknown>) => {
+      if (toolName === 'terminal_create_session' && typeof args.project_id === 'string') {
+        return [args.project_id];
+      }
+      if (typeof args.project_id === 'string') {
+        return [args.project_id];
+      }
+      return [];
+    }),
   }));
 
   mock.module('../services/preferences', () => ({
@@ -917,6 +1129,7 @@ const registerUseChatStoreMocks = async () => {
       const { invoke } = await import('@tauri-apps/api/core');
       return invoke('ai_cancel_stream', { requestId });
     },
+    createConversation: createConversationMock,
     createMessage: createMessageMock,
     dbGetConversationCompactionState: dbGetConversationCompactionStateMock,
     dbUpsertConversationCompactionState: dbUpsertConversationCompactionStateMock,
@@ -995,15 +1208,22 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
-    resolveProjectExecutionContext: mock(async () => ({
+    resolveProjectExecutionContext: mock(() => ({
       groupName: 'Macro',
       groupId: 'group-1',
       projectName: 'Web',
       projectId: 'project-1',
       focusedProjectId: 'project-1',
       projectIds: ['project-1'],
+      actionableProjectIds: ['project-1'],
+      contextProjectIds: [],
       taskId: null,
       branchName: 'develop',
+      workspacePath: 'C:/repos/web',
+      defaultWorkspacePath: 'C:/repos/web/.macro/worktrees/task-1',
+      workspacePathsByProjectId: {
+        'project-1': 'C:/repos/web/.macro/worktrees/task-1',
+      },
       virtualRootEnabled: false,
       projectMounts: [],
     })),
@@ -1014,6 +1234,16 @@ const registerUseChatStoreMocks = async () => {
 const loadChatStore = async () => {
   importCounter += 1;
   return import(`./useChatStore.ts?test=${importCounter}`);
+};
+
+const loadAiSelectionsPreference = async () => {
+  const preferences = await import('../services/preferences');
+  return preferences.loadPreference(preferences.PREF_KEYS.AI_CONTEXT_SELECTIONS);
+};
+
+const saveAiSelectionsPreference = async (value: unknown) => {
+  const preferences = await import('../services/preferences');
+  await preferences.savePreference(preferences.PREF_KEYS.AI_CONTEXT_SELECTIONS, value);
 };
 
 const createConversation = (id: string, projectId = 'project-1'): Conversation => ({
@@ -1189,11 +1419,23 @@ const flushAsyncWork = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+const createDeferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+};
+
 const getLatestArchitectToolHandler = () => {
   const lastCall = ((streamChatMock as unknown as {
     mock: { calls: Array<Array<unknown>> };
   }).mock.calls.at(-1)?.[0] ?? null) as {
-    onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+    onToolCall?: (
+      toolName: string,
+      args: Record<string, unknown>,
+      toolCallId?: string
+    ) => Promise<unknown>;
   } | null;
   expect(lastCall?.onToolCall).toBeDefined();
   if (!lastCall?.onToolCall) {
@@ -1320,14 +1562,25 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
 
+    providerState.providerConfigs = DEFAULT_PROVIDER_CONFIGS.map((provider) => ({ ...provider }));
+    providerState.modelsByProvider = Object.fromEntries(
+      Object.entries(DEFAULT_MODELS_BY_PROVIDER).map(([providerId, models]) => [
+        providerId,
+        models.map((model) => ({ ...model })),
+      ]),
+    ) as Record<string, Array<{ id: string; name: string; isEnabled: boolean }>>;
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
+    providerState.selectedReasoningEffort = null;
     providerState.selectedSupportsNativeToolCalling = () => false;
+    providerState.commitRestoredSelection = createCommitRestoredSelectionMock();
     providerState.loadProviderModels.mockClear();
     providerState.scanModelsForProvider.mockClear();
     providerState.markProviderReachable.mockClear();
     providerState.selectModel.mockClear();
     providerState.selectProvider.mockClear();
+    providerState.selectReasoningEffort.mockClear();
+    providerStoreSubscribers.clear();
 
     architectPlans.clear();
     architectPlanMessages.clear();
@@ -1340,11 +1593,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.refreshFromPlan.mockClear();
     taskStoreState.clearPlanRuntimeState.mockClear();
     taskStoreState.finalizeManualFeatureDraft.mockClear();
+    taskStoreState.revertManualFeatureToDraft.mockClear();
     taskStoreState.startTask.mockClear();
     taskStoreState.markTaskAwaitingResponse.mockClear();
     taskStoreState.retryTask.mockClear();
+    taskStoreState.promoteTaskContextProjects.mockClear();
     taskStoreState.deleteManualFeatureDraft.mockClear();
     tauriAvailable = false;
+    dbConversationCounter = 0;
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
@@ -1364,6 +1620,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getChatSnapshotMock.mockClear();
     updateConversationDetailsMock.mockClear();
     gitBranchListMock.mockClear();
+    createConversationMock.mockClear();
     createMessageMock.mockClear();
     dbGetConversationCompactionStateMock.mockClear();
     dbUpsertConversationCompactionStateMock.mockClear();
@@ -1375,6 +1632,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     hydrateNeedsForPlanMock.mockClear();
     replaceNeedsForPlanMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
+    terminalRunCommandFromChatMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
     appState.activateArchitectPlan.mockClear();
@@ -1407,6 +1665,714 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('restores the provider, model, and thinking for the selected conversation', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
+      'provider-2': [{ id: 'model-2a', name: 'Model 2A', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+        'conv-b': {
+          providerId: 'provider-2',
+          modelId: 'model-2a',
+          reasoningEffort: 'high',
+          updatedAt: '2026-03-19T00:01:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-a': {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+        },
+        'conv-b': {
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a'),
+      createChatSnapshotConversation('conv-b'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1a');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+
+    await useChatStore.getState().selectConversation('conv-b');
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+    expect(providerState.selectedProviderId).toBe('provider-2');
+    expect(providerState.selectedModelId).toBe('model-2a');
+    expect(providerState.selectedReasoningEffort).toBe('high');
+  });
+
+  it('marks restoreStatus as resolving while a manual conversation switch restores the AI selection', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
+      'provider-2': [{ id: 'model-2a', name: 'Model 2A', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+        'conv-b': {
+          providerId: 'provider-2',
+          modelId: 'model-2a',
+          reasoningEffort: 'high',
+          updatedAt: '2026-03-19T00:01:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-a': {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+        },
+        'conv-b': {
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a'),
+      createChatSnapshotConversation('conv-b'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    const provider2Deferred = createDeferred();
+    const baseCommit = createCommitRestoredSelectionMock();
+    providerState.commitRestoredSelection = mock(async (selection, options) => {
+      if (selection.providerId === 'provider-2') {
+        await provider2Deferred.promise;
+      }
+      return baseCommit(selection, options);
+    });
+
+    const selectionPromise = useChatStore.getState().selectConversation('conv-b');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+    expect(useChatStore.getState().restoreStatus).toBe('resolving');
+
+    provider2Deferred.resolve();
+    await selectionPromise;
+
+    expect(useChatStore.getState().restoreStatus).toBe('ready');
+    expect(providerState.selectedProviderId).toBe('provider-2');
+    expect(providerState.selectedModelId).toBe('model-2a');
+    expect(providerState.selectedReasoningEffort).toBe('high');
+  });
+
+  it('keeps the latest manual conversation switch when two restores race', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
+      'provider-2': [{ id: 'model-2a', name: 'Model 2A', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+        'conv-b': {
+          providerId: 'provider-2',
+          modelId: 'model-2a',
+          reasoningEffort: 'high',
+          updatedAt: '2026-03-19T00:01:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-a': {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+        },
+        'conv-b': {
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a'),
+      createChatSnapshotConversation('conv-b'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    const provider1Deferred = createDeferred();
+    const provider2Deferred = createDeferred();
+    const provider1Completed = createDeferred();
+    const provider2Completed = createDeferred();
+    const baseCommit = createCommitRestoredSelectionMock();
+    providerState.commitRestoredSelection = mock(async (selection, options) => {
+      if (selection.providerId === 'provider-2') {
+        await provider2Deferred.promise;
+      }
+      if (selection.providerId === 'provider-1') {
+        await provider1Deferred.promise;
+      }
+      const committed = await baseCommit(selection, options);
+      if (selection.providerId === 'provider-1') {
+        provider1Completed.resolve();
+      }
+      if (selection.providerId === 'provider-2') {
+        provider2Completed.resolve();
+      }
+      return committed;
+    });
+
+    const firstSwitch = useChatStore.getState().selectConversation('conv-b');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const secondSwitch = useChatStore.getState().selectConversation('conv-a');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    provider1Deferred.resolve();
+    await secondSwitch;
+    provider2Deferred.resolve();
+    await firstSwitch;
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-a');
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1a');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+  });
+
+  it('keeps the latest provider switch when provider restores race within a conversation', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
+      'provider-2': [{ id: 'model-2a', name: 'Model 2A', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-a': {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2a',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [createChatSnapshotConversation('conv-a')];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    const provider1Deferred = createDeferred();
+    const provider2Deferred = createDeferred();
+    const provider1Completed = createDeferred();
+    const provider2Completed = createDeferred();
+    const baseCommit = createCommitRestoredSelectionMock();
+    providerState.commitRestoredSelection = mock(async (selection, options) => {
+      if (selection.providerId === 'provider-2') {
+        await provider2Deferred.promise;
+      }
+      if (selection.providerId === 'provider-1') {
+        await provider1Deferred.promise;
+      }
+      const committed = await baseCommit(selection, options);
+      if (selection.providerId === 'provider-1') {
+        provider1Completed.resolve();
+      }
+      if (selection.providerId === 'provider-2') {
+        provider2Completed.resolve();
+      }
+      return committed;
+    });
+
+    providerState.selectProvider('provider-2');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    providerState.selectProvider('provider-1');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    provider1Deferred.resolve();
+    await provider1Completed.promise;
+    provider2Deferred.resolve();
+    await provider2Completed.promise;
+    await flushAsyncWork();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1a');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+  });
+
+  it('remembers the last model and thinking used for each provider within a conversation', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1b', name: 'Model 1B', isEnabled: true }],
+      'provider-2': [{ id: 'model-2b', name: 'Model 2B', isEnabled: true }],
+    };
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(createArchitectStoreState());
+
+    useProviderStoreMock.setState({
+      selectedProviderId: 'provider-1',
+      selectedModelId: 'model-1b',
+      selectedReasoningEffort: 'low',
+    });
+    await flushAsyncWork();
+
+    useProviderStoreMock.setState({
+      selectedProviderId: 'provider-2',
+      selectedModelId: 'model-2b',
+      selectedReasoningEffort: 'high',
+    });
+    await flushAsyncWork();
+
+    providerState.selectProvider('provider-1');
+    await flushAsyncWork();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1b');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+
+    providerState.selectProvider('provider-2');
+    await flushAsyncWork();
+
+    expect(providerState.selectedProviderId).toBe('provider-2');
+    expect(providerState.selectedModelId).toBe('model-2b');
+    expect(providerState.selectedReasoningEffort).toBe('high');
+  });
+
+  it('inherits only the active provider-model-thinking pair when creating a new conversation', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Remote',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [
+        { id: 'model-1a', name: 'Model 1A', isEnabled: true },
+        { id: 'model-1b', name: 'Model 1B', isEnabled: true },
+      ],
+      'provider-2': [{ id: 'model-2b', name: 'Model 2B', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-2',
+          modelId: 'model-2b',
+          reasoningEffort: 'high',
+          updatedAt: '2026-03-19T00:02:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-source': {
+          providerId: 'provider-2',
+          modelId: 'model-2b',
+          reasoningEffort: 'high',
+          updatedAt: '2026-03-19T00:02:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-source': {
+          'provider-1': {
+            modelId: 'model-1b',
+            reasoningEffort: 'low',
+            updatedAt: '2026-03-19T00:00:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2b',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:02:00.000Z',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'medium',
+            updatedAt: '2026-03-19T00:01:00.000Z',
+          },
+          'provider-2': {
+            modelId: 'model-2b',
+            reasoningEffort: 'high',
+            updatedAt: '2026-03-19T00:02:00.000Z',
+          },
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-source'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-source')],
+        selectedConversationId: 'conv-source',
+        selectedConversationIdsByMode: { Architect: 'conv-source' },
+      }),
+    );
+
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+    const createdConversation = await useChatStore
+      .getState()
+      .createConversation('New Conversation', null, 'project-1');
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().selectedConversationId).toBe(createdConversation.id);
+    expect(providerState.selectedProviderId).toBe('provider-2');
+    expect(providerState.selectedModelId).toBe('model-2b');
+    expect(providerState.selectedReasoningEffort).toBe('high');
+
+    providerState.selectProvider('provider-1');
+    await flushAsyncWork();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1a');
+    expect(providerState.selectedReasoningEffort).toBe('medium');
+  });
+
+  it('migrates legacy AI context selections to version 2 and preserves the restored selection', async () => {
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 1,
+      modeSelections: {
+        Architect: {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+          updatedAt: '2026-03-19T00:00:00.000Z',
+        },
+      },
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1a');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+
+    const storedSelections = await loadAiSelectionsPreference();
+    expect(storedSelections).toMatchObject({
+      version: 2,
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'low',
+        },
+      },
+      providerSelectionsByConversationId: {
+        'conv-a': {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+          },
+        },
+      },
+      providerSelectionsByMode: {
+        Architect: {
+          'provider-1': {
+            modelId: 'model-1a',
+            reasoningEffort: 'low',
+          },
+        },
+      },
+    });
   });
 
   it('keeps strategy mutations isolated when the strategy guard loads before the plan service mocks', async () => {
@@ -3227,18 +4193,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('plan_get');
     expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_update');
-    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
-    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
+    expect(streamOptions.allowedToolIds).toContain('need_delete');
+    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
     );
   });
 
-  it('adds destructive Architect tools when the autonomy profile is full', async () => {
+  it('migrates the legacy guarded autonomy profile to strict tool risk filtering', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     localStorage.setItem(
       'macro_architectToolAutonomyProfile',
-      JSON.stringify('full')
+      JSON.stringify('guarded')
     );
 
     const { useChatStore } = await loadChatStore();
@@ -3265,8 +4231,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }).mock.calls[0]?.[0] ?? null) as {
       allowedToolIds: string[];
     };
-    expect(streamOptions.allowedToolIds).toContain('need_delete');
-    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
   it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {
@@ -3646,6 +4612,140 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toMatchObject({
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
+    });
+  });
+
+  it('keeps a standalone manual feature as draft after the first assistant generation fails, then regenerates metadata on retry', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+
+    sendChatNonStreamingMock
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Quick export',
+          description: 'Add a quick CSV export from the table.',
+          featureSlug: 'quick-export',
+        })
+      )
+      .mockImplementationOnce(async () =>
+        JSON.stringify({
+          title: 'Retry export',
+          description: 'Retry the CSV export initialization.',
+          featureSlug: 'retry-export',
+        })
+      );
+
+    streamChatMock
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onError?: (error: Error) => void;
+        };
+        options.onError?.(new Error('Assistant unavailable.'));
+        return { usage: null };
+      }) as typeof streamChatMock)
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'C’est reparti.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'New feature',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ajoute un export CSV rapide depuis le tableau.',
+      taskId: 'manual-task-1',
+    });
+
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+
+    expect(taskStoreState.revertManualFeatureToDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'New feature',
+      description: '',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: true,
+      status: 'Pending',
+      feature_slug: null,
+      branch_name: '',
+    });
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
+    ).toMatchObject({
+      title: 'New feature',
+      description: '',
+    });
+
+    const firstUserMessage = useChatStore
+      .getState()
+      .getConversationMessages('manual-conv')
+      .find((message: { role: string }) => message.role === 'user');
+    expect(firstUserMessage).toBeDefined();
+
+    await useChatStore.getState().editMessage(
+      (firstUserMessage as { id: string }).id,
+      (firstUserMessage as { content: string }).content,
+    );
+
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(2);
+    expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenLastCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'Retry export',
+      description: 'Retry the CSV export initialization.',
+      featureSlug: 'retry-export',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: false,
+      status: 'InProgress',
+      feature_slug: 'retry-export',
+      branch_name: 'feature/retry-export',
+    });
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
+    ).toMatchObject({
+      title: 'Retry export',
+      description: 'Retry the CSV export initialization.',
     });
   });
 
@@ -5459,6 +6559,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -5512,6 +6613,271 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const parsed = JSON.parse(String(result));
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('promotes a context project before opening an explicit implement terminal session', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/implement-checkout',
+            worktreeKey: 'task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Ouvre un terminal sur le projet API.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-2',
+    });
+
+    expect(taskStoreState.promoteTaskContextProjects).toHaveBeenCalledWith(
+      'task-1',
+      ['project-2'],
+      { triggerTool: 'terminal_create_session' }
+    );
+    expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
+      projectId: 'project-2',
+      cwd: null,
+    });
+    expect(taskStoreState.getTaskById('task-1')).toMatchObject({
+      project_ids: ['project-1', 'project-2'],
+      context_project_ids: [],
+      status: 'InProgress',
+    });
+
+    const resultText = String(result);
+    const newlineIndex = resultText.indexOf('\n');
+    const notice = resultText.slice(0, newlineIndex);
+    const sessionJson = resultText.slice(newlineIndex + 1);
+    expect(notice).toBe(
+      '[macro_scope_promotion] {"promoted_project_ids":["project-2"],"retried_tool":"terminal_create_session"}'
+    );
+    const parsed = JSON.parse(sessionJson);
+    expect(parsed.cwd).toBe('C:/repos/api/.macro/worktrees/task-1');
+  });
+
+  it('returns the user denial reason when a pending tool approval is rejected', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const toolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolId).toBe(
+      'terminal_run'
+    );
+
+    useChatStore
+      .getState()
+      .denyPendingToolApproval('implement-conv', 'Stay inside the workspace only.');
+
+    await expect(toolCallPromise).resolves.toBe(
+      'Tool terminal_run was denied by the user. User reason: Stay inside the workspace only.'
+    );
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+  });
+
+  it('clears conversation-scoped approval grants when the user switches conversations', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+        {
+          ...createConversation('implement-conv-2'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement fallback',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const firstToolCall = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+    useChatStore.getState().approvePendingToolApprovalForConversation('implement-conv');
+    await firstToolCall;
+
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toHaveLength(1);
+
+    useChatStore.getState().selectConversation('implement-conv-2');
+
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toBeUndefined();
+
+    const secondToolCall = onToolCall(
+      'terminal_run',
+      { command: 'npm test -- --watch=false', session_id: 'session-1' },
+      'tool-call-2'
+    );
+
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe(
+      'tool-call-2'
+    );
+
+    useChatStore.getState().denyPendingToolApproval('implement-conv');
+    await expect(secondToolCall).resolves.toBe('Tool terminal_run was denied by the user.');
+  });
+
+  it('cancels a pending approval when the conversation stream is stopped', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lance une commande en terminal.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const toolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test', session_id: 'session-1' },
+      'tool-call-1'
+    );
+
+    await flushAsyncWork();
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+
+    useChatStore.getState().stopConversationStream('implement-conv');
+
+    await expect(toolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
+    ).toBeUndefined();
   });
 
   it('rejects sends without a selected provider or model before committing any message', async () => {

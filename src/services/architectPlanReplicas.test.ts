@@ -451,6 +451,34 @@ describe('architectPlanService replicas', () => {
     ).rejects.toThrow(/expected project replicas are missing: api/i);
   });
 
+  it('does not let one registered replica prove availability for every project in plan metadata', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [
+        {
+          id: 'task-api',
+          title: 'Implement API',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'api',
+          projectIds: ['api'],
+        },
+      ],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/api', plan);
+
+    const { service } = await loadArchitectPlanService();
+    const loaded = await service.getArchitectPlan('develop', plan.id);
+
+    expect(loaded).not.toBeNull();
+    expect(loaded?.replicationState).toBe('missing_projects');
+    expect(loaded?.expectedProjectIds).toEqual(['web', 'api']);
+    expect(loaded?.availableProjectIds).toEqual(['api']);
+    expect(loaded?.missingProjectIds).toEqual(['web']);
+  });
+
   it('keeps reporting true content divergence between repositories', async () => {
     const webPlan = buildPlan({
       projectIds: ['web', 'api'],

@@ -301,6 +301,7 @@ export function usePerformanceMonitor() {
 export function useComponentPerformance(componentName: string) {
   const renderCountRef = useRef(0);
   const renderStartRef = useRef(performance.now());
+  const getRenderCount = useCallback(() => renderCountRef.current, []);
 
   useEffect(() => {
     if (!PERFORMANCE_MONITORING_ENABLED) {
@@ -320,7 +321,7 @@ export function useComponentPerformance(componentName: string) {
   });
 
   return {
-    renderCount: renderCountRef.current,
+    getRenderCount,
   };
 }
 

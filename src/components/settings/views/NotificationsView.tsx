@@ -327,7 +327,11 @@ export const NotificationsView: React.FC = () => {
 
   const handleClearNotificationCenter = useCallback(async () => {
     await runDebugAction('clear:center', async () => {
-      clearNotificationCenter();
+      if (typeof clearNotificationCenter === 'function') {
+        clearNotificationCenter();
+      } else {
+        useNotificationCenterStore.setState({ items: [] });
+      }
       return t(
         'settings.notificationsDebug.clearCenterResult',
         'Notification center cleared.'

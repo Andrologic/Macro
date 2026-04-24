@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useTaskStore } from '../../stores/useTaskStore';
 import { TaskStatus } from '../../types';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
@@ -11,6 +12,7 @@ import {
   resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
+import { resolveTaskMergeWorkflowPresentationState } from '../../services/taskMergeWorkflowPresentation';
 
 type TaskSortOption = 'updated' | 'created' | 'status';
 
@@ -40,6 +42,9 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   } =
     useChatStore();
   const [sortOption, setSortOption] = useState<TaskSortOption>('updated');
+  const mergeWorkflowRuntimeByTaskId = useTaskStore(
+    (state) => state.mergeWorkflowRuntimeByTaskId ?? {}
+  );
   const runningTaskIds = useMemo(
     () =>
       resolveRunningTaskIds({
@@ -133,9 +138,21 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
               const conversation = getTaskConversation(task.id);
               const isSelected = conversation?.id === selectedConversationId;
               const isAssistantRunning = runningTaskIds.has(task.id);
+              const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
+                mergeWorkflowRuntimeByTaskId[task.id] ?? null,
+                (
+                  task as typeof task & {
+                    merge_workflow_summary?: Parameters<
+                      typeof resolveTaskMergeWorkflowPresentationState
+                    >[1];
+                  }
+                ).merge_workflow_summary ?? null
+              );
               const indicatorState = resolveTaskStatusIndicatorState(
                 task.status,
-                isAssistantRunning
+                isAssistantRunning,
+                null,
+                mergeWorkflowPresentation
               );
               const indicatorColor = isAssistantRunning
                 ? 'text-amber-500'

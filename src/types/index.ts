@@ -112,6 +112,9 @@ export interface PlanNode {
   projectId?: string;
   projectIds?: string[];
   estimatedTime?: string;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+  mergedAt?: string | null;
 }
 
 export interface PlanEdge {
@@ -137,6 +140,9 @@ export interface TaskExecutionTarget {
   projectId: string;
   branchName: string;
   targetBranchName?: string;
+  // `worktree` tasks run in dedicated task worktrees, while
+  // `repository_root` targets operate directly in the parent repository.
+  executionKind?: 'worktree' | 'repository_root';
   worktreeKey: string;
   repoPath?: string;
   planBranchName?: string;
@@ -210,6 +216,10 @@ export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
 export type ToolCategory = 'git' | 'filesystem' | 'web' | 'database' | 'terminal' | 'ai' | 'productivity' | 'external';
 export type MCPServerStatus = 'online' | 'offline' | 'degraded' | 'unconfigured';
 export type MCPServerCategory = 'database' | 'productivity' | 'communication' | 'development' | 'ai' | 'other';
+export type ToolRiskLevel = 'strict' | 'balanced' | 'yolo';
+export type ToolSecurityActionGroup = 'observe' | 'change' | 'escape';
+export type ToolSecurityDecision = 'allow' | 'ask' | 'deny';
+export type ToolApprovalCategory = 'modify' | 'delete' | 'web' | 'system';
 
 export interface ApiContract {
   id: string;
@@ -364,7 +374,11 @@ export interface CodeDiff {
   language: string;
 }
 
-export type ToolTraceStatus = 'running' | 'done';
+export type ToolTraceStatus =
+  | 'running'
+  | 'pending_approval'
+  | 'denied'
+  | 'done';
 
 export interface ToolTrace {
   tool_call_id: string;
@@ -372,6 +386,25 @@ export interface ToolTrace {
   detail?: string;
   status: ToolTraceStatus;
   visible_offset?: number;
+}
+
+export interface PendingToolApproval {
+  conversationId: string;
+  assistantMessageId: string;
+  toolCallId: string;
+  toolId: string;
+  actionGroup: ToolSecurityActionGroup;
+  riskLevel: ToolRiskLevel;
+  isDestructive?: boolean;
+  summary: string;
+  detail?: string;
+  rememberKey: string;
+}
+
+export interface ConversationApprovalGrant {
+  toolId: string;
+  rememberKey: string;
+  createdAt: string;
 }
 
 export type ContextFootprintThreshold =
