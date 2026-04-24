@@ -40,6 +40,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { notify } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
@@ -64,6 +65,7 @@ import {
   type PlanSelectorRefreshState,
 } from './planSelectorState';
 import { useChatStore } from '../../stores/useChatStore';
+import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 
 interface PlanSelectorProps {
   className?: string;
@@ -197,6 +199,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
     return activePlan ? getArchitectPlanPrimaryName(activePlan) : t('architect.planSelector.selectPlan', 'Select plan');
   }, [activePlan, activePlanContext, activePlanId, t]);
+  const replicaRepairPresentation = useMemo(() => {
+    if (!replicaRepair) return null;
+    const missingCount = replicaRepair.divergence.replicas.filter((replica) => replica.missing).length;
+    return presentReplicaIssue({
+      reason: replicaRepair.divergence.reason,
+      planId: replicaRepair.divergence.planId,
+      missingCount,
+      technicalMessage: replicaRepair.message,
+    });
+  }, [replicaRepair]);
 
   const openReplicaRepair = (
     error: unknown,
@@ -1279,12 +1291,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl">
             <div className="px-5 py-4 border-b border-border">
-              <h3 className="text-sm font-semibold text-foreground">
-                {t('architect.planSelector.replicaRepairTitle', 'Repair plan metadata replicas')}
-              </h3>
-              <p className="mt-2 text-xs text-muted-foreground">
-                {replicaRepair.message}
-              </p>
+              {replicaRepairPresentation && (
+                <ActionableErrorCallout
+                  presentation={replicaRepairPresentation}
+                  compact
+                />
+              )}
             </div>
 
             <div className="px-5 py-4 space-y-2 text-xs text-muted-foreground">

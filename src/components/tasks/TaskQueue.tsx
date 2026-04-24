@@ -63,6 +63,8 @@ import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
+import { presentServiceError } from '../../services/degradedErrorPresentation';
 
 interface TaskQueueProps {
   className?: string;
@@ -1542,6 +1544,40 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       }),
     [conversationRuntimeById, conversations]
   );
+  const selectedTaskForError = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [selectedTaskId, tasks]
+  );
+  const taskErrorPresentation = useMemo(
+    () =>
+      taskError
+        ? presentServiceError(taskError, {
+            projectId: selectedTaskForError?.project_id ?? selectedProjectId,
+          })
+        : null,
+    [selectedProjectId, selectedTaskForError?.project_id, taskError]
+  );
+  const taskErrorActionLabel =
+    taskErrorPresentation?.primaryAction === 'open_project_settings' ||
+    taskErrorPresentation?.primaryAction === 'configure_git'
+      ? t('projects.projectSettings', 'Project settings')
+      : t('common.retry', 'Retry');
+  const handleTaskErrorAction = () => {
+    if (!taskErrorPresentation) return;
+    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    if (
+      (taskErrorPresentation.primaryAction === 'open_project_settings' ||
+        taskErrorPresentation.primaryAction === 'configure_git') &&
+      targetProjectId
+    ) {
+      setSelectedProject(targetProjectId);
+      openProjectGitFlowModal(targetProjectId);
+      return;
+    }
+    if (selectedTaskForError) {
+      void activateTask(selectedTaskForError.id);
+    }
+  };
 
   if (isWorkspaceMissing) {
     return (
@@ -1648,6 +1684,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {taskErrorPresentation && (
+        <div className="border-b border-border px-4 py-3">
+          <ActionableErrorCallout
+            presentation={taskErrorPresentation}
+            actionLabel={taskErrorActionLabel}
+            onAction={handleTaskErrorAction}
+            compact
+          />
         </div>
       )}
 
