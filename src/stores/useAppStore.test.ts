@@ -286,6 +286,7 @@ let bootstrapProjectGroups: ProjectGroupRecord[] = [];
 let bootstrapPlan: unknown = null;
 let bootstrapPlanNodes: unknown[] = [];
 let bootstrapPredictedBranches: unknown[] = [];
+let tauriAvailable = false;
 let ensureProjectGroupPlanResult: { action: string; plan: PlanRecord; needs: [] } | null =
   null;
 
@@ -324,6 +325,11 @@ const getAppBootstrapMock = mock(async () => ({
   projectGroups: bootstrapProjectGroups,
   planNodes: bootstrapPlanNodes,
   predictedBranches: bootstrapPredictedBranches,
+}));
+const workspaceRecoverMissingMetadataMock = mock(async () => ({
+  status: 'none',
+  restoredCommit: null,
+  message: null,
 }));
 const ensureProjectGroupPlanMock = mock(async () => {
   if (ensureProjectGroupPlanResult?.plan) {
@@ -480,7 +486,8 @@ const registerUseAppStoreMocks = async () => {
   }));
 
   registerMockModulePair('../services/tauriIpc', () => ({
-    isTauriAvailable: () => false,
+    isTauriAvailable: () => tauriAvailable,
+    workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
   }));
 
   registerMockModulePair('../utils/devLogger', () => ({
@@ -505,6 +512,7 @@ describe('useAppStore architect plan resolution', () => {
     bootstrapPlan = null;
     bootstrapPlanNodes = [];
     bootstrapPredictedBranches = [];
+    tauriAvailable = false;
     ensureProjectGroupPlanResult = null;
     projectContexts.clear();
     planById.clear();
@@ -514,6 +522,18 @@ describe('useAppStore architect plan resolution', () => {
     getArchitectPlanNeedsMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
+    getAppBootstrapMock.mockImplementation(async () => ({
+      plan: bootstrapPlan,
+      projectGroups: bootstrapProjectGroups,
+      planNodes: bootstrapPlanNodes,
+      predictedBranches: bootstrapPredictedBranches,
+    }));
+    workspaceRecoverMissingMetadataMock.mockClear();
+    workspaceRecoverMissingMetadataMock.mockImplementation(async () => ({
+      status: 'none',
+      restoredCommit: null,
+      message: null,
+    }));
     ensureProjectGroupPlanMock.mockClear();
     consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
@@ -565,6 +585,63 @@ describe('useAppStore architect plan resolution', () => {
     });
     expect(selectorState.nextActivePlanId).toBe(
       useAppStore.getState().activeArchitectPlanId
+    );
+  });
+
+  it('recovers metadata locally without pulling when the initial bootstrap fails', async () => {
+    tauriAvailable = true;
+    const recoveredGroup = buildProjectGroup({
+      id: 'group-recovered',
+      projects: [
+        {
+          id: 'project-recovered',
+          name: 'Recovered',
+          path: '/repos/recovered',
+          gitFlowSettings: { baseBranch: 'develop' },
+        },
+      ],
+    });
+    getAppBootstrapMock
+      .mockImplementationOnce(async () => {
+        throw new Error('metadata missing');
+      })
+      .mockImplementationOnce(async () => ({
+        plan: null,
+        projectGroups: [recoveredGroup],
+        planNodes: [],
+        predictedBranches: [],
+      }));
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initializeCritical();
+
+    expect(workspaceRecoverMissingMetadataMock.mock.calls).toHaveLength(1);
+    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
+      attemptPull: false,
+    });
+    expect(useAppStore.getState().projectGroups).toHaveLength(1);
+    expect(useAppStore.getState().projectGroups[0]?.id).toBe('group-recovered');
+    expect(useAppStore.getState().lastError).toBeNull();
+  });
+
+  it('opens an empty degraded shell when bootstrap and local recovery fail', async () => {
+    tauriAvailable = true;
+    getAppBootstrapMock.mockImplementation(async () => {
+      throw new Error('metadata corrupt');
+    });
+    workspaceRecoverMissingMetadataMock.mockImplementation(async () => {
+      throw new Error('local recovery blocked');
+    });
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initializeCritical();
+
+    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
+      attemptPull: false,
+    });
+    expect(useAppStore.getState().projectGroups).toEqual([]);
+    expect(useAppStore.getState().lastError).toContain(
+      'Macro opened an empty shell',
     );
   });
 
