@@ -28,6 +28,10 @@ import {
   getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
 import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
+import {
   getTaskRepositoryDescriptors,
   type ReviewRepositoryUiState,
   type ReviewTaskSummary,
@@ -58,6 +62,7 @@ import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface TaskQueueProps {
   className?: string;
@@ -571,6 +576,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId,
     projectGroups,
     openProjectGitFlowModal,
+    openProjectModal,
     setSelectedProject,
     setSelectedTask,
   } = useAppStore(useShallow((state) => ({
@@ -579,6 +585,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId: state.selectedTaskId,
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
+    openProjectModal: state.openProjectModal,
     setSelectedProject: state.setSelectedProject,
     setSelectedTask: state.setSelectedTask,
   })));
@@ -775,6 +782,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
 
+    if (isWorkspaceMissing) {
+      notify.error(
+        workspaceState.kind === 'noProjectAvailable'
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+      );
+      return;
+    }
+
     if (pendingTaskId || !selectedGroupId) return;
     const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
     const actionableProjectIds =
@@ -963,6 +979,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const workspaceState = resolveProjectWorkspaceState({
+    projectGroups,
+    selectedGroupId,
+    selectedProjectId,
+  });
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const scopedReadOnlyProjects = useMemo(
     () =>
       scopedReadOnlyProjectIds
@@ -1523,15 +1545,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     [conversationRuntimeById, conversations]
   );
 
-  if (!selectedGroupId) {
+  if (isWorkspaceMissing) {
     return (
       <aside className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}>
-        <div className="text-center px-6">
-          <Icon name="list-todo" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
-          <p className="text-muted-foreground text-sm">
-            {t('implement.selectProject', 'Select a project to view tasks')}
-          </p>
-        </div>
+        <ProjectWorkspaceEmptyState
+          stateKind={workspaceState.kind}
+          onPrimaryAction={() => openProjectModal(null)}
+        />
       </aside>
     );
   }

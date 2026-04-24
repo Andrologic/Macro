@@ -23,6 +23,10 @@ import {
   getGlobalProjectById,
   getRepositoryScopedProjectIds,
 } from '../../services/globalProjects';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
@@ -34,6 +38,7 @@ import { ToolApprovalFooter } from './ToolApprovalFooter';
 import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -394,6 +399,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activePlanContext,
     planNodes,
     predictedBranches,
+    openProjectModal,
   } = useAppStore(useShallow((state) => ({
     mode: state.mode,
     agentType: state.agentType,
@@ -406,6 +412,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activePlanContext: state.activePlanContext,
     planNodes: state.planNodes,
     predictedBranches: state.predictedBranches,
+    openProjectModal: state.openProjectModal,
   })));
   const {
     conversations,
@@ -629,6 +636,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => getRepositoryScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const isModeProjectWorkspaceMissing =
+    (mode === 'Architect' && isWorkspaceMissing && !activeArchitectPlanId) ||
+    (mode === 'Implement' && isWorkspaceMissing && !selectedTask);
   const selectedTaskScopedProjectIds = useMemo(() => {
     if (selectedTaskProjectIds.length === 0) {
       return [];
@@ -667,6 +687,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
   const isComposerDisabled =
     isConversationPending ||
+    isModeProjectWorkspaceMissing ||
     isImplementTaskSelectionMissing ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
@@ -1338,6 +1359,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 );
               })}
             </div>
+          ) : isModeProjectWorkspaceMissing ? (
+            <ProjectWorkspaceEmptyState
+              stateKind={workspaceState.kind}
+              onPrimaryAction={() => openProjectModal(null)}
+            />
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
@@ -1452,6 +1478,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 type="button"
                 onClick={() => void handleGenerateStrategy()}
                 disabled={
+                  isModeProjectWorkspaceMissing ||
                   !activeArchitectPlanId ||
                   isConversationPending ||
                   isBusySending ||
@@ -1459,6 +1486,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 }
                 className={cn(
                   'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                  isModeProjectWorkspaceMissing ||
                   !activeArchitectPlanId ||
                     isConversationPending ||
                     isBusySending ||
@@ -1467,7 +1495,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
                   title={
-                    !activeArchitectPlanId
+                    isModeProjectWorkspaceMissing
+                      ? workspaceState.kind === 'noProjectAvailable'
+                        ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                        : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                      : !activeArchitectPlanId
                       ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
                       : !hasExistingStrategy && activePlanNeedsCount === 0
                         ? t('architect.generateStrategyNeedPrompt', 'Add at least one need before generating a strategy')
@@ -1591,6 +1623,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     placeholder={
                       isConversationPending
                         ? t('chat.loadingConversation', 'Restoring conversation...')
+                      : isModeProjectWorkspaceMissing
+                        ? workspaceState.kind === 'noProjectAvailable'
+                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
                         : isImplementComposerInKickoffMode

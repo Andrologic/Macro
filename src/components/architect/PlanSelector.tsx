@@ -32,9 +32,14 @@ import {
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
+import {
+  isProjectWorkspaceMissing,
+  resolveProjectWorkspaceState,
+} from '../../services/projectWorkspaceState';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
+import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { notify } from '../ui/toastService';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { PlanFormModal } from './PlanFormModal';
@@ -125,6 +130,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setPredictedBranches,
     setActivePlanContext,
     activateArchitectPlan,
+    openProjectModal,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -167,6 +173,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const workspaceState = useMemo(
+    () =>
+      resolveProjectWorkspaceState({
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId]
+  );
+  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const scopedReadOnlyProjects = useMemo(
     () =>
       contextProjectIds
@@ -473,6 +489,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setShowCreateKinds(false);
     setIsLoading(true);
     try {
+      if (isWorkspaceMissing) {
+        const message = workspaceState.kind === 'noProjectAvailable'
+          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.');
+        setError(message);
+        notify.error(message);
+        return;
+      }
+
       if (scopedActionableProjectIds.length === 0) {
         const message = t(
           'implement.manualFeatureMissingProjects',
@@ -901,9 +926,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 <div className="relative">
                   <button
                     onClick={() => setShowCreateKinds((current) => !current)}
-                    disabled={isReadOnlyOnlyScope}
+                    disabled={isReadOnlyOnlyScope || isWorkspaceMissing}
                     title={
-                      isReadOnlyOnlyScope
+                      isWorkspaceMissing
+                        ? workspaceState.kind === 'noProjectAvailable'
+                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un sous-projet pour commencer avec Macro.')
+                          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                        : isReadOnlyOnlyScope
                         ? t(
                             'architect.planSelector.readOnlyOnlyAction',
                             'At least one editable repository is required to create a plan.'
@@ -912,7 +941,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     }
                     className={cn(
                       'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
-                      isReadOnlyOnlyScope
+                      isReadOnlyOnlyScope || isWorkspaceMissing
                         ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                         : 'border-border hover:bg-accent'
                     )}
@@ -920,7 +949,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     <Icon name="plus" size={12} />
                     {t('architect.planSelector.create', 'Create')}
                   </button>
-                  {showCreateKinds && !isReadOnlyOnlyScope && (
+                  {showCreateKinds && !isReadOnlyOnlyScope && !isWorkspaceMissing && (
                     <div className="absolute right-0 top-8 z-[90] w-56 rounded-lg border border-border bg-popover shadow-xl p-1">
                       {([
                         ['feature', 'sparkles', t('architect.planSelector.kindFeature', 'Feature'), t('architect.planSelector.kindFeatureHelp', 'Build something new.')] as const,
@@ -968,7 +997,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && isReadOnlyOnlyScope && (
+            {!error && !isLoading && isWorkspaceMissing && (
+              <ProjectWorkspaceEmptyState
+                stateKind={workspaceState.kind}
+                compact
+                onPrimaryAction={() => {
+                  setIsOpen(false);
+                  openProjectModal(null);
+                }}
+              />
+            )}
+
+            {!error && !isLoading && !isWorkspaceMissing && isReadOnlyOnlyScope && (
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-4">
                 <div className="text-sm font-medium text-amber-100">
                   {t(
@@ -995,7 +1035,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && !isReadOnlyOnlyScope && plans.length === 0 && (
+            {!error && !isLoading && !isWorkspaceMissing && !isReadOnlyOnlyScope && plans.length === 0 && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
                 {t('architect.planSelector.empty', 'No plans yet.')}
               </div>
