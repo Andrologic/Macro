@@ -1845,9 +1845,9 @@ export const createFileChangesStore = (
         tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
       set({
         isGeneratingCommitMessages: false,
-        lastError: messageText,
+        lastError: null,
       });
-      throw error;
+      throw new SmartCommitMessageGenerationError(messageText);
     } finally {
       set({ isGeneratingCommitMessages: false });
     }
