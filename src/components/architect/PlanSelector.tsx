@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
   getArchitectPlan,
-  getArchitectPlanProjectIds,
+  getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
@@ -848,7 +848,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const isUnavailable = plan.status === 'deleted';
               const isMissingProjects = plan.replicationState === 'missing_projects';
               const missingCount = plan.missingProjectIds?.length ?? 0;
-              const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanProjectIds(plan).length;
+              const expectedCount = plan.expectedProjectIds?.length ?? getArchitectPlanVisibleProjectIds(plan).length;
               const availableCount = expectedCount - missingCount;
               const isCanonicalPlan = isCanonicalArchitectPlan(plan);
               const primaryName = getArchitectPlanPrimaryName(plan);

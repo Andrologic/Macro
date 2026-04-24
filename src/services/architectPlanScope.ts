@@ -82,19 +82,21 @@ export const normalizeArchitectPlanScope = (
   scope: ArchitectPlanScopeRef,
   options?: {
     fallbackActionableProjectIds?: ReadonlyArray<string | null | undefined>;
-    preferExpectedProjectIds?: ReadonlyArray<string | null | undefined>;
+    useExpectedAsActionableFallback?: boolean;
   }
 ): NormalizedArchitectPlanScope => {
-  const preferredActionableProjectIds = deriveArchitectPlanActionableProjectIdsFromExpected(
-    options?.preferExpectedProjectIds,
-    scope.contextProjectIds
-  );
-  const actionableProjectIds =
-    preferredActionableProjectIds.length > 0
-      ? preferredActionableProjectIds
-      : normalizeArchitectPlanActionableProjectIds(scope, {
-          fallbackProjectIds: options?.fallbackActionableProjectIds,
-        });
+  const fallbackActionableProjectIds = options?.useExpectedAsActionableFallback
+    ? normalizeArchitectPlanIdList(
+        options.fallbackActionableProjectIds,
+        deriveArchitectPlanActionableProjectIdsFromExpected(
+          scope.expectedProjectIds,
+          scope.contextProjectIds
+        )
+      )
+    : normalizeArchitectPlanIdList(options?.fallbackActionableProjectIds);
+  const actionableProjectIds = normalizeArchitectPlanActionableProjectIds(scope, {
+    fallbackProjectIds: fallbackActionableProjectIds,
+  });
   const actionableProjectIdSet = new Set(actionableProjectIds);
   const contextProjectIds = normalizeArchitectPlanIdList(scope.contextProjectIds).filter(
     (projectId) => !actionableProjectIdSet.has(projectId)
@@ -109,3 +111,27 @@ export const normalizeArchitectPlanScope = (
     ),
   };
 };
+
+export const getArchitectPlanActionableProjectIdsFromScope = (
+  scope: ArchitectPlanScopeRef,
+  options?: {
+    fallbackActionableProjectIds?: ReadonlyArray<string | null | undefined>;
+    useExpectedAsActionableFallback?: boolean;
+  }
+): string[] => normalizeArchitectPlanScope(scope, options).actionableProjectIds;
+
+export const getArchitectPlanContextProjectIdsFromScope = (
+  scope: ArchitectPlanScopeRef,
+  options?: {
+    fallbackActionableProjectIds?: ReadonlyArray<string | null | undefined>;
+    useExpectedAsActionableFallback?: boolean;
+  }
+): string[] => normalizeArchitectPlanScope(scope, options).contextProjectIds;
+
+export const getArchitectPlanVisibleProjectIdsFromScope = (
+  scope: ArchitectPlanScopeRef,
+  options?: {
+    fallbackActionableProjectIds?: ReadonlyArray<string | null | undefined>;
+    useExpectedAsActionableFallback?: boolean;
+  }
+): string[] => normalizeArchitectPlanScope(scope, options).expectedProjectIds;

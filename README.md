@@ -220,19 +220,19 @@ Example:
 {
   "providers": {
     "openai": {
-      "apiKey": "sk-..."
+      "apiKey": "OPENAI_API_KEY_HERE"
     },
     "minimax": {
       "name": "MiniMax",
       "providerType": "openai",
       "baseUrl": "https://api.minimax.io/v1",
-      "apiKey": "test-api-key..."
+      "apiKey": "MINIMAX_API_KEY_HERE"
     },
     "opencode-go": {
       "name": "OpenCode Go",
       "providerType": "openai",
       "baseUrl": "https://opencode.ai/zen/go/v1",
-      "apiKey": "go-..."
+      "apiKey": "OPENCODE_GO_API_KEY_HERE"
     }
   }
 }

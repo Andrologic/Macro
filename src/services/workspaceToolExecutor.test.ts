@@ -176,6 +176,79 @@ describe("workspaceToolExecutor helpers", () => {
     expect(isWriteTool("git_add")).toBe(false);
   });
 
+  it("extracts explicit mutating project targets without falling back to focused repositories", async () => {
+    const { resolveExplicitMutatingToolProjectTargets } = await loadWorkspaceToolExecutor();
+    const routingOptions = {
+      groupId: "macro-suite",
+      focusedProjectId: "web",
+      virtualRootEnabled: true,
+      projectMounts: [
+        {
+          projectId: "api",
+          groupId: "macro-suite",
+          mountName: "api",
+          displayName: "API",
+          workspacePath: "C:/dev/macro-api",
+          isReadOnly: false,
+        },
+        {
+          projectId: "web",
+          groupId: "macro-suite",
+          mountName: "web",
+          displayName: "Web App",
+          workspacePath: "C:/dev/macro-web",
+          isReadOnly: true,
+        },
+      ],
+      workspacePathsByProjectId: {
+        api: "C:/dev/macro-api",
+        web: "C:/dev/macro-web",
+      },
+    };
+
+    expect(
+      resolveExplicitMutatingToolProjectTargets(
+        "write",
+        { path: "web/src/game.ts" },
+        routingOptions,
+      ),
+    ).toEqual(["web"]);
+    expect(
+      resolveExplicitMutatingToolProjectTargets(
+        "apply_patch",
+        {
+          patch_text: [
+            "*** Begin Patch",
+            "*** Update File: api/src/cart.ts",
+            "@@",
+            "-old",
+            "+new",
+            "*** Update File: web/src/game.ts",
+            "@@",
+            "-old",
+            "+new",
+            "*** End Patch",
+          ].join("\n"),
+        },
+        routingOptions,
+      ),
+    ).toEqual(["api", "web"]);
+    expect(
+      resolveExplicitMutatingToolProjectTargets(
+        "write",
+        { path: "src/implicit.ts" },
+        routingOptions,
+      ),
+    ).toEqual([]);
+    expect(
+      resolveExplicitMutatingToolProjectTargets(
+        "read",
+        { path: "web/src/game.ts" },
+        routingOptions,
+      ),
+    ).toEqual([]);
+  });
+
   it("enforces architect write path scope", async () => {
     const { assertPathAllowed } = await loadWorkspaceToolExecutor();
 

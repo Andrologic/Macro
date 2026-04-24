@@ -33,7 +33,10 @@ import { useToolsStore } from "./useToolsStore";
 import { useAppStore } from "./useAppStore";
 import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import { getToolModePolicy as getLocalToolModePolicy } from "../services/toolModePolicy";
-import { executeWorkspaceTool } from "../services/workspaceToolExecutor";
+import {
+  executeWorkspaceTool,
+  resolveExplicitMutatingToolProjectTargets,
+} from "../services/workspaceToolExecutor";
 import {
   MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
@@ -56,7 +59,7 @@ import {
   getArchitectPlanActivationPayload,
   getArchitectPlanChatMessages,
   getGitFlowBaseBranch,
-  getArchitectPlanProjectIds,
+  getArchitectPlanVisibleProjectIds,
   getArchitectPlanNeeds,
   hasPersistedArchitectStrategy,
   isArchitectPlanSlugAvailable,
@@ -3007,7 +3010,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
     }
 
-    const executionContext = resolveConversationExecutionContext(conversationId);
+    let executionContext = resolveConversationExecutionContext(conversationId);
     const riskLevel = await loadToolRiskLevelPreference();
     const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
       mode: useAppStore.getState().mode,
@@ -3196,7 +3199,57 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName.startsWith("git_")
     ) {
       const mode = useAppStore.getState().mode;
-      const appState = useAppStore.getState();
+      let appState = useAppStore.getState();
+      let promotedProjectIdsForTool: string[] = [];
+
+      if (mode === "Implement") {
+        const selectedTaskId = appState.selectedTaskId;
+        const selectedTask = selectedTaskId
+          ? useTaskStore.getState().getTaskById(selectedTaskId)
+          : undefined;
+        const explicitProjectTargets = resolveExplicitMutatingToolProjectTargets(
+          normalizedToolName,
+          args,
+          {
+            workspacePath: executionContext.workspacePath,
+            defaultWorkspacePath: executionContext.defaultWorkspacePath,
+            projectId: executionContext.projectId,
+            focusedProjectId: executionContext.focusedProjectId,
+            groupId: executionContext.groupId,
+            projectMounts: executionContext.projectMounts,
+            virtualRootEnabled: executionContext.virtualRootEnabled,
+            workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+          },
+        );
+        const contextProjectIdSet = new Set(selectedTask?.context_project_ids || []);
+        const actionableProjectIdSet = new Set(executionContext.actionableProjectIds);
+        const promotableProjectIds = explicitProjectTargets.filter(
+          (projectId) =>
+            contextProjectIdSet.has(projectId) &&
+            !actionableProjectIdSet.has(projectId),
+        );
+
+        if (selectedTask && promotableProjectIds.length > 0) {
+          const promotion = await useTaskStore
+            .getState()
+            .promoteTaskContextProjects(selectedTask.id, promotableProjectIds, {
+              triggerTool: normalizedToolName,
+            });
+          promotedProjectIdsForTool = promotion?.promotedProjectIds || [];
+          executionContext = resolveConversationExecutionContext(conversationId);
+          appState = useAppStore.getState();
+        }
+      }
+
+      const withPromotionNotice = (result: string): string => {
+        if (promotedProjectIdsForTool.length === 0) {
+          return result;
+        }
+        return `[macro_scope_promotion] ${JSON.stringify({
+          promoted_project_ids: promotedProjectIdsForTool,
+          retried_tool: normalizedToolName,
+        })}\n${result}`;
+      };
 
       if (normalizedToolName === "terminal_create_session") {
         const explicitProjectId =
@@ -3225,7 +3278,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           projectId,
           cwd: typeof args.cwd === "string" ? args.cwd : null,
         });
-        return JSON.stringify(session, null, 2);
+        return withPromotionNotice(JSON.stringify(session, null, 2));
       }
 
       if (normalizedToolName === "terminal_run") {
@@ -3269,7 +3322,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return JSON.stringify(session, null, 2);
       }
 
-      return executeWorkspaceTool(normalizedToolName, args, mode, {
+      const result = await executeWorkspaceTool(normalizedToolName, args, mode, {
         workspacePath: executionContext.workspacePath,
         defaultWorkspacePath: executionContext.defaultWorkspacePath,
         projectId: executionContext.projectId,
@@ -3279,6 +3332,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         virtualRootEnabled: executionContext.virtualRootEnabled,
         workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
       });
+      return result === undefined ? result : withPromotionNotice(result);
     }
   };
 
@@ -6175,7 +6229,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 architectPlanSwitch.targetPlanId ===
                 appState.activeArchitectPlanId
                   ? architectPlanSwitch.summaryHint
-                    ? getArchitectPlanProjectIds(architectPlanSwitch.summaryHint)
+                    ? getArchitectPlanVisibleProjectIds(architectPlanSwitch.summaryHint)
                     : undefined
                   : undefined,
             },
@@ -6206,7 +6260,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const fallbackProjectId =
               resolvePlanProjectContextId(activePlan, selectedProjectId) ||
-              getArchitectPlanProjectIds(activePlan)[0] ||
+              getArchitectPlanVisibleProjectIds(activePlan)[0] ||
               selectedProjectId ||
               appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
               null;
@@ -6264,7 +6318,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
           const fallbackProjectId =
             resolvePlanProjectContextId(activePlan, selectedProjectId) ||
-            getArchitectPlanProjectIds(activePlan)[0] ||
+            getArchitectPlanVisibleProjectIds(activePlan)[0] ||
             selectedProjectId ||
             appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;

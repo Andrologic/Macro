@@ -30,7 +30,7 @@ import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
   type ArchitectPlanSummary,
-  getArchitectPlanProjectIds,
+  getArchitectPlanVisibleProjectIds,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanNeeds,
@@ -827,7 +827,7 @@ const activateArchitectPlanInStore = async (input: {
     {
       summaryHint: input.options?.planSummaryHint ?? null,
       scopedProjectIdsHint: input.options?.planSummaryHint
-        ? getArchitectPlanProjectIds(input.options.planSummaryHint)
+        ? getArchitectPlanVisibleProjectIds(input.options.planSummaryHint)
         : undefined,
     }
   );

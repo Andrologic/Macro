@@ -101,7 +101,10 @@ const createArchitectAutoPlanHarness = () => {
       projectId: params.projectId ?? projectIds[0],
       projectIds: projectIds.length > 0 ? [...projectIds] : undefined,
       contextProjectIds: params.contextProjectIds ? [...params.contextProjectIds] : undefined,
-      expectedProjectIds: projectIds.length > 0 ? [...projectIds] : undefined,
+      expectedProjectIds:
+        projectIds.length > 0 || params.contextProjectIds?.length
+          ? [...projectIds, ...(params.contextProjectIds || [])]
+          : undefined,
       createdAt: params.createdAt ?? now,
       updatedAt: params.updatedAt ?? now,
       nodes: [],
@@ -175,11 +178,16 @@ const createArchitectAutoPlanHarness = () => {
           : undefined,
       expectedProjectIds: params.expectedProjectIds
         ? [...params.expectedProjectIds]
-        : existing.expectedProjectIds
-          ? [...existing.expectedProjectIds]
-          : existing.projectIds
-            ? [...existing.projectIds]
-            : undefined,
+        : params.projectIds || params.contextProjectIds
+          ? [
+              ...(params.projectIds || existing.projectIds || []),
+              ...(params.contextProjectIds || existing.contextProjectIds || []),
+            ]
+          : existing.expectedProjectIds
+            ? [...existing.expectedProjectIds]
+            : existing.projectIds
+              ? [...existing.projectIds]
+              : undefined,
       updatedAt: params.updatedAt ?? new Date().toISOString(),
     };
     if (updated.projectIds?.length) {
@@ -198,8 +206,9 @@ const createArchitectAutoPlanHarness = () => {
 
   const getArchitectPlanNeeds = async (_branchName: string, _planId: string) => [];
   const getArchitectPlanChatMessages = async (_branchName: string, _planId: string) => [];
-  const getArchitectPlanProjectIds = (plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds'>) =>
-    Array.from(new Set([plan.projectId, ...(plan.projectIds ?? [])].filter(Boolean))) as string[];
+  const getArchitectPlanVisibleProjectIds = (
+    plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>,
+  ) => Array.from(new Set([plan.projectId, ...(plan.projectIds ?? []), ...(plan.expectedProjectIds ?? [])].filter(Boolean))) as string[];
 
   return {
     createArchitectPlan,
@@ -214,7 +223,7 @@ const createArchitectAutoPlanHarness = () => {
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
       getArchitectPlanNeeds,
-      getArchitectPlanProjectIds,
+      getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
       isDefaultNewPlanFamilyLabel,
@@ -231,7 +240,7 @@ const createArchitectAutoPlanHarness = () => {
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
       getArchitectPlanNeeds,
-      getArchitectPlanProjectIds,
+      getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
       isDefaultNewPlanFamilyLabel,
@@ -248,7 +257,7 @@ const createArchitectAutoPlanHarness = () => {
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
       getArchitectPlanNeeds,
-      getArchitectPlanProjectIds,
+      getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
       isDefaultNewPlanFamilyLabel,
@@ -360,10 +369,12 @@ describe('architectAutoPlan', () => {
     expect(ensured?.plan.id).toBe(created.id);
     expect(ensured?.plan.projectIds).toEqual(['web', 'api']);
     expect(ensured?.plan.contextProjectIds).toEqual(['docs', 'storybook']);
+    expect(ensured?.plan.expectedProjectIds).toEqual(['web', 'api', 'docs', 'storybook']);
 
     const reloaded = await getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web', 'api']);
     expect(reloaded?.contextProjectIds).toEqual(['docs', 'storybook']);
+    expect(reloaded?.expectedProjectIds).toEqual(['web', 'api', 'docs', 'storybook']);
   });
 
   it('does not expand a plan automatically once it is no longer blank', async () => {
@@ -571,7 +582,7 @@ describe('architectAutoPlan', () => {
     expect(ensured?.action).toBe('expanded_blank');
     expect(ensured?.plan.id).toBe(created.id);
     expect(ensured?.plan.projectIds).toEqual(['web', 'api']);
-    expect(ensured?.plan.expectedProjectIds).toEqual(['web', 'api']);
+    expect(ensured?.plan.expectedProjectIds).toEqual(['web', 'api', 'docs', 'storybook']);
     expect(ensured?.plan.contextProjectIds).toEqual(['docs', 'storybook']);
 
     const listed = await listArchitectPlans(branchName, true, true);

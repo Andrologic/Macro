@@ -499,6 +499,54 @@ const taskStoreState = {
     );
     emitTaskStoreUpdate(previousTasks);
   }),
+  promoteTaskContextProjects: mock(async (taskId: string, projectIds: string[]) => {
+    const promotedProjectIds = Array.from(new Set(projectIds));
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) => {
+      if (task.id !== taskId) {
+        return task;
+      }
+      const existingProjectIds = Array.isArray(task.project_ids) ? task.project_ids : [];
+      const existingContextProjectIds = Array.isArray(task.context_project_ids)
+        ? task.context_project_ids
+        : [];
+      const existingExecutionTargets = Array.isArray(task.execution_targets)
+        ? task.execution_targets
+        : [];
+      const existingTargetProjectIds = new Set(
+        existingExecutionTargets
+          .map((target) =>
+            target && typeof target === 'object' && 'projectId' in target
+              ? (target as { projectId?: unknown }).projectId
+              : null
+          )
+          .filter((projectId): projectId is string => typeof projectId === 'string' && projectId.length > 0)
+      );
+      return {
+        ...task,
+        status: 'InProgress',
+        project_ids: Array.from(new Set([...existingProjectIds, ...promotedProjectIds])),
+        context_project_ids: existingContextProjectIds.filter(
+          (projectId) => !promotedProjectIds.includes(projectId)
+        ),
+        execution_targets: [
+          ...existingExecutionTargets,
+          ...promotedProjectIds
+            .filter((projectId) => !existingTargetProjectIds.has(projectId))
+            .map((projectId) => ({
+              projectId,
+              branchName: 'feature/implement-checkout',
+              worktreeKey: `task-1-${projectId}`,
+            })),
+        ],
+      };
+    });
+    emitTaskStoreUpdate(previousTasks);
+    return {
+      task: taskStoreState.getTaskById(taskId),
+      promotedProjectIds,
+    };
+  }),
   deleteManualFeatureDraft: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.filter((task) => task.id !== taskId);
@@ -1011,6 +1059,15 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/workspaceToolExecutor', () => ({
     executeWorkspaceTool: mock(async () => undefined),
+    resolveExplicitMutatingToolProjectTargets: mock((toolName: string, args: Record<string, unknown>) => {
+      if (toolName === 'terminal_create_session' && typeof args.project_id === 'string') {
+        return [args.project_id];
+      }
+      if (typeof args.project_id === 'string') {
+        return [args.project_id];
+      }
+      return [];
+    }),
   }));
 
   mock.module('../services/preferences', () => ({
@@ -1151,15 +1208,22 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
-    resolveProjectExecutionContext: mock(async () => ({
+    resolveProjectExecutionContext: mock(() => ({
       groupName: 'Macro',
       groupId: 'group-1',
       projectName: 'Web',
       projectId: 'project-1',
       focusedProjectId: 'project-1',
       projectIds: ['project-1'],
+      actionableProjectIds: ['project-1'],
+      contextProjectIds: [],
       taskId: null,
       branchName: 'develop',
+      workspacePath: 'C:/repos/web',
+      defaultWorkspacePath: 'C:/repos/web/.macro/worktrees/task-1',
+      workspacePathsByProjectId: {
+        'project-1': 'C:/repos/web/.macro/worktrees/task-1',
+      },
       virtualRootEnabled: false,
       projectMounts: [],
     })),
@@ -1533,6 +1597,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.startTask.mockClear();
     taskStoreState.markTaskAwaitingResponse.mockClear();
     taskStoreState.retryTask.mockClear();
+    taskStoreState.promoteTaskContextProjects.mockClear();
     taskStoreState.deleteManualFeatureDraft.mockClear();
     tauriAvailable = false;
     dbConversationCounter = 0;
@@ -6548,6 +6613,84 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const parsed = JSON.parse(String(result));
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('promotes a context project before opening an explicit implement terminal session', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/implement-checkout',
+            worktreeKey: 'task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Ouvre un terminal sur le projet API.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-2',
+    });
+
+    expect(taskStoreState.promoteTaskContextProjects).toHaveBeenCalledWith(
+      'task-1',
+      ['project-2'],
+      { triggerTool: 'terminal_create_session' }
+    );
+    expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
+      projectId: 'project-2',
+      cwd: null,
+    });
+    expect(taskStoreState.getTaskById('task-1')).toMatchObject({
+      project_ids: ['project-1', 'project-2'],
+      context_project_ids: [],
+      status: 'InProgress',
+    });
+
+    const resultText = String(result);
+    const newlineIndex = resultText.indexOf('\n');
+    const notice = resultText.slice(0, newlineIndex);
+    const sessionJson = resultText.slice(newlineIndex + 1);
+    expect(notice).toBe(
+      '[macro_scope_promotion] {"promoted_project_ids":["project-2"],"retried_tool":"terminal_create_session"}'
+    );
+    const parsed = JSON.parse(sessionJson);
+    expect(parsed.cwd).toBe('C:/repos/api/.macro/worktrees/task-1');
   });
 
   it('returns the user denial reason when a pending tool approval is rejected', async () => {
