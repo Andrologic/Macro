@@ -7,8 +7,9 @@ use crate::workspace;
 use crate::workspace::metadata::{
     CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
     ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto,
-    ProjectGroupDto, ProjectRegistryDiagnosticsDto, WorkspaceBootstrapDto,
+    DebugResetProjectReportDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
+    ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
+    WorkspaceBootstrapDto,
     WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
@@ -526,6 +527,32 @@ pub async fn workspace_remove_project(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::remove_project(&workspace_path, &metadata_root, &project_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_debug_reset_project(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    force: Option<bool>,
+) -> Result<DebugResetProjectReportDto> {
+    if !cfg!(debug_assertions) {
+        return Err(BackendError::Validation(
+            "Project debug reset is only available in debug builds.".to_string(),
+        ));
+    }
+
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::debug_reset_project(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        &project_id,
+        force.unwrap_or(false),
+    )
+    .await
 }
 
 #[tauri::command]

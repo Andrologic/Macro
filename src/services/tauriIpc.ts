@@ -1751,6 +1751,26 @@ export async function workspaceRemoveProject(params: {
   });
 }
 
+export interface DebugResetProjectReportDto {
+  projectId: string;
+  projectName: string;
+  removedRegistryEntry: boolean;
+  removedTaskWorktrees: number;
+  removedMetadataWorktree: boolean;
+  removedMacroBranch: boolean;
+  warnings: string[];
+}
+
+export async function workspaceDebugResetProject(params: {
+  projectId: string;
+  force: boolean;
+}): Promise<DebugResetProjectReportDto> {
+  return invoke<DebugResetProjectReportDto>("workspace_debug_reset_project", {
+    projectId: params.projectId,
+    force: params.force,
+  });
+}
+
 export async function workspaceCloseProject(params: {
   projectId: string;
 }): Promise<ProjectGroup[]> {

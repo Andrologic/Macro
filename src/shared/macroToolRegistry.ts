@@ -992,6 +992,23 @@ export const MACRO_TOOL_REGISTRY = [
             "Legacy alias. For new plans this updates the optional secondary label.",
         },
         description: { type: "string" },
+        project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Draft-only actionable repository ids confirmed for the plan.",
+        },
+        context_project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Draft-only read/context repository ids confirmed for the plan.",
+        },
+        git_flow: {
+          type: "object",
+          description:
+            "Draft-only GitFlow metadata for typed Release/Hotfix/Bugfix plans, including per-project versions and slugs.",
+        },
         target_branch: { type: "string" },
       },
       required: ["plan_id"],

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use git2::{BranchType, Repository, RepositoryInitOptions, Signature, WorktreeAddOptions};
+use git2::{
+    BranchType, ErrorCode, Repository, RepositoryInitOptions, Signature, WorktreeAddOptions,
+};
 
 use crate::core::error::{BackendError, Result};
 
@@ -21,8 +23,8 @@ pub use worktree::{
 // dedicated metadata branch with a valid ref name and expose it as logical
 // "@macro" metadata sync in the UI.
 pub const MACRO_BRANCH_NAME: &str = "@macro";
-const MACRO_WORKTREE_NAME: &str = "macro-metadata";
-const MACRO_WORKTREE_DIR_NAME: &str = "macro-metadata-worktree";
+pub(crate) const MACRO_WORKTREE_NAME: &str = "macro-metadata";
+pub(crate) const MACRO_WORKTREE_DIR_NAME: &str = "macro-metadata-worktree";
 const LEGACY_METADATA_DIR_NAME: &str = ".macro";
 const TASK_WORKTREE_GITIGNORE_RULE: &str = "/.macro/";
 const TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE: &str = "chore(gitignore): ignore Macro worktrees";
@@ -81,6 +83,14 @@ pub(crate) struct GitFlowBranchDetection {
     pub current_branch: Option<String>,
     pub branch_candidates: Vec<String>,
     pub requires_confirmation: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MacroProjectResetResult {
+    pub removed_task_worktrees: usize,
+    pub removed_metadata_worktree: bool,
+    pub removed_macro_branch: bool,
+    pub warnings: Vec<String>,
 }
 
 fn current_branch_name(repo: &Repository) -> Option<String> {
@@ -808,6 +818,96 @@ impl GitState {
         })?;
         self.ensure_macro_metadata_worktree(&repo)
     }
+
+    pub fn debug_reset_macro_project_artifacts(
+        &self,
+        project_path: &Path,
+    ) -> Result<MacroProjectResetResult> {
+        let repo = self.open_repo(project_path)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        let mut result = MacroProjectResetResult::default();
+
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for Macro project reset".to_string(),
+        })?;
+        let task_worktree_root = workdir.join(LEGACY_METADATA_DIR_NAME).join("worktrees");
+        let canonical_task_root =
+            std::fs::canonicalize(&task_worktree_root).unwrap_or(task_worktree_root.clone());
+
+        let worktree_names = repo.worktrees().map_err(|e| BackendError::Git {
+            message: format!("Failed to list registered worktrees: {}", e),
+        })?;
+        for worktree_name in worktree_names.iter().flatten() {
+            let worktree = match repo.find_worktree(worktree_name) {
+                Ok(worktree) => worktree,
+                Err(err) if err.code() == ErrorCode::NotFound => continue,
+                Err(err) => {
+                    result.warnings.push(format!(
+                        "Failed to inspect worktree '{}': {}",
+                        worktree_name, err
+                    ));
+                    continue;
+                }
+            };
+            let worktree_path = worktree.path().to_path_buf();
+            let canonical_worktree_path =
+                std::fs::canonicalize(&worktree_path).unwrap_or(worktree_path.clone());
+            if canonical_worktree_path.starts_with(&canonical_task_root) {
+                if remove_macro_path_if_present(&worktree_path)? {
+                    result.removed_task_worktrees += 1;
+                }
+                let mut prune_opts = git2::WorktreePruneOptions::new();
+                prune_opts.valid(true);
+                if let Err(err) = worktree.prune(Some(&mut prune_opts)) {
+                    result.warnings.push(format!(
+                        "Failed to prune worktree '{}': {}",
+                        worktree_name, err
+                    ));
+                }
+            }
+        }
+
+        if remove_macro_path_if_present(&task_worktree_root)? && result.removed_task_worktrees == 0
+        {
+            result.removed_task_worktrees = 1;
+        }
+
+        if let Ok(mut cache) = self.inner.worktrees.lock() {
+            cache.retain(|_, path| {
+                let canonical_path =
+                    std::fs::canonicalize(path.as_path()).unwrap_or_else(|_| path.clone());
+                !canonical_path.starts_with(&canonical_task_root)
+            });
+        }
+
+        Ok(result)
+    }
+}
+
+fn remove_macro_path_if_present(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+    } else {
+        fs::remove_file(path).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+    }
+
+    Ok(true)
 }
 
 impl Default for GitState {
@@ -1315,6 +1415,40 @@ mod tests {
 
         assert!(!worktree_path.exists());
         assert!(repo.find_worktree("task790").is_err());
+    }
+
+    #[test]
+    fn test_debug_reset_macro_project_artifacts_preserves_shared_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        let task_worktree = state
+            .ensure_task_worktree(&repo, "debug-reset", "task-debug-reset", None, None)
+            .expect("task worktree")
+            .worktree_path;
+        fs::write(task_worktree.join("dirty.txt"), "dirty").expect("dirty worktree");
+        let metadata_worktree = state
+            .ensure_macro_metadata_worktree(&repo)
+            .expect("metadata worktree");
+
+        assert!(task_worktree.exists());
+        assert!(metadata_worktree.exists());
+        assert!(repo.find_worktree("taskdebug-reset").is_ok());
+        assert!(repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local).is_ok());
+
+        let report = state
+            .debug_reset_macro_project_artifacts(temp.path())
+            .expect("debug reset");
+
+        assert!(report.removed_task_worktrees > 0);
+        assert!(!report.removed_metadata_worktree);
+        assert!(!report.removed_macro_branch);
+        assert!(!task_worktree.exists());
+        assert!(metadata_worktree.exists());
+        assert!(repo.find_worktree("taskdebug-reset").is_err());
+        assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_ok());
+        assert!(repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local).is_ok());
     }
 
     #[test]
