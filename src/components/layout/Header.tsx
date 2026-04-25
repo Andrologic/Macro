@@ -255,6 +255,7 @@ export function Header({
       key={modeOption.value}
       onClick={() => setMode(modeOption.value)}
       data-tauri-drag-region="false"
+      data-tour-id={`mode-${modeOption.value.toLowerCase()}`}
       className={cn(
         'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
         mode === modeOption.value
@@ -271,7 +272,8 @@ export function Header({
     onClick: () => void,
     iconName: IconName,
     title: string,
-    ariaLabel?: string
+    ariaLabel?: string,
+    tourId?: string
   ) => (
     <button
       onClick={onClick}
@@ -279,6 +281,7 @@ export function Header({
       title={title}
       aria-label={ariaLabel || title}
       data-tauri-drag-region="false"
+      data-tour-id={tourId}
     >
       <Icon name={iconName} size={16} className="text-muted-foreground" />
     </button>
@@ -299,7 +302,7 @@ export function Header({
       >
         <div className="macro-topbar-inner grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-3">
           <div className="macro-topbar-leading flex min-w-0 items-center gap-2">
-            <div className="macro-topbar-brand flex items-center gap-2 shrink-0">
+            <div className="macro-topbar-brand flex items-center gap-2 shrink-0" data-tour-id="app-brand">
               <Logo size={24} strokeWidth={3} />
               <span
                 className={cn(
@@ -323,6 +326,7 @@ export function Header({
                     'min-w-[80px] max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] xl:max-w-[320px]'
                   )}
                   data-tauri-drag-region="false"
+                  data-tour-id="project-picker"
                 >
                   <Icon name="folder-git-2" size={14} className="text-muted-foreground shrink-0" />
                   <span className="truncate text-foreground min-w-0">
@@ -335,7 +339,10 @@ export function Header({
           </div>
 
           <div className="macro-topbar-center justify-self-center" data-tauri-drag-region="false">
-            <div className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0 pointer-events-auto">
+            <div
+              className="hidden lg:inline-flex bg-secondary rounded-lg p-1 shrink-0 pointer-events-auto"
+              data-tour-id="mode-switcher"
+            >
               {modeOptions.map(renderModeButton)}
             </div>
 
@@ -344,6 +351,7 @@ export function Header({
                 onClick={() => setModeMenuOpen((current) => !current)}
                 className="macro-titlebar-action flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors text-xs font-medium"
                 data-tauri-drag-region="false"
+                data-tour-id="mode-switcher"
               >
                 <Icon name={currentMode.icon} size={14} />
                 <span className="truncate max-w-[80px]">{currentMode.label}</span>
@@ -391,6 +399,7 @@ export function Header({
               className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
               title={t('header.toggleLeftPanel')}
               data-tauri-drag-region="false"
+              data-tour-id="toggle-left-panel"
             >
               <Icon
                 name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
@@ -403,6 +412,7 @@ export function Header({
               className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
               title={t('header.toggleRightPanel')}
               data-tauri-drag-region="false"
+              data-tour-id="toggle-right-panel"
             >
               <Icon
                 name={isRightOpen ? 'panel-right-close' : 'panel-right-open'}
@@ -413,7 +423,21 @@ export function Header({
 
             <div className="hidden sm:block w-px h-5 bg-border mx-1" />
 
-            {renderHeaderIconButton(() => openSettings(), 'settings', t('header.settings'), t('header.settings'))}
+            {renderHeaderIconButton(
+              () => window.dispatchEvent(new Event('macro:start-onboarding')),
+              'book-open',
+              t('onboarding.open', 'Open onboarding'),
+              t('onboarding.open', 'Open onboarding'),
+              'onboarding-help'
+            )}
+
+            {renderHeaderIconButton(
+              () => openSettings(),
+              'settings',
+              t('header.settings'),
+              t('header.settings'),
+              'settings-button'
+            )}
 
             {isTauriAvailable && platformChrome.showCustomWindowControls ? (
               <div className="w-px h-5 bg-border mx-1" />

@@ -708,7 +708,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
   return (
     <>
-      <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
+      <aside
+        className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
+        data-tour-id="chat-conversations-panel"
+      >
         <div className="h-12 border-b border-border flex items-center justify-between px-4">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Icon name="message-circle" size={16} className="text-primary" />
@@ -717,6 +720,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           <button
             onClick={handleNewChat}
             disabled={isBulkDeleting}
+            data-tour-id="chat-new-conversation"
             className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={t('chat.newChat', 'New Chat')}
           >
@@ -783,6 +787,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   setIsMultiSelectMode(true);
                 }}
                 disabled={filteredConversations.length === 0 || isBulkDeleting}
+                data-tour-id="chat-multiselect"
                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Icon name="check-square" size={12} />
@@ -802,6 +807,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             value={searchQuery}
             onChange={setSearchQuery}
             placeholder={t('chat.searchConversations', 'Search conversations...')}
+            data-tour-id="chat-conversation-search"
           />
         </div>
 
@@ -899,6 +905,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           <button
             type="button"
             onClick={handleToggleArchivedView}
+            data-tour-id="chat-archive-toggle"
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <Icon name={footerButtonIcon} size={12} />

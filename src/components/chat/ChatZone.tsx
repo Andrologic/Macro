@@ -1286,11 +1286,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [messageIndexById, scrollToMessageIndex]);
 
   return (
-    <main className="flex h-full min-h-0 min-w-0 overflow-hidden bg-background">
+    <main
+      className="flex h-full min-h-0 min-w-0 overflow-hidden bg-background"
+      data-tour-id="chat-surface"
+    >
       {/* Main Chat Area */}
       <div className="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden">
         {/* Header */}
-        <header className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30">
+        <header
+          className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30"
+          data-tour-id="mode-context-header"
+        >
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
               <Icon name={modeHeader.icon} size={10} className="text-primary" />
@@ -1307,16 +1313,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
           <div className="flex items-center gap-2">
             {mode === 'Architect' && (
-              <Suspense fallback={<PlanSelectorFallback />}>
-                <LazyPlanSelector />
-              </Suspense>
+              <div data-tour-id="architect-plan-selector">
+                <Suspense fallback={<PlanSelectorFallback />}>
+                  <LazyPlanSelector />
+                </Suspense>
+              </div>
             )}
             {headerActions}
           </div>
         </header>
 
         {/* Conversation Content */}
-        <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto px-12 pt-8 pb-4">
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 min-h-0 overflow-y-auto px-12 pt-8 pb-4"
+          data-tour-id="chat-transcript"
+        >
           {isConversationPending ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
@@ -1412,7 +1424,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
         {/* Input Area */}
         <ScrollSeparator state={separatorState} />
-        <footer className="bg-card/30 p-3">
+        <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
             {!activeQuestionnaire && !activePendingToolApproval && composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
@@ -1440,10 +1452,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between" data-tour-id="chat-control-row">
               <div className="flex items-center gap-2">
                 {mode === 'Implement' && (
-                  <div className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5">
+                  <div
+                    className="inline-flex items-center rounded-lg border border-border bg-muted/60 p-0.5"
+                    data-tour-id="implement-agent-toggle"
+                  >
                     <button
                       type="button"
                       onClick={() => setAgentType('plan')}
@@ -1482,6 +1497,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               <button
                 type="button"
                 onClick={() => void handleGenerateStrategy()}
+                data-tour-id="architect-generate-strategy"
                 disabled={
                   isModeProjectWorkspaceMissing ||
                   !activeArchitectPlanId ||
@@ -1547,6 +1563,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onClick={() => void handleStartExecution({
                       notesOverride: composerEditorRef.current?.getTextContent() ?? '',
                     }).catch(() => undefined)}
+                    data-tour-id="implement-start-execution"
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
                     title={
                       !runtimeCapabilities.implementExecution
@@ -1620,6 +1637,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               <div
                 className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
                 onPasteCapture={handleComposerPaste}
+                data-tour-id="chat-composer"
               >
                 <Suspense fallback={<ComposerFallbackStatus />}>
                   <LazyComposerEditor
@@ -1669,6 +1687,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               ) : (
                 <button
                   onClick={handleSend}
+                  data-tour-id="chat-send-button"
                   disabled={isBusySending || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
                   className={cn(
                     'rounded-lg px-3 h-9 flex items-center transition-colors',

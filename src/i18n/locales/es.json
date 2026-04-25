@@ -9,6 +9,9 @@
     "browse": "Navegar",
     "add": "Añadir",
     "done": "hecho",
+    "previous": "Anterior",
+    "next": "Siguiente",
+    "finish": "Finalizar",
     "loading": "Cargando...",
     "saving": "Guardando...",
     "error": "error",
@@ -61,6 +64,12 @@
     "toggleRightPanel": "Alternar panel derecho",
     "settings": "Configuración",
     "account": "cuenta"
+  },
+  "onboarding": {
+    "open": "Abrir onboarding",
+    "dialogLabel": "Guía de onboarding",
+    "targetMissing": "Esta zona puede estar oculta por el tamaño de la ventana o por un estado vacío. La guía permanece en el modo correcto y volverá a anclarse cuando el botón sea visible.",
+    "sectionProgress": "{{current}}/{{total}} en esta sección"
   },
   "footer": {
     "online": "En línea",

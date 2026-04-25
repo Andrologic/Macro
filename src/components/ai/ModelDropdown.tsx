@@ -43,7 +43,7 @@ export const ModelDropdown: React.FC = () => {
   }, [isOpen]);
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" data-tour-id="model-dropdown">
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
