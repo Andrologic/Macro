@@ -44,7 +44,7 @@ export const ReasoningDropdown: React.FC = () => {
   }
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" data-tour-id="reasoning-dropdown">
       <button
         type="button"
         onClick={() => setIsOpen((value) => !value)}

@@ -139,7 +139,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
 
   if (isWorkspaceMissing) {
     return (
-      <aside className={cn("h-full w-full bg-card border-r border-border flex items-center justify-center", className)}>
+      <aside
+        className={cn("h-full w-full bg-card border-r border-border flex items-center justify-center", className)}
+        data-tour-id="architect-needs-panel"
+      >
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
           variant="secondary"
@@ -151,7 +154,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
 
   if (isResolvingActivePlan && !isResolvingBlankPlan) {
     return (
-      <aside className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}>
+      <aside
+        className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
+        data-tour-id="architect-needs-panel"
+      >
         <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Icon name="list" size={16} className="text-primary" />
@@ -173,7 +179,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   }
 
   return (
-    <aside className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}>
+    <aside
+      className={cn("h-full w-full bg-card border-r border-border flex flex-col", className)}
+      data-tour-id="architect-needs-panel"
+    >
       {/* Header */}
       <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -186,7 +195,10 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       </div>
 
       {/* Filter Tabs */}
-      <div className="px-3 py-2 border-b border-border flex gap-1 overflow-x-auto no-scrollbar shrink-0">
+      <div
+        className="px-3 py-2 border-b border-border flex gap-1 overflow-x-auto no-scrollbar shrink-0"
+        data-tour-id="architect-need-filters"
+      >
         <button
           onClick={() => setFilter('all')}
           className={cn(

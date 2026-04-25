@@ -486,7 +486,10 @@ export const Footer: React.FC = () => {
 
   return (
     <>
-      <footer className="h-8 overflow-hidden border-t border-border bg-card px-3 text-[11px] text-muted-foreground">
+      <footer
+        className="h-8 overflow-hidden border-t border-border bg-card px-3 text-[11px] text-muted-foreground"
+        data-tour-id="footer-status-bar"
+      >
         <div className="flex h-full min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center overflow-hidden">
             <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || undefined}>
@@ -499,6 +502,7 @@ export const Footer: React.FC = () => {
               className="ml-2 h-6 w-6 shrink-0 px-0 text-[11px]"
               disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
               onClick={() => void handleSyncAction('fetch')}
+              data-tour-id="footer-fetch"
             >
               <Icon
                 name="refresh-cw"
@@ -524,6 +528,7 @@ export const Footer: React.FC = () => {
                     <select
                       className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] text-foreground"
                       value={gitScopeProjectId ?? ALL_PROJECTS_OPTION}
+                      data-tour-id="footer-project-scope"
                       onChange={(event) => setGitScopeProjectId(
                         event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value
                       )}
@@ -550,6 +555,7 @@ export const Footer: React.FC = () => {
                   )}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('pull')}
+                  data-tour-id="footer-pull"
                 >
                   <Icon name="arrow-down" size={12} className={cn(syncAction === 'pull' && 'animate-bounce')} />
                   <span>{totalBehind}</span>
@@ -563,6 +569,7 @@ export const Footer: React.FC = () => {
                   )}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('push')}
+                  data-tour-id="footer-push"
                 >
                   <Icon name="arrow-up" size={12} className={cn(syncAction === 'push' && 'animate-bounce')} />
                   <span>{totalAhead}</span>
@@ -594,6 +601,7 @@ export const Footer: React.FC = () => {
               aria-expanded={isNotificationCenterOpen}
               className={cn('relative h-6 w-6 px-0 text-[11px]', isNotificationCenterOpen && 'bg-accent text-foreground hover:bg-accent')}
               onClick={() => setNotificationCenterOpen(!isNotificationCenterOpen)}
+              data-tour-id="notification-center"
             >
               <Icon name="bell" size={12} />
               {hasUnreadNotificationDot && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full border border-card bg-primary" />}
