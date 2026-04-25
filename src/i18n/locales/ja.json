@@ -9,6 +9,9 @@
     "browse": "ブラウズ",
     "add": "追加",
     "done": "終わり",
+    "previous": "前へ",
+    "next": "次へ",
+    "finish": "完了",
     "loading": "読み込み中...",
     "saving": "保存中...",
     "error": "エラー",
@@ -61,6 +64,12 @@
     "toggleRightPanel": "右パネルを切り替えます",
     "settings": "設定",
     "account": "アカウント"
+  },
+  "onboarding": {
+    "open": "オンボーディングを開く",
+    "dialogLabel": "オンボーディングガイド",
+    "targetMissing": "この領域はウィンドウサイズまたは空の状態により非表示になっている可能性があります。ガイドは正しいモードのまま、ボタンが表示されると再び固定されます。",
+    "sectionProgress": "このセクションの{{current}}/{{total}}"
   },
   "footer": {
     "online": "オンライン",

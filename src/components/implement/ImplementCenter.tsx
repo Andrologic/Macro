@@ -166,6 +166,7 @@ export const ImplementCenter: React.FC = () => {
       disabled={!terminalScope}
       onClick={handleQuickOpenTerminal}
       title={terminalButtonTitle}
+      data-tour-id="implement-terminal-toggle"
       className={cn(
         'relative inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium transition-colors',
         !terminalScope

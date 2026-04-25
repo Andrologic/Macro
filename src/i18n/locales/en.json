@@ -9,6 +9,9 @@
     "browse": "Browse",
     "add": "Add",
     "done": "Done",
+    "previous": "Previous",
+    "next": "Next",
+    "finish": "Finish",
     "loading": "Loading...",
     "saving": "Saving...",
     "error": "Error",
@@ -61,6 +64,12 @@
     "toggleRightPanel": "Toggle right panel",
     "settings": "Settings",
     "account": "Account"
+  },
+  "onboarding": {
+    "open": "Open onboarding",
+    "dialogLabel": "Onboarding guide",
+    "targetMissing": "This area may be hidden by the window size or an empty state. The guide stays in the right mode and will anchor again as soon as the button is visible.",
+    "sectionProgress": "{{current}}/{{total}} in this section"
   },
   "footer": {
     "online": "Online",

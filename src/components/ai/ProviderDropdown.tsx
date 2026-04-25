@@ -35,7 +35,7 @@ export const ProviderDropdown: React.FC = () => {
   }, [isOpen]);
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" data-tour-id="provider-dropdown">
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}

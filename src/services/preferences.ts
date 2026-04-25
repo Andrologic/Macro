@@ -78,6 +78,7 @@ export const PREF_KEYS = {
   PROJECT_OPEN_EDITOR_COMMAND: "projectOpenEditorCommand",
   PROJECT_OPEN_TERMINAL_COMMAND: "projectOpenTerminalCommand",
   PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
+  ONBOARDING_STATE: "onboardingState",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -247,6 +248,12 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND]: getDefaultProjectOpenCommand('editor'),
   [PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND]: getDefaultProjectOpenCommand('terminal'),
   [PREF_KEYS.PROJECT_OPEN_FILES_COMMAND]: getDefaultProjectOpenCommand('files'),
+  [PREF_KEYS.ONBOARDING_STATE]: {
+    version: 1,
+    completedAt: null,
+    dismissedAt: null,
+    lastStepId: null,
+  },
 };
 
 // Store instance (singleton)

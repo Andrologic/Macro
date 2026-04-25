@@ -275,6 +275,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   return (
     <aside
       className={cn('h-full w-full bg-card border-l border-border flex flex-col', className)}
+      data-tour-id="chat-toolbox-panel"
       onDragOver={handleDragOver}
       onDragLeave={(event) => { event.preventDefault(); setIsDragging(false); }}
       onDrop={handleDrop}
@@ -286,7 +287,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         </h1>
       </div>
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void handleFileSelect(event.target.files)} />
-      <div className="h-10 border-b border-border flex items-center px-2 gap-1">
+      <div className="h-10 border-b border-border flex items-center px-2 gap-1" data-tour-id="chat-toolbox-tabs">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -376,15 +377,27 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
             <section>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.quickActions', 'Quick actions')}</h3>
               <div className="grid grid-cols-2 gap-2">
-                <button onClick={handleUploadClick} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                <button
+                  onClick={handleUploadClick}
+                  data-tour-id="chat-context-upload"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
+                >
                   <Icon name="upload" size={14} className="text-muted-foreground" />
                   <span className="truncate">{t('chat.contextToolbox.upload', 'Upload')}</span>
                 </button>
-                <button onClick={handleStartAddingUrl} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                <button
+                  onClick={handleStartAddingUrl}
+                  data-tour-id="chat-context-add-url"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
+                >
                   <Icon name="link" size={14} className="text-muted-foreground" />
                   <span className="truncate">{t('chat.contextToolbox.addUrl', 'Add URL')}</span>
                 </button>
-                <button onClick={() => void handlePaste()} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0">
+                <button
+                  onClick={() => void handlePaste()}
+                  data-tour-id="chat-context-paste"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
+                >
                   <Icon name="clipboard" size={14} className="text-muted-foreground" />
                   <span className="truncate">{t('chat.contextToolbox.paste', 'Paste')}</span>
                 </button>
