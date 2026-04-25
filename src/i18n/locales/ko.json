@@ -69,7 +69,124 @@
     "open": "온보딩 열기",
     "dialogLabel": "온보딩 가이드",
     "targetMissing": "이 영역은 창 크기나 빈 상태 때문에 숨겨져 있을 수 있습니다. 가이드는 올바른 모드에 머무르며 버튼이 보이면 다시 고정됩니다.",
-    "sectionProgress": "이 섹션 {{current}}/{{total}}"
+    "sectionProgress": "이 섹션 {{current}}/{{total}}",
+    "sections": {
+      "basics": "기본",
+      "architect": "Architect",
+      "implement": "Implement",
+      "chat": "Chat",
+      "system": "시스템"
+    },
+    "fallbackTarget": "현재 상태에서는 정확한 대상을 사용할 수 없습니다. 대신 가장 가까운 컨텍스트 영역을 강조 표시합니다.",
+    "steps": {
+      "welcome": {
+        "title": "Macro에 오신 것을 환영합니다",
+        "body": "Macro는 모드별로 구성되어 있습니다. 좋은 온보딩은 컨트롤이 필요해지는 순간에 보여 주고, 이후 사용자가 다시 주도권을 갖게 합니다.",
+        "points": [
+          "가이드는 모드를 자동으로 전환합니다.",
+          "단계에 필요하면 왼쪽과 오른쪽 패널을 다시 엽니다.",
+          "상단의 책 버튼에서 언제든 다시 시작할 수 있습니다."
+        ]
+      },
+      "modes": {
+        "title": "모드 선택기",
+        "body": "이 세 버튼은 전체 작업 화면을 바꿉니다. Architect는 범위 잡기, Implement는 실행, Chat은 컨텍스트가 있는 자유로운 대화에 사용합니다.",
+        "points": [
+          "Architect: 요구사항, 계획, 전략.",
+          "Implement: 작업, 터미널, 변경 검증.",
+          "Chat: 대화, 소스, 일반 도구."
+        ]
+      },
+      "project-picker": {
+        "title": "활성 프로젝트",
+        "body": "이 버튼은 프로젝트 탐색기를 엽니다. Architect와 Implement가 사용할 저장소, 브랜치, 컨텍스트를 결정합니다."
+      },
+      "panel-toggles": {
+        "title": "사이드 패널",
+        "body": "패널 버튼은 컨텍스트 영역을 숨기거나 표시합니다. 왼쪽 패널에는 주로 작업 목록이, 오른쪽 패널에는 세부 정보나 검증 내용이 표시됩니다."
+      },
+      "settings-and-help": {
+        "title": "설정 및 온보딩",
+        "body": "설정에는 AI 제공자, 모델, 도구 보안, 테마, 바로가기가 모여 있습니다. 옆의 책 버튼으로 이 가이드를 다시 시작할 수 있습니다."
+      },
+      "architect-mode": {
+        "title": "Architect 모드",
+        "body": "Architect는 대화를 요구사항으로, 다시 브랜치와 작업 전략으로 바꿉니다. 범위가 아직 흐릿할 때 코딩 전에 사용하는 모드입니다."
+      },
+      "architect-plan-selector": {
+        "title": "계획",
+        "body": "계획 선택기는 대화, 요구사항, 전략을 분리합니다. 예상 Git 흐름에 따라 feature, release, hotfix, bugfix 계획을 만들 수 있습니다."
+      },
+      "architect-needs": {
+        "title": "식별된 요구사항",
+        "body": "왼쪽 패널은 Architect 대화 중 추출되거나 다듬어진 요구사항을 나열합니다. 카테고리 필터는 계획이 커져도 모든 내용을 다시 읽지 않게 해 줍니다."
+      },
+      "architect-generate": {
+        "title": "전략 생성",
+        "body": "Architect의 중요한 동작입니다. 충분한 컨텍스트가 있을 때 요구사항을 작업 그래프와 예측 가능한 브랜치로 변환합니다."
+      },
+      "architect-strategy": {
+        "title": "전략 및 브랜치",
+        "body": "오른쪽 패널은 전략을 보여 줍니다. Graph / Branches 전환은 의존성 보기와 Git 실행 보기 사이를 이동하는 데 도움이 됩니다.",
+        "points": [
+          "Graph: 의존성과 논리적 순서.",
+          "Branches: 기능 브랜치별로 묶인 작업.",
+          "Expand는 더 편한 탐색기를 엽니다."
+        ]
+      },
+      "architect-validate": {
+        "title": "계획 검증",
+        "body": "검증은 브랜치를 준비하고 Implement로 넘길 수 있을 만큼 계획을 고정합니다. 시작되었거나 완료된 작업은 파괴적인 재생성으로부터 보호됩니다."
+      },
+      "implement-mode": {
+        "title": "Implement 모드",
+        "body": "Implement는 작업을 선택하고, 실행을 논의하고, 터미널을 열고, 커밋 전에 수정된 파일을 검증하는 모드입니다."
+      },
+      "implement-tasks": {
+        "title": "작업 대기열",
+        "body": "왼쪽 패널은 작업을 상태별로 정렬합니다. 플러스는 독립 feature를 만들고, 아카이브 버튼은 이전 작업을 표시하거나 숨깁니다."
+      },
+      "implement-agent": {
+        "title": "Plan 또는 Build",
+        "body": "Implement에서 이 컨트롤은 에이전트 동작을 선택합니다. Plan은 준비나 명확화, Build는 코드 수정과 실행을 담당합니다."
+      },
+      "implement-terminal": {
+        "title": "작업 터미널",
+        "body": "터미널은 선택한 작업과 저장소의 컨텍스트에서 열립니다. 여러 하위 프로젝트가 있으면 Macro가 대상을 물어볼 수 있습니다."
+      },
+      "implement-changes": {
+        "title": "변경 검증",
+        "body": "오른쪽 패널은 저장소별 수정 파일을 추적합니다. Validate는 승인한 변경을 스테이징하고, Commit은 준비된 내용을 기록하며, Finish는 모든 것이 해결되면 작업을 완료합니다."
+      },
+      "chat-mode": {
+        "title": "Chat 모드",
+        "body": "Chat은 자유 모드입니다. 대화를 계획 및 작업과 분리하면서 파일, 링크, 도구, 소스를 첨부할 수 있습니다."
+      },
+      "chat-conversations": {
+        "title": "대화",
+        "body": "왼쪽 패널은 기록을 관리합니다: 새 채팅, 검색, 다중 선택, 고정, 아카이브, 내보내기, 삭제."
+      },
+      "chat-toolbox": {
+        "title": "Toolbox",
+        "body": "오른쪽 패널은 컨텍스트 상자입니다. 파일 첨부, URL 추가, 텍스트 붙여넣기, 도구 활성화, 인용된 소스 확인을 할 수 있습니다."
+      },
+      "chat-models": {
+        "title": "제공자, 모델, 추론",
+        "body": "이 메뉴들은 AI 제공자, 모델, 추론 강도를 선택합니다. 버튼이 비활성화되어 있으면 Settings에서 키를 설정해야 하는 경우가 많습니다."
+      },
+      "composer": {
+        "title": "작성 및 전송",
+        "body": "Composer는 텍스트, 멘션, 붙여넣은 이미지를 받습니다. 화살표 버튼은 전송하며, 응답 생성 중에는 중지합니다."
+      },
+      "footer": {
+        "title": "Git 바와 알림",
+        "body": "하단 바는 전역 프로젝트, 브랜치, fetch / pull / push, 알림 센터를 요약합니다. Macro가 동기화 동작을 요청하면 이 영역을 확인하세요."
+      },
+      "done": {
+        "title": "다시 시작할 수 있는 온보딩",
+        "body": "둘러보기가 완료되었습니다. 책 버튼으로 이 가이드를 다시 시작해 모드를 다시 보거나 새 사용자에게 버튼을 설명할 수 있습니다."
+      }
+    }
   },
   "footer": {
     "online": "온라인",

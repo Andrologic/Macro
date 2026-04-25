@@ -69,7 +69,124 @@
     "open": "Onboarding öffnen",
     "dialogLabel": "Onboarding-Leitfaden",
     "targetMissing": "Dieser Bereich ist möglicherweise durch die Fenstergröße oder einen leeren Zustand ausgeblendet. Der Leitfaden bleibt im richtigen Modus und verankert sich wieder, sobald die Schaltfläche sichtbar ist.",
-    "sectionProgress": "{{current}}/{{total}} in diesem Abschnitt"
+    "sectionProgress": "{{current}}/{{total}} in diesem Abschnitt",
+    "sections": {
+      "basics": "Grundlagen",
+      "architect": "Architect",
+      "implement": "Implement",
+      "chat": "Chat",
+      "system": "System"
+    },
+    "fallbackTarget": "Das genaue Ziel ist in diesem Zustand nicht verfügbar. Der Leitfaden hebt stattdessen den nächstliegenden Kontextbereich hervor.",
+    "steps": {
+      "welcome": {
+        "title": "Willkommen bei Macro",
+        "body": "Macro ist nach Modi organisiert. Das beste Onboarding zeigt Bedienelemente erst dann, wenn sie nützlich werden, und gibt danach die Kontrolle an den Nutzer zurück.",
+        "points": [
+          "Der Leitfaden wechselt den Modus automatisch.",
+          "Das linke und rechte Panel werden wieder geöffnet, wenn ein Schritt sie benötigt.",
+          "Du kannst ihn jederzeit über die Buch-Schaltfläche oben neu starten."
+        ]
+      },
+      "modes": {
+        "title": "Modusauswahl",
+        "body": "Diese drei Schaltflächen ändern die gesamte Arbeitsfläche. Architect dient der Eingrenzung, Implement der Ausführung und Chat der freien Diskussion mit Kontext.",
+        "points": [
+          "Architect: Anforderungen, Pläne und Strategie.",
+          "Implement: Aufgaben, Terminal und Änderungsprüfung.",
+          "Chat: Unterhaltungen, Quellen und allgemeine Werkzeuge."
+        ]
+      },
+      "project-picker": {
+        "title": "Aktives Projekt",
+        "body": "Diese Schaltfläche öffnet den Projektnavigator. Sie bestimmt die Repos, Branches und den Kontext, den Architect und Implement verwenden."
+      },
+      "panel-toggles": {
+        "title": "Seitenpanels",
+        "body": "Panel-Schaltflächen blenden Kontextbereiche ein oder aus. Das linke Panel enthält oft die Arbeitsliste, das rechte Details oder Prüfungen."
+      },
+      "settings-and-help": {
+        "title": "Einstellungen und Onboarding",
+        "body": "Die Einstellungen bündeln KI-Anbieter, Modelle, Werkzeugsicherheit, Themes und Tastenkürzel. Die Buch-Schaltfläche daneben startet diesen Leitfaden neu."
+      },
+      "architect-mode": {
+        "title": "Architect-Modus",
+        "body": "Architect verwandelt eine Diskussion in Anforderungen und anschließend in eine Branch- und Aufgabenstrategie. Nutze ihn vor dem Coden, wenn der Rahmen noch unklar ist."
+      },
+      "architect-plan-selector": {
+        "title": "Pläne",
+        "body": "Die Planauswahl trennt Unterhaltungen, Anforderungen und Strategien. Du kannst je nach erwartetem Git-Flow einen Feature-, Release-, Hotfix- oder Bugfix-Plan erstellen."
+      },
+      "architect-needs": {
+        "title": "Identifizierte Anforderungen",
+        "body": "Das linke Panel listet Anforderungen auf, die während der Architect-Unterhaltung extrahiert oder verfeinert wurden. Kategoriefilter verhindern, dass du bei wachsendem Plan alles erneut lesen musst."
+      },
+      "architect-generate": {
+        "title": "Strategie generieren",
+        "body": "Dies ist die wichtige Architect-Aktion. Sie wandelt Anforderungen in einen Aufgabengraphen und vorhersehbare Branches um, sobald genügend Kontext vorhanden ist."
+      },
+      "architect-strategy": {
+        "title": "Strategie und Branches",
+        "body": "Das rechte Panel zeigt die Strategie. Der Graph-/Branches-Schalter hilft beim Wechsel von einer Abhängigkeitsansicht zu einer Git-Ausführungsansicht.",
+        "points": [
+          "Graph: Abhängigkeiten und logische Reihenfolge.",
+          "Branches: Arbeit nach Feature-Branch gruppiert.",
+          "Expand öffnet einen komfortableren Explorer."
+        ]
+      },
+      "architect-validate": {
+        "title": "Plan validieren",
+        "body": "Die Validierung friert den Plan weit genug ein, um Branches bereitzustellen und Implement zu speisen. Gestartete oder abgeschlossene Aufgaben sind vor destruktiver Neugenerierung geschützt."
+      },
+      "implement-mode": {
+        "title": "Implement-Modus",
+        "body": "Implement dient dazu, eine Aufgabe zu übernehmen, die Ausführung zu besprechen, ein Terminal zu öffnen und geänderte Dateien vor dem Commit zu prüfen."
+      },
+      "implement-tasks": {
+        "title": "Aufgabenliste",
+        "body": "Das linke Panel sortiert Aufgaben nach Status. Das Plus erstellt ein unabhängiges Feature, und die Archiv-Schaltfläche zeigt oder verbirgt ältere Aufgaben."
+      },
+      "implement-agent": {
+        "title": "Plan oder Build",
+        "body": "In Implement wählt dieses Steuerelement das Agentenverhalten. Plan bereitet vor oder klärt, Build ändert Code und führt aus."
+      },
+      "implement-terminal": {
+        "title": "Aufgabenterminal",
+        "body": "Das Terminal öffnet sich im Kontext der ausgewählten Aufgabe und des ausgewählten Repos. Bei mehreren Teilprojekten kann Macro fragen, welches Ziel verwendet werden soll."
+      },
+      "implement-changes": {
+        "title": "Änderungsprüfung",
+        "body": "Das rechte Panel verfolgt geänderte Dateien pro Repo. Validate staged akzeptierte Änderungen, Commit speichert, was bereit ist, und Finish beendet die Aufgabe, wenn alles gelöst ist."
+      },
+      "chat-mode": {
+        "title": "Chat-Modus",
+        "body": "Chat ist der freie Modus. Er hält Unterhaltungen von Plänen und Aufgaben getrennt, erlaubt aber Dateien, Links, Werkzeuge und Quellen."
+      },
+      "chat-conversations": {
+        "title": "Unterhaltungen",
+        "body": "Das linke Panel verwaltet den Verlauf: neuer Chat, Suche, Mehrfachauswahl, Anheften, Archiv, Export und Löschen."
+      },
+      "chat-toolbox": {
+        "title": "Toolbox",
+        "body": "Das rechte Panel ist die Kontextbox. Du kannst Dateien anhängen, eine URL hinzufügen, Text einfügen, Werkzeuge aktivieren und zitierte Quellen wiederfinden."
+      },
+      "chat-models": {
+        "title": "Anbieter, Modell und Reasoning",
+        "body": "Diese Menüs wählen KI-Anbieter, Modell und Reasoning-Aufwand. Ist eine Schaltfläche deaktiviert, muss oft ein Schlüssel in Settings konfiguriert werden."
+      },
+      "composer": {
+        "title": "Verfassen und senden",
+        "body": "Der Composer akzeptiert Text, Erwähnungen und eingefügte Bilder. Die Pfeilschaltfläche sendet oder stoppt die Generierung, wenn eine Antwort läuft."
+      },
+      "footer": {
+        "title": "Git-Leiste und Benachrichtigungen",
+        "body": "Die untere Leiste fasst globales Projekt, Branches, fetch / pull / push und das Benachrichtigungszentrum zusammen. Achte auf diesen Bereich, wenn Macro eine Synchronisierungsaktion verlangt."
+      },
+      "done": {
+        "title": "Onboarding neu startbar",
+        "body": "Der Rundgang ist abgeschlossen. Die Buch-Schaltfläche startet diesen Leitfaden neu, um Modi erneut anzusehen oder jemand Neuem eine Schaltfläche zu erklären."
+      }
+    }
   },
   "footer": {
     "online": "Online",

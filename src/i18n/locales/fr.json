@@ -29,7 +29,7 @@
     "resetDefaults": "Réinitialiser les valeurs par défaut",
     "changesAutoSave": "Sauvegarde automatique des modifications",
     "all": "Tout",
-    "areYouSure": "Etes-vous sûr ?",
+    "areYouSure": "Êtes-vous sûr ?",
     "local": "Locale",
     "noKey": "Pas de clé",
     "copy": "Copier",
@@ -40,14 +40,14 @@
     "optional": "facultatif",
     "enabled": "Activé",
     "disabled": "Désactivé",
-    "listening": "A l'écoute...",
+    "listening": "À l'écoute...",
     "name": "Nom",
     "type": "Tapez",
     "status": "Statut",
     "clearSearch": "Effacer la recherche",
     "selectAll": "Tout sélectionner",
     "archive": "Archiver",
-    "confirmDelete": "Etes-vous sûr ?",
+    "confirmDelete": "Êtes-vous sûr ?",
     "now": "maintenant",
     "restore": "Restore",
     "saved": "Enregistré",
@@ -69,7 +69,124 @@
     "open": "Ouvrir l'onboarding",
     "dialogLabel": "Guide d'onboarding",
     "targetMissing": "Cette zone peut être masquée par la taille de fenêtre ou un état vide. Le guide reste dans le bon mode et reprendra l'ancrage dès que le bouton sera visible.",
-    "sectionProgress": "{{current}}/{{total}} dans cette section"
+    "sectionProgress": "{{current}}/{{total}} dans cette section",
+    "sections": {
+      "basics": "Bases",
+      "architect": "Architect",
+      "implement": "Implement",
+      "chat": "Chat",
+      "system": "Système"
+    },
+    "fallbackTarget": "La cible exacte est indisponible dans cet état. Le guide met en avant la zone de contexte la plus proche.",
+    "steps": {
+      "welcome": {
+        "title": "Bienvenue dans Macro",
+        "body": "Macro est organisé par modes. Le meilleur onboarding consiste à montrer les contrôles quand ils deviennent utiles, puis à laisser l'utilisateur reprendre la main.",
+        "points": [
+          "Le guide change de mode automatiquement.",
+          "Les panneaux gauche et droit sont rouverts quand une étape en a besoin.",
+          "Tu peux le relancer à tout moment depuis le bouton livre en haut."
+        ]
+      },
+      "modes": {
+        "title": "Le sélecteur de mode",
+        "body": "Ces trois boutons changent complètement la surface de travail. Architect sert à cadrer, Implement à exécuter, Chat à discuter avec contexte libre.",
+        "points": [
+          "Architect : besoins, plans et stratégie.",
+          "Implement : tâches, terminal et validation des changements.",
+          "Chat : conversations, sources et outils généraux."
+        ]
+      },
+      "project-picker": {
+        "title": "Projet actif",
+        "body": "Ce bouton ouvre le navigateur de projets. Il détermine les repos, les branches et le contexte utilisés par Architect et Implement."
+      },
+      "panel-toggles": {
+        "title": "Panneaux latéraux",
+        "body": "Les boutons de panneau masquent ou affichent les zones de contexte. Le panneau gauche contient souvent la liste de travail, le panneau droit les détails ou validations."
+      },
+      "settings-and-help": {
+        "title": "Réglages et onboarding",
+        "body": "Les réglages regroupent fournisseurs IA, modèles, sécurité des outils, thèmes et raccourcis. Le bouton livre juste à côté relance ce guide."
+      },
+      "architect-mode": {
+        "title": "Mode Architect",
+        "body": "Architect transforme une discussion en besoins, puis en stratégie de branches et de tâches. C'est le mode à utiliser avant de coder quand le cadrage est encore flou."
+      },
+      "architect-plan-selector": {
+        "title": "Plans",
+        "body": "Le sélecteur de plan isole les conversations, besoins et stratégies. Tu peux créer un plan feature, release, hotfix ou bugfix selon le flux Git attendu."
+      },
+      "architect-needs": {
+        "title": "Besoins identifiés",
+        "body": "Le panneau gauche liste les besoins extraits ou affinés pendant la conversation Architect. Les filtres par catégorie évitent de tout relire quand le plan grossit."
+      },
+      "architect-generate": {
+        "title": "Générer la stratégie",
+        "body": "Ce bouton est l'action importante d'Architect. Il convertit les besoins en graphe de tâches et en branches prévisibles, uniquement quand le contexte est suffisant."
+      },
+      "architect-strategy": {
+        "title": "Stratégie et branches",
+        "body": "Le panneau droit montre la stratégie. Le switch Graph / Branches aide à passer d'une vue dépendances à une vue exécution Git.",
+        "points": [
+          "Graph : dépendances et ordre logique.",
+          "Branches : travail regroupé par branche fonctionnelle.",
+          "Expand ouvre un explorateur plus confortable."
+        ]
+      },
+      "architect-validate": {
+        "title": "Valider le plan",
+        "body": "La validation fige le plan suffisamment pour provisionner les branches et alimenter Implement. Les tâches démarrées ou terminées sont protégées contre les régénérations destructrices."
+      },
+      "implement-mode": {
+        "title": "Mode Implement",
+        "body": "Implement sert à prendre une tâche, discuter son exécution, ouvrir un terminal et valider les fichiers modifiés avant commit."
+      },
+      "implement-tasks": {
+        "title": "File de tâches",
+        "body": "Le panneau gauche trie les tâches par état. Le plus crée une feature indépendante, le bouton archive affiche ou masque les anciennes tâches."
+      },
+      "implement-agent": {
+        "title": "Plan ou Build",
+        "body": "Dans Implement, ce contrôle choisit le comportement de l'agent. Plan sert à préparer ou clarifier, Build sert à modifier le code et exécuter."
+      },
+      "implement-terminal": {
+        "title": "Terminal de tâche",
+        "body": "Le terminal s'ouvre dans le contexte de la tâche et du repo sélectionnés. S'il y a plusieurs sous-projets, Macro peut demander lequel cibler."
+      },
+      "implement-changes": {
+        "title": "Validation des changements",
+        "body": "Le panneau droit suit les fichiers modifiés par repo. Valider stage les changements acceptés, Commit enregistre ce qui est prêt, et Finish termine la tâche quand tout est résolu."
+      },
+      "chat-mode": {
+        "title": "Mode Chat",
+        "body": "Chat est le mode libre. Il garde les conversations séparées des plans et tâches, mais permet d'attacher fichiers, liens, outils et sources."
+      },
+      "chat-conversations": {
+        "title": "Conversations",
+        "body": "Le panneau gauche gère l'historique : nouveau chat, recherche, multi-sélection, épinglage, archive, export et suppression."
+      },
+      "chat-toolbox": {
+        "title": "Toolbox",
+        "body": "Le panneau droit est la boîte à contexte. Tu peux joindre des fichiers, ajouter une URL, coller du texte, activer des outils et retrouver les sources citées."
+      },
+      "chat-models": {
+        "title": "Fournisseur, modèle et raisonnement",
+        "body": "Ces menus choisissent le fournisseur IA, le modèle et l'effort de raisonnement. Si un bouton est désactivé, il faut souvent configurer une clé dans Settings."
+      },
+      "composer": {
+        "title": "Composer et envoyer",
+        "body": "Le composer accepte texte, mentions et images collées. Le bouton flèche envoie, ou stoppe la génération quand une réponse est en cours."
+      },
+      "footer": {
+        "title": "Barre Git et notifications",
+        "body": "La barre du bas résume le projet global, les branches, fetch / pull / push et le centre de notifications. C'est la zone à regarder quand Macro demande une action de synchro."
+      },
+      "done": {
+        "title": "Onboarding relançable",
+        "body": "Le parcours est terminé. Le bouton livre relance ce guide pour revisiter les modes ou expliquer un bouton à quelqu'un de nouveau."
+      }
+    }
   },
   "footer": {
     "online": "En ligne",
@@ -504,7 +621,7 @@
         }
       }
     },
-    "projectOpenNone": "Do nothing",
+    "projectOpenNone": "Ne rien faire",
     "projectOpenDetectedGroup": "Detected apps",
     "projectOpenBuiltinGroup": "Built-in options",
     "openSubprojectsWith": "Open subprojects with",
@@ -1068,7 +1185,7 @@
       "toastConversationCreated": "Conversation créée pour ce plan",
       "toastDedicatedConversation": "Conversation dédiée créée pour ce plan",
       "toastBlankPlanReady": "A blank new plan is already ready. Send the first message to name it.",
-      "toastBlankPlanExpanded": "Reused the existing blank new plan and updated its scope. Send the first message to name it.",
+      "toastBlankPlanExpanded": "Plan vierge existant réutilisé et périmètre mis à jour. Envoyez le premier message pour le nommer.",
       "toastPlanArchived": "Plan \"{{title}}\" archivé",
       "toastPlanRestored": "Plan \"{{title}}\" restauré",
       "toastPlanDeleted": "Plan supprimé",
@@ -1086,7 +1203,7 @@
       "archiveFirstShort": "Archiver d'abord",
       "purgePlan": "Purger définitivement",
       "renameBeforeArchivePlan": "Renommer le plan avant de l'archiver",
-      "renameAfterStrategyBlocked": "Rename is unavailable after strategy has been created for this plan.",
+      "renameAfterStrategyBlocked": "Le renommage est indisponible après la création de la stratégie pour ce plan.",
       "replicaRepairTitle": "Réparer les réplicas de métadonnées du plan",
       "replicaRepairNewest": "Métadonnées du plan réparées à partir de la réplique la plus récente.",
       "replicaRepairOldest": "Métadonnées du plan réparées à partir de la réplique la plus ancienne.",
@@ -1099,16 +1216,16 @@
       "targetBranch": "Cible : {{branchName}}"
     },
     "planNamingRecovery": {
-      "title": "Plan name still needed",
-      "description": "Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.",
-      "retryAi": "Retry AI",
-      "retryingAi": "Retrying AI...",
-      "nameManually": "Name manually",
-      "manualTitle": "Name This Plan",
-      "manualDescription": "Enter the plan name you want to use for this conversation.",
-      "saveManualName": "Save plan name",
-      "back": "Back",
-      "manualPlaceholder": "e.g. Checkout Recovery Refresh"
+      "title": "Nom de plan encore requis",
+      "description": "Macro n'a pas pu générer un nom de plan à partir du premier message après trois tentatives. Réessayez avec l'IA ou nommez le plan manuellement.",
+      "retryAi": "Réessayer avec l'IA",
+      "retryingAi": "Nouvelle tentative avec l'IA...",
+      "nameManually": "Nommer manuellement",
+      "manualTitle": "Nommer ce plan",
+      "manualDescription": "Saisissez le nom de plan à utiliser pour cette conversation.",
+      "saveManualName": "Enregistrer le nom du plan",
+      "back": "Retour",
+      "manualPlaceholder": "ex. Rafraîchissement du checkout"
     },
     "needsEmptyTitle": "Aucun besoin identifié pour ce projet pour l'instant.",
     "needsEmptyDescription": "Échangez avec Architect pour faire émerger les besoins du projet.",
@@ -1120,17 +1237,17 @@
     "validate": "Valider le plan",
     "graphView": "Graph",
     "branchesView": "Branches",
-    "dependencyFlow": "Dependency Flow",
+    "dependencyFlow": "Flux de dépendances",
     "itemsCount": "{{count}} articles",
     "noStrategyTitle": "Aucune stratégie générée pour l'instant",
-    "noStrategyDescription": "Discutez des besoins dans le chat Architect, puis utilisez Générer la stratégie pour construire ce graph.",
-    "noBranchesMatchingFilters": "Aucune branch ne correspond aux filtres actuels.",
+    "noStrategyDescription": "Discutez des besoins dans le chat Architect, puis utilisez Générer la stratégie pour construire ce graphe.",
+    "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
     "planCompleted": "Plan terminé",
     "planValidated": "Plan validé",
     "validatingPlan": "Validation...",
     "noActivePlan": "Aucun plan actif",
     "generateStrategy": "Générer une stratégie",
-    "regenerateStrategy": "Stratégie de régénération",
+    "regenerateStrategy": "Régénérer la stratégie",
     "generateStrategyHint": "Générer une stratégie à partir des besoins identifiés",
     "regenerateStrategyHint": "Régénérer la stratégie à partir des besoins actuels",
     "generateStrategySelectPlan": "Sélectionnez d'abord un plan actif",
@@ -1151,7 +1268,7 @@
       "pending": "En attente",
       "active": "Actif",
       "merged": "Fusionné",
-      "mixed": "Mixed"
+      "mixed": "Mixte"
     },
     "progress": "Progrès",
     "branchSearch": "Rechercher des tâches...",
@@ -1171,24 +1288,24 @@
       "medium": "Moyen",
       "low": "Faible"
     },
-    "frozenReasonCompleted": "Completed work",
-    "frozenReasonDependencyLocked": "Locked dependency",
-    "frozenReasonStarted": "Started work",
-    "frozenReasonCompletedTooltip": "This task is already completed and can no longer be modified automatically.",
-    "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
-    "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
-    "frozenNodeLocked": "Locked",
-    "strategyPreviewTitle": "Regeneration preview",
-    "strategyPreviewBlockedTitle": "Regeneration blocked",
-    "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",
-    "strategyPreviewBlockedDescription": "This mutation would break frozen work or create an inconsistent plan.",
-    "strategyPreviewFrozen": "Frozen nodes kept",
-    "strategyPreviewRewrites": "Pending rewrites",
-    "strategyPreviewNone": "None",
-    "strategyPreviewNew": "New tasks",
-    "strategyPreviewRemoved": "Pending removals",
-    "strategyPreviewConflicts": "Conflicts",
-    "applyStrategyPreview": "Apply regeneration"
+    "frozenReasonCompleted": "Travail terminé",
+    "frozenReasonDependencyLocked": "Dépendance verrouillée",
+    "frozenReasonStarted": "Travail commencé",
+    "frozenReasonCompletedTooltip": "Cette tâche est déjà terminée et ne peut plus être modifiée automatiquement.",
+    "frozenReasonDependencyLockedTooltip": "Cette dépendance est verrouillée, car du travail commencé ou terminé en dépend déjà.",
+    "frozenReasonStartedTooltip": "Cette tâche a déjà été commencée et ne peut plus être modifiée automatiquement.",
+    "frozenNodeLocked": "Verrouillé",
+    "strategyPreviewTitle": "Aperçu de régénération",
+    "strategyPreviewBlockedTitle": "Régénération bloquée",
+    "strategyPreviewDescription": "Le travail gelé est préservé. Vérifiez les réécritures en attente avant d’appliquer la stratégie mise à jour.",
+    "strategyPreviewBlockedDescription": "Cette mutation casserait du travail gelé ou créerait un plan incohérent.",
+    "strategyPreviewFrozen": "Nœuds gelés conservés",
+    "strategyPreviewRewrites": "Réécritures en attente",
+    "strategyPreviewNone": "Aucune",
+    "strategyPreviewNew": "Nouvelles tâches",
+    "strategyPreviewRemoved": "Suppressions en attente",
+    "strategyPreviewConflicts": "Conflits",
+    "applyStrategyPreview": "Appliquer la régénération"
   },
   "git": {
     "gitTree": "Arbre Git",
@@ -1251,7 +1368,7 @@
       "connected": "Connecté",
       "downloading": "Téléchargement",
       "runtimeMissing": "Non installe",
-      "updateRequired": "Mise a jour requise",
+      "updateRequired": "Mise à jour requise",
       "configured": "Configured"
     },
     "types": {
@@ -1268,12 +1385,12 @@
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "Clé API",
       "apiKeyPlaceholder": "sk-...",
-      "apiKeyStoredPlaceholder": "Stockee dans le trousseau",
-      "apiKeyStoredHint": "Cette cle est stockee dans le trousseau du systeme.",
-      "revealApiKey": "Afficher la cle API",
-      "hideApiKey": "Masquer la cle API",
+      "apiKeyStoredPlaceholder": "Stockée dans le trousseau",
+      "apiKeyStoredHint": "Cette clé est stockée dans le trousseau du système.",
+      "revealApiKey": "Afficher la clé API",
+      "hideApiKey": "Masquer la clé API",
       "replaceApiKey": "Remplacer",
-      "clearApiKey": "Effacer la cle stockee"
+      "clearApiKey": "Effacer la clé stockée"
     },
     "authErrors": {
       "browser_open_failed": "Échec de l'ouverture de votre navigateur pour la connexion ChatGPT.",
@@ -1285,18 +1402,18 @@
       "secret_persist_failed": "La connexion ChatGPT a réussi, mais la session n'a pas pu être enregistrée."
     },
     "copilot": {
-      "downloadRuntime": "Telecharger Copilot",
-      "runtimeDownloaded": "Le runtime GitHub Copilot est pret",
-      "runtimeDownloadFailed": "Impossible de telecharger le runtime GitHub Copilot",
-      "downloadHint": "Telechargez le runtime officiel GitHub Copilot pour continuer.",
-      "updateHint": "Telechargez un runtime GitHub Copilot gere par Macro pour continuer.",
-      "troubleshootHint": "GitHub Copilot necessite une intervention avant de pouvoir etre utilise.",
+      "downloadRuntime": "Télécharger Copilot",
+      "runtimeDownloaded": "Le runtime GitHub Copilot est prêt",
+      "runtimeDownloadFailed": "Impossible de télécharger le runtime GitHub Copilot",
+      "downloadHint": "Téléchargez le runtime officiel GitHub Copilot pour continuer.",
+      "updateHint": "Téléchargez un runtime GitHub Copilot géré par Macro pour continuer.",
+      "troubleshootHint": "GitHub Copilot nécessite une intervention avant de pouvoir être utilisé.",
       "connectHint": "Connectez GitHub Copilot pour terminer la configuration.",
-      "troubleshoot": "Depanner",
-      "recheckStatus": "Re-verifier le statut",
+      "troubleshoot": "Dépanner",
+      "recheckStatus": "Revérifier le statut",
       "oauthConnectedHint": "Utilisez Copilot CLI sur cette machine pour changer de compte.",
       "ghCliConnectedHint": "Utilise la session GitHub CLI disponible sur cette machine.",
-      "envConnectedHint": "Utilise un token Copilot fourni par l environnement de cette machine.",
+      "envConnectedHint": "Utilise un token Copilot fourni par l'environnement de cette machine.",
       "connectedInTerminalHint": "Connecte dans la session terminal de cette machine.",
       "finishLoginTitle": "Terminez la connexion dans votre navigateur",
       "deviceCode": "Code appareil",
@@ -1644,7 +1761,7 @@
     "noTerminalForSubProject": "No terminal is available for this subproject yet.",
     "openWithPlus": "Open one with the + button.",
     "disconnected": "Disconnected",
-    "disconnectedDescription": "This terminal session is no longer attached to a live process.",
+    "disconnectedDescription": "Cette session de terminal n'est plus attachée à un processus actif.",
     "reconnect": "Reconnect"
   },
   "notify": {
