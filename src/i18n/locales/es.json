@@ -69,7 +69,124 @@
     "open": "Abrir onboarding",
     "dialogLabel": "Guía de onboarding",
     "targetMissing": "Esta zona puede estar oculta por el tamaño de la ventana o por un estado vacío. La guía permanece en el modo correcto y volverá a anclarse cuando el botón sea visible.",
-    "sectionProgress": "{{current}}/{{total}} en esta sección"
+    "sectionProgress": "{{current}}/{{total}} en esta sección",
+    "sections": {
+      "basics": "Bases",
+      "architect": "Architect",
+      "implement": "Implement",
+      "chat": "Chat",
+      "system": "Sistema"
+    },
+    "fallbackTarget": "El objetivo exacto no está disponible en este estado. La guía resalta la zona de contexto más cercana.",
+    "steps": {
+      "welcome": {
+        "title": "Bienvenido a Macro",
+        "body": "Macro se organiza por modos. El mejor onboarding muestra los controles cuando se vuelven útiles y luego deja que el usuario recupere el control.",
+        "points": [
+          "La guía cambia de modo automáticamente.",
+          "Los paneles izquierdo y derecho se vuelven a abrir cuando un paso los necesita.",
+          "Puedes reiniciarla en cualquier momento desde el botón de libro de arriba."
+        ]
+      },
+      "modes": {
+        "title": "Selector de modo",
+        "body": "Estos tres botones cambian toda la superficie de trabajo. Architect sirve para definir el alcance, Implement para ejecutar y Chat para conversar libremente con contexto.",
+        "points": [
+          "Architect: necesidades, planes y estrategia.",
+          "Implement: tareas, terminal y validación de cambios.",
+          "Chat: conversaciones, fuentes y herramientas generales."
+        ]
+      },
+      "project-picker": {
+        "title": "Proyecto activo",
+        "body": "Este botón abre el navegador de proyectos. Determina los repos, ramas y contexto usados por Architect e Implement."
+      },
+      "panel-toggles": {
+        "title": "Paneles laterales",
+        "body": "Los botones de panel ocultan o muestran las zonas de contexto. El panel izquierdo suele contener la lista de trabajo, y el derecho los detalles o validaciones."
+      },
+      "settings-and-help": {
+        "title": "Configuración y onboarding",
+        "body": "La configuración agrupa proveedores de IA, modelos, seguridad de herramientas, temas y atajos. El botón de libro situado al lado reinicia esta guía."
+      },
+      "architect-mode": {
+        "title": "Modo Architect",
+        "body": "Architect transforma una conversación en necesidades y luego en una estrategia de ramas y tareas. Úsalo antes de programar cuando el alcance aún no está claro."
+      },
+      "architect-plan-selector": {
+        "title": "Planes",
+        "body": "El selector de plan aísla conversaciones, necesidades y estrategias. Puedes crear un plan feature, release, hotfix o bugfix según el flujo Git esperado."
+      },
+      "architect-needs": {
+        "title": "Necesidades identificadas",
+        "body": "El panel izquierdo lista las necesidades extraídas o refinadas durante la conversación Architect. Los filtros por categoría evitan releer todo cuando el plan crece."
+      },
+      "architect-generate": {
+        "title": "Generar la estrategia",
+        "body": "Esta es la acción importante de Architect. Convierte las necesidades en un grafo de tareas y ramas predecibles, solo cuando hay contexto suficiente."
+      },
+      "architect-strategy": {
+        "title": "Estrategia y ramas",
+        "body": "El panel derecho muestra la estrategia. El selector Graph / Branches ayuda a pasar de una vista de dependencias a una vista de ejecución Git.",
+        "points": [
+          "Graph: dependencias y orden lógico.",
+          "Branches: trabajo agrupado por rama funcional.",
+          "Expand abre un explorador más cómodo."
+        ]
+      },
+      "architect-validate": {
+        "title": "Validar el plan",
+        "body": "La validación congela el plan lo suficiente para provisionar ramas y alimentar Implement. Las tareas iniciadas o terminadas quedan protegidas contra regeneraciones destructivas."
+      },
+      "implement-mode": {
+        "title": "Modo Implement",
+        "body": "Implement sirve para tomar una tarea, hablar de su ejecución, abrir un terminal y validar archivos modificados antes del commit."
+      },
+      "implement-tasks": {
+        "title": "Cola de tareas",
+        "body": "El panel izquierdo ordena las tareas por estado. El botón más crea una feature independiente, y el botón de archivo muestra u oculta tareas antiguas."
+      },
+      "implement-agent": {
+        "title": "Plan o Build",
+        "body": "En Implement, este control elige el comportamiento del agente. Plan prepara o aclara; Build modifica el código y ejecuta."
+      },
+      "implement-terminal": {
+        "title": "Terminal de tarea",
+        "body": "El terminal se abre en el contexto de la tarea y el repo seleccionados. Si hay varios subproyectos, Macro puede preguntar cuál debe usar."
+      },
+      "implement-changes": {
+        "title": "Validación de cambios",
+        "body": "El panel derecho sigue los archivos modificados por repo. Validate prepara los cambios aceptados, Commit guarda lo que está listo y Finish termina la tarea cuando todo está resuelto."
+      },
+      "chat-mode": {
+        "title": "Modo Chat",
+        "body": "Chat es el modo libre. Mantiene las conversaciones separadas de planes y tareas, pero permite adjuntar archivos, enlaces, herramientas y fuentes."
+      },
+      "chat-conversations": {
+        "title": "Conversaciones",
+        "body": "El panel izquierdo gestiona el historial: nuevo chat, búsqueda, multiselección, fijado, archivo, exportación y eliminación."
+      },
+      "chat-toolbox": {
+        "title": "Toolbox",
+        "body": "El panel derecho es la caja de contexto. Puedes adjuntar archivos, añadir una URL, pegar texto, activar herramientas y encontrar fuentes citadas."
+      },
+      "chat-models": {
+        "title": "Proveedor, modelo y razonamiento",
+        "body": "Estos menús eligen el proveedor de IA, el modelo y el esfuerzo de razonamiento. Si un botón está desactivado, a menudo debes configurar una clave en Settings."
+      },
+      "composer": {
+        "title": "Componer y enviar",
+        "body": "El composer acepta texto, menciones e imágenes pegadas. El botón de flecha envía, o detiene la generación cuando hay una respuesta en curso."
+      },
+      "footer": {
+        "title": "Barra Git y notificaciones",
+        "body": "La barra inferior resume el proyecto global, las ramas, fetch / pull / push y el centro de notificaciones. Mira esta zona cuando Macro pida una acción de sincronización."
+      },
+      "done": {
+        "title": "Onboarding reiniciable",
+        "body": "El recorrido ha terminado. El botón de libro reinicia esta guía para revisar los modos o explicar un botón a alguien nuevo."
+      }
+    }
   },
   "footer": {
     "online": "En línea",

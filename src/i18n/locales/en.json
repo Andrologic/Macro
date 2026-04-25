@@ -69,7 +69,124 @@
     "open": "Open onboarding",
     "dialogLabel": "Onboarding guide",
     "targetMissing": "This area may be hidden by the window size or an empty state. The guide stays in the right mode and will anchor again as soon as the button is visible.",
-    "sectionProgress": "{{current}}/{{total}} in this section"
+    "sectionProgress": "{{current}}/{{total}} in this section",
+    "sections": {
+      "basics": "Basics",
+      "architect": "Architect",
+      "implement": "Implement",
+      "chat": "Chat",
+      "system": "System"
+    },
+    "fallbackTarget": "The exact target is unavailable in this state. The guide highlights the closest context area instead.",
+    "steps": {
+      "welcome": {
+        "title": "Welcome to Macro",
+        "body": "Macro is organized by modes. The best onboarding shows controls when they become useful, then lets the user take back control.",
+        "points": [
+          "The guide changes mode automatically.",
+          "The left and right panels reopen when a step needs them.",
+          "You can restart it anytime from the book button at the top."
+        ]
+      },
+      "modes": {
+        "title": "Mode selector",
+        "body": "These three buttons change the whole workspace. Architect is for scoping, Implement is for executing, and Chat is for free-form discussion with context.",
+        "points": [
+          "Architect: needs, plans, and strategy.",
+          "Implement: tasks, terminal, and change validation.",
+          "Chat: conversations, sources, and general tools."
+        ]
+      },
+      "project-picker": {
+        "title": "Active project",
+        "body": "This button opens the project navigator. It determines the repos, branches, and context used by Architect and Implement."
+      },
+      "panel-toggles": {
+        "title": "Side panels",
+        "body": "Panel buttons hide or show context areas. The left panel often contains the work list, while the right panel contains details or validation."
+      },
+      "settings-and-help": {
+        "title": "Settings and onboarding",
+        "body": "Settings group AI providers, models, tool security, themes, and shortcuts. The book button next to it restarts this guide."
+      },
+      "architect-mode": {
+        "title": "Architect mode",
+        "body": "Architect turns a discussion into needs, then into a branch and task strategy. Use it before coding when the scope is still fuzzy."
+      },
+      "architect-plan-selector": {
+        "title": "Plans",
+        "body": "The plan selector isolates conversations, needs, and strategies. You can create a feature, release, hotfix, or bugfix plan according to the expected Git flow."
+      },
+      "architect-needs": {
+        "title": "Identified needs",
+        "body": "The left panel lists needs extracted or refined during the Architect conversation. Category filters avoid rereading everything as the plan grows."
+      },
+      "architect-generate": {
+        "title": "Generate the strategy",
+        "body": "This is the important Architect action. It converts needs into a task graph and predictable branches, only when enough context is available."
+      },
+      "architect-strategy": {
+        "title": "Strategy and branches",
+        "body": "The right panel shows the strategy. The Graph / Branches switch helps move from a dependency view to a Git execution view.",
+        "points": [
+          "Graph: dependencies and logical order.",
+          "Branches: work grouped by feature branch.",
+          "Expand opens a more comfortable explorer."
+        ]
+      },
+      "architect-validate": {
+        "title": "Validate the plan",
+        "body": "Validation freezes the plan enough to provision branches and feed Implement. Started or completed tasks are protected from destructive regenerations."
+      },
+      "implement-mode": {
+        "title": "Implement mode",
+        "body": "Implement is for picking up a task, discussing execution, opening a terminal, and validating modified files before commit."
+      },
+      "implement-tasks": {
+        "title": "Task queue",
+        "body": "The left panel sorts tasks by state. The plus creates an independent feature, and the archive button shows or hides older tasks."
+      },
+      "implement-agent": {
+        "title": "Plan or Build",
+        "body": "In Implement, this control chooses the agent behavior. Plan prepares or clarifies, while Build changes code and executes."
+      },
+      "implement-terminal": {
+        "title": "Task terminal",
+        "body": "The terminal opens in the context of the selected task and repo. If there are multiple subprojects, Macro can ask which one to target."
+      },
+      "implement-changes": {
+        "title": "Change validation",
+        "body": "The right panel tracks modified files by repo. Validate stages accepted changes, Commit records what is ready, and Finish completes the task when everything is resolved."
+      },
+      "chat-mode": {
+        "title": "Chat mode",
+        "body": "Chat is the free-form mode. It keeps conversations separate from plans and tasks, while allowing files, links, tools, and sources."
+      },
+      "chat-conversations": {
+        "title": "Conversations",
+        "body": "The left panel manages history: new chat, search, multi-select, pinning, archive, export, and delete."
+      },
+      "chat-toolbox": {
+        "title": "Toolbox",
+        "body": "The right panel is the context box. You can attach files, add a URL, paste text, enable tools, and find cited sources."
+      },
+      "chat-models": {
+        "title": "Provider, model, and reasoning",
+        "body": "These menus choose the AI provider, model, and reasoning effort. If a button is disabled, you often need to configure a key in Settings."
+      },
+      "composer": {
+        "title": "Compose and send",
+        "body": "The composer accepts text, mentions, and pasted images. The arrow button sends, or stops generation when a response is running."
+      },
+      "footer": {
+        "title": "Git bar and notifications",
+        "body": "The bottom bar summarizes the global project, branches, fetch / pull / push, and the notification center. Watch this area when Macro asks for a sync action."
+      },
+      "done": {
+        "title": "Restartable onboarding",
+        "body": "The tour is complete. The book button restarts this guide to revisit modes or explain a button to someone new."
+      }
+    }
   },
   "footer": {
     "online": "Online",
