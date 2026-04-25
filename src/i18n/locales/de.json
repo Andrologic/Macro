@@ -9,6 +9,9 @@
     "browse": "Durchsuchen",
     "add": "Hinzufügen",
     "done": "Fertig",
+    "previous": "Zurück",
+    "next": "Weiter",
+    "finish": "Fertig",
     "loading": "Laden...",
     "saving": "Sparen...",
     "error": "Fehler",
@@ -61,6 +64,12 @@
     "toggleRightPanel": "Rechtes Feld umschalten",
     "settings": "Einstellungen",
     "account": "Konto"
+  },
+  "onboarding": {
+    "open": "Onboarding öffnen",
+    "dialogLabel": "Onboarding-Leitfaden",
+    "targetMissing": "Dieser Bereich ist möglicherweise durch die Fenstergröße oder einen leeren Zustand ausgeblendet. Der Leitfaden bleibt im richtigen Modus und verankert sich wieder, sobald die Schaltfläche sichtbar ist.",
+    "sectionProgress": "{{current}}/{{total}} in diesem Abschnitt"
   },
   "footer": {
     "online": "Online",

@@ -183,7 +183,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
 
   if (!terminalScope) {
     return (
-      <div className={cn('h-full border-t border-border/60 bg-card/40', className)}>
+      <div
+        className={cn('h-full border-t border-border/60 bg-card/40', className)}
+        data-tour-id="terminal-panel"
+      >
         <div className="flex h-full items-center justify-center px-6 text-center">
           <div className="flex max-w-md flex-col items-center gap-3">
             <div className="space-y-2">
@@ -223,7 +226,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
     const showMultiProjectPrompt = !hasAnyTabForSelectedTask && terminalScope.projects.length > 1;
 
     return (
-      <div className={cn('h-full border-t border-border/60 bg-card/40', className)}>
+      <div
+        className={cn('h-full border-t border-border/60 bg-card/40', className)}
+        data-tour-id="terminal-panel"
+      >
         <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
           {showMultiProjectPrompt && (
             <p className="max-w-md text-sm text-muted-foreground">
@@ -267,7 +273,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   }
 
   return (
-    <section className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-card/40', className)}>
+    <section
+      className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-card/40', className)}
+      data-tour-id="terminal-panel"
+    >
       <header className="flex h-11 items-center justify-between gap-3 border-b border-border/60 px-3">
         <div className="relative min-w-0 flex-1">
           <div

@@ -9,6 +9,9 @@
     "browse": "Parcourir",
     "add": "Ajouter",
     "done": "Terminé",
+    "previous": "Précédent",
+    "next": "Suivant",
+    "finish": "Terminer",
     "loading": "Chargement...",
     "saving": "Sauvegarde...",
     "error": "Erreur",
@@ -61,6 +64,12 @@
     "toggleRightPanel": "Basculer le panneau droit",
     "settings": "Paramètres",
     "account": "Compte"
+  },
+  "onboarding": {
+    "open": "Ouvrir l'onboarding",
+    "dialogLabel": "Guide d'onboarding",
+    "targetMissing": "Cette zone peut être masquée par la taille de fenêtre ou un état vide. Le guide reste dans le bon mode et reprendra l'ancrage dès que le bouton sera visible.",
+    "sectionProgress": "{{current}}/{{total}} dans cette section"
   },
   "footer": {
     "online": "En ligne",

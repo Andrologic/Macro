@@ -1297,6 +1297,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     return (
       <aside
         className={cn("h-full w-full bg-card border-l border-border flex items-center justify-center", className)}
+        data-tour-id="architect-strategy-panel"
       >
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
@@ -1311,6 +1312,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     return (
       <aside
         className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+        data-tour-id="architect-strategy-panel"
       >
         <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -1333,7 +1335,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
     return (
-      <aside className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}>
+      <aside
+        className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+        data-tour-id="architect-strategy-panel"
+      >
         <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Icon name="git-branch" size={16} className="text-primary" />
@@ -1356,6 +1361,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   return (
     <aside
       className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+      data-tour-id="architect-strategy-panel"
     >
       {/* Header */}
       <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
@@ -1367,6 +1373,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           <button
             type="button"
             onClick={openGraphModal}
+            data-tour-id="architect-graph-expand"
             className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
             title={t('architect.openGraphExplorer', 'Open graph explorer')}
             aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
@@ -1377,7 +1384,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       </div>
 
       {/* View Toggle */}
-      <div className="h-10 border-b border-border flex items-center px-4 gap-2 bg-card shrink-0">
+      <div
+        className="h-10 border-b border-border flex items-center px-4 gap-2 bg-card shrink-0"
+        data-tour-id="architect-strategy-view-switch"
+      >
         <button
           onClick={() => setViewMode('graph')}
           className={cn(
@@ -1994,6 +2004,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </span>
               <button
                 onClick={() => void handleValidatePlan()}
+                data-tour-id="architect-validate-plan"
                 disabled={planNodes.length === 0 || isValidating}
                 className="ml-auto flex items-center gap-2 px-4 h-8 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >

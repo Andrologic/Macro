@@ -726,6 +726,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           'h-full w-full bg-card border-l border-border flex items-center justify-center',
           className
         )}
+        data-tour-id="implement-changes-panel"
       >
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
@@ -743,6 +744,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           'h-full w-full bg-card border-l border-border flex items-center justify-center',
           className
         )}
+        data-tour-id="implement-changes-panel"
       >
         <div className="text-center px-6">
           <Icon name="git-compare" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
@@ -761,6 +763,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           'h-full w-full bg-card border-l border-border flex items-center justify-center',
           className
         )}
+        data-tour-id="implement-changes-panel"
       >
         <div className="text-center px-6 max-w-sm">
           <Icon name="lock" size={48} className="text-muted-foreground/50 mx-auto mb-4" />
@@ -783,7 +786,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }
 
   return (
-    <aside className={cn('h-full w-full bg-card border-l border-border flex flex-col', className)}>
+    <aside
+      className={cn('h-full w-full bg-card border-l border-border flex flex-col', className)}
+      data-tour-id="implement-changes-panel"
+    >
       <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="folder-git-2" size={16} className="text-primary" />
@@ -1049,6 +1055,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         {showValidateChangesButton && (
           <button
             onClick={handleValidateChanges}
+            data-tour-id="implement-validate-changes"
             disabled={isValidateChangesDisabled}
             title={isValidateChangesDisabled ? validateChangesDisabledReason : undefined}
             className={cn(
@@ -1064,6 +1071,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         )}
         <button
           onClick={primaryAction.onClick}
+          data-tour-id="implement-commit-changes"
           disabled={primaryAction.disabled}
           title={primaryAction.title}
           className={cn(

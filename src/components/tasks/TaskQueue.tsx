@@ -359,6 +359,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
       role="button"
       tabIndex={0}
       data-task-card-variant={isCompactDraftFeatureCard ? 'compact-draft' : 'default'}
+      data-tour-id="implement-task-card"
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1581,7 +1582,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   if (isWorkspaceMissing) {
     return (
-      <aside className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}>
+      <aside
+        className={cn('h-full w-full bg-card border-r border-border flex items-center justify-center', className)}
+        data-tour-id="implement-task-panel"
+      >
         <ProjectWorkspaceEmptyState
           stateKind={workspaceState.kind}
           variant="secondary"
@@ -1592,7 +1596,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }
 
   return (
-    <aside className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}>
+    <aside
+      className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
+      data-tour-id="implement-task-panel"
+    >
       <div className="h-12 border-b border-border flex items-center justify-between gap-3 px-4">
         <div className="flex min-w-0 items-center gap-2">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -1604,6 +1611,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           <button
             type="button"
             onClick={() => setShowArchived((current) => !current)}
+            data-tour-id="implement-archive-toggle"
             className={cn(
               'mr-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors',
               showArchived
@@ -1626,6 +1634,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           <button
             type="button"
             onClick={() => void handleCreateManualFeature()}
+            data-tour-id="implement-create-task"
             disabled={
               Boolean(pendingTaskId) ||
               isReadOnlyOnlyScope ||
@@ -1704,6 +1713,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             value={planFilter}
             onChange={(event) => setPlanFilter(event.target.value)}
             className="h-9 py-1.5 text-xs"
+            data-tour-id="implement-plan-filter"
           >
             <option value={ALL_PLANS_FILTER}>
               {t('implement.planFilterAll', 'All plans')}

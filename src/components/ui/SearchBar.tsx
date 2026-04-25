@@ -3,7 +3,7 @@ import { Icon } from './Icon';
 import i18n from '../../i18n';
 import { cn } from '../../utils/cn';
 
-interface SearchBarProps {
+interface SearchBarProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange'> {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -17,6 +17,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   placeholder = i18n.t('common.searchPlaceholder', 'Search...'),
   className,
   showClear = true,
+  ...props
 }) => {
   const handleClear = () => {
     onChange('');
@@ -30,6 +31,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         'transition-all duration-200',
         className
       )}
+      {...props}
     >
       <Icon name="search" size={16} className="text-muted-foreground flex-shrink-0 mx-1" />
       <input

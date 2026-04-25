@@ -40,6 +40,11 @@ const Toaster = lazy(() =>
     default: module.Toaster,
   })),
 );
+const OnboardingGuide = lazy(() =>
+  import("./components/onboarding/OnboardingGuide").then((module) => ({
+    default: module.OnboardingGuide,
+  })),
+);
 
 const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
   phase: "idle",
@@ -416,6 +421,7 @@ const App: React.FC = () => {
   return (
     <div
       className="macro-app-shell grid h-full w-full min-h-0 min-w-0 overflow-hidden bg-background"
+      data-tour-id="app-shell"
       style={{
         gridTemplateRows: `${titleBarLayout.titleBarHeightPx}px 1fr 32px`,
       }}
@@ -434,6 +440,7 @@ const App: React.FC = () => {
           <>
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
+              data-tour-id="left-panel"
               style={{ width: leftPanelWidth }}
             >
               <ModeRouter panel="left" />
@@ -446,7 +453,7 @@ const App: React.FC = () => {
         )}
 
         {/* Center - Chat Zone (all modes use chat in center) */}
-        <div className="flex-1 h-full min-h-0 min-w-0 overflow-hidden">
+        <div className="flex-1 h-full min-h-0 min-w-0 overflow-hidden" data-tour-id="center-panel">
           <ModeRouter panel="center" />
         </div>
 
@@ -459,6 +466,7 @@ const App: React.FC = () => {
             />
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
+              data-tour-id="right-panel"
               style={{ width: rightPanelWidth }}
             >
               <ModeRouter panel="right" />
@@ -483,6 +491,10 @@ const App: React.FC = () => {
 
       <Suspense fallback={null}>
         <Toaster />
+      </Suspense>
+
+      <Suspense fallback={null}>
+        <OnboardingGuide />
       </Suspense>
     </div>
   );
