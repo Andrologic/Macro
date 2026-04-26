@@ -689,16 +689,16 @@ export const OnboardingGuide: React.FC = () => {
         role="dialog"
         aria-modal="false"
         aria-label={t('onboarding.dialogLabel')}
-        className="pointer-events-auto fixed w-[min(23rem,calc(100vw-28px))] overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl transition-[top,left] duration-200"
+        className="pointer-events-auto fixed w-[min(23rem,calc(100vw-28px))] overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl transition-[top,left] duration-200 ease-out animate-in fade-in zoom-in-95"
         style={{
           top: panelPosition.top,
           left: panelPosition.left,
         }}
         data-tour-placement={panelPosition.placement}
       >
-        <div className="h-1 bg-muted">
+        <div className="mx-4 mt-3 h-1.5 rounded-full bg-muted/60 overflow-hidden">
           <div
-            className="h-full bg-primary transition-all duration-300"
+            className="h-full rounded-full bg-primary transition-all duration-300"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
@@ -727,7 +727,7 @@ export const OnboardingGuide: React.FC = () => {
             <button
               type="button"
               onClick={() => void dismissTour()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
               aria-label={t('common.close', 'Close')}
               title={t('common.close', 'Close')}
             >
@@ -736,7 +736,7 @@ export const OnboardingGuide: React.FC = () => {
           </div>
 
           <div className="space-y-3">
-            <p className="text-sm leading-6 text-muted-foreground">
+            <p className="text-sm leading-relaxed text-muted-foreground">
               {t(getStepTranslationKey(activeStep.id, 'body'))}
             </p>
 
@@ -744,7 +744,7 @@ export const OnboardingGuide: React.FC = () => {
               <ul className="space-y-1.5">
                 {activeStepPoints.map((point) => (
                   <li key={point.id} className="flex gap-2 text-xs leading-5 text-foreground/90">
-                    <Icon name="check" size={12} className="mt-1 shrink-0 text-primary" />
+                    <Icon name="check" size={12} className="mt-0.5 shrink-0 text-primary" />
                     <span>{t(point.key)}</span>
                   </li>
                 ))}
@@ -758,7 +758,7 @@ export const OnboardingGuide: React.FC = () => {
             )}
 
             {targetStatus === 'missing' && (
-              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-400">
                 {t('onboarding.targetMissing')}
               </div>
             )}
@@ -771,7 +771,7 @@ export const OnboardingGuide: React.FC = () => {
                 type="button"
                 onClick={() => setActiveStepIndex(index)}
                 className={cn(
-                  'rounded-full border px-2 py-1 text-[11px] font-medium transition-colors',
+                  'rounded-full border px-2 py-0.5 text-[10px] font-medium tracking-wide transition-colors',
                   section === activeStep.section
                     ? 'border-primary/30 bg-primary/10 text-primary'
                     : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -782,7 +782,7 @@ export const OnboardingGuide: React.FC = () => {
             ))}
           </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+          <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
             <div className="text-[11px] text-muted-foreground">
               {t('onboarding.sectionProgress', {
                 current: sectionProgress.current,
@@ -795,7 +795,7 @@ export const OnboardingGuide: React.FC = () => {
                 type="button"
                 onClick={previousStep}
                 disabled={isFirstStep}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
               >
                 <Icon name="chevron-left" size={12} />
                 {t('common.previous', 'Previous')}
@@ -803,7 +803,7 @@ export const OnboardingGuide: React.FC = () => {
               <button
                 type="button"
                 onClick={nextStep}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
               >
                 {isLastStep ? t('common.finish', 'Finish') : t('common.next', 'Next')}
                 {!isLastStep && <Icon name="chevron-right" size={12} />}
