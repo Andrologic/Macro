@@ -14,7 +14,7 @@ export const TourSpotlightOverlay: React.FC<TourSpotlightOverlayProps> = ({
 }) => {
   if (!rect) {
     return (
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px] pointer-events-auto" />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto" />
     );
   }
 
@@ -34,9 +34,9 @@ export const TourSpotlightOverlay: React.FC<TourSpotlightOverlayProps> = ({
     >
       <path
         d={maskPath}
-        fill="rgba(0,0,0,0.55)"
+        fill="rgba(0,0,0,0.40)"
         fillRule="evenodd"
-        className="backdrop-blur-[1px] pointer-events-auto"
+        className="backdrop-blur-sm pointer-events-auto"
       />
       <rect
         data-onboarding-highlight="true"
@@ -48,10 +48,24 @@ export const TourSpotlightOverlay: React.FC<TourSpotlightOverlayProps> = ({
         ry={SPOTLIGHT_RADIUS}
         fill="none"
         stroke="rgb(var(--primary))"
-        strokeOpacity={0.8}
-        strokeWidth={1}
+        strokeOpacity={0.35}
+        strokeWidth={3}
         vectorEffect="non-scaling-stroke"
-        className="drop-shadow-[0_20px_35px_rgba(99,102,241,0.45)]"
+        className="transition-all duration-300 ease-out"
+      />
+      <rect
+        x={rect.left}
+        y={rect.top}
+        width={rect.width}
+        height={rect.height}
+        rx={SPOTLIGHT_RADIUS}
+        ry={SPOTLIGHT_RADIUS}
+        fill="none"
+        stroke="rgb(var(--primary))"
+        strokeOpacity={0.9}
+        strokeWidth={1.5}
+        vectorEffect="non-scaling-stroke"
+        className="transition-all duration-300 ease-out"
       />
     </svg>
   );
