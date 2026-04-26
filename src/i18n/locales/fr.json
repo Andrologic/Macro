@@ -81,7 +81,7 @@
     "steps": {
       "welcome": {
         "title": "Bienvenue dans Macro",
-        "body": "Macro est organisé par modes. Le meilleur onboarding consiste à montrer les contrôles quand ils deviennent utiles, puis à laisser l'utilisateur reprendre la main.",
+        "body": "Macro organise le travail par modes : cadrer avec Architect, exécuter avec Implement, puis échanger librement avec Chat quand le contexte doit rester ouvert.",
         "points": [
           "Le guide change de mode automatiquement.",
           "Les panneaux gauche et droit sont rouverts quand une étape en a besoin.",
@@ -130,8 +130,7 @@
         "body": "Le panneau droit montre la stratégie. Le switch Graph / Branches aide à passer d'une vue dépendances à une vue exécution Git.",
         "points": [
           "Graph : dépendances et ordre logique.",
-          "Branches : travail regroupé par branche fonctionnelle.",
-          "Expand ouvre un explorateur plus confortable."
+          "Branches : travail regroupé par branche fonctionnelle."
         ]
       },
       "architect-validate": {
@@ -144,7 +143,7 @@
       },
       "implement-tasks": {
         "title": "File de tâches",
-        "body": "Le panneau gauche trie les tâches par état. Le plus crée une feature indépendante, le bouton archive affiche ou masque les anciennes tâches."
+        "body": "Le panneau gauche trie les tâches par état. Le bouton + crée une tâche indépendante, et le bouton archive affiche ou masque les anciennes tâches."
       },
       "implement-agent": {
         "title": "Plan ou Build",
