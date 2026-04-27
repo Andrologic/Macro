@@ -183,6 +183,72 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
+  it('uses explicit workspace overrides ahead of task worktrees during merge workflows', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects,
+      projectGroups,
+      tasks: [
+        {
+          id: 'task-1',
+          project_id: 'macro-api',
+          project_ids: ['macro-api', 'macro-web'],
+          assigned_branch: 'feature/payments',
+          execution_targets: [
+            {
+              projectId: 'macro-api',
+              branchName: 'feature/payments',
+              worktreeKey: 'macro-api::feature/payments',
+            },
+            {
+              projectId: 'macro-web',
+              branchName: 'feature/payments',
+              worktreeKey: 'macro-web::feature/payments',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-api',
+      selectedTaskId: 'task-1',
+      activeRepositoryPath: 'C:/dev/macro-api',
+      workspacePathOverridesByProjectId: {
+        'macro-api': 'C:/dev/macro-api',
+        'macro-web': 'projects/macro-web',
+      },
+      branchWorktrees: {
+        'macro-api::feature/payments': 'C:/worktrees/macro-api-payments',
+        'macro-web::feature/payments': 'C:/worktrees/macro-web-payments',
+      },
+    });
+
+    expect(context.taskId).toBe('task-1');
+    expect(context.workspacePath).toBe('C:/dev/macro-api');
+    expect(context.workspacePathsByProjectId).toEqual({
+      'macro-api': 'C:/dev/macro-api',
+      'macro-web': 'projects/macro-web',
+    });
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'macro-web',
+        groupId: 'macro-suite',
+        mountName: 'web',
+        displayName: 'Macro Web',
+        workspacePath: 'projects/macro-web',
+        isReadOnly: false,
+      },
+      {
+        projectId: 'macro-api',
+        groupId: 'macro-suite',
+        mountName: 'api',
+        displayName: 'Macro API',
+        workspacePath: 'C:/dev/macro-api',
+        isReadOnly: false,
+      },
+    ]);
+  });
+
   it('keeps writable context-only task repos readable but non-actionable', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
