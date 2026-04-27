@@ -31,27 +31,39 @@ describe('taskStatusPresentation', () => {
     );
   });
 
-  it('forces the running state only for the streamed task', () => {
+  it('forces the running state only for active preparing or streamed tasks', () => {
     const runningTaskIds = resolveRunningTaskIds({
       conversations: [
         { id: 'conversation-1', task_id: 'task-1' },
         { id: 'conversation-2', task_id: 'task-2' },
+        { id: 'conversation-3', task_id: 'task-3' },
+        { id: 'conversation-4', task_id: 'task-4' },
       ],
       conversationRuntimeById: {
         'conversation-1': {
           phase: 'streaming',
           sessionId: 'session-1',
         },
+        'conversation-2': {
+          phase: 'preparing',
+          sessionId: 'session-2',
+        },
+        'conversation-3': {
+          phase: 'error',
+          sessionId: 'session-3',
+        },
       },
     });
 
     expect(runningTaskIds.has('task-1')).toBe(true);
-    expect(runningTaskIds.has('task-2')).toBe(false);
+    expect(runningTaskIds.has('task-2')).toBe(true);
+    expect(runningTaskIds.has('task-3')).toBe(false);
+    expect(runningTaskIds.has('task-4')).toBe(false);
     expect(
       resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-1'))
     ).toBe('running');
     expect(
-      resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-2'))
+      resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-3'))
     ).toBe('awaiting_response');
   });
 

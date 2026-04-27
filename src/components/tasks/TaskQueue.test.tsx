@@ -87,6 +87,16 @@ const loadTaskQueueModules = async () => {
     ...fileChangesStoreModule,
   }));
 
+  const architectGitFlowServiceModule = await import(
+    `../../services/architectGitFlowService.ts?task-queue-git-flow-service-test=${importCounter}`
+  );
+  mock.module('../../services/architectGitFlowService', () => ({
+    ...architectGitFlowServiceModule,
+  }));
+  mock.module('../../services/architectGitFlowService.ts', () => ({
+    ...architectGitFlowServiceModule,
+  }));
+
   const taskStoreModule = await import(
     `../../stores/useTaskStore.ts?task-queue-task-store-test=${importCounter}`
   );
@@ -182,7 +192,10 @@ describe('TaskQueue', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+  const seedStores = (
+    taskStatus: TaskStatus,
+    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+  ) => {
     seedTasks([makeTask('task-1', taskStatus, {
       title: 'Render task status indicator',
       description: 'Check the status marker',
@@ -192,11 +205,15 @@ describe('TaskQueue', () => {
     })], options);
   };
 
-  const seedTasks = (tasks: Array<Record<string, unknown>>, options?: { isStreaming?: boolean }) => {
-    const conversationRuntimeById = options?.isStreaming
+  const seedTasks = (
+    tasks: Array<Record<string, unknown>>,
+    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+  ) => {
+    const runtimePhase = options?.runtimePhase ?? (options?.isStreaming ? 'streaming' : null);
+    const conversationRuntimeById = runtimePhase
       ? {
           'conversation-1': {
-            phase: 'streaming' as const,
+            phase: runtimePhase,
             sessionId: 'session-1',
             assistantMessageId: 'assistant-1',
             abortController: null,
@@ -240,7 +257,7 @@ describe('TaskQueue', () => {
         },
       ] as never,
       conversationRuntimeById: conversationRuntimeById as never,
-      isStreaming: options?.isStreaming ?? false,
+      isStreaming: runtimePhase === 'streaming',
       selectedConversationId: 'conversation-1',
     });
 
@@ -369,6 +386,19 @@ describe('TaskQueue', () => {
 
   it('renders a spinner only for the streamed task', async () => {
     seedStores('InProgress', { isStreaming: true });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('renders a running indicator while the task conversation is preparing', async () => {
+    seedStores('InProgress', { runtimePhase: 'preparing' });
 
     await act(async () => {
       root?.render(<TaskQueueComponent />);
