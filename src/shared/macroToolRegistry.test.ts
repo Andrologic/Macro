@@ -4,6 +4,8 @@ import {
   filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
   requireMacroToolRegistryEntry,
+  toCopilotFunctionToolShape,
+  toFunctionToolShape,
 } from './macroToolRegistry';
 
 const extractRustPolicyToolIds = (
@@ -25,6 +27,18 @@ const extractRustPolicyToolIds = (
 };
 
 describe('macroToolRegistry', () => {
+  const copilotBuiltInOverrideToolIds = [
+    'read_file',
+    'list',
+    'read',
+    'write',
+    'edit',
+    'delete',
+    'apply_patch',
+    'glob',
+    'grep',
+  ];
+
   it('contains unique ids', () => {
     const ids = MACRO_TOOL_REGISTRY.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -41,9 +55,28 @@ describe('macroToolRegistry', () => {
   });
 
   it('marks tools that shadow Copilot built-ins as explicit overrides', () => {
-    for (const toolId of ['read_file', 'glob']) {
+    for (const toolId of copilotBuiltInOverrideToolIds) {
       expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBe(true);
     }
+
+    for (const toolId of ['git_status', 'terminal_run', 'question']) {
+      expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBeUndefined();
+    }
+  });
+
+  it('keeps default function tool shapes provider-neutral', () => {
+    const shape = toFunctionToolShape(requireMacroToolRegistryEntry('grep'));
+
+    expect(shape.function.name).toBe('grep');
+    expect(shape.overridesBuiltInTool).toBeUndefined();
+  });
+
+  it('adds Copilot override metadata only for marked tool shapes', () => {
+    const grepShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('grep'));
+    const gitShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('git_status'));
+
+    expect(grepShape.overridesBuiltInTool).toBe(true);
+    expect(gitShape.overridesBuiltInTool).toBeUndefined();
   });
 
   it('registers the delete workspace tool', () => {
