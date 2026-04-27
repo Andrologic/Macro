@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createFileChangesStore, resolveChangeFilePath } from './useFileChangesStore';
 import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
+import {
+  SmartCommitMessageGenerationError,
+  type GeneratedCommitMessages,
+} from '../services/smartCommitMessageGenerator';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
@@ -286,10 +290,12 @@ const commitRepository = async ({ repoPath }: { repoPath: string }) => {
 
 const buildGeneratedCommitMessages = async (input: {
   repositories: Array<{ repositoryId: string }>;
-}) => ({
-  title: 'feat: implement multi repo flow',
+}): Promise<GeneratedCommitMessages> => ({
   repositories: input.repositories.map((repository) => ({
     repositoryId: repository.repositoryId,
+    type: 'feat' as const,
+    scope: repository.repositoryId.split('::')[0],
+    subject: `implement ${repository.repositoryId} flow`,
     body: `Update ${repository.repositoryId}.`,
   })),
 });
@@ -1043,15 +1049,22 @@ describe('useFileChangesStore', () => {
     expect(gitCommitMock).toHaveBeenCalledTimes(2);
     expect(gitCommitMock).toHaveBeenCalledWith({
       repoPath: worktreeAPath,
-      message: `feat: implement multi repo flow\n\nUpdate ${repositoryIdA}.`,
+      message: `feat: implement ${repositoryIdA} flow\n\nUpdate ${repositoryIdA}.`,
       stageAll: false,
     });
     expect(gitCommitMock).toHaveBeenCalledWith({
       repoPath: worktreeBPath,
-      message: `feat: implement multi repo flow\n\nUpdate ${repositoryIdB}.`,
+      message: `feat: implement ${repositoryIdB} flow\n\nUpdate ${repositoryIdB}.`,
       stageAll: false,
     });
     expect(generateCommitMessagesMock).toHaveBeenCalledTimes(1);
+    const [input] = generateCommitMessagesMock.mock.calls[0] as unknown as [{
+      repositories: Array<{ projectId: string; projectName?: string | null; scopeCandidates?: string[]; recommendedScope?: string | null }>;
+    }];
+    const projectAInput = input.repositories.find((repository) => repository.projectId === 'project-a');
+    expect(projectAInput?.projectName).toBe('Project A');
+    expect(projectAInput).not.toHaveProperty('scopeCandidates');
+    expect(projectAInput).not.toHaveProperty('recommendedScope');
     expect(useFileChangesStore.getState().executionRecords[repositoryIdA]?.projectId).toBe('project-a');
     expect(useFileChangesStore.getState().executionRecords[repositoryIdB]?.projectId).toBe('project-b');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
@@ -1094,9 +1107,11 @@ describe('useFileChangesStore', () => {
     generateCommitMessagesMock.mockImplementationOnce(async (input: {
       repositories: Array<{ repositoryId: string }>;
     }) => ({
-      title: 'feat: recover generated messages',
       repositories: input.repositories.map((repository) => ({
         repositoryId: repository.repositoryId,
+        type: 'fix' as const,
+        scope: null,
+        subject: `recover ${repository.repositoryId} messages`,
         body: `Recovered ${repository.repositoryId}.`,
       })),
     }));
@@ -1106,6 +1121,101 @@ describe('useFileChangesStore', () => {
     expect(result.commits).toHaveLength(2);
     expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
     expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries when generated commit messages are structurally valid but not conventional', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementationOnce(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => {
+      throw new SmartCommitMessageGenerationError('Commit message must follow Conventional Commits', {
+        generatedMessages: {
+          repositories: input.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            type: 'chore' as const,
+            scope: null,
+            subject: 'update generated messages',
+            body: `Update ${repository.repositoryId}.`,
+          })),
+        },
+      });
+    });
+    generateCommitMessagesMock.mockImplementationOnce(buildGeneratedCommitMessages);
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(2);
+    const retryOptions = (
+      generateCommitMessagesMock.mock.calls as unknown as Array<[unknown, unknown]>
+    )[1]?.[1];
+    expect(retryOptions).toMatchObject({
+      validationFeedback: 'Commit message must follow Conventional Commits',
+    });
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call git commit when generated messages stay non-conventional', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementation(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => {
+      throw new SmartCommitMessageGenerationError('Commit message must follow Conventional Commits', {
+        generatedMessages: {
+          repositories: input.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            type: 'chore' as const,
+            scope: null,
+            subject: 'update generated messages',
+            body: `Update ${repository.repositoryId}.`,
+          })),
+        },
+      });
+    });
+
+    try {
+      await store.commitAllReadyTaskRepositories();
+      throw new Error('expected commit to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SmartCommitMessageGenerationError);
+      expect((error as SmartCommitMessageGenerationError).generatedMessages?.repositories[0]?.subject)
+        .toBe('update generated messages');
+    }
+
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('commits multi-repo changes with manually edited conventional messages', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    const result = await store.commitAllReadyTaskRepositories({
+      messagesByRepositoryId: {
+        [repositoryIdA]: 'fix(project-a): commit edited changes',
+        [repositoryIdB]: 'fix(project-b): commit edited changes',
+      },
+    });
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).not.toHaveBeenCalled();
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      message: 'fix(project-a): commit edited changes',
+      stageAll: false,
+    });
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      message: 'fix(project-b): commit edited changes',
+      stageAll: false,
+    });
   });
 
   it('does not create commits when generated commit messages keep failing', async () => {

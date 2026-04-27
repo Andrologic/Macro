@@ -79,6 +79,8 @@ export const PREF_KEYS = {
   PROJECT_OPEN_TERMINAL_COMMAND: "projectOpenTerminalCommand",
   PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
   ONBOARDING_STATE: "onboardingState",
+  SMART_COMMIT_MODEL_CONFIG: "smartCommitModelConfig",
+  SMART_COMMIT_PROMPT: "smartCommitPrompt",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -138,6 +140,12 @@ const PROMPT_DEFAULTS = {
   ...DEFAULT_MODE_PROMPTS,
   ...DEFAULT_INTERNAL_PROFILE_PROMPTS,
 } as const satisfies Record<PromptPreferenceKey, string>;
+
+export const DEFAULT_SMART_COMMIT_PROMPT =
+  "You generate concise Git commit messages. Return JSON only. Do not include markdown fences.\n" +
+  "Generate one independent Conventional Commit per repository.\n" +
+  "Allowed types: feat, fix, perf, build, chore, ci, docs, refactor, style, test, revert.\n" +
+  "Use the body only when it adds useful context beyond the subject.";
 
 export const PROMPT_PREFERENCE_DEFINITIONS: PromptPreferenceDefinition[] = [
   {
@@ -254,6 +262,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
     dismissedAt: null,
     lastStepId: null,
   },
+  [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
+  [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
 };
 
 // Store instance (singleton)

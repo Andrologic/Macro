@@ -2,6 +2,7 @@
   "common": {
     "save": "구하다",
     "cancel": "취소",
+    "continue": "계속",
     "delete": "삭제",
     "edit": "편집하다",
     "rename": "이름 바꾸기",
@@ -938,6 +939,21 @@
     "revertFailed": "변경을 되돌리지 못했습니다.",
     "unstageSuccess": "변경을 스테이지에서 해제했습니다.",
     "unstageFailed": "변경을 스테이지에서 해제하지 못했습니다.",
+    "commitModelChoiceTitle": "커밋 메시지 모델 선택",
+    "commitModelChoiceDescription": "Macro는 현재 대화 모델 또는 모든 커밋에 사용할 전용 모델로 커밋 메시지를 생성할 수 있습니다.",
+    "commitModelConversation": "대화 모델",
+    "commitModelDedicated": "전용 모델",
+    "commitMessageValidationFailed": "생성된 커밋 메시지는 수동 검토가 필요합니다.",
+    "commitMessageEditTitle": "커밋 메시지 검토",
+    "commitMessageEditDescription": "생성된 메시지가 Conventional Commits 검증을 통과하지 못했습니다. 커밋 전에 수정하세요.",
+    "commitMessageTypeLabel": "타입",
+    "commitMessageScopeLabel": "스코프",
+    "commitMessageScopePlaceholder": "선택 사항",
+    "commitMessageSubjectLabel": "제목",
+    "commitMessageBodyLabel": "본문",
+    "commitMessageBodyPlaceholder": "선택 세부 정보",
+    "commitMessageBreakingLabel": "브레이킹 변경",
+    "retryGeneration": "다시 생성",
     "stage": "Stage",
     "changeStatus": {
       "added": "추가됨",
@@ -1597,7 +1613,15 @@
     "deleteCustomDescription": "이 provider에서 \"{{modelName}}\"을(를) 삭제할까요?",
     "manualModelActions": "모델 작업",
     "modelsRefreshed": "모델이 새로 고쳐졌습니다.",
-    "refreshFailed": "모델을 새로 고치지 못했습니다."
+    "refreshFailed": "모델을 새로 고치지 못했습니다.",
+    "commitMessagesTitle": "커밋 메시지",
+    "commitMessagesDescription": "Macro가 Conventional Commit 메시지를 생성할 때 사용할 모델을 선택하세요.",
+    "commitUseConversationModel": "대화 모델 사용",
+    "commitUseDedicatedModel": "전용 모델 사용",
+    "commitPromptLabel": "커밋 생성 프롬프트",
+    "commitPromptDescription": "이 프롬프트는 스마트 커밋 생성을 안내합니다. Macro는 최종 메시지를 계속 검증하고 커밋 전에 scope를 제거합니다.",
+    "reasoningEffort": "추론",
+    "defaultReasoning": "기본값"
   },
   "shortcuts": {
     "categories": {
