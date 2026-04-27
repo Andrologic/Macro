@@ -1,5 +1,20 @@
 import { sendChatNonStreaming } from './streamingChat';
 import { useProviderStore } from '../stores/useProviderStore';
+import { devLogger } from '../utils/devLogger';
+import {
+  DEFAULT_SMART_COMMIT_PROMPT,
+  PREF_KEYS,
+  loadPreference,
+} from './preferences';
+import {
+  ALLOWED_COMMIT_TYPES,
+  formatConventionalCommitMessage,
+  parseConventionalCommitMessage,
+  validateConventionalCommitFields,
+  validateConventionalCommitMessage,
+  type ConventionalCommitType,
+} from './conventionalCommit';
+import type { SmartCommitModelConfig } from './smartCommitModelConfig';
 
 export interface SmartCommitMessageFileContext {
   path: string;
@@ -28,19 +43,33 @@ export interface GenerateSmartCommitMessagesInput {
 
 export interface GeneratedCommitMessageEntry {
   repositoryId: string;
-  subject?: string;
-  body: string;
+  type: ConventionalCommitType;
+  scope?: string | null;
+  breaking?: boolean;
+  subject: string;
+  body?: string | null;
 }
 
 export interface GeneratedCommitMessages {
-  title: string;
   repositories: GeneratedCommitMessageEntry[];
 }
 
+export const stripGeneratedCommitScopes = (
+  generated: GeneratedCommitMessages
+): GeneratedCommitMessages => ({
+  repositories: generated.repositories.map((entry) => ({
+    ...entry,
+    scope: null,
+  })),
+});
+
 export class SmartCommitMessageGenerationError extends Error {
-  constructor(message: string) {
+  generatedMessages?: GeneratedCommitMessages;
+
+  constructor(message: string, options: { generatedMessages?: GeneratedCommitMessages } = {}) {
     super(message);
     this.name = 'SmartCommitMessageGenerationError';
+    this.generatedMessages = options.generatedMessages;
   }
 }
 
@@ -62,73 +91,216 @@ const stripCodeFence = (value: string): string => {
   return fenced ? fenced[1].trim() : trimmed;
 };
 
-const extractJsonObject = (value: string): string => {
+const extractBalancedJsonAt = (value: string, start: number): string | null => {
+  const opener = value[start];
+  const firstCloser = opener === '{' ? '}' : opener === '[' ? ']' : null;
+  if (!firstCloser) {
+    return null;
+  }
+
+  const stack = [firstCloser];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start + 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === '{') {
+      stack.push('}');
+      continue;
+    }
+    if (character === '[') {
+      stack.push(']');
+      continue;
+    }
+    if (character === '}' || character === ']') {
+      if (stack.at(-1) !== character) {
+        return null;
+      }
+      stack.pop();
+      if (stack.length === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractJsonCandidates = (value: string): string[] => {
   const stripped = stripCodeFence(value);
-  if (stripped.startsWith('{') && stripped.endsWith('}')) {
-    return stripped;
+  const candidates = [stripped];
+  const fencedBlocks = stripped.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
+  for (const match of fencedBlocks) {
+    if (match[1]?.trim()) {
+      candidates.push(match[1].trim());
+    }
   }
 
-  const start = stripped.indexOf('{');
-  const end = stripped.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    return stripped.slice(start, end + 1);
+  const result = new Set<string>();
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      result.add(trimmed);
+    }
+
+    for (let index = 0; index < trimmed.length; index += 1) {
+      if (trimmed[index] !== '{' && trimmed[index] !== '[') {
+        continue;
+      }
+      const balanced = extractBalancedJsonAt(trimmed, index);
+      if (balanced) {
+        result.add(balanced);
+      }
+    }
   }
 
-  return stripped;
+  return Array.from(result);
 };
 
 const normalizeText = (value: unknown): string =>
   typeof value === 'string' ? value.trim() : '';
 
+const describeUnknownError = (error: unknown): string =>
+  error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+
+const debugSmartCommitGenerationError = (
+  message: string,
+  details: Record<string, unknown>
+): void => {
+  devLogger.error(`[smartCommitMessageGenerator] ${message}`, details);
+};
+
+const normalizeGeneratedCommitType = (value: unknown): ConventionalCommitType | null => {
+  const normalized = normalizeText(value).toLowerCase();
+  return ALLOWED_COMMIT_TYPES.includes(normalized as ConventionalCommitType)
+    ? normalized as ConventionalCommitType
+    : null;
+};
+
+const coerceEditableGeneratedCommitMessages = (
+  entries: unknown[],
+  expectedRepositoryIds: string[]
+): GeneratedCommitMessages => ({
+  repositories: expectedRepositoryIds.map((repositoryId) => {
+    const rawEntry = entries.find((entry) =>
+      !!entry &&
+      typeof entry === 'object' &&
+      normalizeText((entry as { repositoryId?: unknown }).repositoryId) === repositoryId
+    ) as {
+      type?: unknown;
+      scope?: unknown;
+      breaking?: unknown;
+      subject?: unknown;
+      body?: unknown;
+    } | undefined;
+    return {
+      repositoryId,
+      type: normalizeGeneratedCommitType(rawEntry?.type) ?? 'chore',
+      scope: null,
+      breaking: Boolean(rawEntry?.breaking),
+      subject: normalizeText(rawEntry?.subject) || 'update task changes',
+      body: normalizeText(rawEntry?.body) || null,
+    };
+  }),
+});
+
 export const validateGeneratedCommitMessages = (
   payload: unknown,
   expectedRepositoryIds: string[]
 ): GeneratedCommitMessages => {
+  if (Array.isArray(payload)) {
+    return validateGeneratedCommitMessages({ repositories: payload }, expectedRepositoryIds);
+  }
+
   if (!payload || typeof payload !== 'object') {
     throw new SmartCommitMessageGenerationError('Commit message response is not a JSON object.');
   }
 
   const value = payload as {
-    title?: unknown;
+    repositoryId?: unknown;
     repositories?: unknown;
   };
-  const title = normalizeText(value.title);
-  if (!title) {
-    throw new SmartCommitMessageGenerationError('Commit message response is missing a title.');
+  if (!Array.isArray(value.repositories) && normalizeText(value.repositoryId)) {
+    return validateGeneratedCommitMessages({ repositories: [value] }, expectedRepositoryIds);
   }
+
   if (!Array.isArray(value.repositories)) {
     throw new SmartCommitMessageGenerationError('Commit message response is missing repositories.');
   }
 
   const expectedIds = new Set(expectedRepositoryIds);
   const seenIds = new Set<string>();
+  const editableGeneratedMessages = coerceEditableGeneratedCommitMessages(
+    value.repositories,
+    expectedRepositoryIds
+  );
   const repositories = value.repositories.map((entry, index): GeneratedCommitMessageEntry => {
     if (!entry || typeof entry !== 'object') {
       throw new SmartCommitMessageGenerationError(`Repository message ${index + 1} is invalid.`);
     }
     const repository = entry as {
       repositoryId?: unknown;
+      type?: unknown;
+      breaking?: unknown;
       subject?: unknown;
       body?: unknown;
     };
     const repositoryId = normalizeText(repository.repositoryId);
-    const body = normalizeText(repository.body);
+    const type = normalizeGeneratedCommitType(repository.type);
     const subject = normalizeText(repository.subject);
+    const body = normalizeText(repository.body);
     if (!repositoryId || !expectedIds.has(repositoryId)) {
       throw new SmartCommitMessageGenerationError('Commit message response referenced an unexpected repository.');
     }
     if (seenIds.has(repositoryId)) {
       throw new SmartCommitMessageGenerationError('Commit message response contains duplicate repositories.');
     }
-    if (!body) {
-      throw new SmartCommitMessageGenerationError(`Commit message body is missing for ${repositoryId}.`);
+    const generatedEntry = {
+      repositoryId,
+      type: type ?? 'chore',
+      scope: null,
+      breaking: Boolean(repository.breaking),
+      subject: subject || 'update task changes',
+      body: body || null,
+    };
+    if (!type) {
+      throw new SmartCommitMessageGenerationError(
+        `Commit message type for ${repositoryId} must be one of: ${ALLOWED_COMMIT_TYPES.join(', ')}.`,
+        { generatedMessages: editableGeneratedMessages }
+      );
+    }
+    if (!subject) {
+      throw new SmartCommitMessageGenerationError(`Commit message subject is missing for ${repositoryId}.`, {
+        generatedMessages: editableGeneratedMessages,
+      });
+    }
+    const validation = validateConventionalCommitFields(generatedEntry);
+    if (!validation.ok) {
+      throw new SmartCommitMessageGenerationError(
+        validation.message || `Commit message for ${repositoryId} is invalid.`,
+        { generatedMessages: editableGeneratedMessages }
+      );
     }
     seenIds.add(repositoryId);
-    return {
-      repositoryId,
-      ...(subject ? { subject } : {}),
-      body,
-    };
+    return generatedEntry;
   });
 
   const missingRepositoryIds = expectedRepositoryIds.filter((repositoryId) => !seenIds.has(repositoryId));
@@ -136,27 +308,135 @@ export const validateGeneratedCommitMessages = (
     throw new SmartCommitMessageGenerationError('Commit message response is missing repositories.');
   }
 
+  return { repositories };
+};
+
+const entryFromParsedConventionalCommit = (
+  repositoryId: string,
+  message: string
+): GeneratedCommitMessageEntry | null => {
+  const parsed = parseConventionalCommitMessage(message);
+  if (!parsed.ok) {
+    return null;
+  }
+
   return {
-    title,
-    repositories,
+    repositoryId,
+    type: parsed.value.type,
+    scope: null,
+    breaking: parsed.value.breaking,
+    subject: parsed.value.subject,
+    body: parsed.value.body,
   };
 };
 
-const parseGeneratedCommitMessages = (
+const parsePlainConventionalCommitMessages = (
+  raw: string,
+  expectedRepositoryIds: string[]
+): GeneratedCommitMessages | null => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (expectedRepositoryIds.length === 1) {
+    const direct = entryFromParsedConventionalCommit(expectedRepositoryIds[0], trimmed);
+    if (direct) {
+      return { repositories: [direct] };
+    }
+  }
+
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, ''))
+    .filter(Boolean);
+  if (expectedRepositoryIds.length === 1) {
+    const lineEntry = lines
+      .map((line) => entryFromParsedConventionalCommit(expectedRepositoryIds[0], line))
+      .find((entry): entry is GeneratedCommitMessageEntry => Boolean(entry));
+    if (lineEntry) {
+      return { repositories: [lineEntry] };
+    }
+  }
+
+  const entries = expectedRepositoryIds
+    .map((repositoryId) => {
+      const line = lines.find((candidate) => {
+        const normalized = candidate.toLowerCase();
+        return normalized.startsWith(`${repositoryId.toLowerCase()}:`) ||
+          normalized.startsWith(`${repositoryId.toLowerCase()} -`);
+      });
+      if (!line) {
+        return null;
+      }
+      const message = line.replace(new RegExp(`^${repositoryId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:-]\\s*`, 'i'), '');
+      return entryFromParsedConventionalCommit(repositoryId, message);
+    })
+    .filter((entry): entry is GeneratedCommitMessageEntry => Boolean(entry));
+
+  return entries.length === expectedRepositoryIds.length ? { repositories: entries } : null;
+};
+
+export const parseGeneratedCommitMessages = (
   raw: string,
   expectedRepositoryIds: string[]
 ): GeneratedCommitMessages => {
-  try {
-    return validateGeneratedCommitMessages(
-      JSON.parse(extractJsonObject(raw)),
-      expectedRepositoryIds
-    );
-  } catch (error) {
-    if (error instanceof SmartCommitMessageGenerationError) {
-      throw error;
+  const jsonCandidates = extractJsonCandidates(raw);
+  if (jsonCandidates.length === 0) {
+    const plainMessages = parsePlainConventionalCommitMessages(raw, expectedRepositoryIds);
+    if (plainMessages) {
+      return plainMessages;
     }
-    throw new SmartCommitMessageGenerationError('Commit message response was not valid JSON.');
+    debugSmartCommitGenerationError('Could not parse commit message response.', {
+      expectedRepositoryIds,
+      rawResponse: raw,
+      reason: 'no-json-candidate-and-no-plain-conventional-commit',
+    });
+    throw new SmartCommitMessageGenerationError(
+      'Commit message response did not include structured JSON or a valid Conventional Commit.'
+    );
   }
+
+  let structuredError: SmartCommitMessageGenerationError | null = null;
+  const parseErrors: string[] = [];
+  for (const jsonCandidate of jsonCandidates) {
+    try {
+      return validateGeneratedCommitMessages(
+        JSON.parse(jsonCandidate),
+        expectedRepositoryIds
+      );
+    } catch (error) {
+      if (error instanceof SmartCommitMessageGenerationError) {
+        structuredError = structuredError ?? error;
+      } else {
+        parseErrors.push(describeUnknownError(error));
+      }
+    }
+  }
+
+  const plainMessages = parsePlainConventionalCommitMessages(raw, expectedRepositoryIds);
+  if (plainMessages) {
+    return plainMessages;
+  }
+
+  if (structuredError) {
+    debugSmartCommitGenerationError('Commit message response JSON parsed but failed validation.', {
+      expectedRepositoryIds,
+      rawResponse: raw,
+      jsonCandidates,
+      error: describeUnknownError(structuredError),
+      generatedMessages: structuredError.generatedMessages ?? null,
+    });
+    throw structuredError;
+  }
+
+  debugSmartCommitGenerationError('Commit message response contained JSON-looking text but no valid JSON payload.', {
+    expectedRepositoryIds,
+    rawResponse: raw,
+    jsonCandidates,
+    parseErrors,
+  });
+  throw new SmartCommitMessageGenerationError('Commit message response was not valid JSON.');
 };
 
 const buildPromptPayloadCandidate = (
@@ -223,21 +503,37 @@ export const formatGeneratedCommitMessageForRepository = (
   if (!entry) {
     throw new SmartCommitMessageGenerationError(`Missing generated commit message for ${repositoryId}.`);
   }
-  const parts = [
-    generated.title.trim(),
-    entry.subject?.trim(),
-    entry.body.trim(),
-  ].filter((part): part is string => Boolean(part));
-  return parts.join('\n\n');
+  const message = formatConventionalCommitMessage({ ...entry, scope: null });
+  const validation = validateConventionalCommitMessage(message);
+  if (!validation.ok) {
+    throw new SmartCommitMessageGenerationError(
+      validation.message || 'Commit message must follow Conventional Commits.',
+      { generatedMessages: generated }
+    );
+  }
+  return message;
 };
 
+export interface GenerateSmartCommitMessagesOptions {
+  modelConfig?: SmartCommitModelConfig | null;
+  validationFeedback?: string | null;
+}
+
 export const generateSmartCommitMessages = async (
-  input: GenerateSmartCommitMessagesInput
+  input: GenerateSmartCommitMessagesInput,
+  options: GenerateSmartCommitMessagesOptions = {}
 ): Promise<GeneratedCommitMessages> => {
   try {
     const providerState = useProviderStore.getState();
-    const providerId = providerState.selectedProviderId;
-    const modelId = providerState.selectedModelId;
+    const providerId = options.modelConfig?.mode === 'dedicated'
+      ? options.modelConfig.providerId
+      : providerState.selectedProviderId;
+    const modelId = options.modelConfig?.mode === 'dedicated'
+      ? options.modelConfig.modelId
+      : providerState.selectedModelId;
+    const reasoningEffort = options.modelConfig?.mode === 'dedicated'
+      ? options.modelConfig.reasoningEffort
+      : providerState.selectedReasoningEffort;
     if (!providerId || !modelId) {
       throw new SmartCommitMessageGenerationError('Select an AI provider and model before committing.');
     }
@@ -249,6 +545,11 @@ export const generateSmartCommitMessages = async (
 
     const apiKey = await providerState.resolveProviderApiKey(providerId);
     const expectedRepositoryIds = input.repositories.map((repository) => repository.repositoryId);
+    const validationFeedback = options.validationFeedback?.trim();
+    const configuredPrompt = (
+      await loadPreference<string>(PREF_KEYS.SMART_COMMIT_PROMPT)
+    )?.trim();
+    const systemPrompt = configuredPrompt || DEFAULT_SMART_COMMIT_PROMPT;
     const content = await sendChatNonStreaming({
       sessionId: `smart-review-commit-${input.task.id}`,
       conversationId: `smart-review-commit-${input.task.id}`,
@@ -258,20 +559,25 @@ export const generateSmartCommitMessages = async (
       baseUrl: provider.baseUrl,
       apiKey,
       modelId,
-      reasoningEffort: providerState.selectedReasoningEffort,
+      reasoningEffort,
       messages: [
         {
           role: 'system',
-          content:
-            'You generate concise Git commit messages. Return JSON only. Do not include markdown fences.',
+          content: systemPrompt,
         },
         {
           role: 'user',
           content:
-            'Generate one shared commit title and one repository-specific body for each repository. ' +
-            'The title must be suitable as the first line of every Git commit. ' +
-            'Each body must summarize only that repository changes. ' +
-            'Return exactly: {"title":"...","repositories":[{"repositoryId":"...","subject":"optional short line","body":"..."}]}.\n\n' +
+            'Generate commit message fields for every repository. ' +
+            'Choose type from this guide: feat=new user-facing capability, fix=bug fix, perf=performance, build=build/dependency packaging, chore=maintenance/metadata, ci=CI automation, docs=documentation, refactor=behavior-preserving code change, style=formatting only, test=test-only change, revert=reverts prior work. ' +
+            'Do not generate or use scopes. Macro will format every header as type: subject, never type(scope): subject. ' +
+            'The subject must be short, imperative, lower sentence style, no period, and no newline. ' +
+            'Set body to null unless it adds useful context beyond the subject. ' +
+            'Return exactly: {"repositories":[{"repositoryId":"...","type":"feat","breaking":false,"subject":"short subject","body":null}]}.' +
+            (validationFeedback
+              ? `\n\nPrevious attempt was rejected: ${validationFeedback}. Fix the invalid repository fields and keep the JSON shape unchanged.`
+              : '') +
+            '\n\n' +
             buildPromptPayload(input),
         },
       ],
@@ -279,12 +585,29 @@ export const generateSmartCommitMessages = async (
       onError: () => undefined,
     });
 
-    return parseGeneratedCommitMessages(content, expectedRepositoryIds);
+    return stripGeneratedCommitScopes(parseGeneratedCommitMessages(content, expectedRepositoryIds));
   } catch (error) {
     if (isSmartCommitMessageGenerationError(error)) {
+      debugSmartCommitGenerationError('Smart commit message generation failed.', {
+        taskId: input.task.id,
+        expectedRepositoryIds: input.repositories.map((repository) => repository.repositoryId),
+        providerId: options.modelConfig?.mode === 'dedicated'
+          ? options.modelConfig.providerId
+          : useProviderStore.getState().selectedProviderId,
+        modelId: options.modelConfig?.mode === 'dedicated'
+          ? options.modelConfig.modelId
+          : useProviderStore.getState().selectedModelId,
+        error: describeUnknownError(error),
+        generatedMessages: error.generatedMessages ?? null,
+      });
       throw error;
     }
     const message = error instanceof Error ? error.message : 'Failed to generate commit messages.';
+    debugSmartCommitGenerationError('Unexpected smart commit message generation error.', {
+      taskId: input.task.id,
+      expectedRepositoryIds: input.repositories.map((repository) => repository.repositoryId),
+      error: describeUnknownError(error),
+    });
     throw new SmartCommitMessageGenerationError(message);
   }
 };

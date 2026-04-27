@@ -1,11 +1,13 @@
 type DevLogMethod = (...args: unknown[]) => void;
 
-type DevConsoleLike = Pick<Console, 'log' | 'info' | 'debug'>;
+type DevConsoleLike = Pick<Console, 'log' | 'info' | 'debug' | 'warn' | 'error'>;
 
 export interface DevLogger {
   log: DevLogMethod;
   info: DevLogMethod;
   debug: DevLogMethod;
+  warn: DevLogMethod;
+  error: DevLogMethod;
 }
 
 interface CreateDevLoggerOptions {
@@ -28,6 +30,8 @@ export const createDevLogger = (options: CreateDevLoggerOptions = {}): DevLogger
       log: noop,
       info: noop,
       debug: noop,
+      warn: noop,
+      error: noop,
     };
   }
 
@@ -35,6 +39,8 @@ export const createDevLogger = (options: CreateDevLoggerOptions = {}): DevLogger
     log: (...args) => consoleLike.log(...args),
     info: (...args) => consoleLike.info(...args),
     debug: (...args) => consoleLike.debug(...args),
+    warn: (...args) => consoleLike.warn(...args),
+    error: (...args) => consoleLike.error(...args),
   };
 };
 
