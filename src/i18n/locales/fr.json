@@ -921,6 +921,7 @@
     "revert": "Annuler",
     "validateAction": "Valider",
     "invalidateAction": "Invalider",
+    "unstageAction": "Désindexer",
     "revertAction": "Annuler",
     "validateFile": "Valider le fichier",
     "validatedFiles": "fichiers validés",
@@ -934,6 +935,8 @@
     "revertScopeDescription": "Cela va annuler les modifications locales pour « {{scope}} ».",
     "revertSuccess": "Changements annulés.",
     "revertFailed": "Impossible d'annuler les changements.",
+    "unstageSuccess": "Changements désindexés.",
+    "unstageFailed": "Impossible de désindexer les changements.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Ajouté",

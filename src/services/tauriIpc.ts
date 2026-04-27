@@ -1351,7 +1351,7 @@ export async function gitAdd(params: {
 export async function gitRestorePaths(params: {
   repoPath: string;
   paths: string[];
-  target?: "worktree" | "staged_and_worktree";
+  target?: "worktree" | "staged" | "staged_and_worktree";
 }): Promise<void> {
   return invoke("git_restore_paths", {
     repoPath: params.repoPath,

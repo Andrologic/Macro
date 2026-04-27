@@ -922,6 +922,7 @@
     "revert": "되돌리기",
     "validateAction": "검증",
     "invalidateAction": "검증 취소",
+    "unstageAction": "스테이지 해제",
     "revertAction": "되돌리기",
     "validateFile": "파일 검증",
     "validatedFiles": "개 파일 검증됨",
@@ -935,6 +936,8 @@
     "revertScopeDescription": "\"{{scope}}\"의 로컬 변경이 삭제됩니다.",
     "revertSuccess": "변경을 되돌렸습니다.",
     "revertFailed": "변경을 되돌리지 못했습니다.",
+    "unstageSuccess": "변경을 스테이지에서 해제했습니다.",
+    "unstageFailed": "변경을 스테이지에서 해제하지 못했습니다.",
     "stage": "Stage",
     "changeStatus": {
       "added": "추가됨",

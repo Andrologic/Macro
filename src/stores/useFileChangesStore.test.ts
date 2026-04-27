@@ -245,11 +245,19 @@ const gitRestorePathsMock = mock(async ({
 }: {
   repoPath: string;
   paths: string[];
-  target?: 'worktree' | 'staged_and_worktree';
+  target?: 'worktree' | 'staged' | 'staged_and_worktree';
 }) => {
   currentFiles[repoPath] ||= {};
   stagedFiles[repoPath] ||= {};
   for (const path of paths) {
+    if (target === 'staged') {
+      const stagedContent = stagedFiles[repoPath][path];
+      if (Object.prototype.hasOwnProperty.call(stagedFiles[repoPath], path)) {
+        currentFiles[repoPath][path] = stagedContent ?? null;
+        delete stagedFiles[repoPath][path];
+      }
+      continue;
+    }
     if (target === 'staged_and_worktree') {
       delete stagedFiles[repoPath][path];
     }
@@ -794,7 +802,48 @@ describe('useFileChangesStore', () => {
 
     const updatedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
     expect(updatedRepository?.stats.validatedStagedFileCount).toBe(2);
-    expect(updatedRepository?.changes).toHaveLength(0);
+    expect(updatedRepository?.stats.pendingVisibleFileCount).toBe(0);
+    expect(updatedRepository?.changes.map((change) => change.path)).toEqual([
+      'src/main.ts',
+      'src/new.ts',
+    ]);
+    expect(updatedRepository?.changes.every((change) => change.hasPendingVisibleChange)).toBe(false);
+    expect(updatedRepository?.changes.every((change) => change.hasValidatedStage)).toBe(true);
+  });
+
+  it('keeps staged-only files visible without marking them pending', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    expect(repository?.stats.pendingVisibleFileCount).toBe(0);
+    expect(repository?.stats.validatedStagedFileCount).toBe(1);
+    expect(mainChange).toBeDefined();
+    expect(mainChange?.hasPendingVisibleChange).toBe(false);
+    expect(mainChange?.hasValidatedStage).toBe(true);
+  });
+
+  it('unstages validated files while preserving them as pending worktree changes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    await store.unstageChanges(repositoryIdA, [changeIdA]);
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    expect(gitRestorePathsMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+      target: 'staged',
+    });
+    expect(repository?.stats.pendingVisibleFileCount).toBe(1);
+    expect(repository?.stats.validatedStagedFileCount).toBe(0);
+    expect(mainChange?.hasPendingVisibleChange).toBe(true);
+    expect(mainChange?.hasValidatedStage).toBe(false);
   });
 
   it('reverts modified, added, and deleted files then reloads the repository state', async () => {
@@ -1103,6 +1152,7 @@ describe('useFileChangesStore', () => {
 
     const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
     expect(repository?.changes[0]?.hasValidatedStage).toBe(true);
+    expect(repository?.changes[0]?.hasPendingVisibleChange).toBe(true);
     expect(repository?.stats.validatedStagedFileCount).toBe(1);
     expect(useFileChangesStore.getState().reviewSummary.actionCounts.pending_validation).toBe(2);
 

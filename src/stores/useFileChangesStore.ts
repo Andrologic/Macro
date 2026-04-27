@@ -56,6 +56,7 @@ export interface FileChangeEntry {
   hunks: ParsedDiffHunk[];
   contextMode: DiffPresentationMode;
   canEdit: boolean;
+  hasPendingVisibleChange: boolean;
   hasValidatedStage: boolean;
   validatedRemovedLineNumbers: number[];
   validatedAddedLineNumbers: number[];
@@ -92,6 +93,8 @@ export interface FolderNode {
   path: string;
   type: 'folder' | 'file';
   changeIds: string[];
+  pendingChangeIds: string[];
+  stagedChangeIds: string[];
   hasPendingVisibleChanges: boolean;
   children?: FolderNode[];
   fileChange?: FileChangeEntry;
@@ -265,7 +268,9 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
           path: currentPath,
           type: isFile ? 'file' : 'folder',
           changeIds: isFile ? [change.id] : [],
-          hasPendingVisibleChanges: isFile,
+          pendingChangeIds: isFile && change.hasPendingVisibleChange ? [change.id] : [],
+          stagedChangeIds: isFile && change.hasValidatedStage ? [change.id] : [],
+          hasPendingVisibleChanges: isFile && change.hasPendingVisibleChange,
           children: isFile ? undefined : [],
           fileChange: isFile ? change : undefined,
         };
@@ -274,6 +279,12 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
 
       if (!isFile) {
         existing.changeIds = [...existing.changeIds, change.id];
+        if (change.hasPendingVisibleChange) {
+          existing.pendingChangeIds = [...existing.pendingChangeIds, change.id];
+        }
+        if (change.hasValidatedStage) {
+          existing.stagedChangeIds = [...existing.stagedChangeIds, change.id];
+        }
       }
 
       if (!isFile && existing.children) {
@@ -287,7 +298,9 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       return {
         ...node,
         changeIds: node.fileChange ? [node.fileChange.id] : node.changeIds,
-        hasPendingVisibleChanges: true,
+        pendingChangeIds: node.fileChange?.hasPendingVisibleChange ? [node.fileChange.id] : [],
+        stagedChangeIds: node.fileChange?.hasValidatedStage ? [node.fileChange.id] : [],
+        hasPendingVisibleChanges: Boolean(node.fileChange?.hasPendingVisibleChange),
       };
     }
 
@@ -296,6 +309,8 @@ export function buildFolderTree(changes: FileChangeEntry[]): FolderNode[] {
       ...node,
       children,
       changeIds: children.flatMap((child) => child.changeIds),
+      pendingChangeIds: children.flatMap((child) => child.pendingChangeIds),
+      stagedChangeIds: children.flatMap((child) => child.stagedChangeIds),
       hasPendingVisibleChanges: children.some((child) => child.hasPendingVisibleChanges),
     };
   };
@@ -345,14 +360,17 @@ const toDefaultCommitMessage = (title?: string | null): string => {
   return `feat: ${normalized}`;
 };
 
-const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => ({
-  // These counts intentionally describe two independent Git buckets.
-  // A partially staged file can therefore contribute to both numbers.
-  pendingVisibleFileCount: changes.length,
-  validatedStagedFileCount: stagedPathCount,
-  additions: changes.reduce((sum, change) => sum + change.additions, 0),
-  deletions: changes.reduce((sum, change) => sum + change.deletions, 0),
-});
+const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => {
+  const pendingChanges = changes.filter((change) => change.hasPendingVisibleChange);
+  return {
+    // These counts intentionally describe two independent Git buckets.
+    // A partially staged file can therefore contribute to both numbers.
+    pendingVisibleFileCount: pendingChanges.length,
+    validatedStagedFileCount: stagedPathCount,
+    additions: pendingChanges.reduce((sum, change) => sum + change.additions, 0),
+    deletions: pendingChanges.reduce((sum, change) => sum + change.deletions, 0),
+  };
+};
 
 const MAX_COMMIT_FILE_SUMMARY_CHARS = 1200;
 const SMART_COMMIT_MESSAGE_GENERATION_ATTEMPTS = 3;
@@ -681,7 +699,7 @@ const loadFileChangeEntry = async (
   deps: FileChangesStoreDependencies,
   repositoryId: string,
   worktreePath: string,
-  file: { path: string; status: string },
+  file: { path: string; status: string; hasPendingVisibleChange: boolean },
   previousChange?: FileChangeEntry
 ): Promise<FileChangeEntry> => {
   const id = `${repositoryId}::${file.path}`;
@@ -714,6 +732,7 @@ const loadFileChangeEntry = async (
     hunks: fullParsed.hunks,
     contextMode: previousChange?.contextMode ?? 'focused',
     canEdit: status !== 'deleted',
+    hasPendingVisibleChange: file.hasPendingVisibleChange,
     hasValidatedStage: validatedStageDecorations.hasValidatedStage,
     validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
     validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
@@ -743,22 +762,34 @@ const loadRepositoryState = async (params: {
 
   const repositoryId = buildFileChangesRepositoryId(target);
   const status = await deps.tauri.gitStatus(worktreePath);
+  const stagedFiles = status.staged_files
+    .filter((file) => typeof file.path === 'string' && file.path.trim().length > 0)
+    .map((file) => ({
+      path: file.path,
+      status: file.status,
+    }));
   const stagedPaths = Array.from(
     new Set(
-      status.staged_files
-        .map((file) => file.path)
-        .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+      stagedFiles.map((file) => file.path)
     )
-  );
-  const visibleByPath = new Map<string, { path: string; status: string }>();
-  [...status.unstaged_files, ...status.untracked_files].forEach((file) => {
+  ).sort((left, right) => left.localeCompare(right));
+  const visibleByPath = new Map<string, { path: string; status: string; hasPendingVisibleChange: boolean }>();
+  const addVisibleFile = (file: { path?: string | null; status: string }, hasPendingVisibleChange: boolean) => {
     if (!file.path) return;
-    visibleByPath.set(file.path, { path: file.path, status: file.status });
-  });
+    const previous = visibleByPath.get(file.path);
+    visibleByPath.set(file.path, {
+      path: file.path,
+      status: hasPendingVisibleChange ? file.status : previous?.status ?? file.status,
+      hasPendingVisibleChange: Boolean(previous?.hasPendingVisibleChange || hasPendingVisibleChange),
+    });
+  };
+  [...status.unstaged_files, ...status.untracked_files].forEach((file) => addVisibleFile(file, true));
+  stagedFiles.forEach((file) => addVisibleFile(file, false));
 
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
   const changes: FileChangeEntry[] = [];
-  for (const file of visibleByPath.values()) {
+  const visibleFiles = Array.from(visibleByPath.values()).sort((left, right) => left.path.localeCompare(right.path));
+  for (const file of visibleFiles) {
     const changeId = `${repositoryId}::${file.path}`;
     const previousChange = previousById.get(changeId);
     changes.push(await loadFileChangeEntry(deps, repositoryId, worktreePath, file, previousChange));
@@ -885,6 +916,7 @@ interface FileChangesState {
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
   stageChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
+  unstageChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
   stageAllChanges: (repositoryId?: string) => Promise<void>;
   stageAllTaskChanges: () => Promise<void>;
   revertChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
@@ -1323,7 +1355,9 @@ export const createFileChangesStore = (
     }
 
     const targetIds = new Set(changeIds);
-    const targetChanges = repository.changes.filter((change) => targetIds.has(change.id));
+    const targetChanges = repository.changes.filter((change) =>
+      targetIds.has(change.id) && change.hasPendingVisibleChange
+    );
     if (targetChanges.length === 0) {
       return;
     }
@@ -1396,12 +1430,108 @@ export const createFileChangesStore = (
     }
   },
 
+  unstageChanges: async (repositoryId, changeIds) => {
+    if (changeIds.length === 0) {
+      return;
+    }
+
+    const repository = get().getRepository(repositoryId);
+    if (!repository) {
+      throw new Error(
+        tChanges('implement.errors.noActiveRepositoryPath', 'No active repository path found for this task.')
+      );
+    }
+
+    if (!deps.tauri.isTauriAvailable()) {
+      throw new Error(
+        tChanges('implement.errors.commitDesktopOnly', 'Git commit flow is only available in desktop mode.')
+      );
+    }
+
+    const targetIds = new Set(changeIds);
+    const targetChanges = repository.changes.filter((change) =>
+      targetIds.has(change.id) && change.hasValidatedStage
+    );
+    if (targetChanges.length === 0) {
+      return;
+    }
+
+    const selectedDiffTarget = get().selectedDiffTarget;
+    const affectsOpenModal =
+      selectedDiffTarget?.repositoryId === repositoryId && targetIds.has(selectedDiffTarget.changeId);
+
+    set((state) => ({
+      repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+        ...currentRepository,
+        savingChangeId:
+          targetChanges.length === 1 ? targetChanges[0]?.id ?? currentRepository.savingChangeId : '__batch_unstage__',
+        lastError: null,
+      })),
+      diffModalSession:
+        state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          ? {
+              ...state.diffModalSession,
+              isSaving: affectsOpenModal,
+            }
+          : state.diffModalSession,
+      lastError: null,
+    }));
+
+    try {
+      await deps.tauri.gitRestorePaths({
+        repoPath: repository.worktreePath,
+        paths: targetChanges.map((change) => change.path),
+        target: 'staged',
+      });
+
+      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+    } catch (error) {
+      const message = toServiceError(error).message ||
+        tChanges('implement.errors.unstageChangesFailed', 'Failed to unstage changes.');
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: message,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+                ...state.diffModalSession,
+                isSaving: false,
+              }
+            : state.diffModalSession,
+        lastError: message,
+      }));
+      throw error;
+    } finally {
+      set((state) => ({
+        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+        })),
+        diffModalSession:
+          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+            ? {
+                ...state.diffModalSession,
+                isSaving: false,
+              }
+            : state.diffModalSession,
+      }));
+    }
+  },
+
   stageAllChanges: async (repositoryId) => {
     const targetRepositoryId = repositoryId || get().selectedRepositoryId;
     if (!targetRepositoryId) return;
     const repository = get().getRepository(targetRepositoryId);
     if (!repository) return;
-    await get().stageChanges(targetRepositoryId, repository.changes.map((change) => change.id));
+    await get().stageChanges(
+      targetRepositoryId,
+      repository.changes
+        .filter((change) => change.hasPendingVisibleChange)
+        .map((change) => change.id)
+    );
   },
 
   stageAllTaskChanges: async () => {
@@ -1447,7 +1577,9 @@ export const createFileChangesStore = (
     }
 
     const targetIds = new Set(changeIds);
-    const targetChanges = repository.changes.filter((change) => targetIds.has(change.id));
+    const targetChanges = repository.changes.filter((change) =>
+      targetIds.has(change.id) && change.hasPendingVisibleChange
+    );
     if (targetChanges.length === 0) {
       return;
     }
