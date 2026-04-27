@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
 import { toServiceError } from '../../services/contracts/errors';
@@ -7,7 +7,6 @@ import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
-import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { presentGitFlowBlockingIssue } from '../../services/degradedErrorPresentation';
 
 interface MergeWorkflowTaskPanelProps {
@@ -51,6 +50,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
+  const lastBlockingNotificationKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!runtime || runtime.review || runtime.phase === 'merging' || runtime.phase === 'archiving') {
@@ -66,7 +66,6 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const isLoading = viewState.isLoading;
   const isBlocked = viewState.isBlocked;
   const isFailed = viewState.isFailed;
-  const reviewError = runtime?.message || null;
 
   useEffect(() => {
     setSelectedRepositoryId((current) =>
@@ -174,6 +173,56 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       setIsResolvingAutomatically(false);
     }
   };
+
+  useEffect(() => {
+    if (!selectedRepository || !selectedRepositoryBlockingPresentation || !isBlocked) {
+      return;
+    }
+
+    const notificationKey = [
+      'merge-workflow-blocker',
+      task.id,
+      selectedRepository.id,
+      selectedRepository.blockingKind || 'unknown',
+      selectedRepository.blockingReason || selectedRepositoryBlockingPresentation.body,
+    ].join(':');
+
+    if (lastBlockingNotificationKeyRef.current === notificationKey) {
+      return;
+    }
+
+    lastBlockingNotificationKeyRef.current = notificationKey;
+    notify.actionRequired(selectedRepositoryBlockingPresentation.title, {
+      description: [
+        selectedRepositoryBlockingPresentation.body,
+        selectedRepositoryBlockingPresentation.nextStep,
+      ].filter(Boolean).join(' '),
+      category: 'task_attention_required',
+      notificationKey,
+      tone: selectedRepositoryBlockingPresentation.severity === 'danger' ? 'error' : 'warning',
+      actions: [
+        {
+          label: t('implement.retryMerge', 'Retry merge'),
+          onClick: () => handleRetryMerge(),
+          dismissOnSuccess: false,
+        },
+        {
+          label: t('implement.resolveAutomatically', 'Resolve automatically'),
+          variant: 'secondary',
+          onClick: () => handleResolveAutomatically(),
+          dismissOnSuccess: true,
+        },
+      ],
+    });
+  }, [
+    handleResolveAutomatically,
+    handleRetryMerge,
+    isBlocked,
+    selectedRepository,
+    selectedRepositoryBlockingPresentation,
+    t,
+    task.id,
+  ]);
 
   const footerMessage = isBlocked
     ? t(
@@ -335,25 +384,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                     </span>
                   )}
                 </div>
-                {selectedRepositoryBlockingPresentation && (
-                  <ActionableErrorCallout
-                    presentation={selectedRepositoryBlockingPresentation}
-                    actionLabel={t('implement.resolveAutomatically', 'Resolve automatically')}
-                    onAction={() => void handleResolveAutomatically()}
-                    secondaryActionLabel={t('implement.retryMerge', 'Retry merge')}
-                    onSecondaryAction={() => void handleRetryMerge()}
-                    compact
-                  />
-                )}
               </div>
 
               <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                {reviewError && (
-                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-500">
-                    {reviewError}
-                  </div>
-                )}
-
                 {selectedRepository.conflictFiles.length > 0 && (
                   <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
                     <div className="text-sm font-medium text-red-500">

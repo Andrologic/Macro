@@ -179,7 +179,14 @@ interface FileChangesGitStatus {
 
 type FileChangesTauriDeps = Pick<
   typeof tauriIpc,
-  'isTauriAvailable' | 'gitDiff' | 'gitReadFilePair' | 'fsWriteFile' | 'gitAdd' | 'gitCommit' | 'gitRestorePaths'
+  | 'isTauriAvailable'
+  | 'gitDiff'
+  | 'gitMergeCheck'
+  | 'gitReadFilePair'
+  | 'fsWriteFile'
+  | 'gitAdd'
+  | 'gitCommit'
+  | 'gitRestorePaths'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
 };
@@ -821,7 +828,34 @@ const loadRepositoryState = async (params: {
     changes.some((change) => change.id === previousRepository.selectedChangeId)
     ? previousRepository.selectedChangeId
     : changes[0]?.id ?? null;
-  const hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
+  const normalizedBranchName = normalizeBranchName(target.branchName);
+  const planBranchName =
+    target.planBranchName ||
+    resolveReviewRepositoryIntegrationBranch(deps, task, { target });
+  let hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
+  if (
+    !hasCommittedSnapshot &&
+    changes.length === 0 &&
+    stagedPaths.length === 0 &&
+    status.is_clean &&
+    planBranchName &&
+    normalizedBranchName &&
+    normalizedBranchName !== planBranchName
+  ) {
+    try {
+      const mergeCheck = await deps.tauri.gitMergeCheck({
+        repoPath: worktreePath,
+        branchName: normalizedBranchName,
+        intoBranch: planBranchName,
+      });
+      hasCommittedSnapshot =
+        typeof mergeCheck.ahead === 'number'
+          ? mergeCheck.ahead > 0
+          : mergeCheck.hasChanges;
+    } catch {
+      hasCommittedSnapshot = false;
+    }
+  }
   const commitState: ReviewRepositoryCommitState = changes.length === 0 && stagedPaths.length === 0
     ? (hasCommittedSnapshot ? 'committed' : 'no_changes')
     : 'idle';
@@ -832,9 +866,7 @@ const loadRepositoryState = async (params: {
     repoPath,
     worktreePath,
     branchName: normalizeBranchName(target.branchName),
-    planBranchName:
-      target.planBranchName ||
-      resolveReviewRepositoryIntegrationBranch(deps, task, { target }),
+    planBranchName,
     changes,
     stagedPaths,
     selectedChangeId,
