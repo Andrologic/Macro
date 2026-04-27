@@ -210,6 +210,11 @@ const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?:
   }
   return buildPatch(repoPath, paths?.[0] || '');
 });
+const gitMergeCheckMock = mock(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
+  mergeable: true,
+  conflictFiles: [],
+  hasChanges: false,
+}));
 
 const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; path: string }) => {
   const headContent = getHeadContent(repoPath, path);
@@ -492,6 +497,12 @@ describe('useFileChangesStore', () => {
 
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
+    gitMergeCheckMock.mockClear();
+    gitMergeCheckMock.mockImplementation(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: false,
+    }));
     gitReadFilePairMock.mockClear();
     fsWriteFileMock.mockClear();
     gitRestorePathsMock.mockClear();
@@ -507,6 +518,7 @@ describe('useFileChangesStore', () => {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
@@ -993,6 +1005,36 @@ describe('useFileChangesStore', () => {
     expect(secondCommit.taskCompleted).toBe(false);
     expect(secondCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('restores committed clean repositories after a restart by checking commits ahead of the target', async () => {
+    currentFiles[worktreeAPath] = {};
+    currentFiles[worktreeBPath] = {};
+    gitMergeCheckMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: repoPath === worktreeAPath || repoPath === worktreeBPath ? 1 : 0,
+      behind: 0,
+    }));
+
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    expect(store.getRepository(repositoryIdA)?.commitState).toBe('committed');
+    expect(store.getRepository(repositoryIdB)?.commitState).toBe('committed');
+    expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
+    expect(useFileChangesStore.getState().reviewSummary.allRepositoriesResolved).toBe(true);
+    expect(gitMergeCheckMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      branchName: 'feature/task-a',
+      intoBranch: 'plan/integration',
+    });
+    expect(gitMergeCheckMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      branchName: 'feature/task-b',
+      intoBranch: 'plan/integration',
+    });
   });
 
   it('validates pending changes across all task repositories', async () => {

@@ -19,6 +19,7 @@ let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
 let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
 let notifySuccessMock: ReturnType<typeof mock>;
 let notifyErrorMock: ReturnType<typeof mock>;
+let notifyActionRequiredMock: ReturnType<typeof mock>;
 let importCounter = 0;
 
 const loadFileChangesPanelModules = async () => {
@@ -75,6 +76,7 @@ const loadFileChangesPanelModules = async () => {
       error: (...args: unknown[]) => notifyErrorMock(...args),
       info: mock(() => undefined),
       warning: mock(() => undefined),
+      actionRequired: (...args: unknown[]) => notifyActionRequiredMock(...args),
     },
   }));
 
@@ -282,6 +284,7 @@ describe('FileChangesPanel', () => {
     mock.restore();
     notifySuccessMock = mock(() => undefined);
     notifyErrorMock = mock(() => undefined);
+    notifyActionRequiredMock = mock(() => undefined);
     await loadFileChangesPanelModules();
     stageChangesMock = mock(async () => undefined);
     unstageChangesMock = mock(async () => undefined);
@@ -839,6 +842,14 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Retry merge');
     expect(document.body.textContent).toContain('Resolve automatically');
     expect(document.body.textContent).toContain('Conflict files');
+    expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
+    expect(notifyActionRequiredMock).toHaveBeenCalledWith(
+      'Resolve these conflicts before finishing',
+      expect.objectContaining({
+        category: 'task_attention_required',
+        notificationKey: expect.stringContaining('merge-workflow-blocker:task-1:repo-1'),
+      })
+    );
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
