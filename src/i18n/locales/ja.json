@@ -1072,6 +1072,12 @@
     "planReviewReplicaRepair": "修復計画メタデータのレプリカ",
     "aiConflictAssistantStarted": "AI競合アシスタント開始",
     "planFinalizationAssistantDescription": "Implement レビュー用の会話を開き、計画完了のブロッカーを投稿しました。",
+    "mergeWorkflowAutoResolved": "マージのブロッカーを解決しました",
+    "mergeWorkflowAutoResolvedDescription": "Macro はローカルのリポジトリ変更を stash し、マージレビューを更新しました。",
+    "dirtyMergeResolutionTitle": "ローカル変更の確認が必要です",
+    "dirtyMergeResolutionDescription": "Macro はマージをブロックしているローカルのリポジトリ変更を検出しました。再試行する前に処理方法を選んでください。",
+    "stashAndRetryMerge": "Stash して再試行",
+    "openAssistantInstead": "代わりにアシスタントを開く",
     "noAggregatedDiff": "このリポジトリのプラン ブランチとベース ブランチの間に集計された差分はありません。",
     "context": {
       "default": "フォーカス diff",

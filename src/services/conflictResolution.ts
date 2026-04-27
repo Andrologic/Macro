@@ -134,7 +134,7 @@ export const buildPlanFinalizationConflictAssistantPrompt = (params: {
     'Blocked repositories:',
     formatPromptEntries(entries),
     '',
-    'Provide a short plan first, then run safe git commands to resolve the blockers and prepare a retry.',
+    'Act directly with the available Macro tools to resolve safe blockers. If a tool needs approval or a blocker is unsafe to modify automatically, explain exactly what remains.',
   ].join('\n');
 };
 
@@ -161,7 +161,7 @@ export const buildMergeWorkflowConflictAssistantPrompt = (params: {
     'Blocked repositories:',
     formatPromptEntries(entries),
     '',
-    'Provide a short plan first, then run safe git commands to resolve the blockers and prepare a retry.',
+    'Act directly with the available Macro tools to resolve safe blockers. If a tool needs approval or a blocker is unsafe to modify automatically, explain exactly what remains.',
   ].join('\n');
 };
 
@@ -178,6 +178,6 @@ export const buildMacroConflictAssistantPrompt = (params: {
     'Affected repositories:',
     formatPromptEntries(entries),
     '',
-    'Provide a short plan first, then run safe git commands to resolve the blockers and prepare a retry.',
+    'Act directly with the available Macro tools to resolve safe blockers. If a tool needs approval or a blocker is unsafe to modify automatically, explain exactly what remains.',
   ].join('\n');
 };
