@@ -12,9 +12,9 @@ export const DiffModal: React.FC = () => {
   if (!isOpen || !codeDiff) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[92vw] max-w-5xl max-h-[90vh] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-        <header className="h-12 px-4 border-b border-border flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+        <header className="h-12 shrink-0 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon name="code" size={16} className="text-primary" />
             <span className="text-sm text-foreground">{t('git.reviewDiff', 'Review Diff')}</span>
@@ -31,7 +31,7 @@ export const DiffModal: React.FC = () => {
           <DiffViewer diff={codeDiff} />
         </div>
 
-        <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2">
+        <footer className="h-12 shrink-0 border-t border-border px-4 flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={closeDiffViewer}>
             {t('common.close', 'Close')}
           </Button>

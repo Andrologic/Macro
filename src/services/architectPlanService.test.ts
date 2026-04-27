@@ -378,19 +378,43 @@ describe('architectPlanService', () => {
     ).rejects.toThrow('Plan slug is immutable and cannot be changed after creation.');
   });
 
-  it('refuses to archive canonical plans still named new plan', async () => {
+  it('allows archiving and deleting canonical draft plans still named new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000011',
       label: 'new plan',
     });
 
+    const archived = await service.archiveArchitectPlan(branchName, created.id);
+    expect(archived.status).toBe('archived');
+
+    await expect(
+      service.deleteArchitectPlan({
+        branchName,
+        planId: created.id,
+      })
+    ).resolves.toBeUndefined();
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.status).toBe('deleted');
+  });
+
+  it('refuses to archive non-draft canonical plans still named new plan', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000011-validated',
+      label: 'new plan',
+    });
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      status: 'validated',
+    });
+
     await expect(service.archiveArchitectPlan(branchName, created.id)).rejects.toThrow(
       'Rename the plan before archiving it.'
     );
-
-    const reloaded = await service.getArchitectPlan(branchName, created.id);
-    expect(reloaded?.status).toBe('draft');
 
     await expect(
       service.updateArchitectPlan({
