@@ -957,6 +957,15 @@ interface TranscriptComparableMessage {
   createdAt: string;
 }
 
+interface ResolvedConversationForContext {
+  conversationId: string | null;
+  source: "active_plan" | "mode_fallback";
+  planId?: string;
+  targetBranch?: string;
+  fallbackProjectId?: string | null;
+  fallbackGroupId?: string | null;
+}
+
 const mapDbConversationToConversation = (
   conversation: tauriIpc.DbConversation,
 ): Conversation => ({
@@ -1124,6 +1133,8 @@ const buildChatContextKey = (
         "plan",
         appState.activeArchitectPlanId,
         appState.activePlanContext?.targetBranch || "none",
+        appState.selectedGroupId || "none",
+        appState.selectedProjectId || "none",
       ].join("::");
     }
 
@@ -1143,6 +1154,9 @@ const buildChatContextKey = (
     appState.selectedTaskId || "none",
   ].join("::");
 };
+
+const isChatContextKeyCurrent = (contextKey: ChatContextKey): boolean =>
+  buildChatContextKey(useAppStore.getState()) === contextKey;
 
 const toComparableChatMessage = (
   message: ChatMessage,
@@ -1986,6 +2000,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (
         params.activeContextKey !== undefined &&
         state.activeContextKey !== params.activeContextKey
+      ) {
+        return false;
+      }
+      if (
+        typeof params.activeContextKey === "string" &&
+        !isChatContextKeyCurrent(params.activeContextKey)
       ) {
         return false;
       }
@@ -5668,26 +5688,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     devLogger.info(JSON.stringify(entry));
   };
 
-  const applyConversationSelection = (
+  const selectConversationInState = (
     conversationId: string,
-    mode: AppMode = useAppStore.getState().mode,
+    mode: AppMode,
   ): boolean => {
-    const appState = useAppStore.getState();
     const state = get();
-    const conversation = state.conversations.find(
-      (candidate) => candidate.id === conversationId,
-    );
-    if (!conversation) {
-      return false;
-    }
-
     if (
-      !isConversationAllowedForMode(
-        conversation,
-        mode,
-        appState.selectedGroupId,
-        appState.selectedProjectId,
-        appState.selectedTaskId,
+      !state.conversations.some(
+        (candidate) => candidate.id === conversationId,
       )
     ) {
       return false;
@@ -5713,6 +5721,113 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ),
     }));
     return true;
+  };
+
+  const applyConversationSelection = (
+    conversationId: string,
+    mode: AppMode = useAppStore.getState().mode,
+  ): boolean => {
+    const appState = useAppStore.getState();
+    const state = get();
+    const conversation = state.conversations.find(
+      (candidate) => candidate.id === conversationId,
+    );
+    if (!conversation) {
+      return false;
+    }
+
+    if (
+      !isConversationAllowedForMode(
+        conversation,
+        mode,
+        appState.selectedGroupId,
+        appState.selectedProjectId,
+        appState.selectedTaskId,
+      )
+    ) {
+      return false;
+    }
+
+    return selectConversationInState(conversationId, mode);
+  };
+
+  const repairArchitectPlanConversationScope = async (params: {
+    conversationId: string;
+    fallbackProjectId?: string | null;
+    fallbackGroupId?: string | null;
+  }): Promise<Conversation | null> => {
+    const appState = useAppStore.getState();
+    const currentConversation =
+      get().conversations.find(
+        (conversation) => conversation.id === params.conversationId,
+      ) ?? null;
+    if (!currentConversation) {
+      return null;
+    }
+
+    const repairedProjectId =
+      params.fallbackProjectId !== undefined
+        ? params.fallbackProjectId
+        : currentConversation.project_id ?? appState.selectedProjectId ?? null;
+    const repairedGroupId =
+      params.fallbackGroupId !== undefined
+        ? params.fallbackGroupId
+        : appState.selectedGroupId ??
+          getProjectGroupByProjectId(
+            appState.projectGroups,
+            repairedProjectId,
+          )?.id ??
+          currentConversation.group_id ??
+          null;
+
+    const repairedConversation: Conversation = {
+      ...currentConversation,
+      scope_mode: "Architect",
+      task_id: null,
+      group_id: repairedGroupId,
+      project_id: repairedProjectId,
+    };
+
+    const needsRepair =
+      currentConversation.scope_mode !== repairedConversation.scope_mode ||
+      currentConversation.task_id !== repairedConversation.task_id ||
+      currentConversation.group_id !== repairedConversation.group_id ||
+      currentConversation.project_id !== repairedConversation.project_id;
+
+    if (!needsRepair) {
+      return currentConversation;
+    }
+
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === params.conversationId
+          ? repairedConversation
+          : conversation,
+      ),
+    }));
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        await tauriIpc.updateConversationScope({
+          id: params.conversationId,
+          scopeMode: "Architect",
+          taskId: null,
+          groupId: repairedGroupId,
+          projectId: repairedProjectId,
+        });
+      } catch (error) {
+        logArchitectTranscriptEvent(
+          "warn",
+          "architect_conversation_scope_repair_failed",
+          {
+            conversationId: params.conversationId,
+            error: toServiceError(error).message,
+          },
+        );
+      }
+    }
+
+    return repairedConversation;
   };
 
   const clearConversationSelection = (mode: AppMode) => {
@@ -6047,11 +6162,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       (await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []));
 
     let conversation =
-      existingConversation &&
-      !sharedConversation &&
-      getConversationScopeMode(existingConversation) === "Architect"
-        ? existingConversation
-        : null;
+      existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
     let restoredTranscript = false;
 
@@ -6064,6 +6175,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectConversation: false,
       });
       createdConversation = true;
+    }
+
+    const repairedConversation = await repairArchitectPlanConversationScope({
+      conversationId: conversation.id,
+      fallbackProjectId,
+      fallbackGroupId,
+    });
+    if (repairedConversation) {
+      conversation = repairedConversation;
     }
 
     const localMessages = getOrderedConversationMessages(conversation.id).map(
@@ -6218,12 +6338,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const resolveConversationForCurrentContext = async (
     requestId: number,
     contextKey: ChatContextKey,
-  ): Promise<string | null> => {
+  ): Promise<ResolvedConversationForContext> => {
+    const modeFallback = (
+      conversationId: string | null,
+    ): ResolvedConversationForContext => ({
+      conversationId,
+      source: "mode_fallback",
+    });
+    const activePlanResolution = (params: {
+      conversationId: string;
+      planId: string;
+      targetBranch: string;
+      fallbackProjectId?: string | null;
+      fallbackGroupId?: string | null;
+    }): ResolvedConversationForContext => ({
+      conversationId: params.conversationId,
+      source: "active_plan",
+      planId: params.planId,
+      targetBranch: params.targetBranch,
+      fallbackProjectId: params.fallbackProjectId ?? null,
+      fallbackGroupId: params.fallbackGroupId ?? null,
+    });
     const isCurrentRequest = () => {
       const state = get();
       return (
         state.selectionRequestId === requestId &&
-        state.activeContextKey === contextKey
+        state.activeContextKey === contextKey &&
+        isChatContextKeyCurrent(contextKey)
       );
     };
 
@@ -6245,7 +6386,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectWorkspaceState &&
       isProjectWorkspaceMissing(architectWorkspaceState)
     ) {
-      return null;
+      return modeFallback(null);
     }
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
@@ -6283,15 +6424,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const activationPayloadSource = sharedActivationPayload
           ? "app_store"
           : "service";
-        if (!isCurrentRequest()) return null;
+        if (!isCurrentRequest()) return modeFallback(null);
         const activePlan =
           activationPayload?.plan ??
           (await getArchitectPlan(
             targetBranch,
             appState.activeArchitectPlanId,
           ));
-        if (!isCurrentRequest()) return null;
+        if (!isCurrentRequest()) return modeFallback(null);
         if (activePlan && activePlan.status !== "deleted") {
+          const fallbackProjectId =
+            resolvePlanProjectContextId(activePlan, selectedProjectId) ||
+            getArchitectPlanVisibleProjectIds(activePlan)[0] ||
+            selectedProjectId ||
+            appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
+            null;
+          const fallbackGroupId = selectedGroupId ?? null;
+
           if (
             activationPayload &&
             isLightweightBlankArchitectPlanPayload(activationPayload)
@@ -6301,15 +6450,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
               planId: activePlan.id,
             });
             if (pendingConversationId) {
-              return pendingConversationId;
+              await repairArchitectPlanConversationScope({
+                conversationId: pendingConversationId,
+                fallbackProjectId,
+                fallbackGroupId,
+              });
+              return activePlanResolution({
+                conversationId: pendingConversationId,
+                planId: activePlan.id,
+                targetBranch,
+                fallbackProjectId,
+                fallbackGroupId,
+              });
             }
 
-            const fallbackProjectId =
-              resolvePlanProjectContextId(activePlan, selectedProjectId) ||
-              getArchitectPlanVisibleProjectIds(activePlan)[0] ||
-              selectedProjectId ||
-              appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-              null;
             const blankConversation = await createConversationRecord({
               title: getArchitectPlanConversationTitle(activePlan),
               taskId: null,
@@ -6322,7 +6476,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               blankConversation.id,
             );
             if (!isCurrentRequest()) {
-              return null;
+              return modeFallback(null);
             }
             logArchitectTranscriptEvent(
               "info",
@@ -6336,7 +6490,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 durationMs: Date.now() - architectResolutionStartedAt,
               },
             );
-            return blankConversation.id;
+            return activePlanResolution({
+              conversationId: blankConversation.id,
+              planId: activePlan.id,
+              targetBranch,
+              fallbackProjectId,
+              fallbackGroupId,
+            });
           }
 
           clearPendingArchitectConversationForPlan({
@@ -6355,29 +6515,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
               true,
               true,
             );
-            if (!isCurrentRequest()) return null;
+            if (!isCurrentRequest()) return modeFallback(null);
             hasSharedConversation = plansSnapshot.plans.some(
               (candidate) =>
                 candidate.id !== activePlan.id &&
                 candidate.conversationId === conversationId,
             );
           }
-          const fallbackProjectId =
-            resolvePlanProjectContextId(activePlan, selectedProjectId) ||
-            getArchitectPlanVisibleProjectIds(activePlan)[0] ||
-            selectedProjectId ||
-            appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
-            null;
           const ensuredConversation = await reconcileArchitectPlanConversation({
             plan: activePlan,
             targetBranch,
             fallbackProjectId: fallbackProjectId ?? undefined,
-            fallbackGroupId: selectedGroupId ?? undefined,
+            fallbackGroupId: fallbackGroupId ?? undefined,
             sharedConversation: hasSharedConversation,
             conversationIdHint: conversationId,
             chatMessagesHint: activationPayload?.chatMessages,
           });
-          if (!isCurrentRequest()) return null;
+          if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
             logArchitectTranscriptEvent(
               "info",
@@ -6393,7 +6547,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 durationMs: Date.now() - architectResolutionStartedAt,
               },
             );
-            return ensuredConversation.conversationId;
+            return activePlanResolution({
+              conversationId: ensuredConversation.conversationId,
+              planId: activePlan.id,
+              targetBranch,
+              fallbackProjectId,
+              fallbackGroupId,
+            });
           }
         }
       } catch (error) {
@@ -6411,7 +6571,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const localProjectContext = selectedGroupId
       ? await getLocalProjectContextState(selectedGroupId)
       : null;
-    if (!isCurrentRequest()) return null;
+    if (!isCurrentRequest()) return modeFallback(null);
     state = get();
 
     const localContextConversationId =
@@ -6436,7 +6596,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedTaskId,
       )
     ) {
-      return localContextConversation.id;
+      return modeFallback(localContextConversation.id);
     }
 
     const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
@@ -6456,7 +6616,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedTaskId,
       )
     ) {
-      return rememberedConversation.id;
+      return modeFallback(rememberedConversation.id);
     }
 
     const fallbackConversationId = getFallbackConversationIdForMode(
@@ -6467,7 +6627,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedTaskId,
     );
     if (fallbackConversationId) {
-      return fallbackConversationId;
+      return modeFallback(fallbackConversationId);
     }
 
     if (mode === "Architect" && selectedGroupId) {
@@ -6494,8 +6654,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId: selectedGroupId,
         selectConversation: false,
       });
-      if (!isCurrentRequest()) return null;
-      return created.id;
+      if (!isCurrentRequest()) return modeFallback(null);
+      return modeFallback(created.id);
     }
 
     if (mode === "Implement" && selectedTaskId) {
@@ -6516,8 +6676,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId: selectedGroupId,
         selectConversation: false,
       });
-      if (!isCurrentRequest()) return null;
-      return created.id;
+      if (!isCurrentRequest()) return modeFallback(null);
+      return modeFallback(created.id);
     }
 
     if (mode === "Implement") {
@@ -6540,11 +6700,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         groupId: selectedGroupId,
         selectConversation: false,
       });
-      if (!isCurrentRequest()) return null;
-      return created.id;
+      if (!isCurrentRequest()) return modeFallback(null);
+      return modeFallback(created.id);
     }
 
-    return null;
+    return modeFallback(null);
   };
 
   return {
@@ -7225,20 +7385,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const isCurrentRequest = () => {
         const state = get();
-        return (
-          state.selectionRequestId === requestId &&
-          state.activeContextKey === contextKey
-        );
-      };
+      return (
+        state.selectionRequestId === requestId &&
+        state.activeContextKey === contextKey &&
+        isChatContextKeyCurrent(contextKey)
+      );
+    };
 
       try {
-        const conversationId = await resolveConversationForCurrentContext(
+        const resolution = await resolveConversationForCurrentContext(
           requestId,
           contextKey,
         );
         if (!isCurrentRequest()) {
           return get().selectedConversationId;
         }
+        const conversationId = resolution.conversationId;
 
         const latestState = get();
         const isAlreadySelected =
@@ -7249,10 +7411,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
               (latestState.selectedConversationIdsByMode[mode] ?? null) === null;
 
         if (conversationId) {
+          let didSelect = isAlreadySelected;
+          if (!didSelect) {
+            didSelect = applyConversationSelection(conversationId, mode);
+          }
           if (
-            !isAlreadySelected &&
-            !applyConversationSelection(conversationId, mode)
+            !didSelect &&
+            resolution.source === "active_plan" &&
+            mode === "Architect"
           ) {
+            const repairedConversation =
+              await repairArchitectPlanConversationScope({
+                conversationId,
+                fallbackProjectId: resolution.fallbackProjectId ?? null,
+                fallbackGroupId: resolution.fallbackGroupId ?? null,
+              });
+            if (!isCurrentRequest()) {
+              return get().selectedConversationId;
+            }
+            const latestAppState = useAppStore.getState();
+            if (
+              repairedConversation &&
+              latestAppState.mode === "Architect" &&
+              latestAppState.activeArchitectPlanId === resolution.planId &&
+              getConversationScopeMode(repairedConversation) === "Architect" &&
+              !repairedConversation.task_id
+            ) {
+              didSelect =
+                applyConversationSelection(conversationId, mode) ||
+                selectConversationInState(conversationId, mode);
+            }
+          }
+
+          if (!didSelect) {
             if (isCurrentRequest()) {
               set({
                 restoreStatus: "error",

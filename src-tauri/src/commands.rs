@@ -3322,6 +3322,29 @@ pub async fn db_update_conversation_details(
 }
 
 #[tauri::command]
+pub async fn db_update_conversation_scope(
+    pool: State<'_, DbPool>,
+    id: String,
+    scope_mode: String,
+    task_id: Option<String>,
+    group_id: Option<String>,
+    project_id: Option<String>,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::update_conversation_scope(
+        &pool,
+        &id,
+        &scope_mode,
+        task_id.as_deref(),
+        group_id.as_deref(),
+        project_id.as_deref(),
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_delete_conversation_by_id(
     pool: State<'_, DbPool>,
     id: String,

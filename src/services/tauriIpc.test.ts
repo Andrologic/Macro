@@ -142,6 +142,31 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("passes conversation scope repairs through db_update_conversation_scope", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.updateConversationScope({
+      id: "conv-1",
+      scopeMode: "Architect",
+      taskId: null,
+      groupId: "group-1",
+      projectId: "project-1",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_update_conversation_scope",
+        payload: {
+          id: "conv-1",
+          scopeMode: "Architect",
+          taskId: null,
+          groupId: "group-1",
+          projectId: "project-1",
+        },
+      },
+    ]);
+  });
+
   it("uses camelCase payload keys for workspace project mutations", async () => {
     const tauriIpc = await loadTauriIpc();
 
