@@ -1077,6 +1077,10 @@
     "dirtyMergeResolutionTitle": "Los cambios locales necesitan atención",
     "dirtyMergeResolutionDescription": "Macro encontró cambios locales del repositorio que bloquean el merge. Elige cómo gestionarlos antes de reintentar.",
     "stashAndRetryMerge": "Guardar en stash y reintentar",
+    "revertAndRetryMerge": "Revertir y reintentar",
+    "mergeInProgressResolutionTitle": "Ya hay un merge en curso",
+    "mergeInProgressResolutionDescription": "Macro encontró un merge sin terminar que bloquea este reintento. Abortarlo puede descartar resoluciones parciales que no se hayan confirmado.",
+    "abortMergeAndRetry": "Abortar merge y reintentar",
     "openAssistantInstead": "Abrir el asistente",
     "noAggregatedDiff": "No hay diferencias agregadas entre la rama del plan y la rama base para este repositorio.",
     "context": {

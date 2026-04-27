@@ -3137,6 +3137,37 @@ pub async fn execute_workspace_tool(
             }))
             .map_err(|error| command_error(error.to_string()))
         }
+        "git_abort_merge" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let confirm = json_arg_bool(&args, "confirm");
+            let repo_path_for_task = repo_path.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+
+                git::abort_merge_with_confirmation(&repo, confirm)
+                    .map_err(|error| command_error(error.to_string()))?;
+                git::build_git_status(&repo).map_err(|error| command_error(error.to_string()))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
         "git_stash" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let message = json_arg_string(&args, "message");

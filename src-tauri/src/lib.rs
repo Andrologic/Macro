@@ -493,6 +493,7 @@ pub fn run() {
             commands::git::git_add,
             commands::git::git_restore_paths,
             commands::git::git_reset,
+            commands::git::git_abort_merge,
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_read_file_pair,
