@@ -18,8 +18,9 @@ describe('smartCommitMessageGenerator', () => {
     expect(validateConventionalCommitMessage('revert: restore previous behavior').ok).toBe(true);
 
     expect(validateConventionalCommitMessage('add checkout').ok).toBe(false);
+    expect(validateConventionalCommitMessage('add checkout').message).toContain('type: subject');
     expect(validateConventionalCommitMessage('fix(api: refresh checkout').message).toContain("close with ')'");
-    expect(validateConventionalCommitMessage('feat:add checkout').message).toContain('Conventional Commits');
+    expect(validateConventionalCommitMessage('feat:add checkout').message).toContain('type: subject');
     expect(validateConventionalCommitMessage('release: bump version').message).toContain('Commit type must be one of');
   });
 

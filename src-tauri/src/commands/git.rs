@@ -22,6 +22,8 @@ use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 
 const DEFAULT_LOG_LIMIT: usize = 50;
 const DEFAULT_REMOTE_NAME: &str = "origin";
+const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
+    "Commit message must follow Conventional Commits: type: subject";
 
 #[derive(Serialize)]
 pub struct GitStatusDto {
@@ -648,13 +650,13 @@ fn validate_commit_message(message: &str) -> Result<()> {
 
     if header.is_empty() {
         return Err(BackendError::Validation(
-            "Commit message must follow Conventional Commits: type(scope)?: subject".to_string(),
+            GENERIC_CONVENTIONAL_COMMIT_MESSAGE.to_string(),
         ));
     }
 
     let Some((header, subject)) = header.split_once(": ") else {
         return Err(BackendError::Validation(
-            "Commit message must follow Conventional Commits: type(scope)?: subject".to_string(),
+            GENERIC_CONVENTIONAL_COMMIT_MESSAGE.to_string(),
         ));
     };
     if subject.trim().is_empty() {
@@ -3382,7 +3384,11 @@ mod tests {
 
     #[test]
     fn test_validate_commit_message_invalid() {
-        assert!(validate_commit_message("add feature").is_err());
+        let err = validate_commit_message("add feature").expect_err("invalid message");
+        assert_eq!(
+            err.to_string(),
+            "Validation error: Commit message must follow Conventional Commits: type: subject"
+        );
         assert!(validate_commit_message("feat: ").is_err());
         assert!(validate_commit_message("invalid: message").is_err());
         assert!(validate_commit_message("feat(scope: message").is_err());

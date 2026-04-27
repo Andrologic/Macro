@@ -42,6 +42,8 @@ export type ConventionalCommitParseResult =
 
 const COMMIT_HEADER_PATTERN = /^([a-z]+)(?:\(([a-z0-9][a-z0-9-]*)\))?(!)?: (.+)$/;
 const ALLOWED_COMMIT_TYPES_LABEL = ALLOWED_COMMIT_TYPES.join(', ');
+const GENERIC_CONVENTIONAL_COMMIT_MESSAGE =
+  'Commit message must follow Conventional Commits: type: subject';
 
 export const normalizeCommitScope = (value?: string | null): string | null => {
   const normalized = (value || '')
@@ -66,14 +68,14 @@ export const parseConventionalCommitMessage = (message: string): ConventionalCom
   if (!header) {
     return {
       ok: false,
-      message: 'Commit message must follow Conventional Commits: type(scope)?: subject',
+      message: GENERIC_CONVENTIONAL_COMMIT_MESSAGE,
     };
   }
 
   if (!header.includes(': ')) {
     return {
       ok: false,
-      message: 'Commit message must follow Conventional Commits: type(scope)?: subject',
+      message: GENERIC_CONVENTIONAL_COMMIT_MESSAGE,
     };
   }
 
@@ -87,7 +89,7 @@ export const parseConventionalCommitMessage = (message: string): ConventionalCom
     }
     return {
       ok: false,
-      message: 'Commit message must follow Conventional Commits: type(scope)?: subject',
+      message: GENERIC_CONVENTIONAL_COMMIT_MESSAGE,
     };
   }
 
