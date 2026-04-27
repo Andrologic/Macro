@@ -1077,6 +1077,10 @@
     "dirtyMergeResolutionTitle": "Lokale Aenderungen brauchen Aufmerksamkeit",
     "dirtyMergeResolutionDescription": "Macro hat lokale Repository-Aenderungen gefunden, die den Merge blockieren. Waehle, wie sie vor dem erneuten Versuch behandelt werden sollen.",
     "stashAndRetryMerge": "Stashen und erneut versuchen",
+    "revertAndRetryMerge": "Verwerfen und erneut versuchen",
+    "mergeInProgressResolutionTitle": "Ein Merge laeuft bereits",
+    "mergeInProgressResolutionDescription": "Macro hat einen nicht abgeschlossenen Merge gefunden, der diesen erneuten Versuch blockiert. Ein Abbruch kann nicht committete Teilaufloesungen verwerfen.",
+    "abortMergeAndRetry": "Merge abbrechen und erneut versuchen",
     "openAssistantInstead": "Assistenten oeffnen",
     "noAggregatedDiff": "Für dieses Repository gibt es keinen aggregierten Unterschied zwischen dem Planzweig und dem Basiszweig.",
     "context": {

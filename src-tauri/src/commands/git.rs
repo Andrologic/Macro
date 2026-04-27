@@ -7,7 +7,8 @@ use std::process::Command;
 
 use chrono::{DateTime, Utc};
 use git2::{
-    BranchType, Commit, DiffFormat, Oid, Repository, ResetType, StashFlags, Status, StatusEntry,
+    BranchType, Commit, DiffFormat, Oid, Repository, RepositoryState, ResetType, StashFlags,
+    Status, StatusEntry,
 };
 use serde::Serialize;
 use tauri::State;
@@ -1080,6 +1081,34 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
 
     repo.reset(target.as_object(), reset_type, None)?;
     Ok(())
+}
+
+pub(crate) fn abort_merge(repo: &Repository) -> Result<()> {
+    if repo.state() != RepositoryState::Merge {
+        return Err(BackendError::Git {
+            message: "No merge in progress".to_string(),
+        });
+    }
+
+    let original_head = repo.revparse_single("ORIG_HEAD").map_err(|_| BackendError::Git {
+        message: "Cannot abort merge because ORIG_HEAD is missing".to_string(),
+    })?;
+    repo.reset(&original_head, ResetType::Hard, None)?;
+    repo.cleanup_state()?;
+    Ok(())
+}
+
+pub(crate) fn abort_merge_with_confirmation(
+    repo: &Repository,
+    confirm: Option<bool>,
+) -> Result<()> {
+    if !confirm.unwrap_or(false) {
+        return Err(BackendError::Git {
+            message: "Abort merge requires confirm=true".to_string(),
+        });
+    }
+
+    abort_merge(repo)
 }
 
 pub(crate) fn stash_repo(repo: &mut Repository, message: Option<String>) -> Result<String> {
@@ -2564,6 +2593,36 @@ pub async fn git_reset(
 }
 
 #[tauri::command]
+/// Abort the in-progress merge in the Git repository.
+pub async fn git_abort_merge(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    confirm: Option<bool>,
+) -> Result<()> {
+    if !confirm.unwrap_or(false) {
+        return Err(BackendError::Git {
+            message: "Abort merge requires confirm=true".to_string(),
+        });
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        abort_merge_with_confirmation(&repo, confirm)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Stash local changes in the Git repository.
 pub async fn git_stash(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -3698,6 +3757,59 @@ mod tests {
         reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
         let contents = fs::read_to_string(&file_path).unwrap();
         assert_eq!(contents, "hello");
+    }
+
+    #[test]
+    fn test_abort_merge_requires_merge_in_progress() {
+        let (_temp, repo) = init_repo();
+        let error = abort_merge(&repo).expect_err("expected no merge error");
+        assert!(error.to_string().contains("No merge in progress"));
+    }
+
+    #[test]
+    fn test_abort_merge_requires_confirmation() {
+        let (_temp, repo) = init_repo();
+        let error =
+            abort_merge_with_confirmation(&repo, Some(false)).expect_err("expected confirm error");
+        assert!(error.to_string().contains("Abort merge requires confirm=true"));
+    }
+
+    #[test]
+    fn test_abort_merge_cleans_merge_state() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let output = run_git_command(
+            temp.path(),
+            &[
+                "merge".to_string(),
+                "--no-ff".to_string(),
+                "--no-edit".to_string(),
+                "feature".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(!output.success);
+        assert_eq!(repo.state(), RepositoryState::Merge);
+
+        abort_merge(&repo).unwrap();
+
+        let status = build_git_status(&repo).unwrap();
+        assert!(status.is_clean);
+        assert!(!status.merge_in_progress);
+        assert!(status.conflicted_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "base branch change"
+        );
     }
 
     #[test]
