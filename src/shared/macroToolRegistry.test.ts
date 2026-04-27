@@ -40,8 +40,10 @@ describe('macroToolRegistry', () => {
     }
   });
 
-  it('marks read_file as overriding the Copilot built-in tool', () => {
-    expect(requireMacroToolRegistryEntry('read_file').copilot?.overridesBuiltInTool).toBe(true);
+  it('marks tools that shadow Copilot built-ins as explicit overrides', () => {
+    for (const toolId of ['read_file', 'glob']) {
+      expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBe(true);
+    }
   });
 
   it('registers the delete workspace tool', () => {
