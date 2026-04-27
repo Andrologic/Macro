@@ -32,6 +32,10 @@ const GENERIC_STREAM_IDLE_TIMEOUT_MS = 45_000;
 const GENERIC_RETRY_BASE_DELAY_MS = 250;
 const GENERIC_RETRY_MAX_DELAY_MS = 5_000;
 const GENERIC_RETRY_MAX_ATTEMPTS = 2;
+const TOOL_DOOM_LOOP_THRESHOLD = 3;
+const TOOL_EXECUTION_ABORTED_RESULT = 'Tool execution aborted';
+const REPEATED_TOOL_CALL_ABORT_RESULT =
+  'Tool execution aborted: repeated identical tool call.';
 
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
@@ -231,6 +235,9 @@ interface ChatCompletionProviderMessageItem {
 interface ChatCompletionProviderCapabilities {
   replayReasoningContent: boolean;
   replayReasoningDetails: boolean;
+  toolCallIdPolicy: 'none' | 'claude' | 'mistral';
+  insertAssistantAfterToolBeforeUser: boolean;
+  injectNoopToolWhenHistoryHasTools: boolean;
 }
 
 export interface ToolResultResolution {
@@ -326,6 +333,37 @@ const isReasoningReplayRequiredError = (message: string): boolean => {
   );
 };
 
+const CONTEXT_OVERFLOW_PATTERNS = [
+  /prompt is too long/i,
+  /input is too long for requested model/i,
+  /exceeds the context window/i,
+  /input token count.*exceeds the maximum/i,
+  /maximum prompt length is \d+/i,
+  /reduce the length of the messages/i,
+  /maximum context length is \d+ tokens/i,
+  /exceeds the limit of \d+/i,
+  /exceeds the available context size/i,
+  /greater than the context length/i,
+  /context window exceeds limit/i,
+  /exceeded model token limit/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /context_length_exceeded/i,
+  /model_context_window_exceeded/i,
+  /request entity too large/i,
+  /context length is only \d+ tokens/i,
+  /input length.*exceeds.*context length/i,
+  /prompt too long; exceeded (?:max )?context length/i,
+  /too large for model with \d+ maximum context length/i,
+  /^4(00|13)\s*(status code)?\s*\(no body\)/i,
+];
+
+const isContextOverflowError = (message: string, status?: number): boolean => {
+  if (status === 413) {
+    return true;
+  }
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
+};
+
 const disableReasoningForSession = (providerId: string, modelId: string) => {
   try {
     useProviderStore.getState().markReasoningUnsupportedForModel(providerId, modelId);
@@ -378,20 +416,37 @@ const stripThinkingBlocksForModel = (content: string): string =>
 
 const resolveChatCompletionProviderCapabilities = (params: {
   providerType: string;
+  providerId?: string;
+  baseUrl?: string;
   modelId: string;
   forceReasoningContentReplay?: boolean;
 }): ChatCompletionProviderCapabilities => {
   const providerType = params.providerType.trim().toLowerCase();
+  const providerId = params.providerId?.trim().toLowerCase() || '';
+  const baseUrl = params.baseUrl?.trim().toLowerCase() || '';
   const modelId = params.modelId.trim().toLowerCase();
+  const providerFingerprint = `${providerId} ${providerType} ${baseUrl} ${modelId}`;
   const isOpenRouter = providerType === 'openrouter';
   const isDeepSeekFamily =
     providerType.includes('deepseek') ||
-    /(^|[/:\-])deepseek([/:\-]|$)/i.test(modelId) ||
-    /(^|[/:\-])deepseek-/i.test(modelId);
+    /(^|[/:_-])deepseek([/:_-]|$)/i.test(modelId) ||
+    /(^|[/:_-])deepseek-/i.test(modelId);
+  const isClaudeFamily =
+    providerType.includes('anthropic') ||
+    /(^|[/:_-])anthropic([/:_-]|$)/i.test(modelId) ||
+    /(^|[/:_-])claude([/:_-]|$)/i.test(modelId);
+  const isMistralFamily =
+    providerType.includes('mistral') ||
+    /(^|[/:_-])mistral([/:_-]|$)/i.test(modelId) ||
+    /(^|[/:_-])devstral([/:_-]|$)/i.test(modelId);
+  const isLiteLlmProxy = providerFingerprint.includes('litellm');
 
   return {
     replayReasoningContent: Boolean(params.forceReasoningContentReplay) || isDeepSeekFamily,
     replayReasoningDetails: isOpenRouter,
+    toolCallIdPolicy: isMistralFamily ? 'mistral' : isClaudeFamily ? 'claude' : 'none',
+    insertAssistantAfterToolBeforeUser: isMistralFamily,
+    injectNoopToolWhenHistoryHasTools: isLiteLlmProxy,
   };
 };
 
@@ -415,13 +470,32 @@ const getChatCompletionProviderItems = (
   return items.filter(isChatCompletionProviderMessageItem);
 };
 
-const cloneToolCalls = (toolCalls?: ToolCall[] | null): ToolCall[] | undefined => {
+const normalizeToolCallIdForProvider = (
+  id: string,
+  policy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+): string => {
+  if (policy === 'claude') {
+    const normalized = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return normalized || 'tool_call';
+  }
+
+  if (policy === 'mistral') {
+    return id.replace(/[^a-zA-Z0-9]/g, '').substring(0, 9).padEnd(9, '0');
+  }
+
+  return id;
+};
+
+const cloneToolCalls = (
+  toolCalls?: ToolCall[] | null,
+  toolCallIdPolicy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+): ToolCall[] | undefined => {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
     return undefined;
   }
 
   return toolCalls.map((toolCall) => ({
-    id: toolCall.id,
+    id: normalizeToolCallIdForProvider(toolCall.id, toolCallIdPolicy),
     type: 'function' as const,
     function: {
       name: toolCall.function.name,
@@ -453,7 +527,10 @@ const serializeProviderItemForChatCompletions = (
     return {
       role: 'tool',
       content: item.content,
-      tool_call_id: item.tool_call_id,
+      tool_call_id: normalizeToolCallIdForProvider(
+        item.tool_call_id,
+        capabilities.toolCallIdPolicy
+      ),
     };
   }
 
@@ -461,7 +538,7 @@ const serializeProviderItemForChatCompletions = (
     role: 'assistant',
     content: normalizeMessageContentForChatCompletions('assistant', item.content),
   };
-  const toolCalls = cloneToolCalls(item.tool_calls);
+  const toolCalls = cloneToolCalls(item.tool_calls, capabilities.toolCallIdPolicy);
   if (toolCalls) {
     message.tool_calls = toolCalls;
   }
@@ -479,11 +556,98 @@ const serializeProviderItemForChatCompletions = (
   return message;
 };
 
+const getChatCompletionMessageToolCallIds = (message: Record<string, unknown>): string[] => {
+  if (!Array.isArray(message.tool_calls)) {
+    return [];
+  }
+
+  return message.tool_calls.flatMap((toolCall) => {
+    if (!isRecord(toolCall) || typeof toolCall.id !== 'string' || !toolCall.id.trim()) {
+      return [];
+    }
+    return [toolCall.id];
+  });
+};
+
+const finalizeDanglingToolCallsForChatCompletions = (
+  messages: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> => {
+  const normalized: Array<Record<string, unknown>> = [];
+  const pendingToolCallIds: string[] = [];
+
+  const flushPendingToolCalls = () => {
+    while (pendingToolCallIds.length > 0) {
+      const toolCallId = pendingToolCallIds.shift();
+      if (!toolCallId) continue;
+      normalized.push({
+        role: 'tool',
+        content: TOOL_EXECUTION_ABORTED_RESULT,
+        tool_call_id: toolCallId,
+      });
+    }
+  };
+
+  for (const message of messages) {
+    if (message.role !== 'tool') {
+      flushPendingToolCalls();
+    }
+
+    normalized.push(message);
+
+    if (message.role === 'assistant') {
+      pendingToolCallIds.push(...getChatCompletionMessageToolCallIds(message));
+      continue;
+    }
+
+    if (message.role === 'tool' && typeof message.tool_call_id === 'string') {
+      const matchIndex = pendingToolCallIds.indexOf(message.tool_call_id);
+      if (matchIndex >= 0) {
+        pendingToolCallIds.splice(matchIndex, 1);
+      }
+    }
+  }
+
+  flushPendingToolCalls();
+  return normalized;
+};
+
+const insertAssistantAfterToolBeforeUserForChatCompletions = (
+  messages: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> => {
+  const normalized: Array<Record<string, unknown>> = [];
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message) continue;
+    normalized.push(message);
+
+    const nextMessage = messages[index + 1];
+    if (message.role === 'tool' && nextMessage?.role === 'user') {
+      normalized.push({
+        role: 'assistant',
+        content: 'Done.',
+      });
+    }
+  }
+
+  return normalized;
+};
+
+const normalizeChatCompletionMessageSequence = (
+  messages: Array<Record<string, unknown>>,
+  capabilities: ChatCompletionProviderCapabilities
+): Array<Record<string, unknown>> => {
+  const withToolResults = finalizeDanglingToolCallsForChatCompletions(messages);
+  return capabilities.insertAssistantAfterToolBeforeUser
+    ? insertAssistantAfterToolBeforeUserForChatCompletions(withToolResults)
+    : withToolResults;
+};
+
 const buildChatCompletionMessages = (
   messages: StreamMessage[],
   capabilities: ChatCompletionProviderCapabilities
-): Array<Record<string, unknown>> =>
-  messages.flatMap((message) => {
+): Array<Record<string, unknown>> => {
+  const serializedMessages = messages.flatMap((message) => {
     const providerItems = getChatCompletionProviderItems(message.provider_input_items);
     if (providerItems.length > 0) {
       return providerItems
@@ -495,15 +659,20 @@ const buildChatCompletionMessages = (
       role: message.role,
       content: normalizeMessageContentForChatCompletions(message.role, message.content),
     };
-    const toolCalls = cloneToolCalls(message.tool_calls);
+    const toolCalls = cloneToolCalls(message.tool_calls, capabilities.toolCallIdPolicy);
     if (toolCalls) {
       serialized.tool_calls = toolCalls;
     }
     if (message.tool_call_id) {
-      serialized.tool_call_id = message.tool_call_id;
+      serialized.tool_call_id = normalizeToolCallIdForProvider(
+        message.tool_call_id,
+        capabilities.toolCallIdPolicy
+      );
     }
     return [serialized];
   });
+  return normalizeChatCompletionMessageSequence(serializedMessages, capabilities);
+};
 
 const buildAssistantChatCompletionProviderItem = (params: {
   visibleContent: string;
@@ -615,17 +784,12 @@ const classifyProviderError = (
     kind = 'unsupported_reasoning';
   } else if (status === 401 || status === 403) {
     kind = 'auth';
+  } else if (isContextOverflowError(message, status)) {
+    kind = 'context_overflow';
   } else if (status === 429) {
     kind = 'rate_limited';
   } else if (status === 408 || status === 502 || status === 503 || status === 504) {
     kind = 'provider_overloaded';
-  } else if (
-    normalized.includes('context length') ||
-    normalized.includes('maximum context') ||
-    normalized.includes('context window') ||
-    normalized.includes('too many tokens')
-  ) {
-    kind = 'context_overflow';
   } else if (
     normalized.includes('tool_call') ||
     normalized.includes('tool call') ||
@@ -635,11 +799,12 @@ const classifyProviderError = (
   }
 
   const retryable =
-    status === 408 ||
-    status === 429 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504;
+    kind !== 'context_overflow' &&
+    (status === 408 ||
+      status === 429 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504);
 
   return new ProviderRuntimeError(message, {
     kind,
@@ -655,11 +820,20 @@ const extractProviderErrorMessage = async (response: Response): Promise<Provider
 
   try {
     const errorJson = JSON.parse(errorText) as {
-      error?: { message?: unknown };
+      error?: { message?: unknown; code?: unknown; type?: unknown };
       message?: unknown;
+      code?: unknown;
+      type?: unknown;
     };
     const parsedMessage = errorJson.error?.message ?? errorJson.message;
-    errorMessage = typeof parsedMessage === 'string' ? parsedMessage : errorMessage;
+    const contextParts = [
+      typeof parsedMessage === 'string' ? parsedMessage : undefined,
+      typeof errorJson.error?.code === 'string' ? errorJson.error.code : undefined,
+      typeof errorJson.error?.type === 'string' ? errorJson.error.type : undefined,
+      typeof errorJson.code === 'string' ? errorJson.code : undefined,
+      typeof errorJson.type === 'string' ? errorJson.type : undefined,
+    ].filter((part): part is string => Boolean(part));
+    errorMessage = contextParts.length > 0 ? contextParts.join(' ') : errorMessage;
   } catch {
     if (errorText) {
       errorMessage = errorText;
@@ -1078,6 +1252,36 @@ interface StreamingTurnResult {
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
   toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
 
+const normalizeToolArgumentsForLoopKey = (argumentsJson: string): string => {
+  try {
+    return JSON.stringify(JSON.parse(argumentsJson));
+  } catch {
+    return argumentsJson.trim();
+  }
+};
+
+const getToolCallLoopKey = (toolCall: ToolCall): string =>
+  `${toolCall.function.name}\u0000${normalizeToolArgumentsForLoopKey(toolCall.function.arguments)}`;
+
+const getAssistantToolCallLoopKeys = (messages: StreamMessage[]): string[] =>
+  messages.flatMap((message) =>
+    message.role === 'assistant' && Array.isArray(message.tool_calls)
+      ? getValidToolCalls(message.tool_calls).map(getToolCallLoopKey)
+      : []
+  );
+
+const isRepeatedToolCallLoop = (
+  messages: StreamMessage[],
+  toolCall: ToolCall
+): boolean => {
+  const recentKeys = getAssistantToolCallLoopKeys(messages).slice(-TOOL_DOOM_LOOP_THRESHOLD);
+  if (recentKeys.length < TOOL_DOOM_LOOP_THRESHOLD) {
+    return false;
+  }
+  const targetKey = getToolCallLoopKey(toolCall);
+  return recentKeys.every((key) => key === targetKey);
+};
+
 const buildChatGptProviderTurnState = (
   responseId?: string | null,
   outputItems?: unknown[] | null
@@ -1401,35 +1605,6 @@ const normalizeToolCallResolution = (
   return value;
 };
 
-export const __testables = {
-  applyReasoningToChatCompletionsRequest,
-  buildAssistantChatCompletionProviderItem,
-  buildChatCompletionMessages,
-  buildFunctionCallOutputProviderInputItem,
-  buildChatGptProviderTurnState,
-  buildToolContextBlock,
-  buildToolChatCompletionProviderItem,
-  classifyProviderError,
-  buildChatGptVisibleTurnContent,
-  extractVisibleTextFromProviderInputItems,
-  compactToolResultForChatGptModelContext,
-  createStreamAccumulator,
-  formatToolTraceDetail,
-  getActiveStreamingSessionIds,
-  getMissingChatGptVisibleTurnSuffix,
-  hasMeaningfulVisibleAssistantText,
-  isEmptyTerminalChatGptTurn,
-  isReasoningReplayRequiredError,
-  isReasoningUnsupportedError,
-  isToolInterruptResolution,
-  normalizeToolCallResolution,
-  resolveChatCompletionProviderCapabilities,
-  shouldRetryArchitectPostToolResponse,
-  shouldRetryMissingRequiredTool,
-  stripThinkingBlocksForModel,
-  summarizeProviderTextPresence,
-};
-
 function shouldRetryMissingRequiredTool(
   policy: StreamingChatOptions['guidedToolRetry'],
   toolCalls: ToolCall[],
@@ -1509,6 +1684,98 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
 
   return tools;
+};
+
+const NOOP_COMPAT_TOOL = {
+  type: 'function',
+  function: {
+    name: '_noop',
+    description:
+      'Do not call this tool. It exists only for API compatibility and must never be invoked.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Unused.',
+        },
+      },
+      required: [],
+    },
+  },
+};
+
+const chatCompletionMessagesHaveToolHistory = (
+  messages: Array<Record<string, unknown>>
+): boolean =>
+  messages.some(
+    (message) =>
+      message.role === 'tool' ||
+      (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+  );
+
+const applyToolsToChatCompletionsRequest = (
+  requestBody: Record<string, unknown>,
+  tools: unknown[],
+  capabilities: ChatCompletionProviderCapabilities,
+  messages: Array<Record<string, unknown>>
+) => {
+  delete requestBody.tools;
+  delete requestBody.tool_choice;
+  delete requestBody.parallel_tool_calls;
+
+  if (tools.length > 0) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = 'auto';
+    requestBody.parallel_tool_calls = false;
+    return;
+  }
+
+  if (
+    capabilities.injectNoopToolWhenHistoryHasTools &&
+    chatCompletionMessagesHaveToolHistory(messages)
+  ) {
+    requestBody.tools = [NOOP_COMPAT_TOOL];
+    requestBody.tool_choice = 'auto';
+    requestBody.parallel_tool_calls = false;
+  }
+};
+
+export const __testables = {
+  applyReasoningToChatCompletionsRequest,
+  applyToolsToChatCompletionsRequest,
+  buildAssistantChatCompletionProviderItem,
+  buildChatCompletionMessages,
+  buildChatGptProviderTurnState,
+  buildChatGptVisibleTurnContent,
+  buildFunctionCallOutputProviderInputItem,
+  buildToolChatCompletionProviderItem,
+  buildToolContextBlock,
+  chatCompletionMessagesHaveToolHistory,
+  classifyProviderError,
+  compactToolResultForChatGptModelContext,
+  createStreamAccumulator,
+  extractVisibleTextFromProviderInputItems,
+  finalizeDanglingToolCallsForChatCompletions,
+  formatToolTraceDetail,
+  getActiveStreamingSessionIds,
+  getMissingChatGptVisibleTurnSuffix,
+  getToolCallLoopKey,
+  hasMeaningfulVisibleAssistantText,
+  isContextOverflowError,
+  isEmptyTerminalChatGptTurn,
+  isReasoningReplayRequiredError,
+  isReasoningUnsupportedError,
+  isRepeatedToolCallLoop,
+  isToolInterruptResolution,
+  normalizeChatCompletionMessageSequence,
+  normalizeToolCallIdForProvider,
+  normalizeToolCallResolution,
+  resolveChatCompletionProviderCapabilities,
+  shouldRetryArchitectPostToolResponse,
+  shouldRetryMissingRequiredTool,
+  stripThinkingBlocksForModel,
+  summarizeProviderTextPresence,
 };
 
 const streamNativeTurnViaTauri = async (params: {
@@ -1906,6 +2173,18 @@ const streamChatViaNativeToolCallingProvider = async (
         let customToolResult: string | undefined;
         let detail: string | undefined;
 
+        if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
+          toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
+          onToolResult?.(toolName, toolResult);
+          toolResults.push({
+            tool_call_id: toolCall.id,
+            content: toolResult,
+            tool_name: toolName,
+          });
+          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+          continue;
+        }
+
         try {
           const args = JSON.parse(toolCall.function.arguments);
           detail = formatToolTraceDetail(toolName, args);
@@ -2284,6 +2563,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   const getChatCompletionCapabilities = () =>
     resolveChatCompletionProviderCapabilities({
       providerType,
+      providerId,
+      baseUrl,
       modelId,
       forceReasoningContentReplay,
     });
@@ -2304,11 +2585,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     enableWebFetch,
     webSearchOptions,
   });
-  if (tools.length > 0) {
-    requestBody.tools = tools;
-    requestBody.tool_choice = 'auto';
-    requestBody.parallel_tool_calls = false;
-  }
 
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
@@ -2352,11 +2628,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let response: Response | null = null;
       let requestAttempt = 0;
       while (!response) {
-        requestBody.messages = buildChatCompletionMessages(
-          currentMessages,
-          getChatCompletionCapabilities()
-        );
+        const capabilities = getChatCompletionCapabilities();
+        const requestMessages = buildChatCompletionMessages(currentMessages, capabilities);
+        requestBody.messages = requestMessages;
         applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
+        applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
 
         try {
           const candidateResponse = await fetchWithTimeout(
@@ -2709,6 +2985,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           let customToolResult: string | undefined;
           let detail: string | undefined;
 
+          if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
+            toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
+            onToolResult?.(toolName, toolResult);
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+            });
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+            continue;
+          }
+
           try {
             const args = JSON.parse(toolCall.function.arguments);
             detail = formatToolTraceDetail(toolName, args);
@@ -2736,9 +3023,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               continue;
             }
 
-          const customResult = normalizeToolCallResolution(
+            const customResult = normalizeToolCallResolution(
               await onToolCall?.(toolName, args, toolCall.id)
-          );
+            );
             if (isToolInterruptResolution(customResult)) {
               interruptResolution = customResult;
               customToolResult = customResult.result;
@@ -3145,15 +3432,20 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     let response: Response | null = null;
 
     while (!response) {
+      const capabilities = resolveChatCompletionProviderCapabilities({
+        providerType,
+        providerId,
+        baseUrl,
+        modelId,
+      });
+      const requestMessages = buildChatCompletionMessages(messages, capabilities);
       const requestBody: Record<string, unknown> = {
         model: modelId,
-        messages: buildChatCompletionMessages(
-          messages,
-          resolveChatCompletionProviderCapabilities({ providerType, modelId })
-        ),
+        messages: requestMessages,
         stream: false,
       };
       applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
+      applyToolsToChatCompletionsRequest(requestBody, [], capabilities, requestMessages);
 
       const candidateResponse = await fetchWithTimeout(
         `${baseUrl}/chat/completions`,
