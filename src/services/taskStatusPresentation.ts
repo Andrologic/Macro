@@ -36,7 +36,10 @@ export const resolveRunningConversationIds = (
 ): Set<string> =>
   new Set(
     Object.entries(conversationRuntimeById)
-      .filter(([, runtime]) => runtime?.phase === 'streaming')
+      .filter(
+        ([, runtime]) =>
+          runtime?.phase === 'preparing' || runtime?.phase === 'streaming'
+      )
       .map(([conversationId]) => conversationId)
   );
 
