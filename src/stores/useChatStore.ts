@@ -5292,6 +5292,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 
     get().addMessage(assistantMessage);
+    setConversationRuntime(
+      params.conversationId,
+      {
+        phase: "preparing",
+        sessionId: params.sessionId,
+        assistantMessageId: assistantMessage.id,
+        abortController: null,
+        lastError: null,
+      },
+      { globalLastError: null },
+    );
 
     try {
       const streamLaunch = await prepareAssistantStreamLaunch({
@@ -5322,7 +5333,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
         guidedToolRetry: streamLaunch.guidedToolRetry,
-        manualFeatureDraftRecovery: params.manualFeatureDraftRecovery,
         showToolTraces: streamLaunch.showToolTraces,
         enableWebSearch: streamLaunch.enableWebSearch,
         enableWebFetch: streamLaunch.enableWebFetch,
@@ -5415,7 +5425,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       retrySystemPrompt: string;
       maxRetries?: number;
     };
-    manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
     showToolTraces: boolean;
     enableWebSearch: boolean;
     enableWebFetch: boolean;
@@ -5438,24 +5447,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const tokenBatcher = createTokenBatcher((tokenChunk) => {
       get().appendToMessage(params.assistantMessage.id, tokenChunk);
     });
-    let didAttemptManualFeatureDraftRollback = false;
-    let assistantReceivedOutput = false;
-    let assistantReceivedToolActivity = false;
 
-    const maybeRollbackManualFeatureDraft = async () => {
+    const maybeMarkImplementTaskFailedAfterStreamError = async () => {
       if (
-        !params.manualFeatureDraftRecovery ||
-        didAttemptManualFeatureDraftRollback ||
-        assistantReceivedOutput ||
-        assistantReceivedToolActivity
+        abortController.signal.aborted ||
+        params.modeAtSend !== "Implement" ||
+        !params.resolvedTaskId
       ) {
         return;
       }
 
-      didAttemptManualFeatureDraftRollback = true;
-      await rollbackManualFeatureDraftAfterFailedLaunch(
-        params.manualFeatureDraftRecovery,
-      );
+      const task = useTaskStore.getState().getTaskById(params.resolvedTaskId);
+      if (!task || task.status === "Completed") {
+        return;
+      }
+
+      try {
+        await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
+      } catch (error) {
+        console.warn("Failed to mark task as failed after stream error:", error);
+      }
     };
 
     void (async () => {
@@ -5486,15 +5497,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           sessionId: params.sessionId,
           signal: abortController.signal,
           onToken: (token) => {
-            if (token.length > 0) {
-              assistantReceivedOutput = true;
-            }
             tokenBatcher.push(token);
           },
           onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-            if (toolTraces.length > 0) {
-              assistantReceivedToolActivity = true;
-            }
             get().updateMessageFields(params.assistantMessage.id, {
               tool_traces: toolTraces,
             });
@@ -5565,7 +5570,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           onError: (error) => {
             tokenBatcher.dispose();
             void (async () => {
-              await maybeRollbackManualFeatureDraft();
+              await maybeMarkImplementTaskFailedAfterStreamError();
               get().updateMessageContent(
                 params.assistantMessage.id,
                 `Error: ${error.message}`,
@@ -5596,7 +5601,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       } catch (error) {
         tokenBatcher.dispose();
-        await maybeRollbackManualFeatureDraft();
+        await maybeMarkImplementTaskFailedAfterStreamError();
         const normalized = toServiceError(error);
         get().updateMessageContent(
           params.assistantMessage.id,
@@ -8007,7 +8012,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,
-            manualFeatureDraftRecovery,
             showToolTraces: streamLaunch.showToolTraces,
             enableWebSearch: streamLaunch.enableWebSearch,
             enableWebFetch: streamLaunch.enableWebFetch,

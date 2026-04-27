@@ -487,6 +487,18 @@ const taskStoreState = {
     );
     emitTaskStoreUpdate(previousTasks);
   }),
+  markTaskFailed: mock(async (taskId: string) => {
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+      task.id === taskId
+        ? {
+            ...task,
+            status: 'Failed',
+          }
+        : task
+    );
+    emitTaskStoreUpdate(previousTasks);
+  }),
   retryTask: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
@@ -679,14 +691,6 @@ const updateArchitectPlanMock = mock(async (params: {
   architectPlans.set(params.planId, updated);
   return updated;
 });
-const provisionPlanBranchesMock = mock(async () => ({
-  planBranchName: 'plan/mock',
-  repositories: [],
-  createdPlanBranch: false,
-  createdFeatureBranches: [],
-  existingFeatureBranches: [],
-}));
-
 const sendChatNonStreamingMock = mock(
   async () =>
     JSON.stringify({
@@ -1019,6 +1023,17 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('./useTaskStore', () => ({
+    getTaskLifecycleCapabilities: (task: { draft?: boolean; status?: string }, published = false) => ({
+      isPublished: published,
+      canRename: true,
+      canDelete: !published,
+      canArchive: !task.draft,
+      canRestore: false,
+      canReopen: task.status === 'Completed',
+      deleteBlockReason: published
+        ? 'This feature branch has already been pushed. Archive it instead.'
+        : null,
+    }),
     getPlanActivationCandidateTask: () => null,
     useTaskStore: useTaskStoreMock,
   }));
@@ -1198,10 +1213,6 @@ const registerUseChatStoreMocks = async () => {
   });
   mock.module('../services/localProjectContext', localProjectContextModule);
   mock.module('../services/localProjectContext.ts', localProjectContextModule);
-
-  mock.module('../services/architectGitFlowService', () => ({
-    provisionPlanBranches: provisionPlanBranchesMock,
-  }));
 
   mock.module('../services/macroSyncService', () => ({
     syncMacroMetadataAfterStream: mock(async () => undefined),
@@ -1596,6 +1607,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.revertManualFeatureToDraft.mockClear();
     taskStoreState.startTask.mockClear();
     taskStoreState.markTaskAwaitingResponse.mockClear();
+    taskStoreState.markTaskFailed.mockClear();
     taskStoreState.retryTask.mockClear();
     taskStoreState.promoteTaskContextProjects.mockClear();
     taskStoreState.deleteManualFeatureDraft.mockClear();
@@ -1610,7 +1622,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     bindArchitectPlanConversationMock.mockClear();
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
-    provisionPlanBranchesMock.mockClear();
     streamChatMock.mockClear();
     sendChatNonStreamingMock.mockClear();
     getToolModePolicyMock.mockClear();
@@ -4615,26 +4626,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
-  it('keeps a standalone manual feature as draft after the first assistant generation fails, then regenerates metadata on retry', async () => {
+  it('keeps a standalone manual feature initialized after assistant generation fails, then retries as an in-progress task', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [createManualFeatureTask()];
 
-    sendChatNonStreamingMock
-      .mockImplementationOnce(async () =>
-        JSON.stringify({
-          title: 'Quick export',
-          description: 'Add a quick CSV export from the table.',
-          featureSlug: 'quick-export',
-        })
-      )
-      .mockImplementationOnce(async () =>
-        JSON.stringify({
-          title: 'Retry export',
-          description: 'Retry the CSV export initialization.',
-          featureSlug: 'retry-export',
-        })
-      );
+    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+      JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export',
+      })
+    );
 
     streamChatMock
       .mockImplementationOnce((async (...args: unknown[]) => {
@@ -4693,23 +4696,19 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.resolve();
 
-    expect(taskStoreState.revertManualFeatureToDraft).toHaveBeenCalledWith({
-      taskId: 'manual-task-1',
-      conversationId: 'manual-conv',
-      title: 'New feature',
-      description: '',
-    });
+    expect(taskStoreState.revertManualFeatureToDraft).not.toHaveBeenCalled();
+    expect(taskStoreState.markTaskFailed).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
-      draft: true,
-      status: 'Pending',
-      feature_slug: null,
-      branch_name: '',
+      draft: false,
+      status: 'Failed',
+      feature_slug: 'quick-export',
+      branch_name: 'feature/quick-export',
     });
     expect(
       useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
     ).toMatchObject({
-      title: 'New feature',
-      description: '',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
     });
 
     const firstUserMessage = useChatStore
@@ -4727,25 +4726,99 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.resolve();
 
-    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(2);
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(taskStoreState.retryTask).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenLastCalledWith({
       taskId: 'manual-task-1',
       conversationId: 'manual-conv',
-      title: 'Retry export',
-      description: 'Retry the CSV export initialization.',
-      featureSlug: 'retry-export',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+      featureSlug: 'quick-export',
     });
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       draft: false,
       status: 'InProgress',
-      feature_slug: 'retry-export',
-      branch_name: 'feature/retry-export',
+      feature_slug: 'quick-export',
+      branch_name: 'feature/quick-export',
     });
     expect(
       useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
     ).toMatchObject({
-      title: 'Retry export',
-      description: 'Retry the CSV export initialization.',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+    });
+  });
+
+  it('rolls a standalone manual feature back to draft when initialization fails before the assistant stream starts', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    taskStoreState.tasks = [createManualFeatureTask()];
+
+    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+      JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export',
+      })
+    );
+    taskStoreState.startTask.mockImplementationOnce(async () => {
+      throw new Error('Worktree could not be prepared.');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('manual-conv'),
+          scope_mode: 'Implement',
+          task_id: 'manual-task-1',
+          title: 'New feature',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'manual-conv',
+      selectedConversationIdsByMode: { Implement: 'manual-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    let thrown: unknown = null;
+    try {
+      await useChatStore.getState().sendMessage({
+        conversationId: 'manual-conv',
+        content: 'Ajoute un export CSV rapide depuis le tableau.',
+        taskId: 'manual-task-1',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as { message?: string } | null)?.message).toBe(
+      'Worktree could not be prepared.'
+    );
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'Quick export',
+      description: 'Add a quick CSV export from the table.',
+      featureSlug: 'quick-export',
+    });
+    expect(taskStoreState.revertManualFeatureToDraft).toHaveBeenCalledWith({
+      taskId: 'manual-task-1',
+      conversationId: 'manual-conv',
+      title: 'New feature',
+      description: '',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      draft: true,
+      status: 'Pending',
+      feature_slug: null,
+      branch_name: '',
     });
   });
 
