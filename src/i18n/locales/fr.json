@@ -1071,6 +1071,12 @@
     "planReviewReplicaRepair": "Réparer les réplicas de métadonnées du plan",
     "aiConflictAssistantStarted": "Assistant IA de conflit lancé",
     "planFinalizationAssistantDescription": "Ouverture d’une conversation de revue Implement et publication des bloqueurs de finalisation du plan.",
+    "mergeWorkflowAutoResolved": "Blocages de merge résolus",
+    "mergeWorkflowAutoResolvedDescription": "Macro a mis de côté les changements locaux du dépôt et rafraîchi la revue de merge.",
+    "dirtyMergeResolutionTitle": "Des changements locaux demandent une décision",
+    "dirtyMergeResolutionDescription": "Macro a trouvé des changements locaux qui bloquent le merge. Choisissez comment les gérer avant de réessayer.",
+    "stashAndRetryMerge": "Stasher et réessayer",
+    "openAssistantInstead": "Ouvrir l’assistant à la place",
     "noAggregatedDiff": "Aucune différence agrégée entre la branche du plan et la branche de base pour ce référentiel.",
     "context": {
       "default": "Diff ciblé",

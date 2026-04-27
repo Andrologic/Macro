@@ -941,6 +941,97 @@ describe('FileChangesPanel', () => {
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
+  it('asks before stashing dirty merge blockers automatically', async () => {
+    const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    }));
+    const dirtyRepository = {
+      id: 'repo-1',
+      projectId: 'project-1',
+      repoPath: '/repos/project',
+      sourceBranchName: 'feature/review-actions',
+      targetBranchName: 'plan/review-actions',
+      progressState: 'blocked',
+      hadChangesAtStart: true,
+      mergeAppliedAt: null,
+      isClean: false,
+      hasChanges: true,
+      mergeable: false,
+      conflictFiles: [],
+      mergeInProgress: false,
+      diff: '',
+      checkStatus: 'not_run',
+      blockingKind: 'repository_dirty',
+      nextAction: 'clean_repository',
+      blockingReason: 'Cannot continue merge because /repos/project has uncommitted changes.',
+    };
+    const mergeWorkflowRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
+      review: {
+        taskId: 'task-1',
+        title: 'Task 1',
+        taskSource: 'architect',
+        planId: 'plan-1',
+        planTitle: 'Plan 1',
+        targetBranch: 'plan/review-actions',
+      },
+      repositories: [dirtyRepository],
+      blockedRepositories: [dirtyRepository],
+      message: 'Resolve the repository blockers before retrying the merge.',
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: resolveMergeWorkflowAutomaticallyMock,
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const resolveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve automatically'));
+
+    await act(async () => {
+      resolveButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Local changes need attention');
+    expect(resolveMergeWorkflowAutomaticallyMock).not.toHaveBeenCalled();
+
+    const stashButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Stash and retry'));
+
+    await act(async () => {
+      stashButton?.click();
+      await flushRender();
+    });
+
+    expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
+      dirtyRepositoryAction: 'stash',
+    });
+  });
+
   it('loads the merge review once when an existing runtime has no review yet', async () => {
     const loadMergeWorkflowReviewMock = mock(async () => null);
     const idleRuntime = {
