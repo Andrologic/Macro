@@ -15,6 +15,14 @@ import {
 } from '../../../ui/Accordion';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
+import {
+  DEFAULT_SMART_COMMIT_PROMPT,
+  PREF_KEYS,
+  loadPreference,
+  savePreference,
+} from '../../../../services/preferences';
+import type { SmartCommitModelConfig } from '../../../../services/smartCommitModelConfig';
+import type { ReasoningEffort } from '../../../../types';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -72,6 +80,7 @@ export const ModelsSettings: React.FC = () => {
     deleteManualModel,
     updateProviderSettings,
     scanModelsForProvider,
+    getAvailableReasoningEfforts,
   } = useProviderStore();
 
   const [manualModelEditor, setManualModelEditor] = useState<{
@@ -93,12 +102,56 @@ export const ModelsSettings: React.FC = () => {
   const [manualModelName, setManualModelName] = useState('');
   const [isSavingManualModel, setIsSavingManualModel] = useState(false);
   const [isDeletingManualModel, setIsDeletingManualModel] = useState(false);
+  const [smartCommitModelConfig, setSmartCommitModelConfig] = useState<SmartCommitModelConfig | null>(null);
+  const [smartCommitPrompt, setSmartCommitPrompt] = useState(DEFAULT_SMART_COMMIT_PROMPT);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const providers = providerConfigs;
+  const enabledCommitProviders = providers.filter((provider) => providerHasCredentials(provider));
+  const dedicatedCommitProviderId = smartCommitModelConfig?.mode === 'dedicated'
+    ? smartCommitModelConfig.providerId
+    : enabledCommitProviders[0]?.id ?? '';
+  const dedicatedCommitModels = dedicatedCommitProviderId
+    ? (modelsByProvider[dedicatedCommitProviderId] || []).filter((model) => model.isEnabled !== false)
+    : [];
+  const dedicatedCommitModelId = smartCommitModelConfig?.mode === 'dedicated'
+    ? smartCommitModelConfig.modelId
+    : dedicatedCommitModels[0]?.id ?? '';
+  const dedicatedCommitReasoningEfforts = getAvailableReasoningEfforts(
+    dedicatedCommitProviderId || null,
+    dedicatedCommitModelId || null
+  );
   const isEditingManualModel =
     manualModelEditor !== null && manualModelEditor.originalModelId !== null;
+
+  useEffect(() => {
+    let disposed = false;
+    void Promise.all([
+      loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG),
+      loadPreference<string>(PREF_KEYS.SMART_COMMIT_PROMPT),
+    ])
+      .then(([modelConfig, prompt]) => {
+        if (!disposed) {
+          setSmartCommitModelConfig(modelConfig);
+          setSmartCommitPrompt(prompt?.trim() || DEFAULT_SMART_COMMIT_PROMPT);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const saveSmartCommitModelConfig = (config: SmartCommitModelConfig) => {
+    setSmartCommitModelConfig(config);
+    void savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, config);
+  };
+
+  const saveSmartCommitPrompt = (prompt: string) => {
+    const nextPrompt = prompt.trim() || DEFAULT_SMART_COMMIT_PROMPT;
+    setSmartCommitPrompt(nextPrompt);
+    void savePreference(PREF_KEYS.SMART_COMMIT_PROMPT, nextPrompt);
+  };
 
   const closeManualModelEditor = () => {
     setManualModelEditor(null);
@@ -172,6 +225,173 @@ export const ModelsSettings: React.FC = () => {
 
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
+      <section className="rounded-xl border border-border bg-card px-4 py-4">
+        <div className="flex flex-col gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              {t('models.commitMessagesTitle', 'Commit messages')}
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(
+                'models.commitMessagesDescription',
+                'Choose which model Macro uses to generate Conventional Commit messages.'
+              )}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-muted/20 p-1">
+            <button
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-2 text-sm transition-colors',
+                smartCommitModelConfig?.mode !== 'dedicated'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+              )}
+              onClick={() => saveSmartCommitModelConfig({ mode: 'conversation' })}
+            >
+              {t('models.commitUseConversationModel', 'Use conversation model')}
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-2 text-sm transition-colors',
+                smartCommitModelConfig?.mode === 'dedicated'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+              )}
+              disabled={!dedicatedCommitProviderId || !dedicatedCommitModelId}
+              onClick={() => {
+                if (!dedicatedCommitProviderId || !dedicatedCommitModelId) return;
+                saveSmartCommitModelConfig({
+                  mode: 'dedicated',
+                  providerId: dedicatedCommitProviderId,
+                  modelId: dedicatedCommitModelId,
+                  reasoningEffort: smartCommitModelConfig?.mode === 'dedicated'
+                    ? smartCommitModelConfig.reasoningEffort
+                    : null,
+                });
+              }}
+            >
+              {t('models.commitUseDedicatedModel', 'Use dedicated model')}
+            </button>
+          </div>
+
+          {smartCommitModelConfig?.mode === 'dedicated' && (
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t('settings.providers', 'AI Providers')}
+                </span>
+                <select
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                  value={dedicatedCommitProviderId}
+                  onChange={(event) => {
+                    const providerId = event.target.value;
+                    const firstModel = (modelsByProvider[providerId] || [])
+                      .find((model) => model.isEnabled !== false);
+                    if (!providerId || !firstModel) return;
+                    saveSmartCommitModelConfig({
+                      mode: 'dedicated',
+                      providerId,
+                      modelId: firstModel.id,
+                      reasoningEffort: null,
+                    });
+                  }}
+                >
+                  {enabledCommitProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t('chat.selectModel', 'Select a model')}
+                </span>
+                <select
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                  value={dedicatedCommitModelId}
+                  onChange={(event) => {
+                    if (!dedicatedCommitProviderId || !event.target.value) return;
+                    saveSmartCommitModelConfig({
+                      mode: 'dedicated',
+                      providerId: dedicatedCommitProviderId,
+                      modelId: event.target.value,
+                      reasoningEffort: null,
+                    });
+                  }}
+                >
+                  {dedicatedCommitModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name || model.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t('models.reasoningEffort', 'Reasoning')}
+                </span>
+                <select
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                  value={smartCommitModelConfig.reasoningEffort ?? ''}
+                  onChange={(event) => {
+                    if (!dedicatedCommitProviderId || !dedicatedCommitModelId) return;
+                    saveSmartCommitModelConfig({
+                      mode: 'dedicated',
+                      providerId: dedicatedCommitProviderId,
+                      modelId: dedicatedCommitModelId,
+                      reasoningEffort: event.target.value ? event.target.value as ReasoningEffort : null,
+                    });
+                  }}
+                  disabled={dedicatedCommitReasoningEfforts.length === 0}
+                >
+                  <option value="">{t('models.defaultReasoning', 'Default')}</option>
+                  {dedicatedCommitReasoningEfforts.map((effort) => (
+                    <option key={effort} value={effort}>
+                      {effort}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
+
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">
+              {t('models.commitPromptLabel', 'Commit generation prompt')}
+            </span>
+            <textarea
+              className="min-h-36 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+              value={smartCommitPrompt}
+              onChange={(event) => {
+                const prompt = event.target.value;
+                setSmartCommitPrompt(prompt);
+                void savePreference(PREF_KEYS.SMART_COMMIT_PROMPT, prompt);
+              }}
+              onBlur={() => saveSmartCommitPrompt(smartCommitPrompt)}
+            />
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  'models.commitPromptDescription',
+                  'This prompt guides smart commit generation. Macro still validates the final message and removes scopes before committing.'
+                )}
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => saveSmartCommitPrompt(DEFAULT_SMART_COMMIT_PROMPT)}
+              >
+                {t('common.reset', 'Reset')}
+              </Button>
+            </div>
+          </label>
+        </div>
+      </section>
+
       <Accordion type="multiple" className="space-y-3">
         {providers.map((provider) => {
           const models = modelsByProvider[provider.id] || [];
