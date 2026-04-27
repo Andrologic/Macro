@@ -74,6 +74,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
       ?.changes.find((candidate) => candidate.id === currentSession.changeId);
   });
   const stageChanges = useFileChangesStore((state) => state.stageChanges);
+  const unstageChanges = useFileChangesStore((state) => state.unstageChanges);
   const revertChanges = useFileChangesStore((state) => state.revertChanges);
   const updateRightDraft = useFileChangesStore((state) => state.updateRightDraft);
   const resetRightDraft = useFileChangesStore((state) => state.resetRightDraft);
@@ -98,8 +99,9 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   const showPresentationControls = diffLayout === 'split';
   const effectivePresentationMode: DiffPresentationMode = showPresentationControls ? presentationMode : 'full';
   const canEdit = Boolean(change?.canEdit && session && !isHydrating && effectivePresentationMode === 'full');
+  const hasPendingValidation = Boolean(change?.hasPendingVisibleChange);
   const canRevertChunks = Boolean(
-    diffLayout === 'split' && change?.canEdit && !isHydrating
+    diffLayout === 'split' && change?.canEdit && hasPendingValidation && !isHydrating
   );
 
   useEffect(() => {
@@ -191,13 +193,18 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
   }, [attemptClose, session]);
 
   const handleValidate = useCallback(async () => {
-    if (!repository || !change || isBusy || isDirty) return;
+    if (!repository || !change || !change.hasPendingVisibleChange || isBusy || isDirty) return;
     await stageChanges(repository.id, [change.id]);
     onClose();
   }, [change, isBusy, isDirty, onClose, repository, stageChanges]);
 
+  const handleUnstage = useCallback(async () => {
+    if (!repository || !change || !change.hasValidatedStage || isBusy || isDirty) return;
+    await unstageChanges(repository.id, [change.id]);
+  }, [change, isBusy, isDirty, repository, unstageChanges]);
+
   const handleRevert = useCallback(async () => {
-    if (!repository || !change || isBusy || isDirty) return;
+    if (!repository || !change || !change.hasPendingVisibleChange || isBusy || isDirty) return;
     await revertChanges(repository.id, [change.id]);
   }, [change, isBusy, isDirty, repository, revertChanges]);
 
@@ -329,7 +336,12 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                         {t('implement.stagedBadge', 'Staged')}
                       </span>
                     )}
-                    <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                    {candidate.hasPendingVisibleChange && (
+                      <span
+                        data-pending-validation-indicator="true"
+                        className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+                      />
+                    )}
                   </div>
                 </button>
               );
@@ -465,8 +477,18 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                     {t('implement.saveDraft', 'Save draft')}
                   </Button>
                 </>
-              ) : (
+              ) : hasPendingValidation ? (
                 <>
+                  {change.hasValidatedStage && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleUnstage()}
+                      disabled={isBusy}
+                    >
+                      {t('implement.unstageAction', 'Unstage')}
+                    </Button>
+                  )}
                   <Button
                     variant="secondary"
                     size="sm"
@@ -485,6 +507,35 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                     {t('implement.validateFile', 'Validate file')}
                   </Button>
                 </>
+              ) : change.hasValidatedStage ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={onClose}
+                    disabled={isBusy}
+                  >
+                    {t('common.close', 'Close')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void handleUnstage()}
+                    disabled={isBusy}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('implement.unstageAction', 'Unstage')}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onClose}
+                  disabled={isBusy}
+                >
+                  {t('common.close', 'Close')}
+                </Button>
               )}
             </div>
           </footer>

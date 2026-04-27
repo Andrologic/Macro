@@ -120,20 +120,24 @@ interface FolderTreeItemProps {
   selectedChangeId: string | null;
   onFileClick: (changeId: string) => void;
   onStageChanges: (changeIds: string[]) => void;
+  onUnstageChanges: (changeIds: string[]) => void;
   onRevert: (changeIds: string[], scopeLabel: string, requiresConfirm: boolean) => void;
   labels: {
     staged: string;
     validate: string;
+    unstage: string;
     revert: string;
   };
 }
 
 interface ScopeActionRailProps {
-  onValidate: () => void;
+  onValidate?: () => void;
+  onUnstage?: () => void;
   onRevert?: () => void;
   labels: {
     staged: string;
     validate: string;
+    unstage: string;
     revert: string;
   };
   className?: string;
@@ -141,6 +145,7 @@ interface ScopeActionRailProps {
 
 const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   onValidate,
+  onUnstage,
   onRevert,
   labels,
   className,
@@ -152,20 +157,38 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
       className
     )}
   >
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className="h-7 w-7 px-0"
-      title={labels.validate}
-      aria-label={labels.validate}
-      onClick={(event) => {
-        event.stopPropagation();
-        onValidate();
-      }}
-    >
-      <Icon name="check" size={14} />
-    </Button>
+    {onValidate && (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 px-0"
+        title={labels.validate}
+        aria-label={labels.validate}
+        onClick={(event) => {
+          event.stopPropagation();
+          onValidate();
+        }}
+      >
+        <Icon name="check" size={14} />
+      </Button>
+    )}
+    {onUnstage && (
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 px-0"
+        title={labels.unstage}
+        aria-label={labels.unstage}
+        onClick={(event) => {
+          event.stopPropagation();
+          onUnstage();
+        }}
+      >
+        <Icon name="minus" size={14} />
+      </Button>
+    )}
     {onRevert && (
       <Button
         type="button"
@@ -192,11 +215,14 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   selectedChangeId,
   onFileClick,
   onStageChanges,
+  onUnstageChanges,
   onRevert,
   labels,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasPendingValidation = node.hasPendingVisibleChanges;
+  const pendingChangeIds = node.pendingChangeIds;
+  const stagedChangeIds = node.stagedChangeIds;
 
   if (node.type === 'folder') {
     return (
@@ -221,15 +247,21 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
             />
             <span className="text-sm text-foreground truncate">{node.name}</span>
             {!isOpen && hasPendingValidation && (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
+              <span
+                data-pending-validation-indicator="true"
+                className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+              />
             )}
           </button>
-          <ScopeActionRail
-            onValidate={() => onStageChanges(node.changeIds)}
-            onRevert={() => onRevert(node.changeIds, node.path, true)}
-            labels={labels}
-            className="rounded-r"
-          />
+          {(pendingChangeIds.length > 0 || stagedChangeIds.length > 0) && (
+            <ScopeActionRail
+              onValidate={pendingChangeIds.length > 0 ? () => onStageChanges(pendingChangeIds) : undefined}
+              onUnstage={stagedChangeIds.length > 0 ? () => onUnstageChanges(stagedChangeIds) : undefined}
+              onRevert={pendingChangeIds.length > 0 ? () => onRevert(pendingChangeIds, node.path, true) : undefined}
+              labels={labels}
+              className="rounded-r"
+            />
+          )}
         </div>
         {isOpen && node.children && (
           <div>
@@ -242,6 +274,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 selectedChangeId={selectedChangeId}
                 onFileClick={onFileClick}
                 onStageChanges={onStageChanges}
+                onUnstageChanges={onUnstageChanges}
                 onRevert={onRevert}
                 labels={labels}
               />
@@ -283,9 +316,20 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
 
         <span className="text-sm text-foreground truncate flex-1 text-left">{node.name}</span>
 
-        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
+        {change.hasPendingVisibleChange && (
+          <span
+            data-pending-validation-indicator="true"
+            className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+          />
+        )}
 
-        <div className="flex items-center gap-1 text-[11px] shrink-0 opacity-60 transition-opacity group-hover:opacity-0">
+        <div
+          className={cn(
+            'flex items-center gap-1 text-[11px] shrink-0 opacity-60',
+            (change.hasPendingVisibleChange || change.hasValidatedStage) &&
+              'transition-opacity group-hover:opacity-0'
+          )}
+        >
           {change.hasValidatedStage && (
             <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
               {labels.staged}
@@ -299,12 +343,15 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
           )}
         </div>
       </button>
-      <ScopeActionRail
-        onValidate={() => onStageChanges([change.id])}
-        onRevert={() => onRevert([change.id], change.path, false)}
-        labels={labels}
-        className="rounded-r-lg"
-      />
+      {(change.hasPendingVisibleChange || change.hasValidatedStage) && (
+        <ScopeActionRail
+          onValidate={change.hasPendingVisibleChange ? () => onStageChanges([change.id]) : undefined}
+          onUnstage={change.hasValidatedStage ? () => onUnstageChanges([change.id]) : undefined}
+          onRevert={change.hasPendingVisibleChange ? () => onRevert([change.id], change.path, false) : undefined}
+          labels={labels}
+          className="rounded-r-lg"
+        />
+      )}
     </div>
   );
 };
@@ -404,6 +451,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     openDiffModal,
     closeDiffModal,
     stageChanges,
+    unstageChanges,
     stageAllTaskChanges,
     revertChanges,
     commitAllReadyTaskRepositories,
@@ -676,6 +724,23 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
   };
 
+  const handleUnstageScope = async (repositoryId: string, changeIds: string[]) => {
+    if (changeIds.length === 0) return;
+    if (isReadOnlyRemoteMode) {
+      notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
+      return;
+    }
+    try {
+      await unstageChanges(repositoryId, changeIds);
+      notify.success(t('implement.unstageSuccess', 'Changes unstaged.'));
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.unstageFailed', 'Failed to unstage changes.')
+      );
+    }
+  };
+
   const handleRevert = async (repositoryId: string, changeIds: string[]) => {
     if (changeIds.length === 0) return;
     if (isReadOnlyRemoteMode) {
@@ -739,6 +804,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const actionLabels = {
     staged: t('implement.stagedBadge', 'Staged'),
     validate: t('implement.validateAction', 'Validate'),
+    unstage: t('implement.unstageAction', 'Unstage'),
     revert: t('implement.revertAction', 'Revert'),
   };
 
@@ -917,7 +983,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           const repositoryName = getRepositoryDisplayName(repository, project?.name);
           const repositoryHasPendingValidation =
             repository.commitState === 'idle' && repository.stats.pendingVisibleFileCount > 0;
-          const repositoryChangeIds = repository.changes.map((change) => change.id);
+          const repositoryChangeIds = repository.changes
+            .filter((change) => change.hasPendingVisibleChange)
+            .map((change) => change.id);
+          const repositoryStagedChangeIds = repository.changes
+            .filter((change) => change.hasValidatedStage)
+            .map((change) => change.id);
+          const repositoryActionCount = repositoryChangeIds.length + repositoryStagedChangeIds.length;
           return (
             <section
               key={repository.id}
@@ -963,7 +1035,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         {repositoryName}
                       </span>
                       {!isExpanded && repositoryHasPendingValidation && (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0" />
+                        <span
+                          data-pending-validation-indicator="true"
+                          className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+                        />
                       )}
                       {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
                         <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
@@ -974,20 +1049,39 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   </button>
                   <div className="flex shrink-0 items-center gap-2">
                     {repositorySummary && (
-                      <span className={cn('px-2 py-0.5 rounded-full text-[10px] shrink-0 transition-opacity group-hover:opacity-0', REVIEW_STATE_CLASSES[repositorySummary.state])}>
+                      <span
+                        className={cn(
+                          'px-2 py-0.5 rounded-full text-[10px] shrink-0',
+                          repositoryActionCount > 0 && 'transition-opacity group-hover:opacity-0',
+                          REVIEW_STATE_CLASSES[repositorySummary.state]
+                        )}
+                      >
                         {renderRepositoryState(repository, repositorySummary, translate)}
                       </span>
                     )}
                   </div>
                 </div>
-                {repository.commitState === 'idle' && repositoryChangeIds.length > 0 && (
+                {repository.commitState === 'idle' && repositoryActionCount > 0 && (
                   <ScopeActionRail
-                    onValidate={() => void handleStageScope(repository.id, repositoryChangeIds)}
-                    onRevert={() => setPendingRevertScope({
-                      repositoryId: repository.id,
-                      changeIds: repositoryChangeIds,
-                      scopeLabel: repositoryName,
-                    })}
+                    onValidate={
+                      repositoryChangeIds.length > 0
+                        ? () => void handleStageScope(repository.id, repositoryChangeIds)
+                        : undefined
+                    }
+                    onUnstage={
+                      repositoryStagedChangeIds.length > 0
+                        ? () => void handleUnstageScope(repository.id, repositoryStagedChangeIds)
+                        : undefined
+                    }
+                    onRevert={
+                      repositoryChangeIds.length > 0
+                        ? () => setPendingRevertScope({
+                          repositoryId: repository.id,
+                          changeIds: repositoryChangeIds,
+                          scopeLabel: repositoryName,
+                        })
+                        : undefined
+                    }
                     labels={actionLabels}
                     className="rounded-r-xl"
                   />
@@ -1043,6 +1137,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         onStageChanges={(changeIds) => {
                           selectRepository(repository.id);
                           void handleStageScope(repository.id, changeIds);
+                        }}
+                        onUnstageChanges={(changeIds) => {
+                          selectRepository(repository.id);
+                          void handleUnstageScope(repository.id, changeIds);
                         }}
                         onRevert={(changeIds, scopeLabel, requiresConfirm) => {
                           selectRepository(repository.id);

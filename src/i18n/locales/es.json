@@ -922,6 +922,7 @@
     "revert": "Revertir",
     "validateAction": "Validar",
     "invalidateAction": "Invalidar",
+    "unstageAction": "Quitar del stage",
     "revertAction": "Revertir",
     "validateFile": "Validar archivo",
     "validatedFiles": "archivos validados",
@@ -935,6 +936,8 @@
     "revertScopeDescription": "Esto descartará los cambios locales de \"{{scope}}\".",
     "revertSuccess": "Cambios revertidos.",
     "revertFailed": "No se pudieron revertir los cambios.",
+    "unstageSuccess": "Cambios quitados del stage.",
+    "unstageFailed": "No se pudieron quitar los cambios del stage.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Añadido",

@@ -922,6 +922,7 @@
     "revert": "元に戻す",
     "validateAction": "検証",
     "invalidateAction": "検証を取り消す",
+    "unstageAction": "ステージ解除",
     "revertAction": "元に戻す",
     "validateFile": "ファイルを検証",
     "validatedFiles": "件の検証済みファイル",
@@ -935,6 +936,8 @@
     "revertScopeDescription": "これにより「{{scope}}」のローカル変更が破棄されます。",
     "revertSuccess": "変更を元に戻しました。",
     "revertFailed": "変更を元に戻せませんでした。",
+    "unstageSuccess": "変更をステージ解除しました。",
+    "unstageFailed": "変更をステージ解除できませんでした。",
     "stage": "Stage",
     "changeStatus": {
       "added": "追加した",
