@@ -91,6 +91,9 @@ describe('appBootstrap', () => {
     const secondStart = controller.ensureStarted();
 
     expect(firstStart).toBe(secondStart);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lowPriorityRuns).toHaveLength(1);
+    lowPriorityRuns[0]();
     await firstStart;
 
     expect(initializeApp.mock.calls.length).toBe(1);
@@ -109,6 +112,7 @@ describe('appBootstrap', () => {
     expect(callOrder).toContain('resume-app');
     expect(callOrder).toContain('resume-tasks');
     expect(callOrder).toContain('resume-chat');
+    expect(callOrder.indexOf('providers')).toBeLessThan(callOrder.indexOf('resume-chat'));
     expect(callOrder).toContain('preload');
 
     expect(controller.getSnapshot()).toEqual({
@@ -116,15 +120,12 @@ describe('appBootstrap', () => {
       critical: true,
       high: true,
       normal: true,
-      low: false,
+      low: true,
       ready: true,
       errors: {},
       warnings: {},
       startupError: null,
     });
-
-    lowPriorityRuns[0]();
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(initializeTools.mock.calls.length).toBe(1);
     expect(initializeProviders.mock.calls.length).toBe(1);
@@ -166,7 +167,11 @@ describe('appBootstrap', () => {
       isPageShuttingDown: () => false,
     }));
 
-    await controller.ensureStarted();
+    const start = controller.ensureStarted();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lowPriorityRuns).toHaveLength(1);
+    lowPriorityRuns[0]();
+    await start;
 
     expect(controller.getSnapshot().critical).toBe(true);
     expect(controller.getSnapshot().ready).toBe(true);
@@ -214,7 +219,11 @@ describe('appBootstrap', () => {
     expect(resumeApp.mock.calls.length).toBe(0);
 
     shouldFail = false;
-    await controller.restart();
+    const restart = controller.restart();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lowPriorityRuns).toHaveLength(1);
+    lowPriorityRuns[0]();
+    await restart;
 
     expect(initializeApp.mock.calls.length).toBe(2);
     expect(controller.getSnapshot().startupError).toBeNull();
@@ -272,6 +281,9 @@ describe('appBootstrap', () => {
     expect(controller.getSnapshot().high).toBe(false);
 
     resumeResolvers[1]?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lowPriorityRuns.length).toBeGreaterThanOrEqual(1);
+    lowPriorityRuns.splice(0).forEach((run) => run());
     await restartPromise;
     await firstStart;
     expect(controller.getSnapshot().ready).toBe(true);
