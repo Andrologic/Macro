@@ -349,6 +349,8 @@ describe('FileChangesPanel', () => {
 
     expect(validateButtons.length).toBeGreaterThan(0);
     expect(revertButtons.length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain('{{pending}}');
+    expect(document.body.textContent).not.toContain('{{validated}}');
 
     await act(async () => {
       validateButtons[0]?.click();
@@ -382,6 +384,8 @@ describe('FileChangesPanel', () => {
 
     expect(validateButtons).toHaveLength(0);
     expect(revertButtons).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('validated file(s) staged and ready to commit');
+    expect(document.body.textContent).not.toContain('All visible changes are already validated');
   });
 
   it('validates the current diff state without moving the task into a review status', async () => {
@@ -757,6 +761,28 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
     expect(document.body.textContent).toContain('Commit, stash, or discard');
     expect(document.body.textContent).toContain('Retry');
+  });
+
+  it('renders a plain empty state for a manual feature draft without a prompt', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'awaiting_worktree',
+      loadMessage: 'Make your first changes to this task to see them here.',
+      taskOverrides: {
+        status: 'Pending',
+        draft: true,
+        task_source: 'standalone',
+        standalone_kind: 'manual_feature',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Make your first changes to this task to see them here.');
+    expect(document.body.textContent).not.toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).not.toContain('Retry');
   });
 
   it('reloads repository changes when the focused subproject changes', async () => {

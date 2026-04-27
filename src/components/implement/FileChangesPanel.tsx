@@ -40,12 +40,26 @@ import {
   presentServiceError,
   presentWorktreeError,
 } from '../../services/degradedErrorPresentation';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 
 interface FileChangesPanelProps {
   className?: string;
 }
 
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+const interpolateFallbackPlaceholders = (
+  value: string,
+  options?: Record<string, unknown>
+): string => {
+  if (!options) {
+    return value;
+  }
+  return Object.entries(options).reduce((text, [key, rawValue]) => {
+    const replacement = rawValue == null ? '' : String(rawValue);
+    return text.replaceAll(`{{${key}}}`, replacement);
+  }, value);
+};
 
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
@@ -330,14 +344,16 @@ const renderRepositoryState = (
   }
   return t('implement.repositoryValidationProgress', '{{pending}} pending', {
     pending: repository.stats.pendingVisibleFileCount,
-    total: repository.stats.pendingVisibleFileCount,
   });
 };
 
 const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const translate: TranslateFn = (key, fallback, options) =>
-    String(t(key, { defaultValue: fallback, ...(options || {}) }));
+    interpolateFallbackPlaceholders(
+      String(t(key, { defaultValue: fallback, ...(options || {}) })),
+      options
+    );
   const serviceRuntimeCapabilities = getServiceRuntimeCapabilities();
   const isReadOnlyRemoteMode = !serviceRuntimeCapabilities.taskMutation;
   const {
@@ -585,7 +601,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const outOfScopeMessage = currentTaskLoadState === 'out_of_scope'
     ? currentTaskLoadMessage
     : null;
-  const mappingError = currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree'
+  const isManualDraftEmptyState =
+    isManualDraftPendingInitialization(currentTask) &&
+    (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree');
+  const draftEmptyStateMessage = isManualDraftEmptyState
+    ? currentTaskLoadMessage
+    : null;
+  const mappingError = !isManualDraftEmptyState &&
+    (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree')
     ? currentTaskLoadMessage
     : null;
   const mappingErrorPresentation = mappingError
@@ -807,15 +830,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
             {overallStats.validatedStagedFileCount > 0 && overallStats.pendingVisibleFileCount > 0
-              ? t('implement.overallPendingAndReadyCompact', '{{ready}} ready, {{pending}} pending', {
+              ? translate('implement.overallPendingAndReadyCompact', '{{ready}} ready, {{pending}} pending', {
                   ready: overallStats.validatedStagedFileCount,
                   pending: overallStats.pendingVisibleFileCount,
                 })
               : overallStats.validatedStagedFileCount > 0
-                ? t('implement.overallReadyCompact', '{{ready}} ready', {
+                ? translate('implement.overallReadyCompact', '{{ready}} ready', {
                     ready: overallStats.validatedStagedFileCount,
                   })
-                : t('implement.overallPendingCompact', '{{pending}} pending', {
+                : translate('implement.overallPendingCompact', '{{pending}} pending', {
                     pending: overallStats.pendingVisibleFileCount,
                   })}
           </span>
@@ -847,6 +870,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             {outOfScopeMessage}
           </div>
         )}
+        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            {draftEmptyStateMessage}
+          </div>
+        )}
         {!isLoading && displayError && (
           <div className="px-4 py-6">
             {displayErrorPresentation ? (
@@ -861,7 +889,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && repositories.length === 0 && (
+        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
@@ -993,25 +1021,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
                       </div>
                     )}
-                    {!repositoryError && repository.commitState === 'idle' && repository.stats.validatedStagedFileCount > 0 && (
-                      <div className="px-2 pb-2 text-xs text-muted-foreground">
-                        {t(
-                          'implement.repositoryStagedSummary',
-                          '{{count}} validated file(s) staged and ready to commit.',
-                          { count: repository.stats.validatedStagedFileCount }
-                        )}
-                      </div>
-                    )}
-                    {!repositoryError && repository.commitState === 'idle' && folderTree.length === 0 && (
-                      <div className="px-2 py-8 text-center text-sm text-muted-foreground">
-                        {repository.stats.validatedStagedFileCount > 0
-                          ? t(
-                              'implement.repositoryOnlyStagedChanges',
-                              'All visible changes are already validated. Commit when you are ready.'
-                            )
-                          : t('implement.noPendingChanges', 'No pending file changes for this repository.')}
-                      </div>
-                    )}
+                    {!repositoryError &&
+                      repository.commitState === 'idle' &&
+                      folderTree.length === 0 &&
+                      repository.stats.validatedStagedFileCount === 0 && (
+                        <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                          {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
+                        </div>
+                      )}
                     {!repositoryError && repository.commitState === 'idle' && folderTree.map((node) => (
                       <FolderTreeItem
                         repositoryId={repository.id}
