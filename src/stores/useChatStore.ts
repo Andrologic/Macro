@@ -4852,11 +4852,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    get().updateMessageFields(messageId, {
-      provider_input_items: providerInputItems,
-    });
-
     if (!tauriIpc.isTauriAvailable()) {
+      get().updateMessageFields(messageId, {
+        provider_input_items: providerInputItems,
+      });
       return;
     }
 
@@ -4867,10 +4866,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
         providerTurnState: message.provider_turn_state,
       });
+      get().updateMessageFields(messageId, {
+        provider_input_items: providerInputItems,
+      });
     } catch (error) {
-      console.error(
-        "Failed to persist provider input items for message:",
-        error,
+      const normalized = toServiceError(error);
+      throw buildSendError(
+        `Failed to persist provider metadata for this message: ${normalized.message}`,
       );
     }
   };
@@ -4929,7 +4931,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             dbPresentation.questionnaire_response_summary,
         };
       } catch (error) {
-        console.error("Failed to create user message in DB:", error);
+        const normalized = toServiceError(error);
+        throw buildSendError(
+          `Failed to save the message before sending: ${normalized.message}`,
+        );
       }
     }
 
@@ -4952,8 +4957,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
   }) => {
     try {
       await ensureToolsLoaded();
-    } catch {
-      // Continue with currently available tool state (safe default is no tools)
+      const toolsState = useToolsStore.getState();
+      const toolLoadError =
+        typeof toolsState.lastError === "string" ? toolsState.lastError : null;
+      if (
+        toolLoadError &&
+        Object.keys(toolsState.internalTools).length === 0
+      ) {
+        throw buildSendError(`Failed to load tool settings: ${toolLoadError}`);
+      }
+    } catch (error) {
+      const normalized = toServiceError(error);
+      throw buildSendError(normalized.message);
     }
 
     const taskStatus = params.resolvedTaskId
@@ -5134,33 +5149,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? cloneProviderInputItems(params.providerInputItems)
       : currentMessage.provider_input_items;
 
-    if (params.replaceStructuredFields) {
-      replaceUserMessagePresentationLocally({
-        messageId: params.messageId,
-        content: params.content,
-        hiddenContext: nextHiddenContext,
-        providerInputItems: nextProviderInputItems,
-      });
-    } else {
-      get().updateMessageContent(params.messageId, params.content);
-    }
-
-    const persistedMessage =
-      get().messages.find((message) => message.id === params.messageId) ??
-      currentMessage;
     if (!tauriIpc.isTauriAvailable()) {
+      if (params.replaceStructuredFields) {
+        replaceUserMessagePresentationLocally({
+          messageId: params.messageId,
+          content: params.content,
+          hiddenContext: nextHiddenContext,
+          providerInputItems: nextProviderInputItems,
+        });
+      } else {
+        get().updateMessageContent(params.messageId, params.content);
+      }
       return;
     }
 
     try {
       await tauriIpc.updateMessage(params.messageId, params.content, {
-        toolTraces: persistedMessage.tool_traces,
+        toolTraces: currentMessage.tool_traces,
         hiddenContext: nextHiddenContext,
         providerInputItems: nextProviderInputItems,
-        providerTurnState: persistedMessage.provider_turn_state,
+        providerTurnState: currentMessage.provider_turn_state,
       });
+      if (params.replaceStructuredFields) {
+        replaceUserMessagePresentationLocally({
+          messageId: params.messageId,
+          content: params.content,
+          hiddenContext: nextHiddenContext,
+          providerInputItems: nextProviderInputItems,
+        });
+      } else {
+        get().updateMessageContent(params.messageId, params.content);
+      }
     } catch (error) {
-      console.error("Failed to persist edited message:", error);
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message, sendState: "error" });
+      throw buildSendError(
+        `Failed to save the edited message: ${normalized.message}`,
+      );
     }
   };
 
@@ -5171,9 +5196,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     updatedMessage?: ChatMessage;
   }) => {
     if (tauriIpc.isTauriAvailable()) {
-      tauriIpc
-        .deleteMessagesAfter(params.conversationId, params.messageId)
-        .catch(console.error);
+      try {
+        await tauriIpc.deleteMessagesAfter(
+          params.conversationId,
+          params.messageId,
+        );
+      } catch (error) {
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message, sendState: "error" });
+        throw buildSendError(
+          `Failed to trim the conversation before retrying: ${normalized.message}`,
+        );
+      }
     }
 
     set((current) => {
@@ -5495,6 +5529,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
+    const handleAssistantStreamError = async (error: Error) => {
+      tokenBatcher.flushNow();
+      tokenBatcher.dispose();
+      await maybeMarkImplementTaskFailedAfterStreamError();
+
+      const assistantMessage = get().messages.find(
+        (message) => message.id === params.assistantMessage.id,
+      );
+      const hasPartialAssistantProgress = Boolean(
+        assistantMessage &&
+          (assistantMessage.content.trim().length > 0 ||
+            (assistantMessage.tool_traces?.length ?? 0) > 0),
+      );
+
+      if (!hasPartialAssistantProgress) {
+        get().updateMessageContent(
+          params.assistantMessage.id,
+          `Error: ${error.message}`,
+        );
+      } else if (assistantMessage) {
+        try {
+          await persistAssistantPartialStreamResult(
+            params.conversationId,
+            assistantMessage,
+          );
+        } catch (persistError) {
+          console.warn(
+            "Failed to persist partial assistant response after stream error:",
+            persistError,
+          );
+        }
+      }
+
+      updateConversationRuntimeIfSessionMatches(
+        params.conversationId,
+        params.sessionId,
+        () => ({
+          phase: "error",
+          sessionId: params.sessionId,
+          assistantMessageId: params.assistantMessage.id,
+          abortController: null,
+          lastError: error.message,
+        }),
+      );
+      set({ lastError: error.message, sendState: "error" });
+    };
+
     void (async () => {
       try {
         await streamChat({
@@ -5576,7 +5657,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
               () => null,
             );
 
-            persistAssistantStreamResult(params.conversationId, result);
+            void persistAssistantStreamResult(params.conversationId, result).catch(
+              (error) => {
+                const normalized = toServiceError(error);
+                setConversationRuntime(
+                  params.conversationId,
+                  {
+                    phase: "error",
+                    sessionId: params.sessionId,
+                    assistantMessageId: params.assistantMessage.id,
+                    abortController: null,
+                    lastError: normalized.message,
+                  },
+                  { globalLastError: normalized.message },
+                );
+                set({ sendState: "error" });
+              },
+            );
             void refreshBackgroundCompaction({
               conversationId: params.conversationId,
               providerId: params.selectedProviderId,
@@ -5594,25 +5691,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             tokenBatcher.dispose();
           },
           onError: (error) => {
-            tokenBatcher.dispose();
             void (async () => {
-              await maybeMarkImplementTaskFailedAfterStreamError();
-              get().updateMessageContent(
-                params.assistantMessage.id,
-                `Error: ${error.message}`,
-              );
-              updateConversationRuntimeIfSessionMatches(
-                params.conversationId,
-                params.sessionId,
-                () => ({
-                  phase: "error",
-                  sessionId: params.sessionId,
-                  assistantMessageId: params.assistantMessage.id,
-                  abortController: null,
-                  lastError: error.message,
-                }),
-              );
-              set({ lastError: error.message, sendState: "error" });
+              await handleAssistantStreamError(error);
             })();
           },
           onToolCall: (toolName, args, toolCallId) => {
@@ -5626,30 +5706,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
         });
       } catch (error) {
-        tokenBatcher.dispose();
-        await maybeMarkImplementTaskFailedAfterStreamError();
         const normalized = toServiceError(error);
-        get().updateMessageContent(
-          params.assistantMessage.id,
-          `Error: ${normalized.message}`,
-        );
-        updateConversationRuntimeIfSessionMatches(
-          params.conversationId,
-          params.sessionId,
-          () => ({
-            phase: "error",
-            sessionId: params.sessionId,
-            assistantMessageId: params.assistantMessage.id,
-            abortController: null,
-            lastError: normalized.message,
-          }),
-        );
-        set({ lastError: normalized.message, sendState: "error" });
+        await handleAssistantStreamError(new Error(normalized.message));
       }
     })();
   };
 
-  const persistAssistantStreamResult = (
+  const persistAssistantPartialStreamResult = async (
+    conversationId: string,
+    assistantMessage: ChatMessage,
+  ) => {
+    if (!tauriIpc.isTauriAvailable()) return;
+    if (
+      assistantMessage.content.trim().length === 0 &&
+      (assistantMessage.tool_traces?.length ?? 0) === 0
+    ) {
+      return;
+    }
+
+    await tauriIpc.createMessage(
+      conversationId,
+      "assistant",
+      assistantMessage.content,
+      {
+        toolTraces: assistantMessage.tool_traces,
+        hiddenContext: assistantMessage.hidden_context,
+      },
+    );
+  };
+
+  const persistAssistantStreamResult = async (
     conversationId: string,
     result: StreamCompletionResult,
   ) => {
@@ -5659,14 +5745,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .getConversationMessages(conversationId)
         .filter((message) => message.role === "assistant")
         .at(-1)?.tool_traces ?? result.toolTraces;
-    tauriIpc
-      .createMessage(conversationId, "assistant", result.visibleContent, {
-        toolTraces: persistedToolTraces,
-        hiddenContext: result.hiddenContext,
-        providerInputItems: result.providerInputItems,
-        providerTurnState: result.providerTurnState,
-      })
-      .catch(console.error);
+    try {
+      await tauriIpc.createMessage(
+        conversationId,
+        "assistant",
+        result.visibleContent,
+        {
+          toolTraces: persistedToolTraces,
+          hiddenContext: result.hiddenContext,
+          providerInputItems: result.providerInputItems,
+          providerTurnState: result.providerTurnState,
+        },
+      );
+    } catch (error) {
+      const normalized = toServiceError(error);
+      throw buildSendError(
+        `Failed to save assistant response: ${normalized.message}`,
+      );
+    }
   };
 
   const logArchitectTranscriptEvent = (
@@ -8037,6 +8133,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         } = providerState;
         const modeAtSend = useAppStore.getState().mode;
         persistSelectionForContext(modeAtSend, conversationId);
+
+        if (providerState.isLoading) {
+          throw buildSendError("Provider settings are still loading.");
+        }
 
         if (!selectedProviderId || !selectedModelId) {
           throw buildSendError(

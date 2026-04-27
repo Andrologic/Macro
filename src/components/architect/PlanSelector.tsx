@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
@@ -71,6 +71,52 @@ import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 interface PlanSelectorProps {
   className?: string;
 }
+
+interface PlanSelectorAsyncContext {
+  targetBranch: string;
+  scopedProjectIdsKey: string;
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  showArchived: boolean;
+  activeArchitectPlanId: string | null;
+}
+
+const buildProjectScopeKey = (projectIds: string[]): string => projectIds.join('\u0000');
+
+const arePlanSelectorAsyncContextsEqual = (
+  left: PlanSelectorAsyncContext | null,
+  right: PlanSelectorAsyncContext | null
+): boolean => {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.targetBranch === right.targetBranch &&
+    left.scopedProjectIdsKey === right.scopedProjectIdsKey &&
+    left.selectedGroupId === right.selectedGroupId &&
+    left.selectedProjectId === right.selectedProjectId &&
+    left.showArchived === right.showArchived &&
+    left.activeArchitectPlanId === right.activeArchitectPlanId
+  );
+};
+
+const arePlanSelectorActivationContextsEqual = (
+  left: PlanSelectorAsyncContext | null,
+  right: PlanSelectorAsyncContext | null
+): boolean => {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.targetBranch === right.targetBranch &&
+    left.scopedProjectIdsKey === right.scopedProjectIdsKey &&
+    left.selectedGroupId === right.selectedGroupId &&
+    left.selectedProjectId === right.selectedProjectId &&
+    left.showArchived === right.showArchived
+  );
+};
 
 const statusClassName: Record<string, string> = {
   draft: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
@@ -169,6 +215,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
+  const loadPlansRequestIdRef = useRef(0);
+  const activationRequestIdRef = useRef(0);
+  const selectorAsyncContextRef = useRef<PlanSelectorAsyncContext | null>(null);
   const targetBranch = getGitFlowBaseBranch();
 
   const [planFormModal, setPlanFormModal] = useState<ArchitectPlanSummary | null>(null);
@@ -189,6 +238,39 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
   );
+  const selectorAsyncContext = useMemo<PlanSelectorAsyncContext>(
+    () => ({
+      targetBranch,
+      scopedProjectIdsKey: buildProjectScopeKey(scopedProjectIds),
+      selectedGroupId: selectedGroupId ?? null,
+      selectedProjectId: selectedProjectId ?? null,
+      showArchived,
+      activeArchitectPlanId: activeArchitectPlanId ?? null,
+    }),
+    [
+      activeArchitectPlanId,
+      scopedProjectIds,
+      selectedGroupId,
+      selectedProjectId,
+      showArchived,
+      targetBranch,
+    ]
+  );
+  useLayoutEffect(() => {
+    selectorAsyncContextRef.current = selectorAsyncContext;
+  }, [selectorAsyncContext]);
+  const isCurrentLoadRequest = (
+    requestId: number,
+    context: PlanSelectorAsyncContext
+  ): boolean =>
+    loadPlansRequestIdRef.current === requestId &&
+    arePlanSelectorAsyncContextsEqual(selectorAsyncContextRef.current, context);
+  const isCurrentActivationRequest = (
+    requestId: number,
+    context: PlanSelectorAsyncContext
+  ): boolean =>
+    activationRequestIdRef.current === requestId &&
+    arePlanSelectorActivationContextsEqual(selectorAsyncContextRef.current, context);
   const scopedActionableProjectIds = useMemo(
     () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId]
@@ -374,10 +456,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   const loadPlans = async (hydrateActive = false) => {
+    const requestId = ++loadPlansRequestIdRef.current;
+    const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
     setIsLoading(true);
     setError(null);
     try {
       const fullResult = await listArchitectPlans(targetBranch, true, true);
+      if (!isCurrentLoadRequest(requestId, requestContext)) {
+        return;
+      }
       const refreshState = computePlanSelectorRefreshState({
         plans: fullResult.plans,
         scopedProjectIds,
@@ -401,7 +488,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           scopedProjectIds,
         })
           .then(async (result) => {
-            if (result.deletedPlanIds.length > 0) {
+            if (
+              result.deletedPlanIds.length > 0 &&
+              isCurrentLoadRequest(requestId, requestContext)
+            ) {
               await loadPlans(false);
             }
           })
@@ -411,6 +501,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           });
       }
     } catch (loadError) {
+      if (!isCurrentLoadRequest(requestId, requestContext)) {
+        return;
+      }
       if (openReplicaRepair(loadError, () => loadPlans(hydrateActive), { toastOnError: false })) {
         setPlans([]);
         setActivePlanId(null);
@@ -424,7 +517,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setPlans([]);
       setActivePlanId(null);
     } finally {
-      setIsLoading(false);
+      if (loadPlansRequestIdRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -432,6 +527,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     planId: string,
     planSummaryHint?: ArchitectPlanSummary | null
   ) => {
+    const requestId = ++activationRequestIdRef.current;
+    const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
     setIsActivating(planId);
     setError(null);
     setActivePlanId(planId);
@@ -440,6 +537,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         targetBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
+      if (!isCurrentActivationRequest(requestId, requestContext)) {
+        return;
+      }
       if (!activated) {
         throw new Error(t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.'));
       }
@@ -448,6 +548,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setIsOpen(false);
       setShowCreateKinds(false);
     } catch (activationError) {
+      if (!isCurrentActivationRequest(requestId, requestContext)) {
+        return;
+      }
       if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
         return;
       }
@@ -457,7 +560,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       );
       setError(message);
     } finally {
-      setIsActivating(null);
+      if (activationRequestIdRef.current === requestId) {
+        setIsActivating(null);
+      }
     }
   };
 
