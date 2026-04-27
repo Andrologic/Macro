@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import {
   useTaskStore,
-  type DirtyMergeWorkflowResolutionAction,
   type ImplementTask,
+  type MergeWorkflowBlockerResolutionAction,
   type MergeWorkflowAutomaticResolutionResult,
 } from '../../stores/useTaskStore';
 import { toServiceError } from '../../services/contracts/errors';
@@ -29,7 +29,7 @@ interface MergeWorkflowTaskPanelProps {
 const COMPACT_PANEL_WIDTH = 520;
 const MAX_RENDERED_MERGE_DIFF_CHARS = 100_000;
 
-type DirtyMergeResolutionIntent = 'retry_merge' | 'resolve_automatically';
+type MergeBlockerResolutionIntent = 'retry_merge' | 'resolve_automatically';
 
 const isAutoStashableDirtyMergeRepository = (
   repository: MergeWorkflowRepositoryResult
@@ -38,6 +38,26 @@ const isAutoStashableDirtyMergeRepository = (
   repository.nextAction === 'clean_repository' &&
   !repository.mergeInProgress &&
   repository.conflictFiles.length === 0;
+
+const isAbortableMergeInProgressRepository = (
+  repository: MergeWorkflowRepositoryResult
+): boolean =>
+  repository.blockingKind === 'merge_in_progress' &&
+  repository.nextAction === 'finish_or_abort_merge' &&
+  repository.mergeInProgress &&
+  repository.conflictFiles.length === 0;
+
+const resolveSimpleBlockerAction = (
+  repositories: MergeWorkflowRepositoryResult[]
+): MergeWorkflowBlockerResolutionAction | null => {
+  if (repositories.some(isAutoStashableDirtyMergeRepository)) {
+    return 'stash_dirty';
+  }
+  if (repositories.some(isAbortableMergeInProgressRepository)) {
+    return 'abort_merge';
+  }
+  return null;
+};
 
 const badgeClassName = (
   enabled: boolean,
@@ -79,9 +99,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
-  const [isDirtyResolutionModalOpen, setIsDirtyResolutionModalOpen] = useState(false);
-  const [dirtyResolutionIntent, setDirtyResolutionIntent] =
-    useState<DirtyMergeResolutionIntent>('resolve_automatically');
+  const [blockerResolutionAction, setBlockerResolutionAction] =
+    useState<MergeWorkflowBlockerResolutionAction | null>(null);
+  const [blockerResolutionIntent, setBlockerResolutionIntent] =
+    useState<MergeBlockerResolutionIntent>('resolve_automatically');
   const lastBlockingNotificationKeyRef = useRef<string | null>(null);
   const hasMergeRuntime = Boolean(runtime);
   const runtimePhase = runtime?.phase;
@@ -136,11 +157,18 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         : null,
     [selectedRepository]
   );
-  const autoStashableDirtyRepositories = useMemo(
-    () =>
-      (runtime?.blockedRepositories ?? []).filter(isAutoStashableDirtyMergeRepository),
+  const simpleBlockerResolutionAction = useMemo(
+    () => resolveSimpleBlockerAction(runtime?.blockedRepositories ?? []),
     [runtime?.blockedRepositories]
   );
+
+  const openBlockerResolutionModal = useCallback((
+    intent: MergeBlockerResolutionIntent,
+    action: MergeWorkflowBlockerResolutionAction
+  ) => {
+    setBlockerResolutionIntent(intent);
+    setBlockerResolutionAction(action);
+  }, []);
 
   const handleMerge = useCallback(async () => {
     try {
@@ -198,52 +226,6 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     }
   }, [isPlanFinalizationTask, t]);
 
-  const handleRetryMerge = useCallback(async (
-    dirtyRepositoryAction?: DirtyMergeWorkflowResolutionAction
-  ) => {
-    try {
-      const nextRuntime = await loadMergeWorkflowReview(task.id, { force: true });
-      if (!nextRuntime) {
-        return;
-      }
-      const nextDirtyRepositories = nextRuntime.blockedRepositories.filter(
-        isAutoStashableDirtyMergeRepository
-      );
-      if (!dirtyRepositoryAction && nextDirtyRepositories.length > 0) {
-        setDirtyResolutionIntent('retry_merge');
-        setIsDirtyResolutionModalOpen(true);
-        return;
-      }
-      if (dirtyRepositoryAction === 'stash') {
-        setIsResolvingAutomatically(true);
-        setIsDirtyResolutionModalOpen(false);
-        const resolution = await resolveMergeWorkflowAutomatically(task.id, {
-          dirtyRepositoryAction,
-        });
-        if (resolution.remainingBlockedRepositoryCount > 0 || resolution.conversationId) {
-          notifyAutomaticResolutionResult(resolution);
-          return;
-        }
-        await handleMerge();
-        return;
-      }
-      if (nextRuntime.blockedRepositories.length > 0 || nextRuntime.phase === 'failed') {
-        return;
-      }
-      await handleMerge();
-    } catch (error) {
-      notify.error(toServiceError(error).message);
-    } finally {
-      setIsResolvingAutomatically(false);
-    }
-  }, [
-    handleMerge,
-    loadMergeWorkflowReview,
-    notifyAutomaticResolutionResult,
-    resolveMergeWorkflowAutomatically,
-    task.id,
-  ]);
-
   const handleArchive = useCallback(async () => {
     if (!isPlanFinalizationTask) {
       return;
@@ -259,32 +241,85 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     }
   }, [archivePlanFromTask, isPlanFinalizationTask, t, task.plan_id]);
 
-  const handleResolveAutomatically = useCallback(async (
-    dirtyRepositoryAction?: DirtyMergeWorkflowResolutionAction
-  ) => {
-    if (!dirtyRepositoryAction && autoStashableDirtyRepositories.length > 0) {
-      setDirtyResolutionIntent('resolve_automatically');
-      setIsDirtyResolutionModalOpen(true);
-      return;
-    }
-
+  const runAutomaticResolution = useCallback(async (
+    action?: MergeWorkflowBlockerResolutionAction
+  ): Promise<MergeWorkflowAutomaticResolutionResult | null> => {
     setIsResolvingAutomatically(true);
     try {
-      setIsDirtyResolutionModalOpen(false);
+      setBlockerResolutionAction(null);
       const resolution = await resolveMergeWorkflowAutomatically(task.id, {
-        dirtyRepositoryAction,
+        blockerResolutionAction: action,
       });
       notifyAutomaticResolutionResult(resolution);
+      return resolution;
     } catch (error) {
       notify.error(toServiceError(error).message);
+      return null;
     } finally {
       setIsResolvingAutomatically(false);
     }
   }, [
-    autoStashableDirtyRepositories.length,
     notifyAutomaticResolutionResult,
     resolveMergeWorkflowAutomatically,
     task.id,
+  ]);
+
+  const handleRetryMerge = useCallback(async (
+    action?: MergeWorkflowBlockerResolutionAction
+  ) => {
+    try {
+      const nextRuntime = await loadMergeWorkflowReview(task.id, { force: true });
+      if (!nextRuntime) {
+        return;
+      }
+
+      const nextSimpleAction = resolveSimpleBlockerAction(nextRuntime.blockedRepositories);
+      if (!action && nextSimpleAction) {
+        openBlockerResolutionModal('retry_merge', nextSimpleAction);
+        return;
+      }
+
+      if (action === 'stash_dirty' || action === 'revert_dirty' || action === 'abort_merge') {
+        const resolution = await runAutomaticResolution(action);
+        if (
+          !resolution ||
+          resolution.remainingBlockedRepositoryCount > 0 ||
+          resolution.conversationId
+        ) {
+          return;
+        }
+        await handleMerge();
+        return;
+      }
+
+      if (nextRuntime.blockedRepositories.length > 0 || nextRuntime.phase === 'failed') {
+        return;
+      }
+      await handleMerge();
+    } catch (error) {
+      notify.error(toServiceError(error).message);
+    }
+  }, [
+    handleMerge,
+    loadMergeWorkflowReview,
+    openBlockerResolutionModal,
+    runAutomaticResolution,
+    task.id,
+  ]);
+
+  const handleResolveAutomatically = useCallback(async (
+    action?: MergeWorkflowBlockerResolutionAction
+  ) => {
+    if (!action && simpleBlockerResolutionAction) {
+      openBlockerResolutionModal('resolve_automatically', simpleBlockerResolutionAction);
+      return;
+    }
+
+    await runAutomaticResolution(action);
+  }, [
+    openBlockerResolutionModal,
+    runAutomaticResolution,
+    simpleBlockerResolutionAction,
   ]);
 
   const blockingNotificationKey = useMemo(() => {
@@ -558,6 +593,33 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const primaryButtonClassName =
     'w-full min-w-0 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2';
   const disabledButtonClassName = 'bg-muted text-muted-foreground cursor-not-allowed';
+  const blockerResolutionRepositories = (runtime?.blockedRepositories ?? []).filter(
+    (repository) =>
+      blockerResolutionAction === 'stash_dirty'
+        ? isAutoStashableDirtyMergeRepository(repository)
+        : blockerResolutionAction === 'abort_merge'
+          ? isAbortableMergeInProgressRepository(repository)
+          : false
+  );
+  const blockerResolutionTitle =
+    blockerResolutionAction === 'abort_merge'
+      ? t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress')
+      : t('implement.dirtyMergeResolutionTitle', 'Local changes need attention');
+  const blockerResolutionDescription =
+    blockerResolutionAction === 'abort_merge'
+      ? t(
+          'implement.mergeInProgressResolutionDescription',
+          'Macro found an unfinished merge blocking this retry. Aborting it can discard partial conflict resolutions that were not committed.'
+        )
+      : t(
+          'implement.dirtyMergeResolutionDescription',
+          'Macro found local repository changes blocking the merge. Choose how to handle them before retrying.'
+        );
+  const blockerResolutionConfirmLabel =
+    blockerResolutionAction === 'abort_merge'
+      ? t('implement.abortMergeAndRetry', 'Abort merge and retry')
+      : t('implement.stashAndRetryMerge', 'Stash and retry');
+  const canRevertDirtyResolution = blockerResolutionAction === 'stash_dirty';
 
   return (
     <>
@@ -753,36 +815,54 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       </aside>
 
       <ConfirmPromptModal
-        isOpen={isDirtyResolutionModalOpen}
-        title={t('implement.dirtyMergeResolutionTitle', 'Local changes need attention')}
-        description={t(
-          'implement.dirtyMergeResolutionDescription',
-          'Macro found local repository changes blocking the merge. Choose how to handle them before retrying.'
-        )}
-        confirmLabel={t('implement.stashAndRetryMerge', 'Stash and retry')}
+        isOpen={Boolean(blockerResolutionAction)}
+        title={blockerResolutionTitle}
+        description={blockerResolutionDescription}
+        confirmLabel={blockerResolutionConfirmLabel}
         cancelLabel={t('common.cancel', 'Cancel')}
         isSubmitting={isResolvingAutomatically}
         onCancel={() => {
           if (!isResolvingAutomatically) {
-            setIsDirtyResolutionModalOpen(false);
+            setBlockerResolutionAction(null);
           }
         }}
         onConfirm={() => {
-          if (dirtyResolutionIntent === 'retry_merge') {
-            void handleRetryMerge('stash');
+          if (!blockerResolutionAction) {
             return;
           }
-          void handleResolveAutomatically('stash');
+          if (blockerResolutionIntent === 'retry_merge') {
+            void handleRetryMerge(blockerResolutionAction);
+            return;
+          }
+          void handleResolveAutomatically(blockerResolutionAction);
         }}
       >
         <div className="space-y-3">
           <div className="max-h-28 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-            {autoStashableDirtyRepositories.map((repository) => (
+            {blockerResolutionRepositories.map((repository) => (
               <div key={repository.id} className="truncate" title={repository.repoPath}>
                 {repository.repoPath}
               </div>
             ))}
           </div>
+          {canRevertDirtyResolution && (
+            <Button
+              type="button"
+              variant="error"
+              size="sm"
+              className="w-full"
+              disabled={isResolvingAutomatically}
+              onClick={() => {
+                if (blockerResolutionIntent === 'retry_merge') {
+                  void handleRetryMerge('revert_dirty');
+                  return;
+                }
+                void handleResolveAutomatically('revert_dirty');
+              }}
+            >
+              {t('implement.revertAndRetryMerge', 'Revert and retry')}
+            </Button>
+          )}
           <Button
             type="button"
             variant="secondary"

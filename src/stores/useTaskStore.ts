@@ -109,7 +109,11 @@ export interface MergeWorkflowAutomaticResolutionResult {
   remainingBlockedRepositoryCount: number;
 }
 
-export type DirtyMergeWorkflowResolutionAction = 'stash' | 'assistant';
+export type MergeWorkflowBlockerResolutionAction =
+  | 'stash_dirty'
+  | 'revert_dirty'
+  | 'abort_merge'
+  | 'assistant';
 
 interface CompleteTaskOptions {
   allowWithoutCodeChanges?: boolean;
@@ -355,20 +359,68 @@ const isAutoStashableMergeWorkflowRepository = (
   !repository.mergeInProgress &&
   repository.conflictFiles.length === 0;
 
-const stashAutoResolvableMergeWorkflowRepositories = async (
+const isAbortableMergeWorkflowRepository = (
+  repository: MergeWorkflowRepositoryResult
+): boolean =>
+  repository.blockingKind === 'merge_in_progress' &&
+  repository.nextAction === 'finish_or_abort_merge' &&
+  repository.mergeInProgress &&
+  repository.conflictFiles.length === 0;
+
+const resolveMergeWorkflowBlockers = async (
   runtime: MergeWorkflowRuntimeState,
-  task: Pick<CatalogedImplementTask, 'id' | 'title'>
+  task: Pick<CatalogedImplementTask, 'id' | 'title'>,
+  action: MergeWorkflowBlockerResolutionAction | null | undefined
 ): Promise<number> => {
-  const repositories = runtime.blockedRepositories.filter(
-    isAutoStashableMergeWorkflowRepository
-  );
-  for (const repository of repositories) {
-    await tauriIpc.gitStash({
-      repoPath: repository.repoPath,
-      message: `Macro merge blocker: ${task.title || task.id}`,
-    });
+  if (action === 'stash_dirty') {
+    const repositories = runtime.blockedRepositories.filter(
+      isAutoStashableMergeWorkflowRepository
+    );
+    for (const repository of repositories) {
+      await tauriIpc.gitStash({
+        repoPath: repository.repoPath,
+        message: `Macro merge blocker: ${task.title || task.id}`,
+      });
+    }
+    return repositories.length;
   }
-  return repositories.length;
+
+  if (action === 'revert_dirty') {
+    const repositories = runtime.blockedRepositories.filter(
+      isAutoStashableMergeWorkflowRepository
+    );
+    for (const repository of repositories) {
+      const status = await tauriIpc.gitStatus(repository.repoPath);
+      const paths = Array.from(new Set([
+        ...status.staged_files.map((file) => file.path),
+        ...status.unstaged_files.map((file) => file.path),
+        ...status.untracked_files.map((file) => file.path),
+      ]));
+      if (paths.length > 0) {
+        await tauriIpc.gitRestorePaths({
+          repoPath: repository.repoPath,
+          paths,
+          target: 'staged_and_worktree',
+        });
+      }
+    }
+    return repositories.length;
+  }
+
+  if (action === 'abort_merge') {
+    const repositories = runtime.blockedRepositories.filter(
+      isAbortableMergeWorkflowRepository
+    );
+    for (const repository of repositories) {
+      await tauriIpc.gitAbortMerge({
+        repoPath: repository.repoPath,
+        confirm: true,
+      });
+    }
+    return repositories.length;
+  }
+
+  return 0;
 };
 
 const updateMergeWorkflowRuntimeState = (
@@ -1170,7 +1222,7 @@ interface TaskStore {
     taskId: string,
     options?: {
       internalAgentProfile?: InternalAgentProfile | null;
-      dirtyRepositoryAction?: DirtyMergeWorkflowResolutionAction;
+      blockerResolutionAction?: MergeWorkflowBlockerResolutionAction;
     }
   ) => Promise<MergeWorkflowAutomaticResolutionResult>;
   finishTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
@@ -1182,7 +1234,7 @@ interface TaskStore {
     planId: string,
     options?: {
       internalAgentProfile?: InternalAgentProfile | null;
-      dirtyRepositoryAction?: DirtyMergeWorkflowResolutionAction;
+      blockerResolutionAction?: MergeWorkflowBlockerResolutionAction;
     }
   ) => Promise<MergeWorkflowAutomaticResolutionResult>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
@@ -3723,13 +3775,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     await get().activateTask(task.id);
 
-    const shouldStashDirtyRepositories = options?.dirtyRepositoryAction === 'stash';
-    const autoResolvedRepositoryCount = shouldStashDirtyRepositories
-      ? await stashAutoResolvableMergeWorkflowRepositories(runtime, task)
-      : 0;
+    const autoResolvedRepositoryCount = await resolveMergeWorkflowBlockers(
+      runtime,
+      task,
+      options?.blockerResolutionAction
+    );
     if (autoResolvedRepositoryCount > 0) {
-      devLogger.info('[mergeWorkflow] Auto-stashed dirty merge blockers.', {
+      devLogger.info('[mergeWorkflow] Resolved merge workflow blockers.', {
         taskId,
+        action: options?.blockerResolutionAction,
         repositoryCount: autoResolvedRepositoryCount,
       });
       runtime = await get().loadMergeWorkflowReview(taskId, { force: true });
