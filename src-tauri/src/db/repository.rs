@@ -245,6 +245,32 @@ pub async fn update_conversation_details(
     Ok(())
 }
 
+pub async fn update_conversation_scope(
+    pool: &SqlitePool,
+    id: &str,
+    scope_mode: &str,
+    task_id: Option<&str>,
+    group_id: Option<&str>,
+    project_id: Option<&str>,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        UPDATE conversations
+        SET scope_mode = ?, task_id = ?, group_id = ?, project_id = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(scope_mode)
+    .bind(task_id)
+    .bind(group_id)
+    .bind(project_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
     // Messages are deleted via CASCADE
     sqlx::query("DELETE FROM conversations WHERE id = ?")
