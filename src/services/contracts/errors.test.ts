@@ -20,6 +20,16 @@ describe('toServiceError', () => {
     expect(result.message).toBe('Unknown project group id: group-123');
   });
 
+  it('extracts stable backend validation errors', () => {
+    const result = toServiceError({
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    });
+
+    expect(result.code).toBe('Validation');
+    expect(result.message).toBe('Staged files outside this task were found: src/extra.ts.');
+  });
+
   it('extracts nested invoke error payloads', () => {
     const result = toServiceError({
       kind: 'InvokeError',
