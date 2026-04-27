@@ -12,6 +12,7 @@ import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
 import type { InternalAgentProfile } from './internalAgentProfile';
 import {
+  isMacroToolCopilotBuiltInOverride,
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
@@ -1778,6 +1779,41 @@ export const __testables = {
   summarizeProviderTextPresence,
 };
 
+const getFunctionToolName = (tool: unknown): string | null => {
+  if (!tool || typeof tool !== 'object') {
+    return null;
+  }
+
+  const functionValue = (tool as { function?: { name?: unknown } }).function;
+  return typeof functionValue?.name === 'string' ? functionValue.name : null;
+};
+
+const withCopilotBuiltInToolOverrides = (tools: unknown[]): unknown[] =>
+  tools.map((tool) => {
+    const toolName = getFunctionToolName(tool);
+    if (
+      !toolName ||
+      !isMacroToolCopilotBuiltInOverride(toolName) ||
+      !tool ||
+      typeof tool !== 'object'
+    ) {
+      return tool;
+    }
+
+    return {
+      ...(tool as Record<string, unknown>),
+      overridesBuiltInTool: true,
+    };
+  });
+
+const normalizeNativeProviderTools = (
+  tools: unknown[],
+  providerType: string,
+): unknown[] =>
+  providerType.trim().toLowerCase() === 'copilot'
+    ? withCopilotBuiltInToolOverrides(tools)
+    : tools;
+
 const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
   providerId: string;
@@ -1890,6 +1926,7 @@ const streamNativeTurnViaTauri = async (params: {
         ]);
 
         resources.tauriUnlisteners = unlisteners;
+        const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
         await tauriIpc.aiStreamChat({
           requestId,
@@ -1909,7 +1946,7 @@ const streamNativeTurnViaTauri = async (params: {
               ? { provider_turn_state: message.provider_turn_state }
               : {}),
           })),
-          tools: params.tools,
+          tools,
           toolChoice: 'auto',
           parallelToolCalls: false,
           workspacePath: params.workspacePath,
