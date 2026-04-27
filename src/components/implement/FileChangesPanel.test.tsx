@@ -108,6 +108,7 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       hunks: [],
       contextMode: 'focused',
       canEdit: true,
+      hasPendingVisibleChange: true,
       hasValidatedStage: reviewedMain,
       validatedRemovedLineNumbers: reviewedMain ? [1] : [],
       validatedAddedLineNumbers: reviewedMain ? [1] : [],
@@ -125,6 +126,7 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
       hunks: [],
       contextMode: 'focused',
       canEdit: true,
+      hasPendingVisibleChange: true,
       hasValidatedStage: false,
       validatedRemovedLineNumbers: [],
       validatedAddedLineNumbers: [],
@@ -160,6 +162,7 @@ describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
   let stageChangesMock: ReturnType<typeof mock>;
+  let unstageChangesMock: ReturnType<typeof mock>;
   let stageAllChangesMock: ReturnType<typeof mock>;
   let stageAllTaskChangesMock: ReturnType<typeof mock>;
   let loadCurrentChangesMock: ReturnType<typeof mock>;
@@ -264,6 +267,7 @@ describe('FileChangesPanel', () => {
       openDiffModal: mock(() => undefined),
       closeDiffModal: mock(() => undefined),
       stageChanges: stageChangesMock,
+      unstageChanges: unstageChangesMock,
       stageAllChanges: stageAllChangesMock,
       stageAllTaskChanges: stageAllTaskChangesMock,
       revertChanges: mock(async () => undefined),
@@ -280,6 +284,7 @@ describe('FileChangesPanel', () => {
     notifyErrorMock = mock(() => undefined);
     await loadFileChangesPanelModules();
     stageChangesMock = mock(async () => undefined);
+    unstageChangesMock = mock(async () => undefined);
     stageAllChangesMock = mock(async () => undefined);
     stageAllTaskChangesMock = mock(async () => undefined);
     loadCurrentChangesMock = mock(async () => undefined);
@@ -349,6 +354,7 @@ describe('FileChangesPanel', () => {
 
     expect(validateButtons.length).toBeGreaterThan(0);
     expect(revertButtons.length).toBeGreaterThan(0);
+    expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]').length).toBeGreaterThan(0);
     expect(document.body.textContent).not.toContain('{{pending}}');
     expect(document.body.textContent).not.toContain('{{validated}}');
 
@@ -362,9 +368,14 @@ describe('FileChangesPanel', () => {
 
   it('hides scope actions once only staged changes remain', async () => {
     const repository = buildRepository(true);
-    repository.changes = [];
+    repository.changes = repository.changes.map((change) => ({
+      ...change,
+      indexContent: change.modifiedContent,
+      hasPendingVisibleChange: false,
+      hasValidatedStage: true,
+    }));
     repository.stagedPaths = ['src/main.ts', 'src/nested/child.ts'];
-    repository.selectedChangeId = null;
+    repository.selectedChangeId = 'change-1';
     repository.stats = {
       pendingVisibleFileCount: 0,
       validatedStagedFileCount: 2,
@@ -381,11 +392,23 @@ describe('FileChangesPanel', () => {
     const buttons = Array.from(document.body.querySelectorAll('button'));
     const validateButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Validate');
     const revertButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Revert');
+    const unstageButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Unstage');
 
     expect(validateButtons).toHaveLength(0);
     expect(revertButtons).toHaveLength(0);
+    expect(unstageButtons.length).toBeGreaterThan(0);
+    expect(document.body.textContent).toContain('main.ts');
+    expect(document.body.textContent).toContain('child.ts');
+    expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]')).toHaveLength(0);
     expect(document.body.textContent).not.toContain('validated file(s) staged and ready to commit');
     expect(document.body.textContent).not.toContain('All visible changes are already validated');
+
+    await act(async () => {
+      unstageButtons[0]?.click();
+      await flushRender();
+    });
+
+    expect(unstageChangesMock).toHaveBeenCalled();
   });
 
   it('validates the current diff state without moving the task into a review status', async () => {

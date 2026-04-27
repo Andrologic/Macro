@@ -152,6 +152,7 @@ pub struct GitFilePairDto {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RestoreTarget {
     Worktree,
+    Staged,
     StagedAndWorktree,
 }
 
@@ -159,6 +160,7 @@ impl RestoreTarget {
     fn from_option(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("staged_and_worktree") {
             "worktree" => Ok(Self::Worktree),
+            "staged" => Ok(Self::Staged),
             "staged_and_worktree" => Ok(Self::StagedAndWorktree),
             other => Err(BackendError::Validation(format!(
                 "Invalid restore target: {}",
@@ -823,7 +825,8 @@ fn head_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
 }
 
 fn index_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
-    let index = repo.index()?;
+    let mut index = repo.index()?;
+    index.read(true)?;
     Ok(index.get_path(path, 0).is_some())
 }
 
@@ -841,6 +844,7 @@ pub(crate) fn restore_paths(
     let repo_root = repo_root(repo)?;
     let mut restore_from_head_paths = Vec::new();
     let mut restore_from_index_paths = Vec::new();
+    let mut restore_from_head_to_index_paths = Vec::new();
     let mut remove_new_paths = Vec::new();
     let mut remove_untracked_worktree_paths = Vec::new();
 
@@ -862,6 +866,11 @@ pub(crate) fn restore_paths(
                     remove_untracked_worktree_paths.push(relative);
                 }
             }
+            RestoreTarget::Staged => {
+                if in_index {
+                    restore_from_head_to_index_paths.push(relative);
+                }
+            }
             RestoreTarget::StagedAndWorktree => {
                 if in_head {
                     restore_from_head_paths.push(relative);
@@ -869,6 +878,30 @@ pub(crate) fn restore_paths(
                     remove_new_paths.push(relative);
                 }
             }
+        }
+    }
+
+    if !restore_from_head_to_index_paths.is_empty() {
+        let mut args = vec![
+            "restore".to_string(),
+            "--staged".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(
+            restore_from_head_to_index_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        );
+        let output = run_git_command(&repo_root, &args)?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    "Failed to unstage paths".to_string()
+                } else {
+                    details
+                },
+            });
         }
     }
 
@@ -2050,7 +2083,8 @@ fn read_head_file_content(repo: &Repository, relative_path: &Path) -> Result<Opt
 }
 
 fn read_index_file_content(repo: &Repository, relative_path: &Path) -> Result<Option<String>> {
-    let index = repo.index()?;
+    let mut index = repo.index()?;
+    index.read(true)?;
     let Some(entry) = index.get_path(relative_path, 0) else {
         return Ok(None);
     };
@@ -3571,6 +3605,23 @@ mod tests {
         assert_eq!(pair.head_content, "hello");
         assert_eq!(pair.index_content, "staged version");
         assert_eq!(pair.worktree_content, "staged version");
+    }
+
+    #[test]
+    fn test_restore_paths_staged_target_preserves_worktree_state() {
+        let (temp, repo) = init_repo();
+        let file_path = temp.path().join("README.md");
+
+        fs::write(&file_path, "staged version").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(&file_path, "worktree version").unwrap();
+
+        restore_paths(&repo, &["README.md".to_string()], RestoreTarget::Staged).unwrap();
+
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(pair.head_content, "hello");
+        assert_eq!(pair.index_content, "hello");
+        assert_eq!(pair.worktree_content, "worktree version");
     }
 
     #[test]

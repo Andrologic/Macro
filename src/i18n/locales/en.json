@@ -922,6 +922,7 @@
     "revert": "Revert",
     "validateAction": "Validate",
     "invalidateAction": "Invalidate",
+    "unstageAction": "Unstage",
     "revertAction": "Revert",
     "validateFile": "Validate file",
     "validatedFiles": "files validated",
@@ -935,6 +936,8 @@
     "revertScopeDescription": "This will discard the local changes for \"{{scope}}\".",
     "revertSuccess": "Changes reverted.",
     "revertFailed": "Failed to revert changes.",
+    "unstageSuccess": "Changes unstaged.",
+    "unstageFailed": "Failed to unstage changes.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Added",
