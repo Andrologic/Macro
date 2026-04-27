@@ -274,9 +274,13 @@ const createGitFlowMetadataNormalizationContext = async (
 };
 
 const assertPlanCanBeArchived = (
-  plan: Pick<ArchitectPlanRecord, 'id' | 'slug' | 'title' | 'label'>
+  plan: Pick<ArchitectPlanRecord, 'id' | 'slug' | 'title' | 'label' | 'status'>
 ): void => {
-  if (isCanonicalArchitectPlan(plan) && isDefaultNewPlanFamilyLabel(plan.label)) {
+  if (
+    plan.status !== 'draft' &&
+    isCanonicalArchitectPlan(plan) &&
+    isDefaultNewPlanFamilyLabel(plan.label)
+  ) {
     throw new Error('Rename the plan before archiving it.');
   }
 };

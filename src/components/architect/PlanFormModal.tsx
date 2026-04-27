@@ -71,12 +71,12 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-[420px] bg-card border border-border rounded-2xl shadow-2xl flex flex-col animate-in zoom-in-95 duration-200">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-in zoom-in-95 duration-200">
         {/* Header */}
         <header className="h-12 px-4 border-b border-border flex items-center gap-3 shrink-0">
           <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">
@@ -98,7 +98,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
         </header>
 
         {/* Body */}
-        <form onSubmit={handleSubmit} id="plan-form">
+        <form onSubmit={handleSubmit} id="plan-form" className="min-h-0 flex-1 overflow-y-auto">
           <div className="p-4 space-y-4">
             {description && (
               <p className="text-sm text-muted-foreground">{description}</p>

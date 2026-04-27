@@ -492,11 +492,11 @@ export const ProjectGitFlowModal: React.FC = () => {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={handleClose} />
 
-      <div className="relative mx-4 w-full max-w-2xl rounded-2xl border border-border bg-card shadow-2xl">
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+      <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-foreground">
               {t('projects.projectSettingsTitle', 'Project settings')}
@@ -518,7 +518,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           </button>
         </div>
 
-        <div className="space-y-5 px-5 py-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
           <section className="rounded-xl border border-border/50 bg-muted/20 p-4">
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-2">
@@ -651,18 +651,18 @@ export const ProjectGitFlowModal: React.FC = () => {
               {t('projects.gitFlowPreviewTitle', 'Preview')}
             </div>
             <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
-              <div>{t('projects.gitFlowPreviewMain', 'Main')}: {previews.mainBranch}</div>
-              <div>{t('projects.gitFlowPreviewTarget', 'Development target')}: {previews.baseBranch}</div>
-              <div>{t('projects.gitFlowPreviewPlan', 'Plan')}: {previews.planBranch}</div>
-              <div>{t('projects.gitFlowPreviewFeature', 'Feature')}: {previews.featureBranch}</div>
-              <div>
+              <div className="truncate" title={previews.mainBranch}>{t('projects.gitFlowPreviewMain', 'Main')}: {previews.mainBranch}</div>
+              <div className="truncate" title={previews.baseBranch}>{t('projects.gitFlowPreviewTarget', 'Development target')}: {previews.baseBranch}</div>
+              <div className="truncate" title={previews.planBranch}>{t('projects.gitFlowPreviewPlan', 'Plan')}: {previews.planBranch}</div>
+              <div className="truncate" title={previews.featureBranch}>{t('projects.gitFlowPreviewFeature', 'Feature')}: {previews.featureBranch}</div>
+              <div className="truncate" title={previews.standaloneFeatureBranch}>
                 {t('projects.gitFlowPreviewStandaloneFeature', 'Independent feature')}:
                 {' '}
                 {previews.standaloneFeatureBranch}
               </div>
-              <div>{t('projects.gitFlowPreviewRelease', 'Release')}: {previews.releaseBranch}</div>
-              <div>{t('projects.gitFlowPreviewHotfix', 'Hotfix')}: {previews.hotfixBranch}</div>
-              <div>{t('projects.gitFlowPreviewBugfix', 'Bugfix')}: {previews.bugfixBranch}</div>
+              <div className="truncate" title={previews.releaseBranch}>{t('projects.gitFlowPreviewRelease', 'Release')}: {previews.releaseBranch}</div>
+              <div className="truncate" title={previews.hotfixBranch}>{t('projects.gitFlowPreviewHotfix', 'Hotfix')}: {previews.hotfixBranch}</div>
+              <div className="truncate" title={previews.bugfixBranch}>{t('projects.gitFlowPreviewBugfix', 'Bugfix')}: {previews.bugfixBranch}</div>
             </div>
           </section>
 
@@ -674,7 +674,7 @@ export const ProjectGitFlowModal: React.FC = () => {
             </section>
           )}
 
-          <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
+          <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
               onClick={() => {
@@ -686,7 +686,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               {t('projects.gitFlowResetToDefaults', 'Reset to app defaults')}
             </button>
 
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={handleClose}
