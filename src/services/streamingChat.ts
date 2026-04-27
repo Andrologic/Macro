@@ -26,6 +26,13 @@ interface ActiveStreamResources {
   tauriUnlisteners: UnlistenFn[];
 }
 
+const CHAT_COMPLETION_PROVIDER_ITEM_TYPE = 'chat_completion_message';
+const GENERIC_REQUEST_TIMEOUT_MS = 120_000;
+const GENERIC_STREAM_IDLE_TIMEOUT_MS = 45_000;
+const GENERIC_RETRY_BASE_DELAY_MS = 250;
+const GENERIC_RETRY_MAX_DELAY_MS = 5_000;
+const GENERIC_RETRY_MAX_ATTEMPTS = 2;
+
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
 
@@ -170,6 +177,62 @@ export interface StreamCompletionResult {
   providerTurnState?: ProviderTurnState;
 }
 
+type ProviderRuntimeErrorKind =
+  | 'reasoning_replay_required'
+  | 'unsupported_reasoning'
+  | 'rate_limited'
+  | 'provider_overloaded'
+  | 'network'
+  | 'stream_idle_timeout'
+  | 'context_overflow'
+  | 'auth'
+  | 'invalid_tool_protocol'
+  | 'unknown';
+
+class ProviderRuntimeError extends Error {
+  readonly kind: ProviderRuntimeErrorKind;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    options: {
+      kind?: ProviderRuntimeErrorKind;
+      status?: number;
+      retryAfterMs?: number;
+      retryable?: boolean;
+      cause?: unknown;
+    } = {}
+  ) {
+    super(message);
+    this.name = 'ProviderRuntimeError';
+    this.kind = options.kind ?? 'unknown';
+    this.status = options.status;
+    this.retryAfterMs = options.retryAfterMs;
+    this.retryable = options.retryable ?? false;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+interface ChatCompletionProviderMessageItem {
+  type: typeof CHAT_COMPLETION_PROVIDER_ITEM_TYPE;
+  role: 'assistant' | 'tool';
+  content: StreamMessageContent;
+  visible_content?: string;
+  reasoning_content?: string;
+  reasoning_details?: unknown[];
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+interface ChatCompletionProviderCapabilities {
+  replayReasoningContent: boolean;
+  replayReasoningDetails: boolean;
+}
+
 export interface ToolResultResolution {
   kind: 'result';
   result: string;
@@ -253,6 +316,16 @@ const isReasoningUnsupportedError = (message: string): boolean => {
   );
 };
 
+const isReasoningReplayRequiredError = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('reasoning_content') &&
+    (normalized.includes('must be passed back') ||
+      normalized.includes('must be passed') ||
+      normalized.includes('thinking mode'))
+  );
+};
+
 const disableReasoningForSession = (providerId: string, modelId: string) => {
   try {
     useProviderStore.getState().markReasoningUnsupportedForModel(providerId, modelId);
@@ -282,6 +355,430 @@ const applyReasoningToChatCompletionsRequest = (
 
   if (providerType === 'openai' || providerType === 'ollama' || providerType === 'lmstudio') {
     requestBody.reasoning_effort = reasoningEffort;
+  }
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const deepCloneJsonValue = <T,>(value: T): T => {
+  if (!isRecord(value) && !Array.isArray(value)) {
+    return value;
+  }
+
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const stripThinkingBlocksForModel = (content: string): string =>
+  content
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '')
+    .replace(/<\/think>/gi, '')
+    .trim();
+
+const resolveChatCompletionProviderCapabilities = (params: {
+  providerType: string;
+  modelId: string;
+  forceReasoningContentReplay?: boolean;
+}): ChatCompletionProviderCapabilities => {
+  const providerType = params.providerType.trim().toLowerCase();
+  const modelId = params.modelId.trim().toLowerCase();
+  const isOpenRouter = providerType === 'openrouter';
+  const isDeepSeekFamily =
+    providerType.includes('deepseek') ||
+    /(^|[/:\-])deepseek([/:\-]|$)/i.test(modelId) ||
+    /(^|[/:\-])deepseek-/i.test(modelId);
+
+  return {
+    replayReasoningContent: Boolean(params.forceReasoningContentReplay) || isDeepSeekFamily,
+    replayReasoningDetails: isOpenRouter,
+  };
+};
+
+const isChatCompletionProviderMessageItem = (
+  item: unknown
+): item is ChatCompletionProviderMessageItem => {
+  if (!isRecord(item) || item.type !== CHAT_COMPLETION_PROVIDER_ITEM_TYPE) {
+    return false;
+  }
+
+  return item.role === 'assistant' || item.role === 'tool';
+};
+
+const getChatCompletionProviderItems = (
+  items?: unknown[] | null
+): ChatCompletionProviderMessageItem[] => {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.filter(isChatCompletionProviderMessageItem);
+};
+
+const cloneToolCalls = (toolCalls?: ToolCall[] | null): ToolCall[] | undefined => {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+    return undefined;
+  }
+
+  return toolCalls.map((toolCall) => ({
+    id: toolCall.id,
+    type: 'function' as const,
+    function: {
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments,
+    },
+  }));
+};
+
+const normalizeMessageContentForChatCompletions = (
+  role: StreamMessage['role'],
+  content: StreamMessageContent
+): StreamMessageContent => {
+  if (role !== 'assistant' || typeof content !== 'string') {
+    return content;
+  }
+
+  return stripThinkingBlocksForModel(content);
+};
+
+const serializeProviderItemForChatCompletions = (
+  item: ChatCompletionProviderMessageItem,
+  capabilities: ChatCompletionProviderCapabilities
+): Record<string, unknown> | null => {
+  if (item.role === 'tool') {
+    if (!item.tool_call_id) {
+      return null;
+    }
+
+    return {
+      role: 'tool',
+      content: item.content,
+      tool_call_id: item.tool_call_id,
+    };
+  }
+
+  const message: Record<string, unknown> = {
+    role: 'assistant',
+    content: normalizeMessageContentForChatCompletions('assistant', item.content),
+  };
+  const toolCalls = cloneToolCalls(item.tool_calls);
+  if (toolCalls) {
+    message.tool_calls = toolCalls;
+  }
+  const reasoningContent = item.reasoning_content?.trim();
+  if (capabilities.replayReasoningContent && reasoningContent) {
+    message.reasoning_content = item.reasoning_content;
+  }
+  if (
+    capabilities.replayReasoningDetails &&
+    Array.isArray(item.reasoning_details) &&
+    item.reasoning_details.length > 0
+  ) {
+    message.reasoning_details = deepCloneJsonValue(item.reasoning_details);
+  }
+  return message;
+};
+
+const buildChatCompletionMessages = (
+  messages: StreamMessage[],
+  capabilities: ChatCompletionProviderCapabilities
+): Array<Record<string, unknown>> =>
+  messages.flatMap((message) => {
+    const providerItems = getChatCompletionProviderItems(message.provider_input_items);
+    if (providerItems.length > 0) {
+      return providerItems
+        .map((item) => serializeProviderItemForChatCompletions(item, capabilities))
+        .filter((item): item is Record<string, unknown> => Boolean(item));
+    }
+
+    const serialized: Record<string, unknown> = {
+      role: message.role,
+      content: normalizeMessageContentForChatCompletions(message.role, message.content),
+    };
+    const toolCalls = cloneToolCalls(message.tool_calls);
+    if (toolCalls) {
+      serialized.tool_calls = toolCalls;
+    }
+    if (message.tool_call_id) {
+      serialized.tool_call_id = message.tool_call_id;
+    }
+    return [serialized];
+  });
+
+const buildAssistantChatCompletionProviderItem = (params: {
+  visibleContent: string;
+  apiContent: string;
+  reasoningContent: string;
+  reasoningDetails: unknown[];
+  toolCalls: ToolCall[];
+}): ChatCompletionProviderMessageItem | null => {
+  if (
+    !params.visibleContent.trim() &&
+    !params.apiContent.trim() &&
+    !params.reasoningContent.trim() &&
+    params.reasoningDetails.length === 0 &&
+    params.toolCalls.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE,
+    role: 'assistant',
+    content: params.apiContent,
+    visible_content: params.visibleContent,
+    ...(params.reasoningContent.trim()
+      ? { reasoning_content: params.reasoningContent }
+      : {}),
+    ...(params.reasoningDetails.length > 0
+      ? { reasoning_details: deepCloneJsonValue(params.reasoningDetails) }
+      : {}),
+    ...(params.toolCalls.length > 0 ? { tool_calls: cloneToolCalls(params.toolCalls) ?? [] } : {}),
+  };
+};
+
+const buildToolChatCompletionProviderItem = (
+  toolCallId: string,
+  content: string
+): ChatCompletionProviderMessageItem => ({
+  type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE,
+  role: 'tool',
+  content,
+  tool_call_id: toolCallId,
+});
+
+const hasReplayableReasoningContent = (messages: StreamMessage[]): boolean =>
+  messages.some((message) =>
+    getChatCompletionProviderItems(message.provider_input_items).some(
+      (item) => item.role === 'assistant' && Boolean(item.reasoning_content?.trim())
+    )
+  );
+
+const appendReasoningDetails = (target: unknown[], value: unknown) => {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    target.push(...deepCloneJsonValue(value));
+    return;
+  }
+
+  target.push(deepCloneJsonValue(value));
+};
+
+const getHeaderValue = (headers: Headers | undefined, name: string): string | null => {
+  if (!headers || typeof headers.get !== 'function') {
+    return null;
+  }
+
+  return headers.get(name);
+};
+
+const parseRetryAfterMs = (headers: Headers | undefined): number | undefined => {
+  const retryAfterMs = getHeaderValue(headers, 'retry-after-ms');
+  if (retryAfterMs) {
+    const parsed = Number(retryAfterMs);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  const retryAfter = getHeaderValue(headers, 'retry-after');
+  if (!retryAfter) {
+    return undefined;
+  }
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const dateMs = Date.parse(retryAfter);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return undefined;
+};
+
+const classifyProviderError = (
+  message: string,
+  status?: number,
+  retryAfterMs?: number
+): ProviderRuntimeError => {
+  const normalized = message.toLowerCase();
+  let kind: ProviderRuntimeErrorKind = 'unknown';
+  if (isReasoningReplayRequiredError(message)) {
+    kind = 'reasoning_replay_required';
+  } else if (isReasoningUnsupportedError(message)) {
+    kind = 'unsupported_reasoning';
+  } else if (status === 401 || status === 403) {
+    kind = 'auth';
+  } else if (status === 429) {
+    kind = 'rate_limited';
+  } else if (status === 408 || status === 502 || status === 503 || status === 504) {
+    kind = 'provider_overloaded';
+  } else if (
+    normalized.includes('context length') ||
+    normalized.includes('maximum context') ||
+    normalized.includes('context window') ||
+    normalized.includes('too many tokens')
+  ) {
+    kind = 'context_overflow';
+  } else if (
+    normalized.includes('tool_call') ||
+    normalized.includes('tool call') ||
+    normalized.includes('tool_calls')
+  ) {
+    kind = 'invalid_tool_protocol';
+  }
+
+  const retryable =
+    status === 408 ||
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504;
+
+  return new ProviderRuntimeError(message, {
+    kind,
+    status,
+    retryAfterMs,
+    retryable,
+  });
+};
+
+const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
+  const errorText = await response.text().catch(() => 'Unknown error');
+  let errorMessage = `Request failed: ${response.status}`;
+
+  try {
+    const errorJson = JSON.parse(errorText) as {
+      error?: { message?: unknown };
+      message?: unknown;
+    };
+    const parsedMessage = errorJson.error?.message ?? errorJson.message;
+    errorMessage = typeof parsedMessage === 'string' ? parsedMessage : errorMessage;
+  } catch {
+    if (errorText) {
+      errorMessage = errorText;
+    }
+  }
+
+  return classifyProviderError(errorMessage, response.status, parseRetryAfterMs(response.headers));
+};
+
+const getRetryDelayMs = (attempt: number, retryAfterMs?: number): number => {
+  const exponential = GENERIC_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
+  const delay = retryAfterMs ?? exponential;
+  return Math.min(GENERIC_RETRY_MAX_DELAY_MS, Math.max(0, delay));
+};
+
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+
+    const timeoutId = globalThis.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const abortHandler = () => {
+      globalThis.clearTimeout(timeoutId);
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const cleanup = () => {
+      signal?.removeEventListener('abort', abortHandler);
+    };
+    signal?.addEventListener('abort', abortHandler, { once: true });
+  });
+};
+
+const fetchWithTimeout = async (
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  outerSignal?: AbortSignal
+): Promise<Response> => {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+
+  try {
+    if (outerSignal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    abortHandler = () => controller.abort(outerSignal?.reason);
+    outerSignal?.addEventListener('abort', abortHandler, { once: true });
+    timeoutId = globalThis.setTimeout(() => {
+      controller.abort(new Error('Provider request timed out'));
+    }, timeoutMs);
+
+    return await tauriFetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (outerSignal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (controller.signal.aborted) {
+      throw new ProviderRuntimeError('Provider request timed out', {
+        kind: 'network',
+        retryable: true,
+        cause: error,
+      });
+    }
+    throw new ProviderRuntimeError(error instanceof Error ? error.message : String(error), {
+      kind: 'network',
+      retryable: true,
+      cause: error,
+    });
+  } finally {
+    if (timeoutId !== undefined) {
+      globalThis.clearTimeout(timeoutId);
+    }
+    if (abortHandler) {
+      outerSignal?.removeEventListener('abort', abortHandler);
+    }
+  }
+};
+
+const readStreamChunkWithIdleTimeout = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  signal?: AbortSignal
+): ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']> => {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+  try {
+    const idleTimeout = new Promise<never>((_, reject) => {
+      timeoutId = globalThis.setTimeout(() => {
+        reject(
+          new ProviderRuntimeError('Provider stream stalled before sending more data', {
+            kind: 'stream_idle_timeout',
+            retryable: true,
+          })
+        );
+      }, timeoutMs);
+    });
+    return await Promise.race([reader.read(), idleTimeout]);
+  } finally {
+    if (timeoutId !== undefined) {
+      globalThis.clearTimeout(timeoutId);
+    }
   }
 };
 
@@ -906,9 +1403,13 @@ const normalizeToolCallResolution = (
 
 export const __testables = {
   applyReasoningToChatCompletionsRequest,
+  buildAssistantChatCompletionProviderItem,
+  buildChatCompletionMessages,
   buildFunctionCallOutputProviderInputItem,
   buildChatGptProviderTurnState,
   buildToolContextBlock,
+  buildToolChatCompletionProviderItem,
+  classifyProviderError,
   buildChatGptVisibleTurnContent,
   extractVisibleTextFromProviderInputItems,
   compactToolResultForChatGptModelContext,
@@ -918,11 +1419,14 @@ export const __testables = {
   getMissingChatGptVisibleTurnSuffix,
   hasMeaningfulVisibleAssistantText,
   isEmptyTerminalChatGptTurn,
+  isReasoningReplayRequiredError,
   isReasoningUnsupportedError,
   isToolInterruptResolution,
   normalizeToolCallResolution,
+  resolveChatCompletionProviderCapabilities,
   shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
+  stripThinkingBlocksForModel,
   summarizeProviderTextPresence,
 };
 
@@ -1741,7 +2245,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     fileToolContext = [],
     allowedToolIds,
     showToolTraces = false,
-    // Note: signal is not used with Tauri HTTP plugin - AbortController support is limited
   } = options;
   const sessionId = getStreamSessionId(options.sessionId);
   const activeResources = getOrCreateActiveStreamResources(sessionId);
@@ -1774,15 +2277,21 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     devLogger.log(`[${providerId}] Connecting to ${baseUrl}/chat/completions`);
   }
 
+  // Storage for the entire conversation (mutated across loop turns)
+  let currentMessages: StreamMessage[] = [...messages];
+  const assistantTranscriptItems: unknown[] = [];
+  let forceReasoningContentReplay = false;
+  const getChatCompletionCapabilities = () =>
+    resolveChatCompletionProviderCapabilities({
+      providerType,
+      modelId,
+      forceReasoningContentReplay,
+    });
+
   // Build request body with optional tools
   const requestBody: Record<string, unknown> = {
     model: modelId,
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      ...(m.tool_calls && { tool_calls: m.tool_calls }),
-      ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-    })),
+    messages: buildChatCompletionMessages(currentMessages, getChatCompletionCapabilities()),
     stream: true,
   };
   let currentReasoningEffort = reasoningEffort;
@@ -1801,8 +2310,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     requestBody.parallel_tool_calls = false;
   }
 
-  // Storage for the entire conversation (mutated across loop turns)
-  let currentMessages: StreamMessage[] = [...messages];
   const readEvidenceBySource = new Map<string, string>();
   const MAX_TURNS = 10;
   let turnCount = 0;
@@ -1810,6 +2317,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
   const architectToolNamesUsed = new Set<string>();
+  let consecutiveStreamRetryCount = 0;
 
   const normalizeSourceKey = (value?: string): string =>
     (value || '')
@@ -1841,51 +2349,88 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         return;
       }
 
-      requestBody.messages = currentMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        ...(m.tool_calls && { tool_calls: m.tool_calls }),
-        ...(m.tool_call_id && { tool_call_id: m.tool_call_id }),
-      }));
-      applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-
-      const response = await tauriFetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        let errorMessage = `Request failed: ${response.status}`;
+      let response: Response | null = null;
+      let requestAttempt = 0;
+      while (!response) {
+        requestBody.messages = buildChatCompletionMessages(
+          currentMessages,
+          getChatCompletionCapabilities()
+        );
+        applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
 
         try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-        } catch {
-          if (errorText) {
-            errorMessage = errorText;
+          const candidateResponse = await fetchWithTimeout(
+            `${baseUrl}/chat/completions`,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(requestBody),
+            },
+            GENERIC_REQUEST_TIMEOUT_MS,
+            options.signal
+          );
+
+          if (!candidateResponse.ok) {
+            throw await extractProviderErrorMessage(candidateResponse);
           }
-        }
 
-        if (
-          currentReasoningEffort &&
-          !didRetryWithoutReasoning &&
-          isReasoningUnsupportedError(errorMessage)
-        ) {
-          didRetryWithoutReasoning = true;
-          currentReasoningEffort = null;
-          disableReasoningForSession(providerId, modelId);
-          continue;
-        }
+          response = candidateResponse;
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            onComplete({
+              ...streamAccumulator.buildResult(),
+              providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+            });
+            return;
+          }
 
-        if (turnCount === 0) {
-          throw new Error(errorMessage);
-        } else {
-          const loopError = `\n\n[System: The agent loop stopped due to an API error: ${errorMessage}]`;
+          const runtimeError =
+            error instanceof ProviderRuntimeError
+              ? error
+              : new ProviderRuntimeError(error instanceof Error ? error.message : String(error), {
+                kind: 'network',
+                retryable: true,
+                cause: error,
+              });
+
+          if (
+            currentReasoningEffort &&
+            !didRetryWithoutReasoning &&
+            runtimeError.kind === 'unsupported_reasoning'
+          ) {
+            didRetryWithoutReasoning = true;
+            currentReasoningEffort = null;
+            disableReasoningForSession(providerId, modelId);
+            continue;
+          }
+
+          if (
+            runtimeError.kind === 'reasoning_replay_required' &&
+            !forceReasoningContentReplay &&
+            hasReplayableReasoningContent(currentMessages)
+          ) {
+            forceReasoningContentReplay = true;
+            continue;
+          }
+
+          if (runtimeError.retryable && requestAttempt < GENERIC_RETRY_MAX_ATTEMPTS) {
+            requestAttempt += 1;
+            await sleep(getRetryDelayMs(requestAttempt, runtimeError.retryAfterMs), options.signal);
+            continue;
+          }
+
+          if (turnCount === 0) {
+            throw runtimeError;
+          }
+
+          const loopError = `\n\n[System: The agent loop stopped due to an API error: ${runtimeError.message}]`;
           streamAccumulator.appendSystemChunk(loopError, true);
           break;
         }
+      }
+
+      if (!response) {
+        break;
       }
 
       if (!response.body) {
@@ -1901,6 +2446,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let isThinking = false;
       let toolCalls: ToolCall[] = [];
       let turnContent = ''; // The text generated *in this specific turn*
+      let turnApiContent = '';
+      let turnReasoningContent = '';
+      const turnReasoningDetails: unknown[] = [];
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       const appendTurnChunk = (chunk: string) => {
         if (!chunk) return;
@@ -1924,89 +2472,148 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         }
       };
 
-      while (true) {
-        // Check if the stream was cancelled
-        if (options.signal?.aborted) {
-          try {
-            await reader.cancel();
-          } catch (e) {
-            // Ignore cancel errors
-          }
-          onComplete(streamAccumulator.buildResult());
-          return;
-        }
-
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // Process complete SSE events
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-
-          if (!trimmedLine || trimmedLine === '') {
-            continue;
+      try {
+        while (true) {
+          // Check if the stream was cancelled
+          if (options.signal?.aborted) {
+            try {
+              await reader.cancel();
+            } catch (e) {
+              // Ignore cancel errors
+            }
+            onComplete({
+              ...streamAccumulator.buildResult(),
+              providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+            });
+            return;
           }
 
-          if (trimmedLine.startsWith('data: ')) {
-            const data = trimmedLine.slice(6);
+          const { done, value } = await readStreamChunkWithIdleTimeout(
+            reader,
+            GENERIC_STREAM_IDLE_TIMEOUT_MS,
+            options.signal
+          );
 
-            if (data === '[DONE]') {
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete SSE events
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+
+            if (!trimmedLine || trimmedLine === '') {
               continue;
             }
 
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parsed.choices?.[0]?.delta;
-              const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+            if (trimmedLine.startsWith('data: ')) {
+              const data = trimmedLine.slice(6);
 
-              if (typeof reasoning === 'string' && reasoning.length > 0) {
-                startThinking();
-                appendTurnChunk(reasoning);
+              if (data === '[DONE]') {
+                continue;
               }
 
-              // Handle tool calls
-              if (delta?.tool_calls) {
-                for (const toolCallDelta of delta.tool_calls) {
-                  const index = toolCallDelta.index ?? 0;
-                  if (!toolCalls[index]) {
-                    toolCalls[index] = {
-                      id: toolCallDelta.id || '',
-                      type: 'function',
-                      function: { name: '', arguments: '' },
-                    };
-                  }
-                  if (toolCallDelta.id) {
-                    toolCalls[index].id = toolCallDelta.id;
-                  }
-                  if (toolCallDelta.function?.name) {
-                    toolCalls[index].function.name = toolCallDelta.function.name;
-                  }
-                  if (toolCallDelta.function?.arguments) {
-                    toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+              try {
+                const parsed = JSON.parse(data);
+                const choice = parsed.choices?.[0] ?? {};
+                const delta = choice.delta ?? {};
+                const message = choice.message ?? {};
+                const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+                appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
+                appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
+
+                if (typeof reasoning === 'string' && reasoning.length > 0) {
+                  turnReasoningContent += reasoning;
+                  startThinking();
+                  appendTurnChunk(reasoning);
+                }
+
+                // Handle tool calls
+                if (delta?.tool_calls) {
+                  for (const toolCallDelta of delta.tool_calls) {
+                    const index = toolCallDelta.index ?? 0;
+                    if (!toolCalls[index]) {
+                      toolCalls[index] = {
+                        id: toolCallDelta.id || '',
+                        type: 'function',
+                        function: { name: '', arguments: '' },
+                      };
+                    }
+                    if (toolCallDelta.id) {
+                      toolCalls[index].id = toolCallDelta.id;
+                    }
+                    if (toolCallDelta.function?.name) {
+                      toolCalls[index].function.name = toolCallDelta.function.name;
+                    }
+                    if (toolCallDelta.function?.arguments) {
+                      toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+                    }
                   }
                 }
-              }
 
-              if (delta?.content) {
-                endThinking();
-                appendTurnChunk(delta.content);
+                if (delta?.content) {
+                  endThinking();
+                  turnApiContent += delta.content;
+                  appendTurnChunk(delta.content);
+                }
+              } catch (e) {
+                // Skip malformed JSON - some providers send non-JSON lines
+                devLogger.debug('Failed to parse SSE data:', data);
               }
-            } catch (e) {
-              // Skip malformed JSON - some providers send non-JSON lines
-              devLogger.debug('Failed to parse SSE data:', data);
             }
           }
         }
+        consecutiveStreamRetryCount = 0;
+      } catch (error) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore cancel errors during stream retry cleanup.
+        }
+        activeResources.reader = null;
+        activeResources.stream = null;
+
+        if (error instanceof Error && error.name === 'AbortError') {
+          onComplete({
+            ...streamAccumulator.buildResult(),
+            providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+          });
+          return;
+        }
+
+        const runtimeError =
+          error instanceof ProviderRuntimeError
+            ? error
+            : new ProviderRuntimeError(error instanceof Error ? error.message : String(error), {
+              kind: 'network',
+              retryable: true,
+              cause: error,
+            });
+
+        if (
+          runtimeError.retryable &&
+          turnContent.length === 0 &&
+          getValidToolCalls(toolCalls).length === 0 &&
+          consecutiveStreamRetryCount < GENERIC_RETRY_MAX_ATTEMPTS
+        ) {
+          consecutiveStreamRetryCount += 1;
+          await sleep(
+            getRetryDelayMs(consecutiveStreamRetryCount, runtimeError.retryAfterMs),
+            options.signal
+          );
+          continue;
+        }
+
+        throw runtimeError;
       }
 
+      activeResources.reader = null;
+      activeResources.stream = null;
       endThinking();
 
       // Handle tool calls if any
@@ -2029,10 +2636,22 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       streamAccumulator.flushProviderDelta();
 
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
+        const assistantProviderItem = buildAssistantChatCompletionProviderItem({
+          visibleContent: turnContent,
+          apiContent: turnApiContent,
+          reasoningContent: turnReasoningContent,
+          reasoningDetails: turnReasoningDetails,
+          toolCalls: validToolCalls,
+        });
+        const turnProviderInputItems = assistantProviderItem ? [assistantProviderItem] : undefined;
+        if (turnProviderInputItems) {
+          assistantTranscriptItems.push(...deepCloneJsonValue(turnProviderInputItems));
+        }
         currentMessages.push({
           role: 'assistant',
           content: turnContent,
           ...(validToolCalls.length > 0 ? { tool_calls: validToolCalls } : {}),
+          ...(turnProviderInputItems ? { provider_input_items: turnProviderInputItems } : {}),
         });
       }
 
@@ -2364,11 +2983,19 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           }
 
           currentMessages.push(
-            ...toolResults.map((result) => ({
-              role: 'tool' as const,
-              content: result.content,
-              tool_call_id: result.tool_call_id,
-            }))
+            ...toolResults.map((result) => {
+              const providerInputItem = buildToolChatCompletionProviderItem(
+                result.tool_call_id,
+                result.content
+              );
+              assistantTranscriptItems.push(deepCloneJsonValue(providerInputItem));
+              return {
+                role: 'tool' as const,
+                content: result.content,
+                tool_call_id: result.tool_call_id,
+                provider_input_items: [providerInputItem],
+              };
+            })
           );
 
           const guardSystemMessages: StreamMessage[] = [];
@@ -2404,14 +3031,20 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       turnCount++;
     }
 
-    onComplete(streamAccumulator.buildResult());
+    onComplete({
+      ...streamAccumulator.buildResult(),
+      providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+    });
   } catch (error) {
     // Cleanup on error
     activeResources.reader = null;
     activeResources.stream = null;
     if (error instanceof Error && error.name === 'AbortError') {
       pruneActiveStreamResources(sessionId);
-      onComplete(streamAccumulator.buildResult());
+      onComplete({
+        ...streamAccumulator.buildResult(),
+        providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
+      });
       return;
     }
 
@@ -2506,50 +3139,79 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
   }
 
   try {
-    const requestBody: Record<string, unknown> = {
-      model: modelId,
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-      stream: false,
-    };
-    applyReasoningToChatCompletionsRequest(requestBody, providerType, reasoningEffort);
+    let currentReasoningEffort = reasoningEffort;
+    let didRetryWithoutReasoning = false;
+    let requestAttempt = 0;
+    let response: Response | null = null;
 
-    const response = await tauriFetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
+    while (!response) {
+      const requestBody: Record<string, unknown> = {
+        model: modelId,
+        messages: buildChatCompletionMessages(
+          messages,
+          resolveChatCompletionProviderCapabilities({ providerType, modelId })
+        ),
+        stream: false,
+      };
+      applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      let errorMessage = `Request failed: ${response.status}`;
+      const candidateResponse = await fetchWithTimeout(
+        `${baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+        },
+        GENERIC_REQUEST_TIMEOUT_MS,
+        options.signal
+      );
 
-      try {
-        const errorJson = JSON.parse(errorText);
-        errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-      } catch {
-        if (errorText) {
-          errorMessage = errorText;
-        }
+      if (candidateResponse.ok) {
+        response = candidateResponse;
+        break;
       }
 
-      if (reasoningEffort && isReasoningUnsupportedError(errorMessage)) {
+      const runtimeError = await extractProviderErrorMessage(candidateResponse);
+      if (
+        currentReasoningEffort &&
+        !didRetryWithoutReasoning &&
+        runtimeError.kind === 'unsupported_reasoning'
+      ) {
+        didRetryWithoutReasoning = true;
+        currentReasoningEffort = null;
         disableReasoningForSession(providerId, modelId);
+        continue;
       }
 
-      throw new Error(errorMessage);
+      if (runtimeError.retryable && requestAttempt < GENERIC_RETRY_MAX_ATTEMPTS) {
+        requestAttempt += 1;
+        await sleep(getRetryDelayMs(requestAttempt, runtimeError.retryAfterMs), options.signal);
+        continue;
+      }
+
+      throw runtimeError;
     }
 
     const data = await response.json();
     const message = data.choices?.[0]?.message || {};
     const messageContent = message.content || '';
     const reasoning = message.reasoning || message.reasoning_content || '';
+    const reasoningDetails: unknown[] = [];
+    appendReasoningDetails(reasoningDetails, message.reasoning_details);
     const content = reasoning
       ? `<think>${reasoning}</think>${messageContent ? `\n${messageContent}` : ''}`
       : messageContent;
-    onComplete(emptyStreamCompletionResult(content));
+    const providerItem = buildAssistantChatCompletionProviderItem({
+      visibleContent: content,
+      apiContent: typeof messageContent === 'string' ? messageContent : '',
+      reasoningContent: typeof reasoning === 'string' ? reasoning : '',
+      reasoningDetails,
+      toolCalls: [],
+    });
+    onComplete({
+      ...emptyStreamCompletionResult(content),
+      providerInputItems: providerItem ? [providerItem] : undefined,
+    });
     return content;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
