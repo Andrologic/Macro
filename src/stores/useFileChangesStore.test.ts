@@ -958,6 +958,27 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().reviewSummary.actionCounts.ready_to_commit).toBe(2);
   });
 
+  it('stores the stable backend validation message when staging fails', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const validationError = {
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    };
+    gitAddMock.mockImplementationOnce(async () => {
+      throw validationError;
+    });
+
+    await expect(store.stageChanges(repositoryIdA, [changeIdA])).rejects.toEqual(validationError);
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.lastError).toBe('Staged files outside this task were found: src/extra.ts.');
+    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe(
+      'Staged files outside this task were found: src/extra.ts.'
+    );
+  });
+
   it('commits all ready task repositories with one logical action', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
@@ -1089,21 +1110,27 @@ describe('useFileChangesStore', () => {
     expect(commitResult.hash).toBe('hash-a');
   });
 
-  it('stores the normalized backend message when commit fails with an object payload', async () => {
+  it('stores the stable backend validation message when commit fails', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
     await store.stageChanges(repositoryIdA, [changeIdA]);
 
+    const validationError = {
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    };
     gitCommitMock.mockImplementationOnce(async () => {
-      throw { message: 'Backend exploded' };
+      throw validationError;
     });
 
     await expect(
       store.commitStagedChanges(repositoryIdA, 'feat: commit project a')
-    ).rejects.toEqual({ message: 'Backend exploded' });
+    ).rejects.toEqual(validationError);
 
     const nextState = useFileChangesStore.getState();
-    expect(nextState.lastError).toBe('Backend exploded');
-    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe('Backend exploded');
+    expect(nextState.lastError).toBe('Staged files outside this task were found: src/extra.ts.');
+    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe(
+      'Staged files outside this task were found: src/extra.ts.'
+    );
   });
 });

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import { resolveTargetBranch } from './architectPlanService';
 import { resolveStandaloneTargetBranchName } from './standaloneTargetBranch';
 
 describe('standaloneTargetBranch', () => {
@@ -9,7 +8,16 @@ describe('standaloneTargetBranch', () => {
         { task_source: 'standalone', base_branch: 'develop' },
         { targetBranchName: 'release/web' }
       )
-    ).toBe(resolveTargetBranch('release/web'));
+    ).toBe('release/web');
+  });
+
+  it('normalizes stored target branch snapshots without applying creation validation', () => {
+    expect(
+      resolveStandaloneTargetBranchName(
+        { task_source: 'standalone', base_branch: 'develop' },
+        { targetBranchName: 'refs/heads/release\\web/' }
+      )
+    ).toBe('release/web');
   });
 
   it('falls back to the legacy base branch when execution targets are incomplete', () => {
@@ -19,7 +27,7 @@ describe('standaloneTargetBranch', () => {
         null,
         { fallbackToGlobalBaseBranch: false }
       )
-    ).toBe(resolveTargetBranch('develop'));
+    ).toBe('develop');
   });
 
   it('can disable the global fallback for incomplete draft data', () => {
