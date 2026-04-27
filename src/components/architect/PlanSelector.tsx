@@ -165,6 +165,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [showCreateKinds, setShowCreateKinds] = useState(false);
+  const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
@@ -525,8 +526,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   const handleCreatePlan = async (planKind: ArchitectPlanKind = 'feature') => {
+    if (creatingPlanKind) {
+      return;
+    }
     setFormError(null);
-    setShowCreateKinds(false);
+    setError(null);
+    setCreatingPlanKind(planKind);
     setIsLoading(true);
     try {
       if (isWorkspaceMissing) {
@@ -591,11 +596,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         trigger: 'explicit_create',
       });
       if (ensuredBlankPlan) {
-        await loadPlans(false);
         await activatePlan(
           ensuredBlankPlan.plan.id,
           summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
         );
+        await loadPlans(false);
         if (ensuredBlankPlan.action === 'reused_blank') {
           notify.info(
             t(
@@ -633,6 +638,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       notify.error(message);
     } finally {
       setIsLoading(false);
+      setCreatingPlanKind(null);
     }
   };
 
@@ -908,6 +914,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!isOpen) return;
     const onDocumentMouseDown = (event: MouseEvent) => {
       if (!rootRef.current) return;
+      if (creatingPlanKind) return;
       if (event.target instanceof Node && !rootRef.current.contains(event.target)) {
         setIsOpen(false);
         setShowCreateKinds(false);
@@ -915,7 +922,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     };
     document.addEventListener('mousedown', onDocumentMouseDown);
     return () => document.removeEventListener('mousedown', onDocumentMouseDown);
-  }, [isOpen]);
+  }, [creatingPlanKind, isOpen]);
 
   return (
     <div ref={rootRef} className={cn('relative', className)}>
@@ -964,7 +971,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 <div className="relative">
                   <button
                     onClick={() => setShowCreateKinds((current) => !current)}
-                    disabled={isReadOnlyOnlyScope || isWorkspaceMissing}
+                    disabled={isReadOnlyOnlyScope || isWorkspaceMissing || Boolean(creatingPlanKind)}
                     title={
                       isWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
@@ -979,39 +986,67 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     }
                     className={cn(
                       'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
-                      isReadOnlyOnlyScope || isWorkspaceMissing
+                      isReadOnlyOnlyScope || isWorkspaceMissing || creatingPlanKind
                         ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                         : 'border-border hover:bg-accent'
                     )}
                   >
-                    <Icon name="plus" size={12} />
-                    {t('architect.planSelector.create', 'Create')}
+                    <Icon
+                      name={creatingPlanKind ? 'loader' : 'plus'}
+                      size={12}
+                      className={cn(creatingPlanKind && 'animate-spin')}
+                    />
+                    {creatingPlanKind
+                      ? t('architect.planSelector.creating', 'Creating')
+                      : t('architect.planSelector.create', 'Create')}
                   </button>
                   {showCreateKinds && !isReadOnlyOnlyScope && !isWorkspaceMissing && (
                     <div className="absolute right-0 top-8 z-[90] w-56 rounded-lg border border-border bg-popover shadow-xl p-1">
                       {([
-                        ['feature', 'sparkles', t('architect.planSelector.kindFeature', 'Feature'), t('architect.planSelector.kindFeatureHelp', 'Build something new.')] as const,
-                        ['release', 'flag', t('architect.planSelector.kindRelease', 'Release'), t('architect.planSelector.kindReleaseHelp', 'Stabilize and ship.')] as const,
-                        ['hotfix', 'zap', t('architect.planSelector.kindHotfix', 'Hotfix'), t('architect.planSelector.kindHotfixHelp', 'Patch production quickly.')] as const,
-                        ['bugfix', 'tool', t('architect.planSelector.kindBugfix', 'Bugfix'), t('architect.planSelector.kindBugfixHelp', 'Fix a normal bug.')] as const,
+                        ['feature', 'sparkles', t('architect.planSelector.newFeaturePlan', 'New Feature Plan'), t('architect.planSelector.kindFeatureHelp', 'Build something new.')] as const,
+                        ['release', 'flag', t('architect.planSelector.releasePlanLabel', 'New Release Plan'), t('architect.planSelector.kindReleaseHelp', 'Stabilize and ship.')] as const,
+                        ['hotfix', 'zap', t('architect.planSelector.hotfixPlanLabel', 'New Hotfix Plan'), t('architect.planSelector.kindHotfixHelp', 'Patch production quickly.')] as const,
+                        ['bugfix', 'tool', t('architect.planSelector.bugfixPlanLabel', 'New Bugfix Plan'), t('architect.planSelector.kindBugfixHelp', 'Fix a normal bug.')] as const,
                       ] satisfies Array<readonly [ArchitectPlanKind, React.ComponentProps<typeof Icon>['name'], string, string]>)
                         .filter(([kind]) => creatablePlanKinds.includes(kind))
-                        .map(([kind, icon, label, help]) => (
-                        <button
-                          key={kind}
-                          type="button"
-                          onClick={() => void handleCreatePlan(kind)}
-                          className="w-full rounded-md px-2 py-1.5 text-left hover:bg-accent transition-colors flex items-stretch gap-3"
-                        >
-                          <span className="w-4 shrink-0 self-stretch inline-flex items-center justify-center">
-                            <Icon name={icon} size={16} className={planKindIconClassName[kind]} />
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block text-xs font-medium text-foreground">{label}</span>
-                            <span className="block text-[11px] text-muted-foreground">{help}</span>
-                          </span>
-                        </button>
-                      ))}
+                        .map(([kind, icon, label, help]) => {
+                          const isCreatingKind = creatingPlanKind === kind;
+                          const isCreateDisabled = Boolean(creatingPlanKind);
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              onClick={() => void handleCreatePlan(kind)}
+                              disabled={isCreateDisabled}
+                              aria-busy={isCreatingKind}
+                              className={cn(
+                                'w-full rounded-md px-2 py-1.5 text-left transition-colors flex items-stretch gap-3',
+                                isCreatingKind
+                                  ? 'bg-primary/10'
+                                  : isCreateDisabled
+                                    ? 'opacity-45 cursor-not-allowed'
+                                    : 'hover:bg-accent'
+                              )}
+                            >
+                              <span className="w-4 shrink-0 self-stretch inline-flex items-center justify-center">
+                                <Icon name={icon} size={16} className={planKindIconClassName[kind]} />
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex min-w-0 items-center justify-between gap-2">
+                                  <span className="truncate text-xs font-medium text-foreground">{label}</span>
+                                  {isCreatingKind && (
+                                    <Icon name="loader" size={11} className="shrink-0 animate-spin text-primary" />
+                                  )}
+                                </span>
+                                <span className="block truncate text-[11px] text-muted-foreground">
+                                  {isCreatingKind
+                                    ? t('architect.planSelector.creatingKind', 'Creating this plan...')
+                                    : help}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
                     </div>
                   )}
                 </div>
