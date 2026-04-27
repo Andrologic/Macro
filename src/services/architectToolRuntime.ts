@@ -30,6 +30,7 @@ import {
   formatArchitectNeedGetToolResult,
   formatArchitectNeedListToolResult,
   formatArchitectNeedUpdateToolResult,
+  formatArchitectPlanCreateToolResult,
   formatArchitectPlanGetToolResult,
   formatArchitectPlanListToolResult,
   formatArchitectPlanUpdateToolResult,
@@ -179,7 +180,24 @@ interface ArchitectToolUpdatePlanInput {
   setActive?: boolean;
 }
 
+interface ArchitectToolCreatePlanInput {
+  branchName: string;
+  title?: string;
+  label?: string;
+  description?: string;
+  planKind?: ArchitectPlanKind;
+  gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
+  status?: ArchitectPlanRecord["status"];
+  projectId?: string;
+  projectIds?: string[];
+  contextProjectIds?: string[];
+  setActive?: boolean;
+}
+
 interface ArchitectToolPlanService {
+  createArchitectPlan: (
+    input: ArchitectToolCreatePlanInput,
+  ) => Promise<ArchitectPlanRecord>;
   getArchitectPlan: (
     branchName: string,
     planId: string,
@@ -1238,7 +1256,81 @@ export const handleArchitectToolCall = async (
   }
 
   if (toolName === "plan_create") {
-    return "plan_create is disabled in Architect chat. Ask the user to create a plan from the plan selector, then continue on the active plan.";
+    if (args.status !== undefined && args.status !== "draft") {
+      return "plan_create can only create draft plans in Architect chat.";
+    }
+
+    const targetBranch = resolveArchitectTargetBranch(
+      args.target_branch,
+      appState,
+      planService,
+    );
+    const titleAlias =
+      typeof args.title === "string" ? args.title.trim() : undefined;
+    const label = typeof args.label === "string" ? args.label.trim() : undefined;
+    const description =
+      typeof args.description === "string" ? args.description : undefined;
+    const projectIds = Array.isArray(args.project_ids)
+      ? args.project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : getScopedActionableProjectIds(
+          appState.projectGroups,
+          appState.selectedGroupId,
+          appState.selectedProjectId,
+        );
+    const contextProjectIds = Array.isArray(args.context_project_ids)
+      ? args.context_project_ids
+          .filter((projectId): projectId is string => typeof projectId === "string")
+          .map((projectId) => projectId.trim())
+          .filter(Boolean)
+      : undefined;
+    const gitFlowPlan =
+      args.git_flow && typeof args.git_flow === "object" && !Array.isArray(args.git_flow)
+        ? (args.git_flow as Partial<ArchitectPlanGitFlowMetadata>)
+        : undefined;
+    const setActive = args.set_active !== false;
+    const createdPlan = await planService.createArchitectPlan({
+      branchName: targetBranch,
+      ...(titleAlias !== undefined ? { title: titleAlias } : {}),
+      ...(label !== undefined ? { label } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(projectIds.length > 0
+        ? { projectId: projectIds[0], projectIds }
+        : {}),
+      ...(contextProjectIds !== undefined ? { contextProjectIds } : {}),
+      ...(gitFlowPlan !== undefined
+        ? {
+            planKind: gitFlowPlan.planKind,
+            gitFlowPlan,
+          }
+        : {}),
+      status: "draft",
+      setActive,
+    });
+
+    if (setActive) {
+      await appState.activateArchitectPlan(createdPlan.id, {
+        targetBranch,
+        persistActiveSelection: true,
+      });
+    }
+
+    if (setActive) {
+      await hydratePlanContext({
+        targetBranch,
+        planId: createdPlan.id,
+        planService,
+        getAppState: params.getAppState,
+        ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
+      });
+    }
+
+    return formatArchitectPlanCreateToolResult(
+      createdPlan,
+      resolveActivePlanId(params.getAppState()),
+    );
   }
 
   if (toolName === "plan_list") {

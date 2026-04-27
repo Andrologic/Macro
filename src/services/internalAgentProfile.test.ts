@@ -65,7 +65,12 @@ describe("internalAgentProfile", () => {
       "plan_explorer"
     );
 
-    expect(filtered).toEqual(["need_delete", "strategy_delete", "plan_get"]);
+    expect(filtered).toEqual([
+      "need_delete",
+      "strategy_delete",
+      "plan_create",
+      "plan_get",
+    ]);
   });
 
   it("keeps task reviewer focused on read, patch, and verification tools", () => {
