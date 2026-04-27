@@ -8,6 +8,7 @@ import {
 } from './architectPlanPresentation';
 import {
   getArchitectGitNamingSettings,
+  isMainlineGitWorkflow,
   normalizeFeatureSlugInput,
   toPlanFeatureBranchName,
   toPlanIntegrationBranchName,
@@ -386,14 +387,24 @@ const LOCAL_PLAN_KEY_PREFIX = 'macro_architect_plan';
 const LOCAL_PLAN_NEEDS_KEY_PREFIX = 'macro_architect_plan_needs';
 const LOCAL_PLAN_CHAT_KEY_PREFIX = 'macro_architect_plan_chat';
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
-const DEFAULT_GIT_FLOW_BASE_BRANCH = 'develop';
+const DEFAULT_GIT_FLOW_BASE_BRANCH = 'main';
 const ARCHITECT_PLAN_INDEX_CACHE_TTL_MS = 60_000;
 const ARCHITECT_PLAN_ACTIVATION_CACHE_TTL_MS = 60_000;
-const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
-  /^feature\/[a-z0-9._-]+$/i,
+const FEATURE_TARGET_PATTERN = /^feature\/[a-z0-9._-]+$/i;
+const HOTFIX_TARGET_PATTERN = /^hotfix\/[a-z0-9._-]+$/i;
+const LEGACY_DEVELOP_TARGET_PATTERN = /^develop$/i;
+const MAINLINE_REJECTED_TARGET_PATTERNS = [
   /^release\/[a-z0-9._-]+$/i,
-  /^hotfix\/[a-z0-9._-]+$/i,
   /^bugfix\/[a-z0-9._-]+$/i,
+];
+const TYPED_GIT_FLOW_TARGET_PATTERNS = [
+  /^release\/[a-z0-9._-]+$/i,
+  HOTFIX_TARGET_PATTERN,
+  /^bugfix\/[a-z0-9._-]+$/i,
+];
+const GIT_FLOW_ALLOWED_TARGET_PATTERNS = [
+  FEATURE_TARGET_PATTERN,
+  ...TYPED_GIT_FLOW_TARGET_PATTERNS,
 ];
 
 const architectPlanIndexCache = new Map<
@@ -418,7 +429,19 @@ const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]
 
 const getDynamicTargetPatterns = (): RegExp[] => {
   const baseBranch = getGitFlowBaseBranch();
-  return [new RegExp(`^${escapeRegex(baseBranch)}$`, 'i'), ...GIT_FLOW_ALLOWED_TARGET_PATTERNS];
+  if (isMainlineGitWorkflow(getArchitectGitNamingSettings())) {
+    return [
+      new RegExp(`^${escapeRegex(baseBranch)}$`, 'i'),
+      LEGACY_DEVELOP_TARGET_PATTERN,
+      FEATURE_TARGET_PATTERN,
+      HOTFIX_TARGET_PATTERN,
+    ];
+  }
+  return [
+    new RegExp(`^${escapeRegex(baseBranch)}$`, 'i'),
+    LEGACY_DEVELOP_TARGET_PATTERN,
+    ...GIT_FLOW_ALLOWED_TARGET_PATTERNS,
+  ];
 };
 
 const normalizeBranchName = (value?: string, fallbackBranch = DEFAULT_GIT_FLOW_BASE_BRANCH): string => {
@@ -548,6 +571,14 @@ const isGitFlowTargetBranch = (branchName: string): boolean =>
 
 const assertGitFlowTargetBranch = (branchName: string): void => {
   if (!isGitFlowTargetBranch(branchName)) {
+    if (
+      isMainlineGitWorkflow(getArchitectGitNamingSettings()) &&
+      MAINLINE_REJECTED_TARGET_PATTERNS.some((pattern) => pattern.test(branchName))
+    ) {
+      throw new Error(
+        `Invalid target branch "${branchName}". Mainline workflow uses "${getGitFlowBaseBranch()}" as the development branch and only allows feature/* or hotfix/* work branches.`
+      );
+    }
     throw new Error(
       `Invalid target branch "${branchName}". Use configured base branch "${getGitFlowBaseBranch()}" or Git Flow naming: feature/*, release/*, hotfix/*, bugfix/*.`
     );

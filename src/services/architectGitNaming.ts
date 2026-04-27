@@ -34,7 +34,7 @@ const TEMPLATE_LABEL_BY_BRANCH_TYPE: Record<GitFlowBranchType, string> = {
 };
 
 const DEFAULT_PROJECT_SETTINGS: ProjectGitFlowSettings = {
-  baseBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH] || 'develop'),
+  baseBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH] || 'main'),
   mainBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH] || 'main'),
   planBranchTemplate: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE] || 'plan/{planSlug}'),
   featureBranchTemplate: String(
@@ -70,6 +70,18 @@ export const normalizeGitBranchName = (
     .replace(/^\/+/, '')
     .replace(/\/+$/, '');
   return normalized || fallback;
+};
+
+export const isMainlineGitWorkflow = (
+  settings?: Partial<Pick<ProjectGitFlowSettings, 'baseBranch' | 'mainBranch'>> | null,
+): boolean => {
+  const baseBranch = normalizeGitBranchName(
+    settings?.baseBranch || DEFAULT_PROJECT_SETTINGS.baseBranch,
+  ).toLowerCase();
+  const mainBranch = normalizeGitBranchName(
+    settings?.mainBranch || DEFAULT_PROJECT_SETTINGS.mainBranch,
+  ).toLowerCase();
+  return Boolean(baseBranch && mainBranch && baseBranch === mainBranch);
 };
 
 const sanitizeSlug = (value: string, fallback: string): string => {

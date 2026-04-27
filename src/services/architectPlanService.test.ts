@@ -216,6 +216,8 @@ describe('architectPlanService', () => {
       removeEventListener: () => undefined,
     };
     (globalThis as { localStorage?: unknown }).localStorage = storage;
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
     service = await loadArchitectPlanService();
   });
 
@@ -223,6 +225,43 @@ describe('architectPlanService', () => {
     mock.restore();
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { localStorage?: unknown }).localStorage;
+  });
+
+  it('allows main as the target branch in mainline mode', () => {
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+
+    expect(service.resolveTargetBranch('main')).toBe('main');
+    expect(service.resolveTargetBranch('feature/foo')).toBe('feature/foo');
+    expect(service.resolveTargetBranch('hotfix/foo')).toBe('hotfix/foo');
+  });
+
+  it('keeps legacy develop target branches readable in mainline mode', () => {
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+
+    expect(service.resolveTargetBranch('develop')).toBe('develop');
+  });
+
+  it('rejects release and bugfix target branches in mainline mode', () => {
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+
+    expect(() => service.resolveTargetBranch('release/foo')).toThrow(
+      'Mainline workflow uses "main" as the development branch and only allows feature/* or hotfix/* work branches.'
+    );
+    expect(() => service.resolveTargetBranch('bugfix/foo')).toThrow(
+      'Mainline workflow uses "main" as the development branch and only allows feature/* or hotfix/* work branches.'
+    );
+  });
+
+  it('keeps typed Git Flow target branches available for develop-based projects', () => {
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+
+    expect(service.resolveTargetBranch('release/foo')).toBe('release/foo');
+    expect(service.resolveTargetBranch('hotfix/foo')).toBe('hotfix/foo');
+    expect(service.resolveTargetBranch('bugfix/foo')).toBe('bugfix/foo');
   });
 
   it('creates canonical plans without requiring a title and allows duplicate labels', async () => {

@@ -40,13 +40,11 @@ const PROJECT_GIT_SETUP_UNBORN: &str = "unborn";
 const PROJECT_GIT_DETECTION_READY: &str = "ready";
 const PROJECT_GIT_DETECTION_NOT_GIT: &str = "not_git";
 const PROJECT_GIT_DETECTION_UNBORN: &str = "unborn";
-const PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY: &str = "single_main_only";
 const PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION: &str = "needs_branch_confirmation";
 const READ_ONLY_REASON_MANUAL: &str = "manual";
 const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
 const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
 const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
-const DEVELOP_PROMPT_MAIN_BRANCHES: &[&str] = &["main", "master", "trunk"];
 const GIT_RESOLUTION_NONE: &str = "none";
 const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
 const GIT_RESOLUTION_PARENT_REPO: &str = "parent_repo";
@@ -329,15 +327,20 @@ fn should_auto_update_project_base_branch(value: &str) -> bool {
     is_auto_detected_branch_family(value, AUTO_DETECTED_BASE_BRANCH_NAMES)
 }
 
-fn repo_has_initial_commit(repo: &Repository) -> bool {
-    repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
+fn should_apply_auto_detected_base_branch(
+    current_base_branch: &str,
+    detected_base_branch: &str,
+    detected_main_branch: Option<&str>,
+) -> bool {
+    let current = normalize_base_branch(Some(current_base_branch));
+    let detected_base = normalize_base_branch(Some(detected_base_branch));
+    let detected_main = detected_main_branch.map(|branch| normalize_base_branch(Some(branch)));
+
+    !(current == "develop" && detected_main.as_deref() == Some(detected_base.as_str()))
 }
 
-fn should_offer_develop_for_branch(branch: Option<&str>) -> bool {
-    let normalized = normalize_base_branch(branch);
-    DEVELOP_PROMPT_MAIN_BRANCHES
-        .iter()
-        .any(|candidate| normalized == *candidate)
+fn repo_has_initial_commit(repo: &Repository) -> bool {
+    repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
 }
 
 fn recommended_git_setup_actions(detection: &ProjectGitFlowDetectionDto) -> Vec<String> {
@@ -345,33 +348,11 @@ fn recommended_git_setup_actions(detection: &ProjectGitFlowDetectionDto) -> Vec<
         return vec![
             GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
             GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
-            GIT_SETUP_ACTION_CREATE_DEVELOP.to_string(),
         ];
     }
 
     if detection.setup_state == PROJECT_GIT_DETECTION_UNBORN {
-        let mut actions = vec![GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string()];
-        let main_branch = detection
-            .suggested_main_branch
-            .as_deref()
-            .or(detection.suggested_commit_branch.as_deref())
-            .or(detection.current_branch.as_deref());
-        if should_offer_develop_for_branch(main_branch) {
-            actions.push(GIT_SETUP_ACTION_CREATE_DEVELOP.to_string());
-        }
-        return actions;
-    }
-
-    if detection.setup_state == PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY
-        && should_offer_develop_for_branch(
-            detection
-                .suggested_main_branch
-                .as_deref()
-                .or(detection.suggested_commit_branch.as_deref())
-                .or(detection.current_branch.as_deref()),
-        )
-    {
-        return vec![GIT_SETUP_ACTION_CREATE_DEVELOP.to_string()];
+        return vec![GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string()];
     }
 
     Vec::new()
@@ -386,55 +367,6 @@ fn detection_setup_state(
     }
     if detection.requires_confirmation {
         return PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION;
-    }
-
-    let suggested_main_branch = detection
-        .main_branch
-        .as_deref()
-        .map(|value| normalize_base_branch(Some(value)));
-    let suggested_base_branch = detection
-        .base_branch
-        .as_deref()
-        .map(|value| normalize_base_branch(Some(value)));
-    let viable_branch_count = detection
-        .branch_candidates
-        .iter()
-        .filter(|branch_name| {
-            let normalized = branch_name.trim().to_lowercase();
-            !normalized.is_empty()
-                && normalized != crate::git::MACRO_BRANCH_NAME.to_lowercase()
-                && !normalized.starts_with("feature/")
-                && !normalized.starts_with("feature-")
-                && !normalized.starts_with("feat/")
-                && !normalized.starts_with("feat-")
-                && !normalized.starts_with("fix/")
-                && !normalized.starts_with("fix-")
-                && !normalized.starts_with("bugfix/")
-                && !normalized.starts_with("bugfix-")
-                && !normalized.starts_with("hotfix/")
-                && !normalized.starts_with("hotfix-")
-                && !normalized.starts_with("release/")
-                && !normalized.starts_with("release-")
-                && !normalized.starts_with("task/")
-                && !normalized.starts_with("task-")
-                && !normalized.starts_with("work/")
-                && !normalized.starts_with("work-")
-        })
-        .count();
-
-    if viable_branch_count <= 1 {
-        if let (Some(main_branch), Some(base_branch)) = (
-            suggested_main_branch.as_deref(),
-            suggested_base_branch.as_deref(),
-        ) {
-            if main_branch == base_branch
-                && DEVELOP_PROMPT_MAIN_BRANCHES
-                    .iter()
-                    .any(|candidate| main_branch == *candidate)
-            {
-                return PROJECT_GIT_DETECTION_SINGLE_MAIN_ONLY;
-            }
-        }
     }
 
     PROJECT_GIT_DETECTION_READY
@@ -1163,7 +1095,13 @@ fn auto_detect_project_git_flow_settings(
             .or_else(|| detected.suggested_main_branch.clone())
             .or_else(|| detected.suggested_commit_branch.clone())
         {
-            normalized.base_branch = base_branch;
+            if should_apply_auto_detected_base_branch(
+                &normalized.base_branch,
+                &base_branch,
+                detected.suggested_main_branch.as_deref(),
+            ) {
+                normalized.base_branch = base_branch;
+            }
         }
     }
 
@@ -3005,7 +2943,7 @@ fn normalize_base_branch(value: Option<&str>) -> String {
     value
         .map(str::trim)
         .filter(|branch| !branch.is_empty())
-        .unwrap_or("develop")
+        .unwrap_or("main")
         .to_string()
 }
 
@@ -4762,7 +4700,7 @@ fn get_git_flow_target_branch(plan: &PlanDto) -> String {
     plan.predicted_git_trees
         .get("targetBranch")
         .and_then(|value| value.as_str())
-        .unwrap_or("develop")
+        .unwrap_or("main")
         .to_string()
 }
 
@@ -5253,7 +5191,7 @@ mod tests {
         );
 
         assert_eq!(project.git_flow_settings.main_branch, "main");
-        assert_eq!(project.git_flow_settings.base_branch, "develop");
+        assert_eq!(project.git_flow_settings.base_branch, "main");
     }
 
     #[test]
@@ -5280,6 +5218,32 @@ mod tests {
         assert_eq!(project.git_flow_settings.main_branch, "master");
         assert_eq!(project.git_flow_settings.base_branch, "dev");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+    }
+
+    #[test]
+    fn sanitize_workspace_state_preserves_existing_develop_on_single_main_repo() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("mainline-repo");
+        let _repo = init_git_repo(&repo_path, "main", &[]);
+        let project_path = repo_path.to_string_lossy().to_string();
+
+        let state = WorkspaceState {
+            version: 2,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-develop", &project_path)],
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
+        let project = &sanitized_state.project_groups[0].projects[0];
+
+        assert_eq!(project.git_flow_settings.main_branch, "main");
+        assert_eq!(project.git_flow_settings.base_branch, "develop");
+        assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
     }
 
     #[test]
@@ -5401,7 +5365,6 @@ mod tests {
             vec![
                 GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
                 GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
-                GIT_SETUP_ACTION_CREATE_DEVELOP.to_string(),
             ]
         );
         assert_eq!(detection.initial_commit_preview_count, 1);
@@ -5409,6 +5372,22 @@ mod tests {
             detection.initial_commit_preview_paths,
             vec!["README.md".to_string()]
         );
+    }
+
+    #[test]
+    fn detect_project_git_flow_treats_single_main_repo_as_ready() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("mainline-repo");
+        let _repo = init_git_repo(&repo_path, "main", &[]);
+
+        let detection =
+            detect_project_git_flow(temp.path(), Some(repo_path.to_string_lossy().as_ref()));
+
+        assert!(detection.repo_detected);
+        assert_eq!(detection.setup_state, PROJECT_GIT_DETECTION_READY);
+        assert_eq!(detection.suggested_main_branch.as_deref(), Some("main"));
+        assert_eq!(detection.suggested_base_branch.as_deref(), Some("main"));
+        assert!(detection.recommended_action_sequence.is_empty());
     }
 
     #[test]

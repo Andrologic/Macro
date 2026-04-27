@@ -230,7 +230,7 @@ pub struct ManualFeatureDto {
 }
 
 fn default_manual_feature_base_branch() -> String {
-    "develop".to_string()
+    "main".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,7 +384,7 @@ impl Default for ProjectGitFlowSettingsDto {
 }
 
 fn default_project_git_base_branch() -> String {
-    "develop".to_string()
+    "main".to_string()
 }
 
 fn default_project_git_detection_repo_resolution() -> String {

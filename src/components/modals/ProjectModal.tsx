@@ -9,6 +9,7 @@ import { GroupCombobox } from '../ui/GroupCombobox';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toServiceError } from '../../services/contracts/errors';
 import {
+  isMainlineGitWorkflow,
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
 } from '../../services/architectGitNaming';
@@ -124,6 +125,7 @@ export const ProjectModal: React.FC = () => {
     ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project')
     : globalProjectName.trim() || t('project.newGlobalProject', 'New global project');
   const derivedSubProjectName = inferProjectNameFromPath(subProjectPath);
+  const isDefaultMainlineWorkflow = isMainlineGitWorkflow(resolveProjectGitFlowSettings());
   const pendingGitFlowValidationError = pendingGitFlowConfirmation
     ? pendingGitFlowConfirmation.branches.length > 1 &&
       pendingGitFlowConfirmation.mainBranch === pendingGitFlowConfirmation.baseBranch
@@ -552,6 +554,11 @@ export const ProjectModal: React.FC = () => {
                   <span>
                     {t('project.targetSummary', 'Target')}: {destinationSummary}
                   </span>
+                  {isDefaultMainlineWorkflow && (
+                    <span className="rounded-full bg-sky-500/15 px-2 py-0.5 font-semibold text-sky-300">
+                      {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
+                    </span>
+                  )}
                   {targetGroup && isAttachingToExistingGroup && (
                     <span>
                       |{' '}
@@ -662,7 +669,7 @@ export const ProjectModal: React.FC = () => {
                   )
                 : t(
                     'project.createDevelopDescription',
-                    'This repository only has a main branch. Create develop from {{mainBranch}} now? If you skip this step, future features will merge directly into {{mainBranch}}.',
+                    'This repository can work in mainline mode: Macro will use {{mainBranch}} as both the main branch and the development target. Create develop only if this project intentionally uses a separate integration branch.',
                     {
                       mainBranch: activeProjectSetupPrompt.mainBranch || 'main',
                       branchName: activeProjectSetupPrompt.mainBranch || 'main',
@@ -692,6 +699,33 @@ export const ProjectModal: React.FC = () => {
           }}
         >
           <div className="space-y-3">
+            {activeProjectSetupPrompt.kind === 'create_develop' && (
+              <div className="space-y-2 text-xs">
+                <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-sky-200">
+                  <span className="font-semibold">
+                    {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
+                  </span>
+                  {' - '}
+                  {t(
+                    'project.mainlineModeExplanation',
+                    'Keep {{branchName}} as the development target. Feature work merges back into {{branchName}}, and urgent fixes can use hotfix plans.',
+                    { branchName: activeProjectSetupPrompt.mainBranch || 'main' }
+                  )}
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
+                  <span className="font-semibold text-foreground">
+                    {t('project.developModeLabel', 'Separate develop')}
+                  </span>
+                  {' - '}
+                  {t(
+                    'project.developModeExplanation',
+                    'Create develop from {{branchName}} for repositories that still use a classic Git Flow integration branch.',
+                    { branchName: activeProjectSetupPrompt.mainBranch || 'main' }
+                  )}
+                </div>
+              </div>
+            )}
+
             {activeProjectSetupPrompt.resolvedRepoRootPath && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">

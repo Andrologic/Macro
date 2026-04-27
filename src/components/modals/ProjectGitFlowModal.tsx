@@ -7,6 +7,7 @@ import { Icon } from '../ui/Icon';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import {
   getDefaultProjectGitFlowSettings,
+  isMainlineGitWorkflow,
   renderGitFlowBranchName,
   renderStandaloneFeatureBranchName,
   resolveProjectGitFlowSettings,
@@ -102,6 +103,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   const appDefaults = useMemo(() => getDefaultProjectGitFlowSettings(), []);
   const validationErrors = useMemo(() => validateProjectGitFlowSettings(settings), [settings]);
   const previews = useMemo(() => buildTemplatePreview(settings), [settings]);
+  const isMainlineWorkflow = useMemo(() => isMainlineGitWorkflow(settings), [settings]);
   const resolvedProjectPath = project?.path ?? '';
   const projectSetupPrompt = projectSetupFlow?.prompts[projectSetupFlow.promptIndex] ?? null;
 
@@ -534,6 +536,11 @@ export const ProjectGitFlowModal: React.FC = () => {
                   >
                     {accessBadgeLabel}
                   </span>
+                  {isMainlineWorkflow && (
+                    <span className="rounded-full bg-sky-500/15 px-2.5 py-1 text-[11px] font-semibold text-sky-300">
+                      {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">
                     {project.gitSetupState === 'ready'
                       ? t('projects.projectAccessGitReady', 'Git ready')
@@ -599,7 +606,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               t('projects.gitFlowBaseBranch', 'Development/target branch'),
               settings.baseBranch,
               'baseBranch',
-              'develop'
+              'main'
             )}
             {renderInput(
               t('projects.gitFlowPlanTemplate', 'Plan branch template'),
@@ -789,7 +796,7 @@ export const ProjectGitFlowModal: React.FC = () => {
                   )
                 : t(
                     'project.createDevelopDescription',
-                    'This repository only has a main branch. Create develop from {{mainBranch}} now? If you skip this step, future features will merge directly into {{mainBranch}}.',
+                    'This repository can work in mainline mode: Macro will use {{mainBranch}} as both the main branch and the development target. Create develop only if this project intentionally uses a separate integration branch.',
                     {
                       mainBranch: projectSetupPrompt.mainBranch || 'main',
                       branchName: projectSetupPrompt.mainBranch || 'main',
@@ -819,6 +826,33 @@ export const ProjectGitFlowModal: React.FC = () => {
           }}
         >
           <div className="space-y-3">
+            {projectSetupPrompt.kind === 'create_develop' && (
+              <div className="space-y-2 text-xs">
+                <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-sky-200">
+                  <span className="font-semibold">
+                    {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
+                  </span>
+                  {' - '}
+                  {t(
+                    'project.mainlineModeExplanation',
+                    'Keep {{branchName}} as the development target. Feature work merges back into {{branchName}}, and urgent fixes can use hotfix plans.',
+                    { branchName: projectSetupPrompt.mainBranch || 'main' }
+                  )}
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
+                  <span className="font-semibold text-foreground">
+                    {t('project.developModeLabel', 'Separate develop')}
+                  </span>
+                  {' - '}
+                  {t(
+                    'project.developModeExplanation',
+                    'Create develop from {{branchName}} for repositories that still use a classic Git Flow integration branch.',
+                    { branchName: projectSetupPrompt.mainBranch || 'main' }
+                  )}
+                </div>
+              </div>
+            )}
+
             {projectSetupPrompt.resolvedRepoRootPath && (
               <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-foreground">

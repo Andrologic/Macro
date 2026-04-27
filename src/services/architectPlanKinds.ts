@@ -1,5 +1,5 @@
 import type { ProjectGitFlowSettings } from '../types';
-import { renderGitFlowBranchName } from './architectGitNaming';
+import { isMainlineGitWorkflow, renderGitFlowBranchName } from './architectGitNaming';
 
 export type ArchitectPlanKind = 'feature' | 'release' | 'hotfix' | 'bugfix';
 export type TypedArchitectPlanKind = Exclude<ArchitectPlanKind, 'feature'>;
@@ -37,6 +37,15 @@ export const ARCHITECT_PLAN_KINDS: ArchitectPlanKind[] = [
   'bugfix',
 ];
 
+export const getCreatableArchitectPlanKinds = (
+  settings: Array<Partial<ProjectGitFlowSettings> | null | undefined>,
+): ArchitectPlanKind[] => {
+  if (settings.length > 0 && settings.some((setting) => isMainlineGitWorkflow(setting))) {
+    return ['feature', 'hotfix'];
+  }
+  return ARCHITECT_PLAN_KINDS;
+};
+
 export const normalizeArchitectPlanKind = (
   value?: string | null,
 ): ArchitectPlanKind =>
@@ -51,7 +60,7 @@ export const isTypedGitFlowPlanKind = (
   return kind === 'release' || kind === 'hotfix' || kind === 'bugfix';
 };
 
-const normalizeBranchName = (value?: string | null, fallback = 'develop'): string => {
+const normalizeBranchName = (value?: string | null, fallback = 'main'): string => {
   const normalized = (typeof value === 'string' ? value : fallback)
     .trim()
     .replace(/\\/g, '/')
@@ -75,7 +84,7 @@ export const getPlanKindSourceBranch = (params: {
   if (params.planKind === 'hotfix') {
     return normalizeBranchName(params.mainBranch, 'main');
   }
-  return normalizeBranchName(params.baseBranch, 'develop');
+  return normalizeBranchName(params.baseBranch, 'main');
 };
 
 export const getPlanKindTargetBranch = (params: {
@@ -86,15 +95,21 @@ export const getPlanKindTargetBranch = (params: {
   if (params.planKind === 'release' || params.planKind === 'hotfix') {
     return normalizeBranchName(params.mainBranch, 'main');
   }
-  return normalizeBranchName(params.baseBranch, 'develop');
+  return normalizeBranchName(params.baseBranch, 'main');
 };
 
 export const getPlanKindBackmergeBranch = (params: {
   planKind: ArchitectPlanKind;
   baseBranch: string;
+  mainBranch?: string | null;
 }): string | null => {
-  if (params.planKind === 'release' || params.planKind === 'hotfix') {
-    return normalizeBranchName(params.baseBranch, 'develop');
+  if (params.planKind === 'release') {
+    return normalizeBranchName(params.baseBranch, 'main');
+  }
+  if (params.planKind === 'hotfix') {
+    const baseBranch = normalizeBranchName(params.baseBranch, 'main');
+    const mainBranch = normalizeBranchName(params.mainBranch, 'main');
+    return baseBranch.toLowerCase() === mainBranch.toLowerCase() ? null : baseBranch;
   }
   return null;
 };
@@ -179,7 +194,7 @@ export const normalizeArchitectPlanGitFlowMetadata = (params: {
   for (const projectId of params.projectIds) {
     const existing = params.gitFlowPlan?.projects?.[projectId];
     const branches = params.getDefaultBranches?.(projectId) || {
-      baseBranch: 'develop',
+      baseBranch: 'main',
       mainBranch: 'main',
     };
     const sourceBranch = normalizeBranchName(
@@ -195,7 +210,7 @@ export const normalizeArchitectPlanGitFlowMetadata = (params: {
         ? null
         : normalizeBranchName(
             existing?.backmergeBranch,
-            getPlanKindBackmergeBranch({ planKind, baseBranch: branches.baseBranch }) || '',
+            getPlanKindBackmergeBranch({ planKind, ...branches }) || '',
           ) || null;
     const branchSlug =
       normalizeVersionSlug(existing?.confirmedSlug) ||

@@ -12,7 +12,7 @@ import { cn } from '../../../utils/cn';
 
 const defaultSettings: ArchitectGitNamingSettings = {
   mainBranch: 'main',
-  baseBranch: 'develop',
+  baseBranch: 'main',
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
   standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
@@ -156,12 +156,12 @@ export const ArchitectGitFlowView: React.FC = () => {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
         <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.architectGitFlow.title', 'Architect Git Flow')}
+          {t('settings.architectGitFlow.title', 'Architect Git Workflow')}
         </h4>
         <p className="text-xs text-muted-foreground">
           {t(
             'settings.architectGitFlow.subtitle',
-            'Configure the default Git Flow profile applied to new subprojects, including planned and independent feature branches. Existing subprojects can override these values individually.'
+            'Configure the default Git workflow applied to new subprojects, including the development target and feature branch templates. Existing subprojects can override these values individually.'
           )}
         </p>
       </section>
@@ -187,7 +187,7 @@ export const ArchitectGitFlowView: React.FC = () => {
             value={settings.baseBranch}
             onChange={(event) => setSettings((prev) => ({ ...prev, baseBranch: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="develop"
+            placeholder="main"
           />
         </div>
 
