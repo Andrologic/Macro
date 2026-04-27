@@ -21,6 +21,39 @@ let notifySuccessMock: ReturnType<typeof mock>;
 let notifyErrorMock: ReturnType<typeof mock>;
 let notifyActionRequiredMock: ReturnType<typeof mock>;
 let importCounter = 0;
+let resizeObserverWidth = 640;
+
+class ResizeObserverTestMock {
+  private callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(target: Element) {
+    Object.defineProperty(target, 'clientWidth', {
+      configurable: true,
+      value: resizeObserverWidth,
+    });
+    Object.defineProperty(target, 'clientHeight', {
+      configurable: true,
+      value: 720,
+    });
+    this.callback([
+      {
+        target,
+        contentRect: {
+          width: resizeObserverWidth,
+          height: 720,
+        },
+      } as ResizeObserverEntry,
+    ], this as unknown as ResizeObserver);
+  }
+
+  unobserve() {}
+
+  disconnect() {}
+}
 
 const loadFileChangesPanelModules = async () => {
   importCounter += 1;
@@ -282,6 +315,8 @@ describe('FileChangesPanel', () => {
 
   beforeEach(async () => {
     mock.restore();
+    resizeObserverWidth = 640;
+    globalThis.ResizeObserver = ResizeObserverTestMock as unknown as typeof ResizeObserver;
     notifySuccessMock = mock(() => undefined);
     notifyErrorMock = mock(() => undefined);
     notifyActionRequiredMock = mock(() => undefined);
@@ -839,6 +874,9 @@ describe('FileChangesPanel', () => {
     });
 
     expect(document.body.textContent).toContain('Merge workflow');
+    expect(document.body.querySelector('[data-merge-workflow-layout="wide"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
     expect(document.body.textContent).toContain('Retry merge');
     expect(document.body.textContent).toContain('Resolve automatically');
     expect(document.body.textContent).toContain('Conflict files');
@@ -851,6 +889,304 @@ describe('FileChangesPanel', () => {
       })
     );
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not reload the merge review again while it is already loading', async () => {
+    const loadMergeWorkflowReviewMock = mock(async () => null);
+    const loadingRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'loading_review',
+      taskStatus: 'InProgress',
+      review: null,
+      repositories: [],
+      blockedRepositories: [],
+      message: null,
+      lastLoadedAt: null,
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'InProgress',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? loadingRuntime : null,
+        loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Loading merge review...');
+    expect(loadMergeWorkflowReviewMock).not.toHaveBeenCalled();
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('loads the merge review once when an existing runtime has no review yet', async () => {
+    const loadMergeWorkflowReviewMock = mock(async () => null);
+    const idleRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'idle',
+      taskStatus: 'InProgress',
+      review: null,
+      repositories: [],
+      blockedRepositories: [],
+      message: null,
+      lastLoadedAt: null,
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'InProgress',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? idleRuntime : null,
+        loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledTimes(1);
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith('task-1');
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('stacks the merge workflow repository selector above the diff in compact width', async () => {
+    resizeObserverWidth = 360;
+    const mergeWorkflowRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
+      review: {
+        taskId: 'task-1',
+        title: 'Review panel actions',
+        taskSource: 'architect',
+        planId: 'plan-1',
+        planTitle: 'Plan 1',
+        targetBranch: 'plan/review-actions',
+      },
+      repositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: 'diff --git a/src/main.ts b/src/main.ts',
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      blockedRepositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: 'diff --git a/src/main.ts b/src/main.ts',
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      message: 'Resolve the repository blockers before retrying the merge.',
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-merge-workflow-layout="compact"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-rail="true"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
+    expect(document.body.textContent).toContain('Retry merge');
+    expect(document.body.textContent).toContain('Resolve automatically');
+    expect(document.body.textContent).toContain('Conflict files');
+    expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
+    expect(notifyActionRequiredMock).toHaveBeenCalledWith(
+      'Resolve these conflicts before finishing',
+      expect.objectContaining({
+        category: 'task_attention_required',
+        notificationKey: expect.stringContaining('merge-workflow-blocker:task-1:repo-1'),
+      })
+    );
+  });
+
+  it('shows a lightweight preview instead of rendering very large merge diffs', async () => {
+    const largeDiff = `${'diff --git a/src/main.ts b/src/main.ts\n'.repeat(4000)}END-OF-LARGE-DIFF`;
+    const mergeWorkflowRuntime = {
+      taskId: 'task-1',
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
+      review: {
+        taskId: 'task-1',
+        title: 'Review panel actions',
+        taskSource: 'architect',
+        planId: 'plan-1',
+        planTitle: 'Plan 1',
+        targetBranch: 'plan/review-actions',
+      },
+      repositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: largeDiff,
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      blockedRepositories: [
+        {
+          id: 'repo-1',
+          projectId: 'project-1',
+          repoPath: '/tmp/repo-1',
+          sourceBranchName: 'feature/review-actions',
+          targetBranchName: 'plan/review-actions',
+          isClean: true,
+          hasChanges: true,
+          mergeable: false,
+          conflictFiles: ['src/main.ts'],
+          mergeInProgress: false,
+          diff: largeDiff,
+          checkStatus: 'failed',
+          blockingKind: 'merge_conflict',
+          nextAction: 'resolve_conflicts',
+          blockingReason: 'Cannot continue merge because /tmp/repo-1 would conflict in: src/main.ts.',
+        },
+      ],
+      message: 'Resolve the repository blockers before retrying the merge.',
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Diff too large to render fully. Showing a preview.');
+    expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
+    expect(document.body.textContent).toContain('Retry merge');
+    expect(document.body.textContent).toContain('Resolve automatically');
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {

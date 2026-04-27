@@ -91,6 +91,7 @@ import {
   sendMergeWorkflowConflictPrompt,
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
+import { devLogger } from '../utils/devLogger';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
@@ -119,6 +120,10 @@ export interface TaskMissingBaseBranchIssue {
 }
 
 let appSyncUnsubscribe: (() => void) | null = null;
+const mergeWorkflowReviewLoads = new Map<string, {
+  token: symbol;
+  promise: Promise<MergeWorkflowRuntimeState | null>;
+}>();
 const REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE = REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
 
 const canUseTaskMutationRuntime = (): boolean => getServiceRuntimeCapabilities().taskMutation;
@@ -305,6 +310,34 @@ const getExecutionTargetsWithRepoPaths = (
       return repoPath ? { ...target, repoPath } : null;
     })
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
+
+const buildMergeWorkflowWorkspaceContext = (
+  runtime: MergeWorkflowRuntimeState | null | undefined,
+  preferredProjectId?: string | null
+): {
+  activeBranchName: string | null;
+  activeRepositoryPath: string | null;
+  activeWorkspacePathOverridesByProjectId: Record<string, string>;
+} => {
+  const repositories = runtime?.repositories ?? [];
+  const overrides = Object.fromEntries(
+    repositories.map((repository) => [repository.projectId, repository.repoPath])
+  );
+  const preferredRepository = preferredProjectId
+    ? repositories.find((repository) => repository.projectId === preferredProjectId) ?? null
+    : null;
+  const focusedRepository =
+    runtime?.blockedRepositories[0] ??
+    preferredRepository ??
+    repositories[0] ??
+    null;
+
+  return {
+    activeBranchName: focusedRepository?.targetBranchName ?? null,
+    activeRepositoryPath: focusedRepository?.repoPath ?? null,
+    activeWorkspacePathOverridesByProjectId: overrides,
+  };
+};
 
 const updateMergeWorkflowRuntimeState = (
   current: Record<string, MergeWorkflowRuntimeState>,
@@ -623,7 +656,13 @@ const ensureTargetWorktreePath = async (
 };
 
 const updateTaskRuntimeAfterCleanup = (
-  state: Pick<TaskStore, 'branchWorktrees' | 'activeBranchName' | 'activeRepositoryPath'>,
+  state: Pick<
+    TaskStore,
+    | 'branchWorktrees'
+    | 'activeBranchName'
+    | 'activeRepositoryPath'
+    | 'activeWorkspacePathOverridesByProjectId'
+  >,
   task: CatalogedImplementTask,
   removedWorktreeKeys: string[]
 ) => {
@@ -644,6 +683,7 @@ const updateTaskRuntimeAfterCleanup = (
       state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
         ? null
         : state.activeRepositoryPath,
+    activeWorkspacePathOverridesByProjectId: {},
   };
 };
 
@@ -831,11 +871,13 @@ const ensureAppSync = () => {
             activeRepositoryPath: nextState.selectedProjectId
               ? nextState.getProjectById(nextState.selectedProjectId)?.path ?? null
               : null,
+            activeWorkspacePathOverridesByProjectId: {},
           });
         } else if (!nextState.selectedProjectId) {
           useTaskStore.setState({
             activeBranchName: null,
             activeRepositoryPath: useTaskStore.getState().activeRepositoryPath,
+            activeWorkspacePathOverridesByProjectId: {},
           });
         }
       } else {
@@ -844,6 +886,7 @@ const ensureAppSync = () => {
           activeRepositoryPath: nextState.selectedProjectId
             ? nextState.getProjectById(nextState.selectedProjectId)?.path ?? null
             : null,
+          activeWorkspacePathOverridesByProjectId: {},
         });
       }
     }
@@ -1037,6 +1080,7 @@ interface TaskStore {
   branchWorktrees: Record<string, string>;
   activeBranchName: string | null;
   activeRepositoryPath: string | null;
+  activeWorkspacePathOverridesByProjectId: Record<string, string>;
   taskCommandRuns: Record<string, TaskCommandRunState>;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
   initialize: () => Promise<void>;
@@ -1580,6 +1624,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   branchWorktrees: {},
   activeBranchName: null,
   activeRepositoryPath: null,
+  activeWorkspacePathOverridesByProjectId: {},
   taskCommandRuns: {},
 
   setTasks: (tasks) => set({ tasks }),
@@ -1762,6 +1807,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({
         activeBranchName: null,
         activeRepositoryPath: projectPath,
+        activeWorkspacePathOverridesByProjectId: {},
       });
       await syncWorkspaceRoot(projectPath);
       return;
@@ -1774,12 +1820,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         preferredProjectId: appState.selectedProjectId,
         resolveRepoPath: resolveTaskRepositoryPath,
       });
+      const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
+        mergeRuntime,
+        appState.selectedProjectId
+      );
 
       set({
-        activeBranchName: branchName,
-        activeRepositoryPath: repoPath,
+        activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
+        activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
+        activeWorkspacePathOverridesByProjectId:
+          mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
       });
-      await syncWorkspaceRoot(repoPath);
+      await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
       return;
     }
 
@@ -1798,11 +1850,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           },
           activeBranchName: branchName,
           activeRepositoryPath: knownWorktree,
+          activeWorkspacePathOverridesByProjectId: {},
         }));
       } else {
         set({
           activeBranchName: branchName,
           activeRepositoryPath: knownWorktree,
+          activeWorkspacePathOverridesByProjectId: {},
         });
       }
       await syncWorkspaceRoot(knownWorktree);
@@ -1818,6 +1872,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     set({
       activeBranchName: branchName,
       activeRepositoryPath: projectPath,
+      activeWorkspacePathOverridesByProjectId: {},
     });
     await syncWorkspaceRoot(projectPath);
   },
@@ -2137,6 +2192,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
             ? null
             : state.activeRepositoryPath,
+        activeWorkspacePathOverridesByProjectId: {},
       }));
 
       if (
@@ -2281,6 +2337,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
             ? null
             : state.activeRepositoryPath,
+        activeWorkspacePathOverridesByProjectId: {},
       }));
       if (get().activeBranchName === null && get().activeRepositoryPath === null) {
         await syncWorkspaceRoot(null);
@@ -2395,15 +2452,21 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           preferredProjectId: appState.selectedProjectId,
           resolveRepoPath: resolveTaskRepositoryPath,
         });
+        const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
+          runtime,
+          appState.selectedProjectId
+        );
 
         set({
-          activeBranchName: branchName,
-          activeRepositoryPath: repoPath,
+          activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
+          activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
+          activeWorkspacePathOverridesByProjectId:
+            mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
           missingBaseBranchIssue: null,
           lastError: null,
         });
 
-        await syncWorkspaceRoot(repoPath);
+        await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
         return;
       } catch (error) {
         const failureState = buildMergeWorkflowFailureState(error, {
@@ -2443,6 +2506,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         },
         activeBranchName: task.assigned_branch,
         activeRepositoryPath: primaryWorktree,
+        activeWorkspacePathOverridesByProjectId: {},
         missingBaseBranchIssue: null,
         lastError: null,
       }));
@@ -2524,6 +2588,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         },
         activeBranchName: updatedTask.assigned_branch,
         activeRepositoryPath: primaryWorktree,
+        activeWorkspacePathOverridesByProjectId: {},
         missingBaseBranchIssue: null,
         lastError: null,
       }));
@@ -2827,85 +2892,139 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return existingRuntime;
     }
 
-    set((state) => ({
-      ...applyMergeWorkflowRuntimePatch(state, taskId, {
-        taskId,
-        kind,
-        phase: 'loading_review',
-        taskStatus:
-          task.status === 'AwaitingResponse'
-            ? 'AwaitingResponse'
-            : resolveMergeWorkflowTaskStatus('loading_review', { kind }),
-        message: null,
-      }),
-      lastError: null,
-    }));
-
-    try {
-      let nextRuntime: MergeWorkflowRuntimeState | null = null;
-      if (kind === 'plan_finalization') {
-        const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
-        if (!summary) {
-          return null;
-        }
-        nextRuntime = await loadPlanFinalizationMergeWorkflowRuntime({
-          taskId,
-          summary,
-        });
-      } else {
-        const executionTargets = getExecutionTargetsWithRepoPaths(task);
-        if (executionTargets.length === 0) {
-          throw new Error(
-            tTask(
-              'implement.errors.cannotResolveTaskProject',
-              'Cannot resolve project for task {{taskId}}',
-              { taskId }
-            )
-          );
-        }
-        nextRuntime = await buildTaskCompletionMergeWorkflowRuntime({
-          task,
-          executionTargets,
-        });
-      }
-
-      if (!nextRuntime) {
-        return null;
-      }
-
-      const persistedSession = task.merge_workflow ?? null;
-      const resolvedRuntime = {
-        ...nextRuntime,
-        taskStatus:
-          task.status === 'AwaitingResponse'
-            ? 'AwaitingResponse'
-            : nextRuntime.taskStatus,
-      };
-      const mergedRuntime = overlayPersistedMergeWorkflowSession({
-        runtime: resolvedRuntime,
-        session: persistedSession,
-      });
-
-      await syncRuntimePersistence(task, mergedRuntime);
-      set({ lastError: null });
-
-      return mergedRuntime;
-    } catch (error) {
-      const failureState = buildMergeWorkflowFailureState(error, {
+    const existingLoad = mergeWorkflowReviewLoads.get(taskId);
+    if (!options?.force && existingLoad) {
+      devLogger.debug('[mergeWorkflow] Reusing in-flight review load.', {
         taskId,
         kind,
       });
-      const nextRuntime = mergeMergeWorkflowRuntimeState(
-        get().mergeWorkflowRuntimeByTaskId[taskId],
-        {
+      return existingLoad.promise;
+    }
+
+    const loadToken = Symbol(taskId);
+    const loadPromise = (async (): Promise<MergeWorkflowRuntimeState | null> => {
+      devLogger.debug('[mergeWorkflow] Loading review.', {
+        taskId,
+        kind,
+        force: options?.force === true,
+      });
+
+      set((state) => ({
+        ...applyMergeWorkflowRuntimePatch(state, taskId, {
           taskId,
           kind,
-          ...failureState.runtimePatch,
+          phase: 'loading_review',
+          taskStatus:
+            task.status === 'AwaitingResponse'
+              ? 'AwaitingResponse'
+              : resolveMergeWorkflowTaskStatus('loading_review', { kind }),
+          message: null,
+        }),
+        lastError: null,
+      }));
+
+      try {
+        let nextRuntime: MergeWorkflowRuntimeState | null = null;
+        if (kind === 'plan_finalization') {
+          const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
+          if (!summary) {
+            return null;
+          }
+          nextRuntime = await loadPlanFinalizationMergeWorkflowRuntime({
+            taskId,
+            summary,
+          });
+        } else {
+          const executionTargets = getExecutionTargetsWithRepoPaths(task);
+          if (executionTargets.length === 0) {
+            throw new Error(
+              tTask(
+                'implement.errors.cannotResolveTaskProject',
+                'Cannot resolve project for task {{taskId}}',
+                { taskId }
+              )
+            );
+          }
+          nextRuntime = await buildTaskCompletionMergeWorkflowRuntime({
+            task,
+            executionTargets,
+          });
         }
-      );
-      await syncRuntimePersistence(task, nextRuntime);
-      set({ lastError: failureState.lastError });
-      throw toServiceError(error);
+
+        if (!nextRuntime) {
+          return null;
+        }
+
+        const persistedSession = task.merge_workflow ?? null;
+        const resolvedRuntime = {
+          ...nextRuntime,
+          taskStatus:
+            task.status === 'AwaitingResponse'
+              ? 'AwaitingResponse'
+              : nextRuntime.taskStatus,
+        };
+        const mergedRuntime = overlayPersistedMergeWorkflowSession({
+          runtime: resolvedRuntime,
+          session: persistedSession,
+        });
+
+        if (mergeWorkflowReviewLoads.get(taskId)?.token !== loadToken) {
+          devLogger.debug('[mergeWorkflow] Ignoring superseded review load result.', {
+            taskId,
+            kind,
+          });
+          return get().mergeWorkflowRuntimeByTaskId[taskId] ?? null;
+        }
+
+        await syncRuntimePersistence(task, mergedRuntime);
+        set({ lastError: null });
+        devLogger.debug('[mergeWorkflow] Review loaded.', {
+          taskId,
+          kind,
+          phase: mergedRuntime.phase,
+          repositoryCount: mergedRuntime.repositories.length,
+          blockedRepositoryCount: mergedRuntime.blockedRepositories.length,
+        });
+
+        return mergedRuntime;
+      } catch (error) {
+        devLogger.error('[mergeWorkflow] Review load failed.', {
+          taskId,
+          kind,
+          error,
+        });
+        if (mergeWorkflowReviewLoads.get(taskId)?.token !== loadToken) {
+          throw toServiceError(error);
+        }
+        const failureState = buildMergeWorkflowFailureState(error, {
+          taskId,
+          kind,
+        });
+        const nextRuntime = mergeMergeWorkflowRuntimeState(
+          get().mergeWorkflowRuntimeByTaskId[taskId],
+          {
+            taskId,
+            kind,
+            ...failureState.runtimePatch,
+          }
+        );
+        await syncRuntimePersistence(task, nextRuntime);
+        set({ lastError: failureState.lastError });
+        throw toServiceError(error);
+      }
+    })();
+
+    mergeWorkflowReviewLoads.set(taskId, {
+      token: loadToken,
+      promise: loadPromise,
+    });
+
+    try {
+      return await loadPromise;
+    } finally {
+      if (mergeWorkflowReviewLoads.get(taskId)?.token === loadToken) {
+        mergeWorkflowReviewLoads.delete(taskId);
+      }
     }
   },
 
@@ -3551,12 +3670,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    const runtime =
-      get().mergeWorkflowRuntimeByTaskId[taskId] ||
-      (await get().loadMergeWorkflowReview(taskId, { force: true }));
+    const runtime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (!runtime || runtime.blockedRepositories.length === 0) {
       return null;
     }
+
+    await get().activateTask(task.id);
 
     const appState = useAppStore.getState();
     const chatStore = useChatStore.getState();
@@ -3801,6 +3920,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       branchWorktrees: nextRuntimeState.branchWorktrees,
       activeBranchName: nextRuntimeState.activeBranchName,
       activeRepositoryPath: nextRuntimeState.activeRepositoryPath,
+      activeWorkspacePathOverridesByProjectId: {},
       mergeWorkflowRuntimeByTaskId: Object.fromEntries(
         Object.entries(get().mergeWorkflowRuntimeByTaskId).filter(
           ([candidateTaskId]) =>
