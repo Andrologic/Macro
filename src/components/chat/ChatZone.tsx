@@ -247,7 +247,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 </div>
               )}
               {isStreamingMessage && message.role === 'assistant' && (
-                <span className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1" />
+                <span
+                  data-chat-assistant-activity="true"
+                  className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
+                />
               )}
             </div>
           )}
@@ -569,10 +572,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isStreaming || isPreparingSend;
   const visibleError = selectedConversationRuntime.lastError ?? lastError;
-  const streamingAssistantMessageId =
-    selectedConversationRuntime.phase === 'streaming'
-      ? selectedConversationRuntime.assistantMessageId ?? null
-      : null;
+  const activeAssistantMessageId =
+    isBusySending ? selectedConversationRuntime.assistantMessageId ?? null : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1359,7 +1360,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     key={message.id}
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
-                    streamingAssistantMessageId={streamingAssistantMessageId}
+                    streamingAssistantMessageId={activeAssistantMessageId}
                     showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}

@@ -244,7 +244,7 @@ const getMockConversationRuntime = (
   return {
     phase,
     sessionId: phase === 'idle' ? null : `session-${conversationId || 'unknown'}`,
-    assistantMessageId: phase === 'streaming'
+    assistantMessageId: phase === 'streaming' || phase === 'preparing'
       ? latestAssistantMessage?.id ?? null
       : null,
     lastError: phase === 'error' ? state.lastError : null,
@@ -703,6 +703,30 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
     expect(requireContainer().textContent).toContain('Stop');
+  });
+
+  it('shows assistant activity while a retry is preparing', async () => {
+    chatState = {
+      ...chatState,
+      sendState: 'preparing',
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Relance cette tentative' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: '',
+          tool_traces: [],
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-chat-assistant-activity="true"]')
+    ).not.toBeNull();
   });
 
   it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
