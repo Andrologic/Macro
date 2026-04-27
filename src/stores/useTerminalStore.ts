@@ -339,6 +339,7 @@ const resolveSessionBaseCwd = (projectId: string, fallbackProjectPath: string): 
     selectedProjectId: projectId,
     selectedTaskId: appState.selectedTaskId,
     activeRepositoryPath: taskState.activeRepositoryPath,
+    workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
     branchWorktrees: taskState.branchWorktrees,
   });
 
@@ -456,6 +457,7 @@ const resolveManualTerminalContext = (params?: {
     selectedProjectId: targetProjectId,
     selectedTaskId: scope.taskId,
     activeRepositoryPath: taskState.activeRepositoryPath,
+    workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
     branchWorktrees: taskState.branchWorktrees,
   });
   const cwd =

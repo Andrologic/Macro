@@ -3,6 +3,7 @@ import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../services/serviceRuntime';
+import type { GitMergeCheckDto } from '../services/tauriIpc';
 import {
   buildPlanFinalizationFailureState,
   toBlockedPlanFinalizationState,
@@ -17,6 +18,22 @@ let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }
 const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/repos/web/.macro/worktrees/task-1',
+}));
+const gitStatusMock = mock(async () => ({
+  branch: 'plan/review-actions',
+  is_clean: true,
+  conflicted_files: [],
+  conflictedFiles: [],
+  merge_in_progress: false,
+  mergeInProgress: false,
+}));
+const gitDiffMock = mock(async () => 'diff --git a/src/main.ts b/src/main.ts');
+const gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
+  mergeable: true,
+  conflictFiles: [],
+  hasChanges: true,
+  ahead: 1,
+  behind: 0,
 }));
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
@@ -55,9 +72,20 @@ const syncTerminalDisplayMetadataMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
+const persistArchitectPlanMergeWorkflowSessionMock = mock(async () => undefined);
+const ensureConversationForCurrentModeMock = mock(async () => null as string | null);
+const createConversationMock = mock(async () => ({ id: 'conv-1' }));
+const sendMessageMock = mock(async () => undefined);
 const appStoreState = {
   selectedTaskId: null as string | null,
-  getProjectById: (_projectId: string) => null,
+  selectedGroupId: 'group-1' as string | null,
+  selectedProjectId: null as string | null,
+  getProjectById: (_projectId: string) => null as null | {
+    id: string;
+    name: string;
+    path: string;
+  },
+  setMode: mock((_mode: 'Implement') => undefined),
   setSelectedTask: mock((_taskId: string | null) => undefined),
 };
 
@@ -65,6 +93,9 @@ mock.module('../services/tauriIpc', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  gitStatus: gitStatusMock,
+  gitDiff: gitDiffMock,
+  gitMergeCheck: gitMergeCheckMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -75,6 +106,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  gitStatus: gitStatusMock,
+  gitDiff: gitDiffMock,
+  gitMergeCheck: gitMergeCheckMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -96,10 +130,29 @@ mock.module('./useTerminalStore', () => ({
   },
 }));
 
+mock.module('./useChatStore', () => ({
+  useChatStore: {
+    getState: () => ({
+      ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
+      createConversation: createConversationMock,
+      sendMessage: sendMessageMock,
+      deleteConversation: mock(async () => undefined),
+    }),
+  },
+}));
+
 mock.module('../services/manualFeatureMetadataService', () => ({
   syncManualFeatureMetadataFromTask: syncManualFeatureMetadataFromTaskMock,
   commitManualFeatureMetadata: commitManualFeatureMetadataMock,
   removeManualFeatureMetadata: removeManualFeatureMetadataMock,
+}));
+
+mock.module('../services/architectPlanRuntimeService', () => ({
+  persistArchitectPlanMergeWorkflowSession: persistArchitectPlanMergeWorkflowSessionMock,
+}));
+
+mock.module('../services/architectPlanRuntimeService.ts', () => ({
+  persistArchitectPlanMergeWorkflowSession: persistArchitectPlanMergeWorkflowSessionMock,
 }));
 
 const loadIsolatedTaskStore = async () => {
@@ -111,6 +164,11 @@ const invokeDeferredResolver = (resolver: (() => void) | null) => {
   if (typeof resolver === 'function') {
     resolver();
   }
+};
+
+const flushPromises = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
 };
 
 const blockedRepository = {
@@ -289,6 +347,268 @@ describe('getPlanActivationCandidateTask', () => {
   });
 });
 
+describe('useTaskStore merge workflow review loading', () => {
+  beforeEach(() => {
+    gitStatusMock.mockClear();
+    gitDiffMock.mockClear();
+    gitMergeCheckMock.mockClear();
+    persistArchitectPlanMergeWorkflowSessionMock.mockClear();
+    ensureConversationForCurrentModeMock.mockClear();
+    createConversationMock.mockClear();
+    sendMessageMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = null;
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+    });
+    appStoreState.setMode.mockClear();
+    appStoreState.setSelectedTask.mockClear();
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+    gitStatusMock.mockImplementation(async () => ({
+      branch: 'plan/review-actions',
+      is_clean: true,
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
+    }));
+    gitDiffMock.mockImplementation(async () => 'diff --git a/src/main.ts b/src/main.ts');
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+  });
+
+  const buildMergeReviewTask = () =>
+    buildTask({
+      status: 'Blocked',
+      execution_targets: [
+        {
+          projectId: 'project-1',
+          branchName: 'feature/review-actions',
+          planBranchName: 'plan/review-actions',
+          executionKind: 'worktree',
+          worktreeKey: 'project-1::feature/review-actions',
+          repoPath: '/repos/web',
+        },
+      ],
+    });
+
+  const buildBlockedMergeRuntime = () => {
+    const repository = {
+      id: 'project-1::/repos/web',
+      projectId: 'project-1',
+      repoPath: '/repos/web',
+      sourceBranchName: 'feature/review-actions',
+      targetBranchName: 'plan/review-actions',
+      progressState: 'pending' as const,
+      hadChangesAtStart: true,
+      mergeAppliedAt: null,
+      isClean: true,
+      hasChanges: true,
+      mergeable: false,
+      conflictFiles: ['src/main.ts'],
+      mergeInProgress: false,
+      diff: 'diff --git a/src/main.ts b/src/main.ts',
+      checkStatus: 'failed' as const,
+      blockingKind: 'merge_conflict' as const,
+      nextAction: 'resolve_conflicts' as const,
+      blockingReason: 'Cannot continue merge because /repos/web would conflict in: src/main.ts.',
+    };
+
+    return {
+      taskId: 'task-1',
+      kind: 'task_completion' as const,
+      phase: 'blocked' as const,
+      taskStatus: 'Blocked' as const,
+      review: {
+        taskId: 'task-1',
+        title: 'Task 1',
+        taskSource: 'architect',
+        planId: 'plan-1',
+        planTitle: 'Plan 1',
+        targetBranch: 'plan/review-actions',
+      },
+      repositories: [repository],
+      blockedRepositories: [repository],
+      message: 'Resolve the repository blockers before retrying the merge.',
+      lastLoadedAt: '2026-04-22T10:00:00.000Z',
+    };
+  };
+
+  it('reuses an in-flight merge review load for repeated non-forced calls', async () => {
+    let resolveDiff: (() => void) | null = null;
+    gitDiffMock.mockImplementation(
+      async () =>
+        await new Promise<string>((resolve) => {
+          resolveDiff = () => resolve('diff --git a/src/main.ts b/src/main.ts');
+        })
+    );
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {},
+      lastError: null,
+    });
+
+    const firstLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
+    await flushPromises();
+    const secondLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
+
+    expect(gitStatusMock).toHaveBeenCalledTimes(1);
+    expect(gitDiffMock).toHaveBeenCalledTimes(1);
+
+    invokeDeferredResolver(resolveDiff);
+    const [firstRuntime, secondRuntime] = await Promise.all([firstLoad, secondLoad]);
+
+    expect(firstRuntime?.phase).toBe('ready');
+    expect(secondRuntime?.phase).toBe('ready');
+    expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
+    expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a forced merge review load to bypass an existing in-flight load', async () => {
+    const diffResolvers: Array<(value: string) => void> = [];
+    gitDiffMock.mockImplementation(
+      async () =>
+        await new Promise<string>((resolve) => {
+          diffResolvers.push(resolve);
+        })
+    );
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {},
+      lastError: null,
+    });
+
+    const firstLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
+    await flushPromises();
+    const forcedLoad = useTaskStore
+      .getState()
+      .loadMergeWorkflowReview('task-1', { force: true });
+    await flushPromises();
+
+    expect(gitStatusMock).toHaveBeenCalledTimes(2);
+    expect(gitDiffMock).toHaveBeenCalledTimes(2);
+
+    diffResolvers[1]?.('forced diff');
+    await forcedLoad;
+    diffResolvers[0]?.('stale diff');
+    await firstLoad;
+
+    expect(gitMergeCheckMock).toHaveBeenCalledTimes(2);
+    expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledTimes(1);
+    expect(
+      useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.repositories[0]?.diff
+    ).toBe('forced diff');
+  });
+
+  it('cleans the in-flight review registry after a failed load', async () => {
+    let shouldFail = true;
+    gitDiffMock.mockImplementation(async () => {
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error('diff failed');
+      }
+      return 'diff --git a/src/main.ts b/src/main.ts';
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {},
+      lastError: null,
+    });
+
+    await expect(
+      useTaskStore.getState().loadMergeWorkflowReview('task-1')
+    ).rejects.toMatchObject({
+      message: 'diff failed',
+    });
+
+    const recoveredRuntime = await useTaskStore
+      .getState()
+      .loadMergeWorkflowReview('task-1');
+
+    expect(recoveredRuntime?.phase).toBe('ready');
+    expect(gitDiffMock).toHaveBeenCalledTimes(2);
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('activates merge workflows on the target repository root instead of the task worktree', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': buildBlockedMergeRuntime(),
+      },
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().activateTask('task-1');
+
+    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web');
+    expect(useTaskStore.getState().activeBranchName).toBe('plan/review-actions');
+    expect(useTaskStore.getState().activeWorkspacePathOverridesByProjectId).toEqual({
+      'project-1': '/repos/web',
+    });
+  });
+
+  it('synchronizes the merge root workspace before starting automatic resolution', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: false,
+      conflictFiles: ['src/main.ts'],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const conversationId = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1');
+
+    expect(conversationId).toBe('conv-1');
+    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web');
+    expect(useTaskStore.getState().activeBranchName).toBe('plan/review-actions');
+    expect(useTaskStore.getState().activeWorkspacePathOverridesByProjectId).toEqual({
+      'project-1': '/repos/web',
+    });
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        taskId: 'task-1',
+        content: expect.stringContaining('Blocked repositories:'),
+      })
+    );
+  });
+});
+
 describe('useTaskStore optimistic AwaitingResponse transitions', () => {
   beforeEach(() => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
@@ -301,6 +621,7 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
     commitManualFeatureMetadataMock.mockClear();
     removeManualFeatureMetadataMock.mockClear();
     appStoreState.selectedTaskId = null;
+    appStoreState.getProjectById = (_projectId: string) => null;
     appStoreState.setSelectedTask.mockClear();
     updateStandaloneTaskStatusImpl = null;
   });
@@ -382,6 +703,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     syncTerminalDisplayMetadataMock.mockClear();
     syncManualFeatureMetadataFromTaskMock.mockClear();
     appStoreState.selectedTaskId = null;
+    appStoreState.getProjectById = (_projectId: string) => null;
   });
 
   it('cleans standalone execution state and reverts the task to draft metadata', async () => {

@@ -28,6 +28,7 @@ export interface ResolveProjectExecutionContextInput {
   selectedProjectId?: string | null;
   selectedTaskId?: string | null;
   activeRepositoryPath?: string | null;
+  workspacePathOverridesByProjectId?: Record<string, string>;
   branchWorktrees?: Record<string, string>;
 }
 
@@ -200,6 +201,9 @@ export const resolveProjectExecutionContext = (
 
   const workspacePathsByProjectId = scopedProjectIds.reduce<Record<string, string>>((acc, scopedProjectId) => {
     const matchingTarget = executionTargets.find((target) => target.projectId === scopedProjectId) || null;
+    const workspacePathOverride = input.workspacePathOverridesByProjectId
+      ? cleanString(input.workspacePathOverridesByProjectId[scopedProjectId])
+      : null;
     const branchWorktree = input.branchWorktrees
       ? cleanString(
           (matchingTarget?.worktreeKey ? input.branchWorktrees[matchingTarget.worktreeKey] : null) ||
@@ -207,6 +211,7 @@ export const resolveProjectExecutionContext = (
         )
       : null;
     const resolvedPath =
+      workspacePathOverride ||
       branchWorktree ||
       cleanString(matchingTarget?.repoPath) ||
       cleanString(projectById.get(scopedProjectId)?.path) ||

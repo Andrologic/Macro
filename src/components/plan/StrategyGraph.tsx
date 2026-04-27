@@ -34,6 +34,7 @@ import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { Skeleton } from '../shared/Skeleton';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { cn } from '../../utils/cn';
+import { useElementSize } from '../../hooks/useElementSize';
 import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
 import {
   isCanonicalArchitectPlan,
@@ -363,47 +364,6 @@ const buildBranchCards = (params: {
       (branch) => branch.tasks.length > 0 || params.branchSearch.trim().length === 0,
     );
 };
-
-// Utility hook for element size
-function useElementSize<T extends HTMLElement>() {
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const [node, setNode] = useState<T | null>(null);
-
-  const ref = useCallback((element: T | null) => {
-    setNode(element);
-  }, []);
-
-  useEffect(() => {
-    if (!node) {
-      setSize({ width: 0, height: 0 });
-      return;
-    }
-
-    const updateSize = () => {
-      setSize({
-        width: node.clientWidth,
-        height: node.clientHeight,
-      });
-    };
-
-    updateSize();
-
-    const observer = new ResizeObserver((entries) => {
-      if (entries.length === 0) return;
-
-      setSize({
-        width: entries[0].contentRect.width,
-        height: entries[0].contentRect.height,
-      });
-    });
-
-    observer.observe(node);
-
-    return () => observer.disconnect();
-  }, [node]);
-
-  return { ref, width: size.width, height: size.height };
-}
 
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {

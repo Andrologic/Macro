@@ -1454,6 +1454,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedProjectId: appState.selectedProjectId,
       selectedTaskId: appState.selectedTaskId,
       activeRepositoryPath: taskState.activeRepositoryPath,
+      workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
     });
   };
