@@ -35,6 +35,7 @@ const gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
   ahead: 1,
   behind: 0,
 }));
+const gitStashMock = mock(async () => 'stash@{0}');
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
   remote: [],
@@ -96,6 +97,7 @@ mock.module('../services/tauriIpc', () => ({
   gitStatus: gitStatusMock,
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitStash: gitStashMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -109,6 +111,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitStatus: gitStatusMock,
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitStash: gitStashMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -352,6 +355,7 @@ describe('useTaskStore merge workflow review loading', () => {
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
+    gitStashMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
     createConversationMock.mockClear();
@@ -589,11 +593,15 @@ describe('useTaskStore merge workflow review loading', () => {
       lastError: null,
     });
 
-    const conversationId = await useTaskStore
+    const resolution = await useTaskStore
       .getState()
-      .resolveMergeWorkflowAutomatically('task-1');
+      .resolveMergeWorkflowAutomatically('task-1', { dirtyRepositoryAction: 'stash' });
 
-    expect(conversationId).toBe('conv-1');
+    expect(resolution).toEqual({
+      conversationId: 'conv-1',
+      autoResolvedRepositoryCount: 0,
+      remainingBlockedRepositoryCount: 1,
+    });
     expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web');
     expect(useTaskStore.getState().activeBranchName).toBe('plan/review-actions');
     expect(useTaskStore.getState().activeWorkspacePathOverridesByProjectId).toEqual({
@@ -603,9 +611,57 @@ describe('useTaskStore merge workflow review loading', () => {
       expect.objectContaining({
         conversationId: 'conv-1',
         taskId: 'task-1',
+        internalAgentProfile: 'default_executor',
         content: expect.stringContaining('Blocked repositories:'),
       })
     );
+  });
+
+  it('automatically stashes dirty merge blockers before opening the assistant', async () => {
+    let hasStashedDirtyChanges = false;
+    gitStashMock.mockImplementation(async () => {
+      hasStashedDirtyChanges = true;
+      return 'stash@{0}';
+    });
+    gitStatusMock.mockImplementation(async () => {
+      return {
+        branch: 'plan/review-actions',
+        is_clean: hasStashedDirtyChanges,
+        conflicted_files: [],
+        conflictedFiles: [],
+        merge_in_progress: false,
+        mergeInProgress: false,
+      };
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', { dirtyRepositoryAction: 'stash' });
+
+    expect(resolution).toEqual({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    });
+    expect(gitStashMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      message: 'Macro merge blocker: Task 1',
+    });
+    expect(gitStatusMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
   });
 });
 
