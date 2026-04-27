@@ -839,6 +839,7 @@ const createMessageMock = mock(
 );
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
 const deleteConversationsMock = mock(async (_conversationIds: string[]) => undefined);
+const updateConversationScopeMock = mock(async () => undefined);
 const updateMessageMock = mock(async () => undefined);
 const deleteMessagesAfterMock = mock(async () => undefined);
 const importMessagesMock = mock(
@@ -1157,6 +1158,7 @@ const registerUseChatStoreMocks = async () => {
     updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     updateConversationDetails: updateConversationDetailsMock,
+    updateConversationScope: updateConversationScopeMock,
   }));
 
   importCounter += 1;
@@ -1430,9 +1432,9 @@ const flushAsyncWork = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-const createDeferred = () => {
-  let resolve!: () => void;
-  const promise = new Promise<void>((innerResolve) => {
+const createDeferred = <T = void>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
     resolve = innerResolve;
   });
   return { promise, resolve };
@@ -1637,6 +1639,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbUpsertConversationCompactionStateMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
+    updateConversationScopeMock.mockClear();
     updateMessageMock.mockClear();
     deleteMessagesAfterMock.mockClear();
     importMessagesMock.mockClear();
@@ -2936,6 +2939,129 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
     ).toEqual(['m-1', 'm-2']);
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('repairs stale scope metadata for the active plan conversation during initialize', async () => {
+    tauriAvailable = true;
+
+    const plan = createPlan({ conversationId: 'plan-conv' });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('plan-conv', {
+        scope_mode: 'Chat',
+        group_id: null,
+        project_id: null,
+        title: 'Checkout refresh',
+        last_message: 'latest',
+        message_count: 1,
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'm-1',
+        conversation_id: 'plan-conv',
+        role: 'user',
+        content: 'Restore this history.',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    const repairedConversation = useChatStore
+      .getState()
+      .conversations.find((conversation: Conversation) => conversation.id === 'plan-conv');
+    expect(useChatStore.getState().selectedConversationId).toBe('plan-conv');
+    expect(useChatStore.getState().getConversationMessages('plan-conv')).toHaveLength(1);
+    expect(repairedConversation).toEqual(
+      expect.objectContaining({
+        scope_mode: 'Architect',
+        task_id: null,
+        group_id: 'group-1',
+        project_id: 'project-1',
+      })
+    );
+    expect(updateConversationScopeMock).toHaveBeenCalledWith({
+      id: 'plan-conv',
+      scopeMode: 'Architect',
+      taskId: null,
+      groupId: 'group-1',
+      projectId: 'project-1',
+    });
+    expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale active-plan resolutions when the project scope changes during startup', async () => {
+    tauriAvailable = true;
+
+    const plan = createPlan({ conversationId: 'plan-conv' });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('plan-conv', {
+        title: 'Checkout refresh',
+        message_count: 1,
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'm-1',
+        conversation_id: 'plan-conv',
+        role: 'assistant',
+        content: 'Previous answer.',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+
+    const firstResolution = createDeferred<{
+      plan: ArchitectPlanRecord;
+      needs: never[];
+      chatMessages: never[];
+      conversationId: string;
+      sharedConversation: false;
+      targetBranch: string;
+      resolutionMode: 'full';
+    }>();
+    getArchitectPlanActivationPayloadMock
+      .mockImplementationOnce(async () => firstResolution.promise)
+      .mockImplementationOnce(async (_branchName: string) => ({
+        plan,
+        needs: [],
+        chatMessages: [],
+        conversationId: 'plan-conv',
+        sharedConversation: false,
+        targetBranch: 'develop',
+        resolutionMode: 'full',
+      }));
+
+    const staleResolution = useChatStore.getState().ensureConversationForCurrentMode();
+    await Promise.resolve();
+
+    useAppStoreMock.setState({ selectedProjectId: null });
+    firstResolution.resolve({
+      plan,
+      needs: [],
+      chatMessages: [],
+      conversationId: 'plan-conv',
+      sharedConversation: false,
+      targetBranch: 'develop',
+      resolutionMode: 'full',
+    });
+    await staleResolution;
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().lastError).not.toBe(
+      'Failed to select the resolved conversation.'
+    );
+    expect(useChatStore.getState().restoreStatus).toBe('ready');
+    expect(useChatStore.getState().selectedConversationId).toBe('plan-conv');
   });
 
   it('keeps the active plan conversation during initialize without replaying a project scope switch', async () => {

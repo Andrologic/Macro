@@ -806,6 +806,22 @@ export async function updateConversationDetails(params: {
   });
 }
 
+export async function updateConversationScope(params: {
+  id: string;
+  scopeMode: AppMode;
+  taskId?: string | null;
+  groupId?: string | null;
+  projectId?: string | null;
+}): Promise<void> {
+  return invoke("db_update_conversation_scope", {
+    id: params.id,
+    scopeMode: params.scopeMode,
+    taskId: params.taskId ?? null,
+    groupId: params.groupId ?? null,
+    projectId: params.projectId ?? null,
+  });
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   return invoke("db_delete_conversation_by_id", { id });
 }
