@@ -49,10 +49,10 @@ export const SettingsModal: React.FC = () => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in p-3 md:p-6">
       {/* Modal Container */}
-      <div className="w-full max-w-[1200px] h-[90vh] md:h-[85vh] bg-card border border-border rounded-xl shadow-2xl flex flex-col md:flex-row overflow-hidden ring-1 ring-white/5">
+      <div className="flex h-[min(90vh,calc(100vh-1.5rem))] w-full max-w-[1200px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ring-1 ring-white/5 md:h-[min(85vh,calc(100vh-3rem))] md:flex-row">
 
         {/* Sidebar */}
-        <div className="w-full md:w-64 bg-card/50 border-b md:border-b-0 md:border-r border-border flex flex-col">
+        <div className="flex max-h-56 w-full shrink-0 flex-col border-b border-border bg-card/50 md:max-h-none md:w-64 md:border-b-0 md:border-r">
           <div className="p-4 md:p-6">
             <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
               <div className="p-1.5 rounded-md bg-primary/20 text-primary">
@@ -62,7 +62,7 @@ export const SettingsModal: React.FC = () => {
             </h2>
           </div>
 
-          <nav className="flex-1 px-3 pb-3 md:pb-0 space-y-1">
+          <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 pb-3 md:pb-0">
             {tabs.map((tab) => (
               <button
                 key={tab.id}

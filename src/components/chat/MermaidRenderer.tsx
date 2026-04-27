@@ -172,8 +172,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     if (!isExpanded) return null;
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-        <div className="w-[92vw] h-[86vh] bg-card border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm">
+        <div className="flex h-[min(86vh,calc(100vh-2rem))] w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
             <div className="flex items-center gap-2">

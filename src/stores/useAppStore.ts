@@ -28,7 +28,6 @@ import * as localProjectContext from "../services/localProjectContext";
 import { getDefaultProjectGitFlowSettings } from "../services/architectGitNaming";
 import {
   type ArchitectPlanActivationPayload,
-  type ArchitectPlanRecord,
   type ArchitectPlanSummary,
   getArchitectPlanVisibleProjectIds,
   getArchitectPlan,
@@ -72,9 +71,7 @@ import {
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
   resolveExplicitProjectIdForGroup,
-  getScopedActionableProjectIds,
   getScopedProjectIds,
-  getScopedReadOnlyProjectIds,
 } from "../services/globalProjects";
 import {
   countProjectsInRegistry,
@@ -85,10 +82,7 @@ import {
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
 } from "../services/projectRegistry";
-import {
-  consolidateScopedBlankPlans,
-  ensureProjectGroupPlan,
-} from "../services/architectAutoPlan";
+import { consolidateScopedBlankPlans } from "../services/architectAutoPlan";
 import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
 import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
@@ -223,36 +217,6 @@ const buildArchitectPlanContext = (
   hasMixedTargetBranches:
     Boolean(plan.targetBranchesByProjectId) &&
     new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
-});
-
-const summarizeArchitectPlanRecord = (
-  plan: ArchitectPlanRecord,
-): ArchitectPlanSummary => ({
-  id: plan.id,
-  slug: plan.slug,
-  title: plan.title,
-  label: plan.label,
-  description: plan.description,
-  planKind: plan.planKind,
-  gitFlowPlan: plan.gitFlowPlan,
-  status: plan.status,
-  targetBranch: plan.targetBranch,
-  targetBranchesByProjectId: plan.targetBranchesByProjectId,
-  conversationId: plan.conversationId,
-  projectId: plan.projectId,
-  projectIds: plan.projectIds,
-  contextProjectIds: plan.contextProjectIds,
-  expectedProjectIds: plan.expectedProjectIds,
-  createdAt: plan.createdAt,
-  updatedAt: plan.updatedAt,
-  nodeCount: plan.nodes.length,
-  predictedBranchCount: plan.predictedBranches.length,
-  availableProjectIds: plan.availableProjectIds,
-  missingProjectIds: plan.missingProjectIds,
-  replicationState: plan.replicationState,
-  revision: plan.revision,
-  replicas: plan.replicas,
-  hasReplicaDivergence: plan.hasReplicaDivergence,
 });
 
 const upsertRememberedProject = (
@@ -1085,44 +1049,6 @@ const ensureAutoPlanForSelection = async (input: {
   if (await resolveArchitectPlanForScope(input)) {
     return;
   }
-  const scopedProjectIds = getScopedProjectIds(
-    appState.projectGroups,
-    input.groupId,
-    input.projectId,
-  );
-  const actionableProjectIds = getScopedActionableProjectIds(
-    appState.projectGroups,
-    input.groupId,
-    input.projectId,
-  );
-  const readOnlyProjectIds = getScopedReadOnlyProjectIds(
-    appState.projectGroups,
-    input.groupId,
-    input.projectId,
-  );
-  if (scopedProjectIds.length === 0 || actionableProjectIds.length === 0) {
-    return;
-  }
-
-  const ensuredPlan = await ensureProjectGroupPlan({
-    branchName: getGitFlowBaseBranch(),
-    scopedProjectIds: actionableProjectIds,
-    contextProjectIds: readOnlyProjectIds,
-    trigger: "implicit_resume",
-  });
-  if (!ensuredPlan) {
-    return;
-  }
-
-  await activateArchitectPlanInStore({
-    planId: ensuredPlan.plan.id,
-    options: {
-      targetBranch: ensuredPlan.plan.targetBranch,
-      persistActiveSelection: false,
-      allowScopeSwitch: false,
-      planSummaryHint: summarizeArchitectPlanRecord(ensuredPlan.plan),
-    },
-  });
 };
 
 const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {

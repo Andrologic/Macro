@@ -680,9 +680,9 @@ export const ModelsSettings: React.FC = () => {
         )}
 
       {manualModelEditor && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="mb-0 flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
               <h4 className="text-base font-semibold">
                 {isEditingManualModel
                   ? t('models.editCustomTitle', 'Edit Custom Model')
@@ -698,7 +698,7 @@ export const ModelsSettings: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">{t('models.modelId', 'Model ID')}</label>
                 <Input
@@ -724,7 +724,7 @@ export const ModelsSettings: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-6">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-5 py-4">
               <Button variant="ghost" onClick={resetManualModelEditor} disabled={isSavingManualModel}>
                 {t('common.cancel', 'Cancel')}
               </Button>

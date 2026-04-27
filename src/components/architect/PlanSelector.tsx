@@ -2,7 +2,6 @@
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
-  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
@@ -527,79 +526,77 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
 
-      if (planKind === 'feature') {
-        const ensuredBlankPlan = await ensureScopedBlankPlan({
-          branchName: targetBranch,
-          scopedProjectIds: scopedActionableProjectIds,
-          contextProjectIds,
-          trigger: 'explicit_create',
-        });
-        if (ensuredBlankPlan) {
-          await loadPlans(false);
-          await activatePlan(
-            ensuredBlankPlan.plan.id,
-            summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
-          );
-          if (ensuredBlankPlan.action === 'reused_blank') {
-            notify.info(
-              t(
-                'architect.planSelector.toastBlankPlanReady',
-                'A blank new plan is already ready. Send the first message to name it.'
-              )
-            );
-          } else if (ensuredBlankPlan.action === 'expanded_blank') {
-            notify.info(
-              t(
-                'architect.planSelector.toastBlankPlanExpanded',
-                'Reused the existing blank new plan and updated its scope. Send the first message to name it.'
-              )
-            );
-          }
-          return;
-        }
-      } else {
-        const labelByKind: Record<Exclude<ArchitectPlanKind, 'feature'>, string> = {
-          release: t('architect.planSelector.releasePlanLabel', 'New Release Plan'),
-          hotfix: t('architect.planSelector.hotfixPlanLabel', 'New Hotfix Plan'),
-          bugfix: t('architect.planSelector.bugfixPlanLabel', 'New Bugfix Plan'),
-        };
-        const dateSlug = new Date().toISOString().slice(0, 10);
-        const slugBase = `${planKind}-${dateSlug}`;
-        const typedMetadata = await buildTypedPlanGitFlowMetadata(
-          planKind,
-          scopedActionableProjectIds,
-          dateSlug,
-        );
-        const createdPlan = await createArchitectPlan({
-          branchName: targetBranch,
-          label: labelByKind[planKind],
-          slug: slugBase,
-          description:
-            planKind === 'release'
-              ? t(
-                  'architect.planSelector.releasePlanDescription',
-                  'Release workflow draft. Confirm versions and repositories in chat, then generate the stabilization checklist.'
-                )
-              : t(
-                  'architect.planSelector.bugPlanDescription',
-                  'Bug workflow draft. Describe the bug(s) in chat so Macro can infer the affected repositories.'
-                ),
-          planKind,
-          gitFlowPlan: typedMetadata.gitFlowPlan,
-          projectId: scopedActionableProjectIds[0],
-          projectIds: scopedActionableProjectIds,
-          contextProjectIds,
-          targetBranchesByProjectId: typedMetadata.targetBranchesByProjectId,
-          status: 'draft',
-          setActive: true,
-        });
+      const labelByKind: Record<Exclude<ArchitectPlanKind, 'feature'>, string> = {
+        release: t('architect.planSelector.releasePlanLabel', 'New Release Plan'),
+        hotfix: t('architect.planSelector.hotfixPlanLabel', 'New Hotfix Plan'),
+        bugfix: t('architect.planSelector.bugfixPlanLabel', 'New Bugfix Plan'),
+      };
+      const typedPlanInput =
+        planKind === 'feature'
+          ? undefined
+          : await (async () => {
+              const dateSlug = new Date().toISOString().slice(0, 10);
+              const typedMetadata = await buildTypedPlanGitFlowMetadata(
+                planKind,
+                scopedActionableProjectIds,
+                dateSlug,
+              );
+              return {
+                label: labelByKind[planKind],
+                slug: `${planKind}-${dateSlug}`,
+                description:
+                  planKind === 'release'
+                    ? t(
+                        'architect.planSelector.releasePlanDescription',
+                        'Release workflow draft. Confirm versions and repositories in chat, then generate the stabilization checklist.'
+                      )
+                    : t(
+                        'architect.planSelector.bugPlanDescription',
+                        'Bug workflow draft. Describe the bug(s) in chat so Macro can infer the affected repositories.'
+                      ),
+                planKind,
+                gitFlowPlan: typedMetadata.gitFlowPlan,
+                targetBranchesByProjectId: typedMetadata.targetBranchesByProjectId,
+              };
+            })();
+
+      const ensuredBlankPlan = await ensureScopedBlankPlan({
+        branchName: targetBranch,
+        scopedProjectIds: scopedActionableProjectIds,
+        contextProjectIds,
+        planKind,
+        createPlanInput: typedPlanInput,
+        trigger: 'explicit_create',
+      });
+      if (ensuredBlankPlan) {
         await loadPlans(false);
-        await activatePlan(createdPlan.id, summarizeArchitectPlanRecord(createdPlan));
-        notify.success(
-          planKind === 'release'
-            ? t('architect.planSelector.releasePlanReady', 'Release plan ready. Macro will ask for versions and repositories in chat.')
-            : t('architect.planSelector.bugPlanReady', 'Plan ready. Describe the bug in chat so Macro can map the affected repositories.')
+        await activatePlan(
+          ensuredBlankPlan.plan.id,
+          summarizeArchitectPlanRecord(ensuredBlankPlan.plan)
         );
+        if (ensuredBlankPlan.action === 'reused_blank') {
+          notify.info(
+            t(
+              'architect.planSelector.toastBlankPlanReady',
+              'A blank new plan is already ready. Send the first message to name it.'
+            )
+          );
+        } else if (ensuredBlankPlan.action === 'expanded_blank') {
+          notify.info(
+            t(
+              'architect.planSelector.toastBlankPlanExpanded',
+              'Reused the existing blank new plan and updated its scope. Send the first message to name it.'
+            )
+          );
+        } else {
+          notify.success(
+            planKind === 'feature'
+              ? t('architect.planSelector.toastBlankPlanCreated', 'New plan ready. Send the first message to name it.')
+              : planKind === 'release'
+                ? t('architect.planSelector.releasePlanReady', 'Release plan ready. Macro will ask for versions and repositories in chat.')
+                : t('architect.planSelector.bugPlanReady', 'Plan ready. Describe the bug in chat so Macro can map the affected repositories.')
+          );
+        }
         return;
       }
     } catch (err) {
@@ -1079,6 +1076,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 (plan.predictedBranchCount ?? 0) === 0;
               const canArchivePlan =
                 plan.status === 'archived' ||
+                plan.status === 'draft' ||
                 !(isCanonicalPlan && isDefaultNewPlanFamilyLabel(plan.label));
               const effectiveTargetBranch =
                 (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
@@ -1299,8 +1297,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
       {replicaRepair && (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl">
-            <div className="px-5 py-4 border-b border-border">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="shrink-0 px-5 py-4 border-b border-border">
               {replicaRepairPresentation && (
                 <ActionableErrorCallout
                   presentation={replicaRepairPresentation}
@@ -1309,7 +1307,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               )}
             </div>
 
-            <div className="px-5 py-4 space-y-2 text-xs text-muted-foreground">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-2 text-xs text-muted-foreground">
               {replicaRepair.divergence.replicas.map((replica) => (
                 <div key={replica.scopeKey} className="rounded-md border border-border px-3 py-2">
                   <div className="text-foreground">{replica.repoPath || replica.scopeKey}</div>
@@ -1322,7 +1320,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               ))}
             </div>
 
-            <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
               <button
                 type="button"
                 disabled={isRepairingReplica}

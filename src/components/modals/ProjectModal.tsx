@@ -127,18 +127,12 @@ export const ProjectModal: React.FC = () => {
   const derivedSubProjectName = inferProjectNameFromPath(subProjectPath);
   const isDefaultMainlineWorkflow = isMainlineGitWorkflow(resolveProjectGitFlowSettings());
   const pendingGitFlowValidationError = pendingGitFlowConfirmation
-    ? pendingGitFlowConfirmation.branches.length > 1 &&
-      pendingGitFlowConfirmation.mainBranch === pendingGitFlowConfirmation.baseBranch
-      ? t(
-          'projects.gitFlowConfirmDistinctBranches',
-          'Choose two different branches for main and development.'
-        )
-      : validateProjectGitFlowSettings(
-          resolveProjectGitFlowSettings({
-            mainBranch: pendingGitFlowConfirmation.mainBranch,
-            baseBranch: pendingGitFlowConfirmation.baseBranch,
-          })
-        )[0] ?? null
+    ? validateProjectGitFlowSettings(
+        resolveProjectGitFlowSettings({
+          mainBranch: pendingGitFlowConfirmation.mainBranch,
+          baseBranch: pendingGitFlowConfirmation.baseBranch,
+        })
+      )[0] ?? null
     : null;
   const activeProjectSetupPrompt =
     pendingProjectSetupPrompt?.prompts[pendingProjectSetupPrompt.promptIndex] ?? null;
@@ -426,8 +420,8 @@ export const ProjectModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[560px] max-h-[88vh] bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="h-14 px-5 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
