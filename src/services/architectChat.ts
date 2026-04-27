@@ -226,6 +226,30 @@ export const formatArchitectPlanListToolResult = (params: {
   });
 };
 
+export const formatArchitectPlanCreateToolResult = (
+  plan: ArchitectPlanRecord,
+  activePlanId: string | null
+): string =>
+  formatArchitectToolResult(
+    `Created plan ${getArchitectPlanDisplayName(plan)}. Active=${plan.id === activePlanId ? 'yes' : 'no'}.`,
+    {
+      id: plan.id,
+      slug: plan.slug,
+      title: plan.title,
+      label: plan.label ?? null,
+      display_name: getArchitectPlanDisplayName(plan),
+      description: cleanLine(plan.description) || '',
+      plan_kind: plan.planKind || 'feature',
+      git_flow: plan.gitFlowPlan ?? null,
+      status: plan.status,
+      target_branch: plan.targetBranch,
+      active: plan.id === activePlanId,
+      conversation_id: plan.conversationId ?? null,
+      project_ids: getArchitectPlanActionableProjectIds(plan),
+      context_project_ids: plan.contextProjectIds || [],
+    }
+  );
+
 export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): string =>
   formatArchitectToolResult(
     `Loaded plan ${getArchitectPlanDisplayName(plan)}: status ${plan.status}, ${plan.nodes.length} node${plan.nodes.length === 1 ? '' : 's'}, ${plan.predictedBranches.length} predicted branch${plan.predictedBranches.length === 1 ? '' : 'es'}.`,
