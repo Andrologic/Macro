@@ -2,6 +2,7 @@
   "common": {
     "save": "保存",
     "cancel": "キャンセル",
+    "continue": "続行",
     "delete": "消去",
     "edit": "編集",
     "rename": "名前の変更",
@@ -938,6 +939,21 @@
     "revertFailed": "変更を元に戻せませんでした。",
     "unstageSuccess": "変更をステージ解除しました。",
     "unstageFailed": "変更をステージ解除できませんでした。",
+    "commitModelChoiceTitle": "コミットメッセージ用モデルを選択",
+    "commitModelChoiceDescription": "Macro は会話中のアクティブなモデル、またはすべてのコミット用の専用モデルでコミットメッセージを生成できます。",
+    "commitModelConversation": "会話モデル",
+    "commitModelDedicated": "専用モデル",
+    "commitMessageValidationFailed": "生成されたコミットメッセージは手動確認が必要です。",
+    "commitMessageEditTitle": "コミットメッセージを確認",
+    "commitMessageEditDescription": "生成されたメッセージは Conventional Commits に一致しません。コミット前に編集してください。",
+    "commitMessageTypeLabel": "タイプ",
+    "commitMessageScopeLabel": "スコープ",
+    "commitMessageScopePlaceholder": "任意",
+    "commitMessageSubjectLabel": "件名",
+    "commitMessageBodyLabel": "本文",
+    "commitMessageBodyPlaceholder": "任意の詳細",
+    "commitMessageBreakingLabel": "破壊的変更",
+    "retryGeneration": "再生成",
     "stage": "Stage",
     "changeStatus": {
       "added": "追加した",
@@ -1597,7 +1613,15 @@
     "deleteCustomDescription": "このプロバイダーから「{{modelName}}」を削除しますか？",
     "manualModelActions": "モデルの操作",
     "modelsRefreshed": "モデルが更新されました",
-    "refreshFailed": "モデルの更新に失敗しました"
+    "refreshFailed": "モデルの更新に失敗しました",
+    "commitMessagesTitle": "コミットメッセージ",
+    "commitMessagesDescription": "Conventional Commit メッセージの生成に使う Macro のモデルを選択します。",
+    "commitUseConversationModel": "会話モデルを使用",
+    "commitUseDedicatedModel": "専用モデルを使用",
+    "commitPromptLabel": "コミット生成プロンプト",
+    "commitPromptDescription": "このプロンプトはスマートコミット生成を制御します。Macro は最終メッセージを引き続き検証し、コミット前にスコープを削除します。",
+    "reasoningEffort": "推論",
+    "defaultReasoning": "デフォルト"
   },
   "shortcuts": {
     "categories": {

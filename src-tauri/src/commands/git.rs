@@ -644,13 +644,22 @@ fn validate_refspec(spec: &str) -> Result<()> {
 
 fn validate_commit_message(message: &str) -> Result<()> {
     let trimmed = message.trim();
-    let mut parts = trimmed.splitn(2, ':');
-    let header = parts.next().unwrap_or("").trim();
-    let body = parts.next().unwrap_or("").trim();
+    let header = trimmed.lines().next().unwrap_or("").trim();
 
-    if header.is_empty() || body.is_empty() {
+    if header.is_empty() {
         return Err(BackendError::Validation(
             "Commit message must follow Conventional Commits: type(scope)?: subject".to_string(),
+        ));
+    }
+
+    let Some((header, subject)) = header.split_once(": ") else {
+        return Err(BackendError::Validation(
+            "Commit message must follow Conventional Commits: type(scope)?: subject".to_string(),
+        ));
+    };
+    if subject.trim().is_empty() {
+        return Err(BackendError::Validation(
+            "Commit subject is required".to_string(),
         ));
     }
 
@@ -678,12 +687,28 @@ fn validate_commit_message(message: &str) -> Result<()> {
                 "Commit scope cannot be empty".to_string(),
             ));
         }
+        let valid_scope = scope
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+            && scope
+                .chars()
+                .next()
+                .map(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+                .unwrap_or(false);
+        if !valid_scope {
+            return Err(BackendError::Validation(
+                "Commit scope must be kebab-case".to_string(),
+            ));
+        }
     }
 
-    let allowed = ["feat", "fix", "chore", "refactor", "docs", "test", "perf"];
+    let allowed = [
+        "feat", "fix", "perf", "build", "chore", "ci", "docs", "refactor", "style", "test",
+        "revert",
+    ];
     if !allowed.contains(&commit_type) {
         return Err(BackendError::Validation(
-            "Commit type must be one of: feat, fix, chore, refactor, docs, test, perf".to_string(),
+            "Commit type must be one of: feat, fix, perf, build, chore, ci, docs, refactor, style, test, revert".to_string(),
         ));
     }
 
@@ -3350,6 +3375,9 @@ mod tests {
         assert!(validate_commit_message("feat: add feature").is_ok());
         assert!(validate_commit_message("fix(scope): correct bug").is_ok());
         assert!(validate_commit_message("chore!: breaking change").is_ok());
+        assert!(validate_commit_message("build(deps): update tauri\n\nUpgrade runtime dependencies.").is_ok());
+        assert!(validate_commit_message("ci: update release workflow").is_ok());
+        assert!(validate_commit_message("revert: restore previous behavior").is_ok());
     }
 
     #[test]
@@ -3357,6 +3385,9 @@ mod tests {
         assert!(validate_commit_message("add feature").is_err());
         assert!(validate_commit_message("feat: ").is_err());
         assert!(validate_commit_message("invalid: message").is_err());
+        assert!(validate_commit_message("feat(scope: message").is_err());
+        assert!(validate_commit_message("feat(BadScope): message").is_err());
+        assert!(validate_commit_message("style:").is_err());
     }
 
     #[test]

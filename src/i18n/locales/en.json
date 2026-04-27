@@ -2,6 +2,7 @@
   "common": {
     "save": "Save",
     "cancel": "Cancel",
+    "continue": "Continue",
     "delete": "Delete",
     "edit": "Edit",
     "rename": "Rename",
@@ -938,6 +939,21 @@
     "revertFailed": "Failed to revert changes.",
     "unstageSuccess": "Changes unstaged.",
     "unstageFailed": "Failed to unstage changes.",
+    "commitModelChoiceTitle": "Choose commit message model",
+    "commitModelChoiceDescription": "Macro can generate commit messages with the active conversation model or with a dedicated model for every commit.",
+    "commitModelConversation": "Conversation model",
+    "commitModelDedicated": "Dedicated model",
+    "commitMessageValidationFailed": "Generated commit messages need manual review.",
+    "commitMessageEditTitle": "Review commit messages",
+    "commitMessageEditDescription": "The generated message did not pass Conventional Commits validation. Edit it before committing.",
+    "commitMessageTypeLabel": "Type",
+    "commitMessageScopeLabel": "Scope",
+    "commitMessageScopePlaceholder": "optional",
+    "commitMessageSubjectLabel": "Subject",
+    "commitMessageBodyLabel": "Body",
+    "commitMessageBodyPlaceholder": "Optional details",
+    "commitMessageBreakingLabel": "Breaking change",
+    "retryGeneration": "Retry generation",
     "stage": "Stage",
     "changeStatus": {
       "added": "Added",
@@ -1597,7 +1613,15 @@
     "deleteCustomDescription": "Delete \"{{modelName}}\" from this provider?",
     "manualModelActions": "Model actions",
     "modelsRefreshed": "Models refreshed",
-    "refreshFailed": "Failed to refresh models"
+    "refreshFailed": "Failed to refresh models",
+    "commitMessagesTitle": "Commit messages",
+    "commitMessagesDescription": "Choose which model Macro uses to generate Conventional Commit messages.",
+    "commitUseConversationModel": "Use conversation model",
+    "commitUseDedicatedModel": "Use dedicated model",
+    "commitPromptLabel": "Commit generation prompt",
+    "commitPromptDescription": "This prompt guides smart commit generation. Macro still validates the final message and removes scopes before committing.",
+    "reasoningEffort": "Reasoning",
+    "defaultReasoning": "Default"
   },
   "shortcuts": {
     "categories": {

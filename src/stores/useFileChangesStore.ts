@@ -28,9 +28,16 @@ import {
   SmartCommitMessageGenerationError,
   formatGeneratedCommitMessageForRepository,
   generateSmartCommitMessages,
+  isSmartCommitMessageGenerationError,
+  stripGeneratedCommitScopes,
   type GeneratedCommitMessages,
+  type GenerateSmartCommitMessagesOptions,
   type GenerateSmartCommitMessagesInput,
 } from '../services/smartCommitMessageGenerator';
+import {
+  validateConventionalCommitMessage,
+} from '../services/conventionalCommit';
+import type { SmartCommitModelConfig } from '../services/smartCommitModelConfig';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -208,7 +215,10 @@ export interface FileChangesStoreDependencies {
   getAppState: () => FileChangesAppState;
   getTaskState: () => FileChangesTaskStoreState;
   setTaskState: FileChangesSetTaskState;
-  generateCommitMessages: (input: GenerateSmartCommitMessagesInput) => Promise<GeneratedCommitMessages>;
+  generateCommitMessages: (
+    input: GenerateSmartCommitMessagesInput,
+    options?: GenerateSmartCommitMessagesOptions
+  ) => Promise<GeneratedCommitMessages>;
 }
 
 const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies => ({
@@ -357,7 +367,7 @@ const toDefaultCommitMessage = (title?: string | null): string => {
   const trimmed = title?.trim();
   if (!trimmed) return 'chore: update task changes';
   const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
-  return `feat: ${normalized}`;
+  return `chore: ${normalized}`;
 };
 
 const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => {
@@ -451,15 +461,27 @@ const buildSmartCommitMessageInput = async (
 
 const generateCommitMessagesWithRetry = async (
   deps: FileChangesStoreDependencies,
-  input: GenerateSmartCommitMessagesInput
+  input: GenerateSmartCommitMessagesInput,
+  options: GenerateSmartCommitMessagesOptions = {}
 ): Promise<GeneratedCommitMessages> => {
   let lastError: unknown = null;
+  let validationFeedback = options.validationFeedback ?? null;
   for (let attempt = 0; attempt < SMART_COMMIT_MESSAGE_GENERATION_ATTEMPTS; attempt += 1) {
     try {
-      return await deps.generateCommitMessages(input);
+      return await deps.generateCommitMessages(input, {
+        ...options,
+        validationFeedback,
+      });
     } catch (error) {
       lastError = error;
+      if (isSmartCommitMessageGenerationError(error) && error.generatedMessages) {
+        validationFeedback = error.message;
+      }
     }
+  }
+
+  if (isSmartCommitMessageGenerationError(lastError)) {
+    throw lastError;
   }
 
   const message = toServiceError(lastError).message ||
@@ -925,7 +947,10 @@ interface FileChangesState {
   saveRightDraft: () => Promise<void>;
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
   commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
-  commitAllReadyTaskRepositories: () => Promise<CommitTaskRepositoriesResult>;
+  commitAllReadyTaskRepositories: (options?: {
+    modelConfig?: SmartCommitModelConfig | null;
+    messagesByRepositoryId?: Record<string, string>;
+  }) => Promise<CommitTaskRepositoriesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;
   getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
   getSelectedRepository: () => ReviewRepositoryState | undefined;
@@ -1950,7 +1975,7 @@ export const createFileChangesStore = (
     }
   },
 
-  commitAllReadyTaskRepositories: async () => {
+  commitAllReadyTaskRepositories: async (options = {}) => {
     const task = ensureReviewTask(deps);
 
     const targetRepositories = get().repositories
@@ -1965,23 +1990,44 @@ export const createFileChangesStore = (
       throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
     }
 
-    set({ isGeneratingCommitMessages: true, lastError: null });
-    let generatedMessages: GeneratedCommitMessages;
-    try {
-      generatedMessages = await generateCommitMessagesWithRetry(
-        deps,
-        await buildSmartCommitMessageInput(deps, task, targetRepositories)
+    let messagesByRepositoryId = options.messagesByRepositoryId ?? null;
+
+    if (!messagesByRepositoryId) {
+      set({ isGeneratingCommitMessages: true, lastError: null });
+      let generatedMessages: GeneratedCommitMessages;
+      const commitMessageInput = await buildSmartCommitMessageInput(deps, task, targetRepositories);
+      try {
+        generatedMessages = await generateCommitMessagesWithRetry(
+          deps,
+          commitMessageInput,
+          { modelConfig: options.modelConfig ?? null }
+        );
+        generatedMessages = stripGeneratedCommitScopes(generatedMessages);
+      } catch (error) {
+        const messageText = toServiceError(error).message ||
+          tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
+        set({
+          isGeneratingCommitMessages: false,
+          lastError: null,
+        });
+        if (isSmartCommitMessageGenerationError(error)) {
+          throw new SmartCommitMessageGenerationError(messageText, {
+            generatedMessages: error.generatedMessages
+              ? stripGeneratedCommitScopes(error.generatedMessages)
+              : undefined,
+          });
+        }
+        throw new SmartCommitMessageGenerationError(messageText);
+      } finally {
+        set({ isGeneratingCommitMessages: false });
+      }
+
+      messagesByRepositoryId = Object.fromEntries(
+        targetRepositoryIds.map((repositoryId) => [
+          repositoryId,
+          formatGeneratedCommitMessageForRepository(generatedMessages, repositoryId),
+        ])
       );
-    } catch (error) {
-      const messageText = toServiceError(error).message ||
-        tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
-      set({
-        isGeneratingCommitMessages: false,
-        lastError: null,
-      });
-      throw new SmartCommitMessageGenerationError(messageText);
-    } finally {
-      set({ isGeneratingCommitMessages: false });
     }
 
     const commits: CommitTaskChangesResult[] = [];
@@ -1997,7 +2043,16 @@ export const createFileChangesStore = (
         continue;
       }
 
-      const repositoryMessage = formatGeneratedCommitMessageForRepository(generatedMessages, repositoryId);
+      const repositoryMessage = messagesByRepositoryId[repositoryId]?.trim() || '';
+      const validation = validateConventionalCommitMessage(repositoryMessage);
+      if (!validation.ok) {
+        throw new SmartCommitMessageGenerationError(
+          validation.message || tChanges(
+            'implement.errors.commitMessageInvalid',
+            'Commit message must follow Conventional Commits.'
+          )
+        );
+      }
 
       try {
         const result = await get().commitStagedChanges(repositoryId, repositoryMessage);

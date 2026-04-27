@@ -2,6 +2,7 @@
   "common": {
     "save": "Enregistrer",
     "cancel": "Annuler",
+    "continue": "Continuer",
     "delete": "Supprimer",
     "edit": "Modifier",
     "rename": "Renommer",
@@ -937,6 +938,21 @@
     "revertFailed": "Impossible d'annuler les changements.",
     "unstageSuccess": "Changements désindexés.",
     "unstageFailed": "Impossible de désindexer les changements.",
+    "commitModelChoiceTitle": "Choisir le modèle des messages de commit",
+    "commitModelChoiceDescription": "Macro peut générer les messages de commit avec le modèle actif de la conversation ou avec un modèle dédié pour tous les commits.",
+    "commitModelConversation": "Modèle de la conversation",
+    "commitModelDedicated": "Modèle dédié",
+    "commitMessageValidationFailed": "Les messages de commit générés doivent être relus manuellement.",
+    "commitMessageEditTitle": "Relire les messages de commit",
+    "commitMessageEditDescription": "Le message généré ne respecte pas Conventional Commits. Modifiez-le avant de committer.",
+    "commitMessageTypeLabel": "Type",
+    "commitMessageScopeLabel": "Scope",
+    "commitMessageScopePlaceholder": "optionnel",
+    "commitMessageSubjectLabel": "Sujet",
+    "commitMessageBodyLabel": "Corps",
+    "commitMessageBodyPlaceholder": "Détails optionnels",
+    "commitMessageBreakingLabel": "Breaking change",
+    "retryGeneration": "Regénérer",
     "stage": "Stage",
     "changeStatus": {
       "added": "Ajouté",
@@ -1596,7 +1612,15 @@
     "deleteCustomDescription": "Supprimer \"{{modelName}}\" de ce provider ?",
     "manualModelActions": "Actions du modèle",
     "modelsRefreshed": "Modèles rafraîchis",
-    "refreshFailed": "Échec de l'actualisation des modèles"
+    "refreshFailed": "Échec de l'actualisation des modèles",
+    "commitMessagesTitle": "Messages de commit",
+    "commitMessagesDescription": "Choisissez quel modèle Macro utilise pour générer les messages Conventional Commit.",
+    "commitUseConversationModel": "Utiliser le modèle de la conversation",
+    "commitUseDedicatedModel": "Utiliser un modèle dédié",
+    "commitPromptLabel": "Prompt de génération des commits",
+    "commitPromptDescription": "Ce prompt guide la génération intelligente des commits. Macro valide toujours le message final et retire les scopes avant de commit.",
+    "reasoningEffort": "Raisonnement",
+    "defaultReasoning": "Par défaut"
   },
   "shortcuts": {
     "categories": {

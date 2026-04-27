@@ -316,6 +316,7 @@ describe('FileChangesPanel', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    window.localStorage.setItem('macro_smartCommitModelConfig', JSON.stringify({ mode: 'conversation' }));
   });
 
   afterEach(async () => {
@@ -337,6 +338,7 @@ describe('FileChangesPanel', () => {
     }
     delete process.env.VITE_BACKEND_TRANSPORT;
     delete process.env.VITE_DATA_PROVIDER;
+    window.localStorage.removeItem('macro_smartCommitModelConfig');
     mock.restore();
   });
 
@@ -364,6 +366,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(stageChangesMock).toHaveBeenCalled();
+    expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
   it('hides scope actions once only staged changes remain', async () => {
@@ -409,6 +412,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(unstageChangesMock).toHaveBeenCalled();
+    expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
   it('validates the current diff state without moving the task into a review status', async () => {
@@ -433,6 +437,7 @@ describe('FileChangesPanel', () => {
     expect(stageAllChangesMock).not.toHaveBeenCalled();
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().tasks[0]?.status).toBe('InProgress');
+    expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
   it('keeps Commit as the primary action while a repository is ready to commit', async () => {
@@ -462,6 +467,42 @@ describe('FileChangesPanel', () => {
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
     expect(commitStagedChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('asks for the smart commit model choice the first time a commit is generated', async () => {
+    window.localStorage.removeItem('macro_smartCommitModelConfig');
+    const repository = buildRepository(true);
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    expect(commitButton).toBeDefined();
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Choose commit message model');
+    expect(document.body.textContent).toContain('Conversation model');
+    expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
+
+    const continueButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Continue');
+    expect(continueButton).toBeDefined();
+
+    await act(async () => {
+      continueButton?.click();
+      await flushRender();
+    });
+
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('macro_smartCommitModelConfig')).toContain('conversation');
   });
 
   it('shows the backend commit error message when the commit rejects with an object payload', async () => {
@@ -527,6 +568,53 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows structured commit message editing when generated fields are invalid', async () => {
+    const repository = buildRepository(true);
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
+      const error = new Error('Commit type must be one of: feat, fix, perf, build, chore, ci, docs, refactor, style, test, revert');
+      error.name = 'SmartCommitMessageGenerationError';
+      Object.assign(error, {
+        generatedMessages: {
+          repositories: [
+            {
+              repositoryId: repository.id,
+              type: 'release',
+              scope: 'project-one',
+              subject: 'update generated messages',
+              body: null,
+            },
+          ],
+        },
+      });
+      throw error;
+    });
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    expect(commitButton).toBeDefined();
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Review commit messages');
+    expect(document.body.textContent).toContain('Type');
+    expect(document.body.textContent).toContain('Subject');
+    expect(document.body.textContent).toContain('Body');
+    expect(document.body.textContent).toContain('Commit type must be one of');
+    const modalCommitButton = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent?.trim() === 'Commit')
+      .at(-1) as HTMLButtonElement | undefined;
+    expect(modalCommitButton?.disabled).toBe(true);
   });
 
   it('switches the primary action to Finish task once the task is fully resolved', async () => {
