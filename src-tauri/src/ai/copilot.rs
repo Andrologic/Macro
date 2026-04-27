@@ -1,5 +1,6 @@
 use crate::ai::chatgpt::types::{
-    AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent, AiToolTrace,
+    AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
+    AiStreamToolTraceEvent, AiToolTrace,
 };
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::ai::{AiState, AuthTask, DownloadTask};
@@ -77,7 +78,7 @@ enum BridgeSendEvent {
     },
     ToolTrace {
         #[serde(flatten)]
-        _extra: HashMap<String, Value>,
+        tool_trace: AiToolTrace,
     },
     Done {
         content: String,
@@ -1927,9 +1928,18 @@ async fn stream_chat_inner(
                         .unwrap_or(message),
                 );
             }
-            BridgeSendEvent::ToolTrace { .. }
-            | BridgeSendEvent::Progress { .. }
-            | BridgeSendEvent::LoginComplete { .. } => {}
+            BridgeSendEvent::ToolTrace { tool_trace } => {
+                app_handle
+                    .emit(
+                        "ai:tool-trace",
+                        AiStreamToolTraceEvent {
+                            request_id: request.request_id.clone(),
+                            tool_trace,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            BridgeSendEvent::Progress { .. } | BridgeSendEvent::LoginComplete { .. } => {}
         }
     }
 
