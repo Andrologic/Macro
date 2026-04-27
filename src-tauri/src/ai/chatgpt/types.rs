@@ -99,6 +99,12 @@ pub struct AiStreamChunkEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AiStreamToolTraceEvent {
+    pub request_id: String,
+    pub tool_trace: AiToolTrace,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiStreamDoneEvent {
     pub request_id: String,
     pub output_text: String,

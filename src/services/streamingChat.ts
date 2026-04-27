@@ -410,6 +410,20 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     options.onToolTracesUpdate?.(snapshotToolTraces());
   };
 
+  const upsertToolTrace = (trace: ToolTrace) => {
+    const existingTrace = toolTraces.get(trace.tool_call_id);
+    const nextTrace: ToolTrace = {
+      ...trace,
+      visible_offset:
+        existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
+    };
+    if (!toolTraces.has(trace.tool_call_id)) {
+      toolTraceOrder.push(trace.tool_call_id);
+    }
+    toolTraces.set(trace.tool_call_id, nextTrace);
+    publishToolTraces();
+  };
+
   const markRunningToolTracesDone = () => {
     let changed = false;
     for (const toolCallId of toolTraceOrder) {
@@ -442,20 +456,16 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     appendSystemChunk(chunk: string, markToolsDone = false) {
       appendVisibleChunk(chunk, markToolsDone);
     },
+    upsertToolTrace,
     upsertRunningToolTrace(toolCallId: string, toolName: string, detail?: string) {
       const existingTrace = toolTraces.get(toolCallId);
-      const nextTrace: ToolTrace = {
+      upsertToolTrace({
         tool_call_id: toolCallId,
         tool_name: toolName,
         detail,
         status: 'running',
         visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
-      };
-      if (!toolTraces.has(toolCallId)) {
-        toolTraceOrder.push(toolCallId);
-      }
-      toolTraces.set(toolCallId, nextTrace);
-      publishToolTraces();
+      });
     },
     addHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
@@ -1014,6 +1024,7 @@ const streamNativeTurnViaTauri = async (params: {
   focusedProjectId?: string | null;
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
+  onToolTrace?: (toolTrace: ToolTrace) => void;
 }): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
@@ -1064,6 +1075,10 @@ const streamNativeTurnViaTauri = async (params: {
             if (event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
             params.onDelta(event.payload.delta);
+          }),
+          listen<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            params.onToolTrace?.(event.payload.tool_trace);
           }),
           listen<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (event.payload.request_id !== requestId) return;
@@ -1262,7 +1277,16 @@ const streamChatViaNativeToolCallingProvider = async (
             streamAccumulator.appendProviderDelta(delta);
           }
         },
+        onToolTrace: (toolTrace) => {
+          streamAccumulator.upsertToolTrace(toolTrace);
+        },
       });
+      turnResult.toolTraces?.forEach((toolTrace) => {
+        streamAccumulator.upsertToolTrace(toolTrace);
+      });
+      if (turnResult.hiddenContext) {
+        streamAccumulator.addHiddenContextBlock(turnResult.hiddenContext);
+      }
 
       const turnContent = buildNativeProviderTurnContent(
         providerType,

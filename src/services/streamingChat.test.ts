@@ -709,6 +709,157 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('streams and persists Copilot tool traces from native events', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:stream')?.({
+            payload: {
+              request_id: request.request_id,
+              delta: 'Inspecting files.',
+            },
+          });
+          listeners.get('ai:tool-trace')?.({
+            payload: {
+              request_id: request.request_id,
+              tool_trace: {
+                tool_call_id: 'call_read',
+                tool_name: 'read',
+                detail: 'README.md',
+                status: 'running',
+              },
+            },
+          });
+          listeners.get('ai:tool-trace')?.({
+            payload: {
+              request_id: request.request_id,
+              tool_trace: {
+                tool_call_id: 'call_read',
+                tool_name: 'read',
+                detail: 'README.md',
+                status: 'done',
+              },
+            },
+          });
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: 'Inspecting files. Done.',
+              tool_calls: [],
+              tool_traces: [
+                {
+                  tool_call_id: 'call_read',
+                  tool_name: 'read',
+                  detail: 'README.md',
+                  status: 'done',
+                },
+                {
+                  tool_call_id: 'call_glob',
+                  tool_name: 'glob',
+                  detail: 'src/**/*.ts',
+                  status: 'done',
+                },
+              ],
+              hidden_context:
+                '<tool_context tool_call_id="call_read" tool="read" detail="README.md">\nFILE: README.md\n</tool_context>',
+            },
+          });
+        });
+      }
+
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const onToolTracesUpdate = mock((_toolTraces: unknown) => undefined);
+    const onComplete = mock((_result: unknown) => undefined);
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'Analyse le projet.' }],
+      allowedToolIds: ['read', 'glob'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onToolTracesUpdate,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    const traceUpdateCalls = onToolTracesUpdate.mock.calls as Array<
+      [Array<{ tool_call_id: string; status: string }>]
+    >;
+    const traceUpdates = traceUpdateCalls.map(([toolTraces]) => toolTraces);
+    expect(traceUpdates[0]).toEqual([
+      expect.objectContaining({ tool_call_id: 'call_read', status: 'running' }),
+    ]);
+    expect(traceUpdates.some((toolTraces) =>
+      toolTraces.some((trace) => trace.tool_call_id === 'call_read' && trace.status === 'done')
+    )).toBe(true);
+
+    const completionCalls = onComplete.mock.calls as Array<
+      [
+        {
+          visibleContent: string;
+          hiddenContext?: string;
+          toolTraces?: Array<{
+            tool_call_id: string;
+            tool_name: string;
+            detail?: string;
+            status: string;
+            visible_offset?: number;
+          }>;
+        },
+      ]
+    >;
+    const completion = completionCalls[0]?.[0];
+    expect(completion).toBeDefined();
+    const completedResult = completion as {
+      visibleContent: string;
+      hiddenContext?: string;
+      toolTraces?: Array<{
+        tool_call_id: string;
+        tool_name: string;
+        detail?: string;
+        status: string;
+        visible_offset?: number;
+      }>;
+    };
+    expect(completedResult.visibleContent).toBe('Inspecting files. Done.');
+    expect(completedResult.hiddenContext).toContain('FILE: README.md');
+    expect(completedResult.toolTraces).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call_read',
+        tool_name: 'read',
+        status: 'done',
+        visible_offset: expect.any(Number),
+      }),
+      expect.objectContaining({
+        tool_call_id: 'call_glob',
+        tool_name: 'glob',
+        detail: 'src/**/*.ts',
+        status: 'done',
+      }),
+    ]);
+  });
+
   it('tracks active streaming sessions independently and cancels only the targeted one', async () => {
     const fetchMock = mock(async () => ({
       ok: true,
