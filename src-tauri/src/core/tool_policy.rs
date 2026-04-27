@@ -32,6 +32,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_branch_list",
         "git_diff",
         "git_get_tree",
+        "plan_create",
         "need_add",
         "need_list",
         "need_get",

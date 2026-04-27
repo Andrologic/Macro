@@ -1,4 +1,5 @@
 export const ARCHITECT_PLAN_CHAT_TOOL_IDS = [
+  "plan_create",
   "plan_list",
   "plan_get",
   "plan_update",
@@ -24,7 +25,6 @@ export const ARCHITECT_STRATEGY_DESTRUCTIVE_TOOL_IDS = [
 ] as const;
 
 export const ARCHITECT_CHAT_UI_ONLY_TOOL_IDS = [
-  "plan_create",
   "plan_set_active",
   "plan_delete",
   "plan_restore",
