@@ -95,7 +95,8 @@ const resolvePlanProjectBackmergeBranchName = (
   return plan.gitFlowPlan?.projects?.[projectId]?.backmergeBranch ??
     getPlanKindBackmergeBranch({
       planKind: getArchitectPlanKind(plan),
-      baseBranch: settings?.baseBranch || 'develop',
+      baseBranch: settings?.baseBranch || 'main',
+      mainBranch: settings?.mainBranch || 'main',
     });
 };
 

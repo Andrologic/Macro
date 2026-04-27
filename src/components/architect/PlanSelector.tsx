@@ -20,6 +20,7 @@ import {
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
 import {
   getPlanKindBackmergeBranch,
+  getCreatableArchitectPlanKinds,
   getPlanKindSourceBranch,
   getPlanKindTargetBranch,
   normalizeVersionSlug,
@@ -193,6 +194,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   );
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
+  const creatablePlanKinds = useMemo(
+    () =>
+      getCreatableArchitectPlanKinds(
+        scopedActionableProjectIds.map((projectId) => getProjectById(projectId)?.gitFlowSettings ?? null)
+      ),
+    [scopedActionableProjectIds, getProjectById]
+  );
   const displayedActivePlanTitle = useMemo(() => {
     if (activePlanContext && activePlanContext.id === activePlanId) {
       return getArchitectPlanPrimaryName(activePlanContext);
@@ -469,7 +477,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             : null;
       const sourceBranch = getPlanKindSourceBranch({ planKind, baseBranch, mainBranch });
       const targetBranchName = getPlanKindTargetBranch({ planKind, baseBranch, mainBranch });
-      const backmergeBranch = getPlanKindBackmergeBranch({ planKind, baseBranch });
+      const backmergeBranch = getPlanKindBackmergeBranch({ planKind, baseBranch, mainBranch });
       targetBranchesByProjectId[projectId] = targetBranchName;
       gitFlowProjects[projectId] = {
         projectId,
@@ -967,7 +975,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         ['release', 'flag', t('architect.planSelector.kindRelease', 'Release'), t('architect.planSelector.kindReleaseHelp', 'Stabilize and ship.')] as const,
                         ['hotfix', 'zap', t('architect.planSelector.kindHotfix', 'Hotfix'), t('architect.planSelector.kindHotfixHelp', 'Patch production quickly.')] as const,
                         ['bugfix', 'tool', t('architect.planSelector.kindBugfix', 'Bugfix'), t('architect.planSelector.kindBugfixHelp', 'Fix a normal bug.')] as const,
-                      ] satisfies Array<readonly [ArchitectPlanKind, React.ComponentProps<typeof Icon>['name'], string, string]>).map(([kind, icon, label, help]) => (
+                      ] satisfies Array<readonly [ArchitectPlanKind, React.ComponentProps<typeof Icon>['name'], string, string]>)
+                        .filter(([kind]) => creatablePlanKinds.includes(kind))
+                        .map(([kind, icon, label, help]) => (
                         <button
                           key={kind}
                           type="button"

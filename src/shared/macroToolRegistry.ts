@@ -828,7 +828,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and per-node `featureSlug`) rather than raw git branch names. Concrete branch names are rendered later from each subproject GitFlow profile.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and per-node `featureSlug`) rather than raw git branch names. Concrete branch names are rendered later from each subproject Git workflow profile.",
     {
       type: "object",
       properties: {
@@ -868,9 +868,9 @@ export const MACRO_TOOL_REGISTRY = [
               },
               branchType: {
                 type: "string",
-                enum: ["feature", "release", "hotfix", "bugfix"],
+                enum: ["feature"],
                 description:
-                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
+                  "Legacy compatibility field. New plan work branches must use feature; prefer featureSlug.",
               },
               featureSlug: {
                 type: "string",
@@ -1092,9 +1092,9 @@ export const MACRO_TOOL_REGISTRY = [
               },
               branchType: {
                 type: "string",
-                enum: ["feature", "release", "hotfix", "bugfix"],
+                enum: ["feature"],
                 description:
-                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
+                  "Legacy compatibility field. New plan work branches must use feature; prefer featureSlug.",
               },
               featureSlug: {
                 type: "string",
@@ -1135,9 +1135,9 @@ export const MACRO_TOOL_REGISTRY = [
               },
               branchType: {
                 type: "string",
-                enum: ["feature", "release", "hotfix", "bugfix"],
+                enum: ["feature"],
                 description:
-                  "Legacy compatibility field. Prefer featureSlug for plan work branches.",
+                  "Legacy compatibility field. New plan work branches must use feature; prefer featureSlug.",
               },
               featureSlug: {
                 type: "string",

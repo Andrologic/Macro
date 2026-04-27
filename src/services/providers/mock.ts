@@ -283,7 +283,7 @@ const buildMockProjectGitFlowDetection = async (_data: {
     initialCommitPreviewPaths: [],
     initialCommitPreviewCount: 0,
     initialCommitRiskFlags: [],
-    recommendedActionSequence: ['initialize_repo', 'create_initial_commit', 'create_develop'],
+    recommendedActionSequence: ['initialize_repo', 'create_initial_commit'],
   });
 };
 
@@ -359,7 +359,7 @@ export const createProjectWithGitSetup = async (data: {
       suggestedBaseBranch: hasDevelop ? 'develop' : 'main',
       suggestedCommitBranch: hasDevelop ? 'develop' : 'main',
       requiresConfirmation: false,
-      setupState: hasDevelop ? 'ready' : hasInitialCommit ? 'single_main_only' : hasRepo ? 'unborn' : 'not_git',
+      setupState: hasInitialCommit ? 'ready' : hasRepo ? 'unborn' : 'not_git',
       hasInitialCommit,
       resolvedRepoRootPath: data.expectedRepoRootPath ?? data.path,
       repoResolution: hasRepo ? 'selected_folder' : 'none',
@@ -522,7 +522,7 @@ export const updateProjectGitFlowWithSetup = async (data: {
       suggestedBaseBranch: hasDevelop ? 'develop' : 'main',
       suggestedCommitBranch: hasDevelop ? 'develop' : 'main',
       requiresConfirmation: false,
-      setupState: hasDevelop ? 'ready' : hasInitialCommit ? 'single_main_only' : hasRepo ? 'unborn' : 'not_git',
+      setupState: hasInitialCommit ? 'ready' : hasRepo ? 'unborn' : 'not_git',
       hasInitialCommit,
       resolvedRepoRootPath: data.expectedRepoRootPath ?? null,
       repoResolution: hasRepo ? 'selected_folder' : 'none',

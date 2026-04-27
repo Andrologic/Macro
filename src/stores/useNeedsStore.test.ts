@@ -202,7 +202,7 @@ describe('useNeedsStore', () => {
     ]);
 
     expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
-    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('develop', 'plan-2', [
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('main', 'plan-2', [
       expect.objectContaining({
         id: 'need-2',
         planId: 'plan-2',
@@ -244,7 +244,7 @@ describe('useNeedsStore', () => {
       })
     );
     expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
-    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('develop', 'plan-3', [
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('main', 'plan-3', [
       expect.objectContaining({
         id: 'need-3',
         planId: 'plan-3',
@@ -278,6 +278,6 @@ describe('useNeedsStore', () => {
     expect(useNeedsStore.getState().getNeed('need-4')).toBeUndefined();
     expect(useNeedsStore.getState().selectedNeedId).toBeNull();
     expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
-    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('develop', 'plan-4', []);
+    expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('main', 'plan-4', []);
   });
 });
