@@ -18,6 +18,7 @@ import {
 } from '../../services/architectPlanService';
 import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
 import {
+  getArchitectPlanKind,
   getPlanKindBackmergeBranch,
   getCreatableArchitectPlanKinds,
   getPlanKindSourceBranch,
@@ -38,7 +39,7 @@ import {
 } from '../../services/projectWorkspaceState';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { Icon } from '../ui/Icon';
+import { Icon, type IconName } from '../ui/Icon';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { notify } from '../ui/toastService';
@@ -78,6 +79,27 @@ const statusClassName: Record<string, string> = {
   completed: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   archived: 'text-muted-foreground bg-muted/50 border-border/70',
   deleted: 'text-red-500 bg-red-500/10 border-red-500/20',
+};
+
+const planKindIconName: Record<ArchitectPlanKind, IconName> = {
+  feature: 'sparkles',
+  release: 'flag',
+  hotfix: 'zap',
+  bugfix: 'tool',
+};
+
+const planKindClassName: Record<ArchitectPlanKind, string> = {
+  feature: 'border-sky-500/25 bg-sky-500/10 text-sky-500',
+  release: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-500',
+  hotfix: 'border-red-500/25 bg-red-500/10 text-red-500',
+  bugfix: 'border-violet-500/25 bg-violet-500/10 text-violet-500',
+};
+
+const planKindIconClassName: Record<ArchitectPlanKind, string> = {
+  feature: 'text-sky-500',
+  release: 'text-emerald-500',
+  hotfix: 'text-red-500',
+  bugfix: 'text-violet-500',
 };
 
 const formatRelativeDate = (iso: string, unknownLabel: string): string => {
@@ -979,9 +1001,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           key={kind}
                           type="button"
                           onClick={() => void handleCreatePlan(kind)}
-                          className="w-full rounded-md px-2.5 py-2 text-left hover:bg-accent transition-colors flex items-start gap-2"
+                          className="w-full rounded-md px-2 py-1.5 text-left hover:bg-accent transition-colors flex items-stretch gap-3"
                         >
-                          <Icon name={icon} size={13} className="mt-0.5 text-primary" />
+                          <span className="w-4 shrink-0 self-stretch inline-flex items-center justify-center">
+                            <Icon name={icon} size={16} className={planKindIconClassName[kind]} />
+                          </span>
                           <span className="min-w-0">
                             <span className="block text-xs font-medium text-foreground">{label}</span>
                             <span className="block text-[11px] text-muted-foreground">{help}</span>
@@ -1069,6 +1093,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const primaryName = getArchitectPlanPrimaryName(plan);
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
               const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
+              const planKind = getArchitectPlanKind(plan);
+              const planKindLabel =
+                planKind === 'feature'
+                  ? t('architect.planSelector.kindFeature', 'Feature')
+                  : planKind === 'release'
+                    ? t('architect.planSelector.kindRelease', 'Release')
+                    : planKind === 'hotfix'
+                      ? t('architect.planSelector.kindHotfix', 'Hotfix')
+                      : t('architect.planSelector.kindBugfix', 'Bugfix');
               const canDeletePlan = plan.status === 'archived' || plan.status === 'deleted';
               const canRenamePlan =
                 plan.status !== 'deleted' &&
@@ -1126,11 +1159,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-foreground truncate">{primaryName}</div>
-                      {secondaryText && (
-                        <div className="text-[11px] text-muted-foreground truncate">{secondaryText}</div>
-                      )}
+                    <div className="min-w-0 flex items-stretch gap-2">
+                      <span
+                        className={cn(
+                          'self-stretch min-h-8 aspect-square shrink-0 rounded-full border inline-flex items-center justify-center',
+                          planKindClassName[planKind]
+                        )}
+                        title={planKindLabel}
+                      >
+                        <Icon name={planKindIconName[planKind]} size={14} />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-foreground truncate">{primaryName}</div>
+                        {secondaryText && (
+                          <div className="text-[11px] text-muted-foreground truncate">{secondaryText}</div>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
