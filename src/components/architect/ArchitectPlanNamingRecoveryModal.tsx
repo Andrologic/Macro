@@ -26,8 +26,8 @@ export const ArchitectPlanNamingRecoveryModal: React.FC<
   onRetry,
   onManual,
 }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-    <div className="w-[440px] bg-card border border-border rounded-2xl shadow-2xl flex flex-col animate-in zoom-in-95 duration-200">
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[440px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-in zoom-in-95 duration-200">
       <header className="h-12 px-4 border-b border-border flex items-center gap-3 shrink-0">
         <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">
           <Icon name="sparkles" size={14} className="text-primary" />
@@ -35,7 +35,7 @@ export const ArchitectPlanNamingRecoveryModal: React.FC<
         <h2 className="text-sm font-semibold text-foreground flex-1">{title}</h2>
       </header>
 
-      <div className="p-4 space-y-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <p className="text-sm text-muted-foreground">{description}</p>
 
         {error && (

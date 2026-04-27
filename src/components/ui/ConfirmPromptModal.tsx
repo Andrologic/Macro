@@ -48,7 +48,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   const confirmDisabled = isSubmitting || (requireInput && !value.trim());
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center">
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={() => {
@@ -58,36 +58,38 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
         }}
       />
 
-      <div className="relative w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl p-4">
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-        {description && (
-          <p className="mt-2 text-sm text-muted-foreground">{description}</p>
-        )}
+      <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          {description && (
+            <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+          )}
 
-        {children && (
-          <div className="mt-3">{children}</div>
-        )}
+          {children && (
+            <div className="mt-3">{children}</div>
+          )}
 
-        {showInput && (
-          <div className="mt-3">
-            <Input
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              placeholder={inputPlaceholder}
-              autoFocus
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !confirmDisabled) {
-                  onConfirm(value.trim());
-                }
-                if (event.key === 'Escape' && !isSubmitting) {
-                  onCancel();
-                }
-              }}
-            />
-          </div>
-        )}
+          {showInput && (
+            <div className="mt-3">
+              <Input
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                placeholder={inputPlaceholder}
+                autoFocus
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !confirmDisabled) {
+                    onConfirm(value.trim());
+                  }
+                  if (event.key === 'Escape' && !isSubmitting) {
+                    onCancel();
+                  }
+                }}
+              />
+            </div>
+          )}
+        </div>
 
-        <div className={cn('mt-4 flex items-center justify-end gap-2')}>
+        <div className={cn('flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3')}>
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>

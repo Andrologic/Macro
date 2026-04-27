@@ -1408,123 +1408,125 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       )}
 
       {isCommitModelChoiceOpen && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-black/50 backdrop-blur-sm"
             onClick={() => setIsCommitModelChoiceOpen(false)}
           />
-          <div className="relative w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-2xl">
-            <h3 className="text-sm font-semibold text-foreground">
-              {t('implement.commitModelChoiceTitle', 'Choose commit message model')}
-            </h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t(
-                'implement.commitModelChoiceDescription',
-                'Macro can generate commit messages with the active conversation model or with a dedicated model for every commit.'
-              )}
-            </p>
-
-            <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg border border-border bg-muted/20 p-1">
-              <button
-                type="button"
-                className={cn(
-                  'rounded-md px-3 py-2 text-sm transition-colors',
-                  commitModelChoiceMode === 'conversation'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <h3 className="text-sm font-semibold text-foreground">
+                {t('implement.commitModelChoiceTitle', 'Choose commit message model')}
+              </h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {t(
+                  'implement.commitModelChoiceDescription',
+                  'Macro can generate commit messages with the active conversation model or with a dedicated model for every commit.'
                 )}
-                onClick={() => setCommitModelChoiceMode('conversation')}
-              >
-                {t('implement.commitModelConversation', 'Conversation model')}
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded-md px-3 py-2 text-sm transition-colors',
-                  commitModelChoiceMode === 'dedicated'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                )}
-                onClick={() => setCommitModelChoiceMode('dedicated')}
-              >
-                {t('implement.commitModelDedicated', 'Dedicated model')}
-              </button>
-            </div>
+              </p>
 
-            {commitModelChoiceMode === 'dedicated' && (
-              <div className="mt-4 space-y-3">
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {t('settings.providers', 'AI Providers')}
-                  </span>
-                  <select
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                    value={dedicatedCommitProviderId}
-                    onChange={(event) => {
-                      const providerId = event.target.value;
-                      const firstModel = (modelsByProvider[providerId] || [])
-                        .find((model) => model.isEnabled !== false);
-                      setDedicatedCommitProviderId(providerId);
-                      setDedicatedCommitModelId(firstModel?.id ?? '');
-                      setDedicatedCommitReasoningEffort(null);
-                    }}
-                  >
-                    <option value="">{t('chat.selectProvider', 'Select a provider')}</option>
-                    {enabledCommitProviders.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    {t('chat.selectModel', 'Select a model')}
-                  </span>
-                  <select
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                    value={dedicatedCommitModelId}
-                    onChange={(event) => {
-                      setDedicatedCommitModelId(event.target.value);
-                      setDedicatedCommitReasoningEffort(null);
-                    }}
-                    disabled={!dedicatedCommitProviderId}
-                  >
-                    <option value="">{t('chat.selectModel', 'Select a model')}</option>
-                    {dedicatedCommitModels.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name || model.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {dedicatedCommitReasoningEfforts.length > 0 && (
+              <div className="mt-4 grid grid-cols-1 gap-2 rounded-lg border border-border bg-muted/20 p-1 sm:grid-cols-2">
+                <button
+                  type="button"
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    commitModelChoiceMode === 'conversation'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                  )}
+                  onClick={() => setCommitModelChoiceMode('conversation')}
+                >
+                  {t('implement.commitModelConversation', 'Conversation model')}
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    commitModelChoiceMode === 'dedicated'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                  )}
+                  onClick={() => setCommitModelChoiceMode('dedicated')}
+                >
+                  {t('implement.commitModelDedicated', 'Dedicated model')}
+                </button>
+              </div>
+
+              {commitModelChoiceMode === 'dedicated' && (
+                <div className="mt-4 space-y-3">
                   <label className="block space-y-1.5">
                     <span className="text-xs font-medium text-muted-foreground">
-                      {t('models.reasoningEffort', 'Reasoning')}
+                      {t('settings.providers', 'AI Providers')}
                     </span>
                     <select
                       className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                      value={dedicatedCommitReasoningEffort ?? ''}
-                      onChange={(event) =>
-                        setDedicatedCommitReasoningEffort(
-                          event.target.value ? event.target.value as ReasoningEffort : null
-                        )
-                      }
+                      value={dedicatedCommitProviderId}
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        const firstModel = (modelsByProvider[providerId] || [])
+                          .find((model) => model.isEnabled !== false);
+                        setDedicatedCommitProviderId(providerId);
+                        setDedicatedCommitModelId(firstModel?.id ?? '');
+                        setDedicatedCommitReasoningEffort(null);
+                      }}
                     >
-                      <option value="">{t('models.defaultReasoning', 'Default')}</option>
-                      {dedicatedCommitReasoningEfforts.map((effort) => (
-                        <option key={effort} value={effort}>
-                          {effort}
+                      <option value="">{t('chat.selectProvider', 'Select a provider')}</option>
+                      {enabledCommitProviders.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
                         </option>
                       ))}
                     </select>
                   </label>
-                )}
-              </div>
-            )}
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {t('chat.selectModel', 'Select a model')}
+                    </span>
+                    <select
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                      value={dedicatedCommitModelId}
+                      onChange={(event) => {
+                        setDedicatedCommitModelId(event.target.value);
+                        setDedicatedCommitReasoningEffort(null);
+                      }}
+                      disabled={!dedicatedCommitProviderId}
+                    >
+                      <option value="">{t('chat.selectModel', 'Select a model')}</option>
+                      {dedicatedCommitModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name || model.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {dedicatedCommitReasoningEfforts.length > 0 && (
+                    <label className="block space-y-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {t('models.reasoningEffort', 'Reasoning')}
+                      </span>
+                      <select
+                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                        value={dedicatedCommitReasoningEffort ?? ''}
+                        onChange={(event) =>
+                          setDedicatedCommitReasoningEffort(
+                            event.target.value ? event.target.value as ReasoningEffort : null
+                          )
+                        }
+                      >
+                        <option value="">{t('models.defaultReasoning', 'Default')}</option>
+                        {dedicatedCommitReasoningEfforts.map((effort) => (
+                          <option key={effort} value={effort}>
+                            {effort}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
 
-            <div className="mt-5 flex items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-5 py-4">
               <Button variant="ghost" size="sm" onClick={() => setIsCommitModelChoiceOpen(false)}>
                 {t('common.cancel', 'Cancel')}
               </Button>
@@ -1551,101 +1553,103 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       )}
 
       {commitMessageEditState && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative max-h-[86vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-2xl">
-            <h3 className="text-sm font-semibold text-foreground">
-              {t('implement.commitMessageEditTitle', 'Review commit messages')}
-            </h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t(
-                'implement.commitMessageEditDescription',
-                'The generated message did not pass Conventional Commits validation. Edit it before committing.'
-              )}
-            </p>
-            {commitMessageEditState.error && (
-              <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {commitMessageEditState.error}
+          <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <h3 className="text-sm font-semibold text-foreground">
+                {t('implement.commitMessageEditTitle', 'Review commit messages')}
+              </h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {t(
+                  'implement.commitMessageEditDescription',
+                  'The generated message did not pass Conventional Commits validation. Edit it before committing.'
+                )}
               </p>
-            )}
-            <div className="mt-4 space-y-4">
-              {Object.entries(commitMessageEditState.fieldsByRepositoryId).map(([repositoryId, fields]) => {
-                const repository = repositories.find((entry) => entry.id === repositoryId);
-                const validation = commitMessageValidationByRepositoryId[repositoryId];
-                const updateFields = (patch: Partial<ConventionalCommitFields>) => {
-                  setCommitMessageEditState((current) => current
-                    ? {
-                        ...current,
-                        fieldsByRepositoryId: {
-                          ...current.fieldsByRepositoryId,
-                          [repositoryId]: {
-                            ...current.fieldsByRepositoryId[repositoryId],
-                            ...patch,
+              {commitMessageEditState.error && (
+                <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {commitMessageEditState.error}
+                </p>
+              )}
+              <div className="mt-4 space-y-4">
+                {Object.entries(commitMessageEditState.fieldsByRepositoryId).map(([repositoryId, fields]) => {
+                  const repository = repositories.find((entry) => entry.id === repositoryId);
+                  const validation = commitMessageValidationByRepositoryId[repositoryId];
+                  const updateFields = (patch: Partial<ConventionalCommitFields>) => {
+                    setCommitMessageEditState((current) => current
+                      ? {
+                          ...current,
+                          fieldsByRepositoryId: {
+                            ...current.fieldsByRepositoryId,
+                            [repositoryId]: {
+                              ...current.fieldsByRepositoryId[repositoryId],
+                              ...patch,
+                            },
                           },
-                        },
-                      }
-                    : current
-                  );
-                };
-                return (
-                  <div key={repositoryId} className="space-y-2 rounded-lg border border-border bg-muted/10 p-3">
-                    <div className="text-xs font-medium text-muted-foreground">
-                      {repository ? getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name) : repositoryId}
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-[120px]">
-                      <label className="space-y-1">
+                        }
+                      : current
+                    );
+                  };
+                  return (
+                    <div key={repositoryId} className="space-y-2 rounded-lg border border-border bg-muted/10 p-3">
+                      <div className="text-xs font-medium text-muted-foreground">
+                        {repository ? getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name) : repositoryId}
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-[120px]">
+                        <label className="space-y-1">
+                          <span className="text-[11px] font-medium text-muted-foreground">
+                            {t('implement.commitMessageTypeLabel', 'Type')}
+                          </span>
+                          <select
+                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                            value={fields.type}
+                            onChange={(event) => updateFields({ type: event.target.value as ConventionalCommitType })}
+                          >
+                            {ALLOWED_COMMIT_TYPES.map((type) => (
+                              <option key={type} value={type}>{type}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <label className="block space-y-1">
                         <span className="text-[11px] font-medium text-muted-foreground">
-                          {t('implement.commitMessageTypeLabel', 'Type')}
+                          {t('implement.commitMessageSubjectLabel', 'Subject')}
                         </span>
-                        <select
+                        <input
                           className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                          value={fields.type}
-                          onChange={(event) => updateFields({ type: event.target.value as ConventionalCommitType })}
-                        >
-                          {ALLOWED_COMMIT_TYPES.map((type) => (
-                            <option key={type} value={type}>{type}</option>
-                          ))}
-                        </select>
+                          value={fields.subject}
+                          onChange={(event) => updateFields({ subject: event.target.value })}
+                        />
                       </label>
+                      <label className="block space-y-1">
+                        <span className="text-[11px] font-medium text-muted-foreground">
+                          {t('implement.commitMessageBodyLabel', 'Body')}
+                        </span>
+                        <Textarea
+                          rows={4}
+                          value={fields.body ?? ''}
+                          error={!!validation && !validation.ok}
+                          placeholder={t('implement.commitMessageBodyPlaceholder', 'Optional details')}
+                          onChange={(event) => updateFields({ body: event.target.value || null })}
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(fields.breaking)}
+                          onChange={(event) => updateFields({ breaking: event.target.checked })}
+                        />
+                        {t('implement.commitMessageBreakingLabel', 'Breaking change')}
+                      </label>
+                      {validation && !validation.ok && (
+                        <span className="text-xs text-destructive">{validation.message}</span>
+                      )}
                     </div>
-                    <label className="block space-y-1">
-                      <span className="text-[11px] font-medium text-muted-foreground">
-                        {t('implement.commitMessageSubjectLabel', 'Subject')}
-                      </span>
-                      <input
-                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                        value={fields.subject}
-                        onChange={(event) => updateFields({ subject: event.target.value })}
-                      />
-                    </label>
-                    <label className="block space-y-1">
-                      <span className="text-[11px] font-medium text-muted-foreground">
-                        {t('implement.commitMessageBodyLabel', 'Body')}
-                      </span>
-                      <Textarea
-                        rows={4}
-                        value={fields.body ?? ''}
-                        error={!!validation && !validation.ok}
-                        placeholder={t('implement.commitMessageBodyPlaceholder', 'Optional details')}
-                        onChange={(event) => updateFields({ body: event.target.value || null })}
-                      />
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(fields.breaking)}
-                        onChange={(event) => updateFields({ breaking: event.target.checked })}
-                      />
-                      {t('implement.commitMessageBreakingLabel', 'Breaking change')}
-                    </label>
-                    {validation && !validation.ok && (
-                      <span className="text-xs text-destructive">{validation.message}</span>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-            <div className="mt-5 flex items-center justify-end gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
               <Button
                 variant="ghost"
                 size="sm"

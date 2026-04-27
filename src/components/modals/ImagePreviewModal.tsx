@@ -37,14 +37,14 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, im
 
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm animate-in fade-in duration-200"
       onClick={handleBackdropClick}
     >
       <div
-        className="w-[92vw] max-w-5xl max-h-[90vh] bg-card border border-border shadow-2xl rounded-xl overflow-hidden animate-in zoom-in-95 duration-200"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl animate-in zoom-in-95 duration-200"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/20">
+        <div className="flex shrink-0 items-center justify-between px-4 py-3 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2 min-w-0">
             <div className="p-1.5 rounded-md bg-primary/10">
               <Icon name="camera" size={14} className="text-primary" />
@@ -64,11 +64,11 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, im
           </button>
         </div>
 
-        <div className="p-3 md:p-4 flex items-center justify-center bg-background/40">
+        <div className="min-h-0 flex flex-1 items-center justify-center overflow-auto bg-background/40 p-3 md:p-4">
           <img
             src={image.dataUrl}
             alt={t('implement.previewTab', 'Preview')}
-            className="max-w-full max-h-[80vh] object-contain rounded-md border border-border"
+            className="max-h-full max-w-full rounded-md border border-border object-contain"
           />
         </div>
       </div>

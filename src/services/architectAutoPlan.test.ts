@@ -8,6 +8,7 @@ import {
   isDefaultNewPlanBaseLabel,
 } from './architectPlanPresentation';
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
+import type { ArchitectPlanGitFlowMetadata, ArchitectPlanKind } from './architectPlanKinds';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 
 interface LocalStorageMock {
@@ -50,8 +51,11 @@ const createArchitectAutoPlanHarness = () => {
     title: plan.title,
     label: plan.label,
     description: plan.description,
+    planKind: plan.planKind,
+    gitFlowPlan: plan.gitFlowPlan,
     status: plan.status,
     targetBranch: plan.targetBranch,
+    targetBranchesByProjectId: plan.targetBranchesByProjectId,
     conversationId: plan.conversationId,
     projectId: plan.projectId,
     projectIds: plan.projectIds,
@@ -78,9 +82,14 @@ const createArchitectAutoPlanHarness = () => {
     branchName: string;
     planId?: string;
     label?: string;
+    slug?: string;
+    description?: string;
+    planKind?: ArchitectPlanKind;
+    gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
     projectId?: string;
     projectIds?: string[];
     contextProjectIds?: string[];
+    targetBranchesByProjectId?: Record<string, string>;
     createdAt?: string;
     updatedAt?: string;
     status?: ArchitectPlanRecord['status'];
@@ -91,12 +100,15 @@ const createArchitectAutoPlanHarness = () => {
     const projectIds = params.projectIds ?? (params.projectId ? [params.projectId] : []);
     const plan: ArchitectPlanRecord = {
       id,
-      slug: id,
+      slug: params.slug ?? id,
       title: id,
       label: params.label ?? id,
-      description: '',
+      description: params.description ?? '',
+      planKind: params.planKind,
+      gitFlowPlan: params.gitFlowPlan as ArchitectPlanGitFlowMetadata | undefined,
       status: params.status ?? 'draft',
       targetBranch: params.branchName,
+      targetBranchesByProjectId: params.targetBranchesByProjectId,
       conversationId: undefined,
       projectId: params.projectId ?? projectIds[0],
       projectIds: projectIds.length > 0 ? [...projectIds] : undefined,
@@ -156,6 +168,9 @@ const createArchitectAutoPlanHarness = () => {
     planId: string;
     label?: string;
     description?: string;
+    planKind?: ArchitectPlanKind;
+    gitFlowPlan?: Partial<ArchitectPlanGitFlowMetadata>;
+    status?: ArchitectPlanRecord['status'];
     projectIds?: string[];
     contextProjectIds?: string[];
     expectedProjectIds?: string[];
@@ -170,6 +185,9 @@ const createArchitectAutoPlanHarness = () => {
       ...existing,
       label: params.label ?? existing.label,
       description: params.description ?? existing.description,
+      planKind: params.planKind ?? existing.planKind,
+      gitFlowPlan: (params.gitFlowPlan as ArchitectPlanGitFlowMetadata | undefined) ?? existing.gitFlowPlan,
+      status: params.status ?? existing.status,
       projectIds: params.projectIds ? [...params.projectIds] : existing.projectIds ? [...existing.projectIds] : undefined,
       contextProjectIds: params.contextProjectIds
         ? [...params.contextProjectIds]
@@ -297,21 +315,18 @@ describe('architectAutoPlan', () => {
     mock.restore();
   });
 
-  it('creates and activates a default blank plan when none exists for the scope', async () => {
+  it('does not implicitly create a default blank plan when none exists for the scope', async () => {
     const { ensureProjectGroupPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
     const ensured = await ensureProjectGroupPlan({
       branchName,
       scopedProjectIds: ['web'],
     });
 
-    expect(ensured).not.toBeNull();
-    expect(ensured?.action).toBe('created');
-    expect(ensured?.plan.label).toBe('new plan');
-    expect(ensured?.plan.projectIds).toEqual(['web']);
+    expect(ensured).toBeNull();
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.activePlanId).toBe(ensured!.plan.id);
-    expect(listed.plans).toHaveLength(1);
+    expect(listed.activePlanId).toBeNull();
+    expect(listed.plans).toHaveLength(0);
   });
 
   it('expands an existing blank plan scope instead of creating a second plan', async () => {
@@ -493,7 +508,7 @@ describe('architectAutoPlan', () => {
     expect(ensured).toBeNull();
   });
 
-  it('creates a new explicit placeholder without renaming a started new plan', async () => {
+  it('reuses an existing started draft of the same type during explicit create', async () => {
     const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan, updateArchitectPlan } =
       createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
@@ -518,18 +533,18 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.action).toBe('created');
-    expect(ensured?.plan.id).not.toBe(created.id);
-    expect(ensured?.plan.label).toBe('new plan 2');
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.label).toBe('new plan');
 
     const reloadedOriginal = await getArchitectPlan(branchName, created.id);
     expect(reloadedOriginal?.label).toBe('new plan');
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.map((plan) => plan.label)).toEqual(['new plan', 'new plan 2']);
+    expect(listed.plans.map((plan) => plan.label)).toEqual(['new plan']);
   });
 
-  it('creates a new placeholder instead of reusing a renamed empty draft during explicit create', async () => {
+  it('reuses a renamed empty draft of the same type during explicit create', async () => {
     const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan } =
       createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
@@ -548,15 +563,15 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.action).toBe('created');
-    expect(ensured?.plan.id).not.toBe(created.id);
-    expect(ensured?.plan.label).toBe('new plan');
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.label).toBe('architecture scratchpad');
 
     const reloadedOriginal = await getArchitectPlan(branchName, created.id);
     expect(reloadedOriginal?.label).toBe('architecture scratchpad');
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans).toHaveLength(1);
   });
 
   it('expands a reusable blank draft during explicit create instead of creating a second plan', async () => {
@@ -617,6 +632,236 @@ describe('architectAutoPlan', () => {
     const listed = await listArchitectPlans(branchName, true, true);
     expect(listed.plans).toHaveLength(1);
     expect(listed.plans[0]?.label).toBe('new plan 2');
+  });
+
+  it('allows one explicit blank draft per plan type in the same scope', async () => {
+    const { ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+
+    const release = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      planKind: 'release',
+      createPlanInput: {
+        label: 'New Release Plan',
+        slug: 'release-2026-01-01',
+        planKind: 'release',
+      },
+      trigger: 'explicit_create',
+    });
+    const hotfix = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      planKind: 'hotfix',
+      createPlanInput: {
+        label: 'New Hotfix Plan',
+        slug: 'hotfix-2026-01-01',
+        planKind: 'hotfix',
+      },
+      trigger: 'explicit_create',
+    });
+
+    expect(release?.action).toBe('created');
+    expect(hotfix?.action).toBe('created');
+    expect(release?.plan.id).not.toBe(hotfix?.plan.id);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans.map((plan) => plan.planKind).sort()).toEqual(['hotfix', 'release']);
+  });
+
+  it('reuses an existing typed draft instead of creating another draft of the same type', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    const existingRelease = await createArchitectPlan({
+      branchName,
+      planId: 'release-draft',
+      label: 'New Release Plan',
+      description: 'Release workflow draft.',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web'],
+      planKind: 'release',
+      createPlanInput: {
+        label: 'New Release Plan',
+        slug: 'release-2026-01-01',
+        description: 'Release workflow draft.',
+        planKind: 'release',
+      },
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(existingRelease.id);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+  });
+
+  it('expands an overlapping typed draft before reusing it for a wider scope', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, getArchitectPlan, listArchitectPlans } =
+      createArchitectAutoPlanHarness();
+    const existingRelease = await createArchitectPlan({
+      branchName,
+      planId: 'release-web',
+      label: 'New Release Plan',
+      description: 'Release workflow draft.',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['web', 'api'],
+      contextProjectIds: ['docs'],
+      planKind: 'release',
+      createPlanInput: {
+        label: 'New Release Plan',
+        slug: 'release-2026-01-01',
+        description: 'Release workflow draft.',
+        planKind: 'release',
+      },
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.action).toBe('expanded_blank');
+    expect(ensured?.plan.id).toBe(existingRelease.id);
+    expect(ensured?.plan.projectIds).toEqual(['web', 'api']);
+    expect(ensured?.plan.contextProjectIds).toEqual(['docs']);
+    expect(ensured?.plan.expectedProjectIds).toEqual(['web', 'api', 'docs']);
+
+    const reloaded = await getArchitectPlan(branchName, existingRelease.id);
+    expect(reloaded?.projectIds).toEqual(['web', 'api']);
+    expect(reloaded?.contextProjectIds).toEqual(['docs']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(1);
+  });
+
+  it('keeps unrelated exact scopes separate for typed drafts of the same type', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    const existingRelease = await createArchitectPlan({
+      branchName,
+      planId: 'release-web',
+      label: 'New Release Plan',
+      description: 'Release workflow draft.',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName,
+      scopedProjectIds: ['api'],
+      planKind: 'release',
+      createPlanInput: {
+        label: 'New Release Plan',
+        slug: 'release-2026-01-01',
+        description: 'Release workflow draft.',
+        planKind: 'release',
+      },
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured?.action).toBe('created');
+    expect(ensured?.plan.id).not.toBe(existingRelease.id);
+    expect(ensured?.plan.projectIds).toEqual(['api']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans.map((plan) => plan.projectIds?.join(','))).toEqual(['web', 'api']);
+  });
+
+  it('archives duplicate non-empty typed drafts that share the same exact scope', async () => {
+    const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } =
+      createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'release-older',
+      label: 'New Release Plan',
+      description: 'Release workflow draft.',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const releaseWinner = await createArchitectPlan({
+      branchName,
+      planId: 'release-newer',
+      label: 'New Release Plan',
+      description: 'Release workflow draft.',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    const result = await consolidateScopedBlankPlans({
+      branchName,
+      scopedProjectIds: ['web'],
+      planKind: 'release',
+    });
+
+    expect(result.deletedPlanIds).toEqual([]);
+    expect(result.archivedPlanIds).toEqual(['release-older']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans.find((plan) => plan.id === releaseWinner.id)?.status).toBe('draft');
+    expect(listed.plans.find((plan) => plan.id === 'release-older')?.status).toBe('archived');
+  });
+
+  it('consolidates duplicate blank drafts only within the same plan type', async () => {
+    const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } =
+      createArchitectAutoPlanHarness();
+    await createArchitectPlan({
+      branchName,
+      planId: 'release-older',
+      label: 'New Release Plan',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const releaseWinner = await createArchitectPlan({
+      branchName,
+      planId: 'release-newer',
+      label: 'New Release Plan',
+      planKind: 'release',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    });
+    const hotfix = await createArchitectPlan({
+      branchName,
+      planId: 'hotfix-draft',
+      label: 'New Hotfix Plan',
+      planKind: 'hotfix',
+      projectIds: ['web'],
+      status: 'draft',
+      createdAt: '2026-01-03T00:00:00.000Z',
+      updatedAt: '2026-01-03T00:00:00.000Z',
+    });
+
+    const result = await consolidateScopedBlankPlans({
+      branchName,
+      scopedProjectIds: ['web'],
+      planKind: 'release',
+    });
+
+    expect(result.deletedPlanIds).toEqual(['release-older']);
+
+    const listed = await listArchitectPlans(branchName, true, true);
+    expect(listed.plans.map((plan) => plan.id).sort()).toEqual([hotfix.id, releaseWinner.id].sort());
   });
 
   it('prefers the active blank draft over newer blank duplicates during explicit create', async () => {

@@ -1,5 +1,6 @@
 import { getRegisteredAppStateSync } from './appStateRuntime';
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
+import { normalizeArchitectPlanKind } from './architectPlanKinds';
 import {
   createArchitectPlan,
   deleteArchitectPlan,
@@ -114,6 +115,32 @@ const withArchitectAutoPlanService = <T>(
   callback: (service: ReturnType<typeof createArchitectAutoPlanService>) => T,
 ): T => callback(createLazyArchitectAutoPlanService());
 
+const pendingScopedBlankPlanEnsuresByKey = new Map<
+  string,
+  ReturnType<ReturnType<typeof createArchitectAutoPlanService>['ensureScopedBlankPlan']>
+>();
+
+const normalizeIdListForKey = (values?: string[]): string =>
+  Array.from(
+    new Set(
+      (values || [])
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  )
+    .sort((left, right) => left.localeCompare(right))
+    .join(',');
+
+const getEnsureScopedBlankPlanLockKey = (
+  params: Parameters<ReturnType<typeof createArchitectAutoPlanService>['ensureScopedBlankPlan']>[0]
+): string =>
+  JSON.stringify({
+    branchName: params.branchName.trim(),
+    scopedProjectIds: normalizeIdListForKey(params.scopedProjectIds),
+    contextProjectIds: normalizeIdListForKey(params.contextProjectIds),
+    planKind: normalizeArchitectPlanKind(params.planKind || params.createPlanInput?.planKind),
+  });
+
 export const isArchitectPlanBlankDraft = (...args: Parameters<ReturnType<typeof createArchitectAutoPlanService>['isArchitectPlanBlankDraft']>) =>
   withArchitectAutoPlanService((service) => service.isArchitectPlanBlankDraft(...args));
 
@@ -123,8 +150,25 @@ export const isReusableBlankDraft = (...args: Parameters<ReturnType<typeof creat
 export const consolidateScopedBlankPlans = (...args: Parameters<ReturnType<typeof createArchitectAutoPlanService>['consolidateScopedBlankPlans']>) =>
   withArchitectAutoPlanService((service) => service.consolidateScopedBlankPlans(...args));
 
-export const ensureScopedBlankPlan = (...args: Parameters<ReturnType<typeof createArchitectAutoPlanService>['ensureScopedBlankPlan']>) =>
-  withArchitectAutoPlanService((service) => service.ensureScopedBlankPlan(...args));
+export const ensureScopedBlankPlan = (...args: Parameters<ReturnType<typeof createArchitectAutoPlanService>['ensureScopedBlankPlan']>) => {
+  const [params] = args;
+  if (params.trigger !== 'explicit_create') {
+    return withArchitectAutoPlanService((service) => service.ensureScopedBlankPlan(...args));
+  }
+
+  const lockKey = getEnsureScopedBlankPlanLockKey(params);
+  const pending = pendingScopedBlankPlanEnsuresByKey.get(lockKey);
+  if (pending) {
+    return pending;
+  }
+
+  const task = withArchitectAutoPlanService((service) => service.ensureScopedBlankPlan(...args));
+  pendingScopedBlankPlanEnsuresByKey.set(lockKey, task);
+  task.finally(() => {
+    pendingScopedBlankPlanEnsuresByKey.delete(lockKey);
+  });
+  return task;
+};
 
 export const ensureProjectGroupPlan = (...args: Parameters<ReturnType<typeof createArchitectAutoPlanService>['ensureProjectGroupPlan']>) =>
   withArchitectAutoPlanService((service) => service.ensureProjectGroupPlan(...args));

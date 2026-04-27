@@ -171,7 +171,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
           ))}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border px-5 py-4">
+        <footer className="flex shrink-0 flex-col gap-3 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground">
             {hasMissingCommand
               ? t(
@@ -183,7 +183,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                   'Les commandes seront exécutées dans le worktree de la tâche pour chaque sous-projet concerné.'
                 )}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onClose} disabled={isSubmitting}>
               {t('common.cancel', 'Cancel')}
             </Button>

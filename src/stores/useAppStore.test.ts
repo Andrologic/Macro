@@ -916,19 +916,7 @@ describe('useAppStore architect plan resolution', () => {
     expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-visible');
   });
 
-  it('keeps the blank auto-plan fallback when no visible plan exists', async () => {
-    const blankPlan = buildPlan({
-      id: 'plan-blank',
-      updatedAt: '2026-04-17T12:00:00.000Z',
-      projectIds: ['project-1', 'project-2'],
-      expectedProjectIds: ['project-1', 'project-2'],
-    });
-    ensureProjectGroupPlanResult = {
-      action: 'created',
-      plan: blankPlan,
-      needs: [],
-    };
-
+  it('does not create a blank auto-plan when no visible plan exists', async () => {
     const { useAppStore } = await loadIsolatedUseAppStore();
     useAppStore.setState({
       mode: 'Chat',
@@ -944,8 +932,8 @@ describe('useAppStore architect plan resolution', () => {
     useAppStore.getState().setMode('Architect');
     await flushAsyncWork();
 
-    expect(ensureProjectGroupPlanMock).toHaveBeenCalledTimes(1);
-    expect(useAppStore.getState().activeArchitectPlanId).toBe('plan-blank');
+    expect(ensureProjectGroupPlanMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
   });
 
   it('hydrates a switched architect plan from the activation payload and starts the chat transition immediately', async () => {
