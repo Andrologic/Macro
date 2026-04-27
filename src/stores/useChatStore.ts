@@ -2579,6 +2579,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<think>[\s\S]*$/gi, "")
+      .replace(/<\/think>/gi, "")
       .split("\n")
       .filter((line) => {
         const trimmed = line.trim();
