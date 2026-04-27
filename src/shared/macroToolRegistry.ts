@@ -69,6 +69,17 @@ const objectTool = (
   parameters,
 });
 
+const copilotBuiltInOverrideTool = (
+  id: string,
+  description: string,
+  parameters: JsonSchema,
+): MacroToolRegistryEntry => ({
+  ...objectTool(id, description, parameters),
+  copilot: {
+    overridesBuiltInTool: true,
+  },
+});
+
 export const MACRO_TOOL_REGISTRY = [
   objectTool(
     "web_search",
@@ -252,31 +263,26 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["citation_id", "action"],
     },
   ),
-  {
-    ...objectTool(
-      "read_file",
-      "Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.",
-      {
-        type: "object",
-        properties: {
-          file: {
-            type: "string",
-            description: "File name/path/source to read (example: hotas.pr0).",
-          },
-          extract_text: {
-            type: "boolean",
-            description:
-              "Optional hint to request text extraction for binary-like formats (e.g. .docx).",
-          },
+  copilotBuiltInOverrideTool(
+    "read_file",
+    "Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.",
+    {
+      type: "object",
+      properties: {
+        file: {
+          type: "string",
+          description: "File name/path/source to read (example: hotas.pr0).",
         },
-        required: ["file"],
+        extract_text: {
+          type: "boolean",
+          description:
+            "Optional hint to request text extraction for binary-like formats (e.g. .docx).",
+        },
       },
-    ),
-    copilot: {
-      overridesBuiltInTool: true,
+      required: ["file"],
     },
-  },
-  objectTool(
+  ),
+  copilotBuiltInOverrideTool(
     "list",
     "List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.",
     {
@@ -308,7 +314,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: [],
     },
   ),
-  objectTool(
+  copilotBuiltInOverrideTool(
     "read",
     "Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.",
     {
@@ -329,7 +335,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["path"],
     },
   ),
-  objectTool(
+  copilotBuiltInOverrideTool(
     "write",
     "Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
@@ -350,7 +356,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["path", "content"],
     },
   ),
-  objectTool(
+  copilotBuiltInOverrideTool(
     "edit",
     "Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
@@ -372,7 +378,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["path", "old_text", "new_text"],
     },
   ),
-  objectTool(
+  copilotBuiltInOverrideTool(
     "delete",
     "Delete a file in the current execution workspace. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
     {
@@ -388,7 +394,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["path"],
     },
   ),
-  objectTool(
+  copilotBuiltInOverrideTool(
     "apply_patch",
     "Apply an atomic multi-file patch in the current execution workspace. Use the Macro patch format: *** Begin Patch, then one or more file sections using *** Add File:, *** Update File:, or *** Delete File:, then *** End Patch. Prefer this for coordinated edits and keep paths relative to the execution workspace.",
     {
@@ -408,32 +414,27 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["patch_text"],
     },
   ),
-  {
-    ...objectTool(
-      "glob",
-      "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
-      {
-        type: "object",
-        properties: {
-          pattern: { type: "string", description: "Glob pattern." },
-          project_id: {
-            type: "string",
-            description:
-              "Optional subproject identifier when you want to force which subproject to use.",
-          },
-          include_hidden: {
-            type: "boolean",
-            description: "Include hidden files/folders.",
-          },
+  copilotBuiltInOverrideTool(
+    "glob",
+    "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+    {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "Glob pattern." },
+        project_id: {
+          type: "string",
+          description:
+            "Optional subproject identifier when you want to force which subproject to use.",
         },
-        required: ["pattern"],
+        include_hidden: {
+          type: "boolean",
+          description: "Include hidden files/folders.",
+        },
       },
-    ),
-    copilot: {
-      overridesBuiltInTool: true,
+      required: ["pattern"],
     },
-  },
-  objectTool(
+  ),
+  copilotBuiltInOverrideTool(
     "grep",
     "Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
     {
@@ -1223,6 +1224,9 @@ export const requireMacroToolRegistryEntry = (
 export const isMacroToolSupportedByCopilot = (toolId: string): boolean =>
   COPILOT_SUPPORTED_TOOL_ID_SET.has(toolId);
 
+export const isMacroToolCopilotBuiltInOverride = (toolId: string): boolean =>
+  Boolean(registryMap.get(toolId)?.copilot?.overridesBuiltInTool);
+
 export const filterCopilotSupportedToolIds = (toolIds: string[]): string[] =>
   toolIds.filter(isMacroToolSupportedByCopilot);
 
@@ -1233,6 +1237,7 @@ export interface FunctionToolShape {
     description: string;
     parameters: JsonSchema;
   };
+  overridesBuiltInTool?: true;
 }
 
 export const toFunctionToolShape = (
@@ -1245,3 +1250,15 @@ export const toFunctionToolShape = (
     parameters: entry.parameters,
   },
 });
+
+export const toCopilotFunctionToolShape = (
+  entry: MacroToolRegistryEntry,
+): FunctionToolShape => {
+  const shape = toFunctionToolShape(entry);
+  return entry.copilot?.overridesBuiltInTool
+    ? {
+        ...shape,
+        overridesBuiltInTool: true,
+      }
+    : shape;
+};

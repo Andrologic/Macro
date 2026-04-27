@@ -1177,6 +1177,118 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('sends Copilot built-in override metadata only for shadowing tools', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: 'Done.',
+              tool_calls: [],
+            },
+          });
+        });
+      }
+
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'Search and inspect git status.' }],
+      allowedToolIds: ['grep', 'git_status'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    const invokePayload = (invokeMock.mock.calls[0]?.[1] ?? {}) as {
+      request?: {
+        tools?: Array<{
+          overridesBuiltInTool?: true;
+          function?: { name?: string };
+        }>;
+      };
+    };
+    const tools = invokePayload.request?.tools ?? [];
+    const grepTool = tools.find((tool) => tool.function?.name === 'grep');
+    const gitStatusTool = tools.find((tool) => tool.function?.name === 'git_status');
+
+    expect(grepTool?.overridesBuiltInTool).toBe(true);
+    expect(gitStatusTool?.overridesBuiltInTool).toBeUndefined();
+  });
+
+  it('does not leak Copilot override metadata into OpenAI-compatible payloads', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{
+      tools?: Array<{
+        overridesBuiltInTool?: true;
+        function?: { name?: string };
+      }>;
+    }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(JSON.parse(init?.body ?? '{}'));
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Search workspace.' }],
+      allowedToolIds: ['grep'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    const grepTool = requestBodies[0]?.tools?.find((tool) => tool.function?.name === 'grep');
+
+    expect(grepTool).toBeDefined();
+    expect(grepTool?.overridesBuiltInTool).toBeUndefined();
+  });
+
   it('streams and persists Copilot tool traces from native events', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
