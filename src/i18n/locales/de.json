@@ -922,6 +922,7 @@
     "revert": "Verwerfen",
     "validateAction": "Validieren",
     "invalidateAction": "Ungültig machen",
+    "unstageAction": "Aus dem Stage entfernen",
     "revertAction": "Verwerfen",
     "validateFile": "Datei validieren",
     "validatedFiles": "Dateien validiert",
@@ -935,6 +936,8 @@
     "revertScopeDescription": "Dadurch werden die lokalen Änderungen für „{{scope}}“ verworfen.",
     "revertSuccess": "Änderungen verworfen.",
     "revertFailed": "Änderungen konnten nicht verworfen werden.",
+    "unstageSuccess": "Änderungen aus dem Stage entfernt.",
+    "unstageFailed": "Änderungen konnten nicht aus dem Stage entfernt werden.",
     "stage": "Stage",
     "changeStatus": {
       "added": "Hinzugefügt",

@@ -75,6 +75,7 @@ const buildRepository = (): ReviewRepositoryState => {
       hunks: [makeHunk('@@ -0,0 +1 @@')],
       contextMode: 'focused',
       canEdit: true,
+      hasPendingVisibleChange: true,
       hasValidatedStage: false,
       validatedRemovedLineNumbers: [],
       validatedAddedLineNumbers: [],
@@ -92,6 +93,7 @@ const buildRepository = (): ReviewRepositoryState => {
       hunks: [makeHunk('@@ -1 +1 @@')],
       contextMode: 'focused',
       canEdit: true,
+      hasPendingVisibleChange: true,
       hasValidatedStage: true,
       validatedRemovedLineNumbers: [1],
       validatedAddedLineNumbers: [1],
@@ -109,6 +111,7 @@ const buildRepository = (): ReviewRepositoryState => {
       hunks: [makeHunk('@@ -1 +0 @@')],
       contextMode: 'full',
       canEdit: false,
+      hasPendingVisibleChange: true,
       hasValidatedStage: false,
       validatedRemovedLineNumbers: [],
       validatedAddedLineNumbers: [],
@@ -180,6 +183,7 @@ describe('FileChangesDiffModal', () => {
   let repository: ReviewRepositoryState;
   let diffSession: FileDiffModalSession;
   let stageChangesMock: ReturnType<typeof mock>;
+  let unstageChangesMock: ReturnType<typeof mock>;
   let revertChangesMock: ReturnType<typeof mock>;
   let updateRightDraftMock: ReturnType<typeof mock>;
   let resetRightDraftMock: ReturnType<typeof mock>;
@@ -198,6 +202,7 @@ describe('FileChangesDiffModal', () => {
       isCommitting: false,
       lastError: null,
       stageChanges: stageChangesMock,
+      unstageChanges: unstageChangesMock,
       revertChanges: revertChangesMock,
       updateRightDraft: updateRightDraftMock,
       resetRightDraft: resetRightDraftMock,
@@ -214,6 +219,7 @@ describe('FileChangesDiffModal', () => {
     repository = buildRepository();
     diffSession = buildSession();
     stageChangesMock = mock(async () => undefined);
+    unstageChangesMock = mock(async () => undefined);
     revertChangesMock = mock(async () => undefined);
     updateRightDraftMock = mock(() => undefined);
     resetRightDraftMock = mock(() => undefined);
@@ -343,6 +349,7 @@ describe('FileChangesDiffModal', () => {
     expect(findButton('Reset draft')).toBeUndefined();
     expect(findButton('Focused diff')).toBeDefined();
     expect(findButton('Full file context')).toBeDefined();
+    expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]').length).toBeGreaterThan(0);
   });
 
   it('switches between focused diff and full file context on demand', async () => {
@@ -408,8 +415,46 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(document.body.textContent).toContain('Validated lines are shown with a softer highlight until commit.');
+    expect(findButton('Unstage')).toBeDefined();
     expect(findButton('Validate file')).toBeDefined();
     expect(findButton('Revert')).toBeDefined();
+  });
+
+  it('shows staged-only files without pending validation controls', async () => {
+    repository.changes = repository.changes.map((change) => ({
+      ...change,
+      indexContent: change.modifiedContent,
+      hasPendingVisibleChange: false,
+      hasValidatedStage: true,
+    }));
+    repository.stats = {
+      pendingVisibleFileCount: 0,
+      validatedStagedFileCount: 3,
+      additions: 0,
+      deletions: 0,
+    };
+    diffSession = buildSession();
+    seedStore();
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('feature.tsx');
+    expect(findButton('Validate file')).toBeUndefined();
+    expect(findButton('Revert')).toBeUndefined();
+    expect(findButton('Close')).toBeDefined();
+    expect(findButton('Unstage')).toBeDefined();
+    expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]')).toHaveLength(0);
+
+    await act(async () => {
+      findButton('Unstage')?.click();
+      await flushRender();
+    });
+
+    expect(unstageChangesMock).toHaveBeenCalledTimes(1);
+    expect(unstageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
   });
 
   it('validates the current file from the footer by staging it', async () => {
