@@ -47,6 +47,7 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "need_add",
   "need_update",
   "need_delete",
+  "plan_create",
   "strategy_generate",
   "strategy_update",
   "strategy_delete",
@@ -196,25 +197,25 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
   need_update: {
     actionGroup: "change",
     rememberStrategy: "tool",
-    destructiveStrategy: "never",
+    destructiveStrategy: "always",
     summary: "Update a plan need",
   },
   plan_update: {
     actionGroup: "change",
     rememberStrategy: "tool",
-    destructiveStrategy: "never",
+    destructiveStrategy: "always",
     summary: "Update the active plan",
   },
   strategy_generate: {
     actionGroup: "change",
     rememberStrategy: "tool",
-    destructiveStrategy: "never",
+    destructiveStrategy: "always",
     summary: "Generate a strategy",
   },
   strategy_update: {
     actionGroup: "change",
     rememberStrategy: "tool",
-    destructiveStrategy: "never",
+    destructiveStrategy: "always",
     summary: "Update a strategy",
   },
   git_add: {

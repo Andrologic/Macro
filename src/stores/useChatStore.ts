@@ -55,6 +55,7 @@ import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
   bindArchitectPlanConversation,
+  createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatMessages,
@@ -3166,6 +3167,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toolName: normalizedToolName,
       args,
       planService: {
+        createArchitectPlan,
         getArchitectPlan,
         getGitFlowBaseBranch,
         isArchitectPlanSlugAvailable,

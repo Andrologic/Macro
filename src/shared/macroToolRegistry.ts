@@ -925,6 +925,23 @@ export const MACRO_TOOL_REGISTRY = [
           description: "Legacy alias for label. Optional.",
         },
         description: { type: "string" },
+        project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional actionable repository ids for the new draft plan. Defaults to the current Architect scope.",
+        },
+        context_project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional read/context repository ids for the new draft plan.",
+        },
+        git_flow: {
+          type: "object",
+          description:
+            "Optional GitFlow metadata for typed Release/Hotfix/Bugfix draft plans.",
+        },
         target_branch: {
           type: "string",
           description:

@@ -74,6 +74,59 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("tool:web_search");
   });
 
+  it("allows additive Architect actions in balanced mode", () => {
+    const needResult = evaluateToolSecurity(
+      "need_add",
+      {
+        title: "Capture onboarding requirements",
+        description: "Understand the new onboarding flow.",
+        category: "functional",
+        priority: "medium",
+      },
+      {
+        mode: "Architect",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+    const planResult = evaluateToolSecurity(
+      "plan_create",
+      { label: "Onboarding refresh" },
+      {
+        mode: "Architect",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(needResult.decision).toBe("allow");
+    expect(planResult.decision).toBe("allow");
+  });
+
+  it("asks before modifying or replacing Architect records in balanced mode", () => {
+    const needResult = evaluateToolSecurity(
+      "need_update",
+      { need_id: "need-1", description: "Replace the requirement text." },
+      {
+        mode: "Architect",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+    const strategyResult = evaluateToolSecurity(
+      "strategy_generate",
+      { nodes: [{ title: "New plan", type: "task" }] },
+      {
+        mode: "Architect",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(needResult.decision).toBe("ask");
+    expect(strategyResult.decision).toBe("ask");
+  });
+
   it("asks again when the terminal command prefix does not match the grant", () => {
     const result = evaluateToolSecurity(
       "terminal_run",
