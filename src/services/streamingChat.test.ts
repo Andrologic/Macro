@@ -441,6 +441,228 @@ describe('streamingChat tool rendering helpers', () => {
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
   });
 
+  it('serializes provider reasoning metadata without replaying visible think blocks as content', async () => {
+    const { __testables } = await loadStreamingChat();
+    const reasoningDetails = [{ type: 'reasoning.trace', payload: 'opaque-provider-data' }];
+    const providerItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: '<think>native thoughts</think>\nFinal answer',
+      apiContent: 'Final answer',
+      reasoningContent: 'native thoughts',
+      reasoningDetails,
+      toolCalls: [
+        {
+          id: 'call_read',
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"README.md"}' },
+        },
+      ],
+    });
+
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '<think>legacy thoughts</think>\nFinal answer',
+          provider_input_items: providerItem ? [providerItem] : undefined,
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openrouter',
+        modelId: 'deepseek/deepseek-v4-pro',
+      })
+    );
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'Final answer',
+        reasoning_content: 'native thoughts',
+        reasoning_details: reasoningDetails,
+        tool_calls: [
+          expect.objectContaining({
+            id: 'call_read',
+            function: { name: 'read', arguments: '{"path":"README.md"}' },
+          }),
+        ],
+      }),
+    ]);
+    expect(JSON.stringify(messages)).not.toContain('<think>');
+  });
+
+  it('repairs DeepSeek thinking-mode follow-up requests by replaying native reasoning_content', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestCount += 1;
+      requestBodies.push(JSON.parse(init?.body ?? '{}'));
+
+      if (requestCount === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"reasoning_content":"Need file context.","tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      if (requestCount === 2) {
+        const assistantMessage = requestBodies[1]?.messages?.find(
+          (message) => message.role === 'assistant'
+        );
+        expect(assistantMessage?.reasoning_content).toBeUndefined();
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: {
+                message:
+                  'The reasoning_content in the thinking mode must be passed back to the API.',
+              },
+            }),
+          json: async () => ({}),
+        };
+      }
+
+      const assistantMessage = requestBodies[2]?.messages?.find(
+        (message) => message.role === 'assistant'
+      );
+      expect(assistantMessage).toEqual(
+        expect.objectContaining({
+          content: '',
+          reasoning_content: 'Need file context.',
+          tool_calls: [
+            expect.objectContaining({
+              id: 'call_read',
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+            }),
+          ],
+        })
+      );
+      expect(JSON.stringify(requestBodies[2]?.messages)).not.toContain('<think>');
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'openrouter',
+      providerType: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      modelId: 'provider/reasoner',
+      messages: [{ role: 'user', content: 'Inspect README.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => 'FILE: README.md\n\n# Macro',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: '<think>Need file context.</think>Done.',
+        providerInputItems: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'chat_completion_message',
+            role: 'assistant',
+            reasoning_content: 'Need file context.',
+          }),
+          expect.objectContaining({
+            type: 'chat_completion_message',
+            role: 'tool',
+            tool_call_id: 'call_read',
+          }),
+        ]),
+      })
+    );
+  });
+
+  it('silently retries recoverable provider errors before streaming visible output', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return {
+          ok: false,
+          status: 429,
+          headers: new Headers({ 'retry-after-ms': '0' }),
+          text: async (): Promise<string> =>
+            JSON.stringify({ error: { message: 'Rate limited' } }),
+          json: async () => ({}),
+        };
+      }
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Recovered."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async (): Promise<string> => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onError = mock(() => undefined);
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'openrouter',
+      providerType: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      modelId: 'openai/gpt-4.1',
+      messages: [{ role: 'user', content: 'Say hi.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ visibleContent: 'Recovered.' })
+    );
+  });
+
   it('interrupts the turn immediately when the question tool is invoked', async () => {
     const encoder = new TextEncoder();
     const fetchMock = mock(async () => ({
