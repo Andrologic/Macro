@@ -271,7 +271,6 @@ describe("tauriIpc executeWorkspaceTool", () => {
       expectedRecommendedActionSequence: [
         "initialize_repo",
         "create_initial_commit",
-        "create_develop",
       ],
     });
     await tauriIpc.workspaceUpdateProjectGitFlowWithSetup({
@@ -323,7 +322,6 @@ describe("tauriIpc executeWorkspaceTool", () => {
           expectedRecommendedActionSequence: [
             "initialize_repo",
             "create_initial_commit",
-            "create_develop",
           ],
         },
       },

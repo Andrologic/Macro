@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { ProjectGitFlowSettings } from '../types';
 import {
+  isMainlineGitWorkflow,
   validateProjectGitFlowParsing,
   validateProjectGitFlowSettings,
 } from './architectGitNaming';
@@ -20,6 +21,12 @@ const createSettings = (
 });
 
 describe('architectGitNaming', () => {
+  it('detects mainline workflow when the target branch is the main branch', () => {
+    expect(isMainlineGitWorkflow(createSettings({ baseBranch: 'main', mainBranch: 'main' }))).toBe(true);
+    expect(isMainlineGitWorkflow(createSettings({ baseBranch: 'master', mainBranch: 'master' }))).toBe(true);
+    expect(isMainlineGitWorkflow(createSettings({ baseBranch: 'develop', mainBranch: 'main' }))).toBe(false);
+  });
+
   it('rejects unknown template placeholders during parse validation', () => {
     const errors = validateProjectGitFlowParsing(
       createSettings({

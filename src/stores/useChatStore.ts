@@ -3647,13 +3647,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, the plan lifecycle remains UI-only for this iteration. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active`; ask the user to use the plan selector instead.",
       );
       systemInstructions.push(
-        "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope/GitFlow metadata for typed plans. Never use it to change plan status or activate a plan.",
+        "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. Never use it to change plan status or activate a plan.",
       );
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       systemInstructions.push(
-        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. Feature plans integrate on rendered `plan/*` branches. Release, Hotfix, and Bugfix plans integrate on rendered `release/*`, `hotfix/*`, or `bugfix/*` branches. The Architect AI should propose `plan_slug` and per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each subproject GitFlow profile and merge into the plan integration branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same branch.",
+        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each subproject Git workflow profile and merge into the plan integration branch. Multiple sequential nodes may share the same `featureSlug` when they stay on the same branch.",
       );
       systemInstructions.push(
         "A plan node is not the same thing as a branch. Reuse the same `featureSlug` for sequential work that stays on one logical branch, and create separate `featureSlug` values only for work that can proceed in parallel.",

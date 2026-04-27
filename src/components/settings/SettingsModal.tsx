@@ -42,7 +42,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
-    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Architect Git Flow' },
+    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Architect Git Workflow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
   ];
 

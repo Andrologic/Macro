@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 use tokio::fs;
 use tokio::sync::RwLock;
 
-const DEFAULT_TARGET_BRANCH: &str = "develop";
+const DEFAULT_TARGET_BRANCH: &str = "main";
 const DEFAULT_NEW_PLAN_LABEL: &str = "new plan";
 
 #[derive(Debug, Clone)]
