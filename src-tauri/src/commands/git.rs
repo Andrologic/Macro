@@ -136,6 +136,8 @@ pub struct GitMergeCheckDto {
     pub mergeable: bool,
     pub conflict_files: Vec<String>,
     pub has_changes: bool,
+    pub ahead: u32,
+    pub behind: u32,
 }
 
 #[derive(Serialize)]
@@ -1810,6 +1812,16 @@ pub(crate) fn build_git_merge_check(
     validate_branch_name(branch_name)?;
     validate_branch_name(into_branch)?;
 
+    let into_commit = resolve_commit(repo, into_branch)?;
+    let branch_commit = resolve_commit(repo, branch_name)?;
+    let (ahead_count, behind_count) = repo
+        .graph_ahead_behind(branch_commit.id(), into_commit.id())
+        .map_err(|e| BackendError::Git {
+            message: e.to_string(),
+        })?;
+    let ahead = ahead_count as u32;
+    let behind = behind_count as u32;
+
     let diff = diff_repo(
         repo,
         Some(into_branch),
@@ -1826,11 +1838,11 @@ pub(crate) fn build_git_merge_check(
             mergeable: true,
             conflict_files: Vec::new(),
             has_changes: false,
+            ahead,
+            behind,
         });
     }
 
-    let into_commit = resolve_commit(repo, into_branch)?;
-    let branch_commit = resolve_commit(repo, branch_name)?;
     let index = repo
         .merge_commits(&into_commit, &branch_commit, None)
         .map_err(|e| BackendError::Git {
@@ -1846,6 +1858,8 @@ pub(crate) fn build_git_merge_check(
         mergeable: conflict_files.is_empty(),
         conflict_files,
         has_changes,
+        ahead,
+        behind,
     })
 }
 
@@ -3490,6 +3504,8 @@ mod tests {
         assert!(check.has_changes);
         assert!(check.mergeable);
         assert!(check.conflict_files.is_empty());
+        assert_eq!(check.ahead, 1);
+        assert_eq!(check.behind, 0);
     }
 
     #[test]
@@ -3509,6 +3525,8 @@ mod tests {
         assert!(check.has_changes);
         assert!(!check.mergeable);
         assert!(check.conflict_files.iter().any(|path| path == "README.md"));
+        assert_eq!(check.ahead, 1);
+        assert_eq!(check.behind, 1);
     }
 
     #[test]

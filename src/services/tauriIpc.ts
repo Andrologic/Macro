@@ -177,6 +177,8 @@ export interface GitMergeCheckDto {
   mergeable: boolean;
   conflictFiles: string[];
   hasChanges: boolean;
+  ahead?: number;
+  behind?: number;
 }
 
 export interface GitFilePairDto {
