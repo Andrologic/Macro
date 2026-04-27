@@ -408,26 +408,31 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["patch_text"],
     },
   ),
-  objectTool(
-    "glob",
-    "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
-    {
-      type: "object",
-      properties: {
-        pattern: { type: "string", description: "Glob pattern." },
-        project_id: {
-          type: "string",
-          description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+  {
+    ...objectTool(
+      "glob",
+      "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+      {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Glob pattern." },
+          project_id: {
+            type: "string",
+            description:
+              "Optional subproject identifier when you want to force which subproject to use.",
+          },
+          include_hidden: {
+            type: "boolean",
+            description: "Include hidden files/folders.",
+          },
         },
-        include_hidden: {
-          type: "boolean",
-          description: "Include hidden files/folders.",
-        },
+        required: ["pattern"],
       },
-      required: ["pattern"],
+    ),
+    copilot: {
+      overridesBuiltInTool: true,
     },
-  ),
+  },
   objectTool(
     "grep",
     "Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
