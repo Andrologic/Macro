@@ -175,6 +175,38 @@ describe('MarkdownRenderer tool trace rendering', () => {
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
   });
 
+  it('renders Copilot final tool traces with the shared structured UI', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+
+    await act(async () => {
+      root?.render(
+        <MarkdownRenderer
+          content="Voici l'analyse."
+          toolTraces={[
+            {
+              tool_call_id: 'copilot_read',
+              tool_name: 'read',
+              detail: 'README.md',
+              status: 'done',
+            },
+          ]}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const trigger = container?.querySelector(
+      '[data-testid="tool-traces-completed-trigger"]'
+    ) as HTMLButtonElement | null;
+    expect(container?.querySelector('[data-testid="tool-traces-completed"]')).not.toBeNull();
+    await act(async () => {
+      trigger?.click();
+      await Promise.resolve();
+    });
+    expect(getToolNames(container!)).toEqual(['read']);
+    expect(container?.textContent).toContain('README.md');
+  });
+
   it('splits structured tool traces into multiple groups when new visible content appears', async () => {
     const { MarkdownRenderer } = await loadMarkdownRenderer();
     const content = [

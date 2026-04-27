@@ -420,6 +420,11 @@ export interface AiStreamChunkEvent {
   delta: string;
 }
 
+export interface AiStreamToolTraceEvent {
+  request_id: string;
+  tool_trace: ToolTrace;
+}
+
 export interface AiStreamDoneEvent {
   request_id: string;
   output_text: string;
