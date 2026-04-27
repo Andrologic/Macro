@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useTaskStore, type ImplementTask } from '../../stores/useTaskStore';
+import {
+  useTaskStore,
+  type DirtyMergeWorkflowResolutionAction,
+  type ImplementTask,
+} from '../../stores/useTaskStore';
 import { toServiceError } from '../../services/contracts/errors';
 import {
   resolveMergeWorkflowViewState,
@@ -8,6 +12,8 @@ import {
 } from '../../services/mergeWorkflow';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
+import { Button } from '../ui/Button';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { presentGitFlowBlockingIssue } from '../../services/degradedErrorPresentation';
@@ -62,6 +68,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
+  const [isDirtyResolutionModalOpen, setIsDirtyResolutionModalOpen] = useState(false);
   const lastBlockingNotificationKeyRef = useRef<string | null>(null);
   const hasMergeRuntime = Boolean(runtime);
   const runtimePhase = runtime?.phase;
@@ -116,6 +123,17 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         : null,
     [selectedRepository]
   );
+  const autoStashableDirtyRepositories = useMemo(
+    () =>
+      (runtime?.blockedRepositories ?? []).filter(
+        (repository) =>
+          repository.blockingKind === 'repository_dirty' &&
+          repository.nextAction === 'clean_repository' &&
+          !repository.mergeInProgress &&
+          repository.conflictFiles.length === 0
+      ),
+    [runtime?.blockedRepositories]
+  );
 
   const handleMerge = useCallback(async () => {
     try {
@@ -169,10 +187,27 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     }
   }, [archivePlanFromTask, isPlanFinalizationTask, t, task.plan_id]);
 
-  const handleResolveAutomatically = useCallback(async () => {
+  const handleResolveAutomatically = useCallback(async (
+    dirtyRepositoryAction?: DirtyMergeWorkflowResolutionAction
+  ) => {
+    if (
+      !dirtyRepositoryAction &&
+      autoStashableDirtyRepositories.length > 0
+    ) {
+      setIsDirtyResolutionModalOpen(true);
+      return;
+    }
+
     setIsResolvingAutomatically(true);
     try {
-      const conversationId = await resolveMergeWorkflowAutomatically(task.id);
+      setIsDirtyResolutionModalOpen(false);
+      const resolution = await resolveMergeWorkflowAutomatically(task.id, {
+        dirtyRepositoryAction,
+      });
+      const conversationId =
+        typeof resolution === 'string' ? resolution : resolution.conversationId;
+      const autoResolvedRepositoryCount =
+        typeof resolution === 'string' ? 0 : resolution.autoResolvedRepositoryCount;
       if (conversationId) {
         notify.success(
           t('implement.aiConflictAssistantStarted', 'AI conflict assistant started'),
@@ -188,13 +223,29 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                 ),
           }
         );
+      } else if (autoResolvedRepositoryCount > 0) {
+        notify.success(
+          t('implement.mergeWorkflowAutoResolved', 'Merge blockers resolved'),
+          {
+            description: t(
+              'implement.mergeWorkflowAutoResolvedDescription',
+              'Macro stashed local repository changes and refreshed the merge review.'
+            ),
+          }
+        );
       }
     } catch (error) {
       notify.error(toServiceError(error).message);
     } finally {
       setIsResolvingAutomatically(false);
     }
-  }, [isPlanFinalizationTask, resolveMergeWorkflowAutomatically, t, task.id]);
+  }, [
+    autoStashableDirtyRepositories.length,
+    isPlanFinalizationTask,
+    resolveMergeWorkflowAutomatically,
+    t,
+    task.id,
+  ]);
 
   const blockingNotificationKey = useMemo(() => {
     if (!selectedRepository || !selectedRepositoryBlockingPresentation || !isBlocked) {
@@ -469,11 +520,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const disabledButtonClassName = 'bg-muted text-muted-foreground cursor-not-allowed';
 
   return (
-    <aside
-      ref={panelRef}
-      className={cn('h-full w-full min-w-0 bg-card border-l border-border flex flex-col', className)}
-      data-merge-workflow-layout={isCompact ? 'compact' : 'wide'}
-    >
+    <>
+      <aside
+        ref={panelRef}
+        className={cn('h-full w-full min-w-0 bg-card border-l border-border flex flex-col', className)}
+        data-merge-workflow-layout={isCompact ? 'compact' : 'wide'}
+      >
       <div className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
         <h1 className="min-w-0 text-sm font-semibold text-foreground flex items-center gap-2">
           <Icon name="git-merge" size={16} className="text-primary shrink-0" />
@@ -658,7 +710,50 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
           </div>
         )}
       </div>
-    </aside>
+      </aside>
+
+      <ConfirmPromptModal
+        isOpen={isDirtyResolutionModalOpen}
+        title={t('implement.dirtyMergeResolutionTitle', 'Local changes need attention')}
+        description={t(
+          'implement.dirtyMergeResolutionDescription',
+          'Macro found local repository changes blocking the merge. Choose how to handle them before retrying.'
+        )}
+        confirmLabel={t('implement.stashAndRetryMerge', 'Stash and retry')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        isSubmitting={isResolvingAutomatically}
+        onCancel={() => {
+          if (!isResolvingAutomatically) {
+            setIsDirtyResolutionModalOpen(false);
+          }
+        }}
+        onConfirm={() => {
+          void handleResolveAutomatically('stash');
+        }}
+      >
+        <div className="space-y-3">
+          <div className="max-h-28 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            {autoStashableDirtyRepositories.map((repository) => (
+              <div key={repository.id} className="truncate" title={repository.repoPath}>
+                {repository.repoPath}
+              </div>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="w-full"
+            disabled={isResolvingAutomatically}
+            onClick={() => {
+              void handleResolveAutomatically('assistant');
+            }}
+          >
+            {t('implement.openAssistantInstead', 'Open assistant instead')}
+          </Button>
+        </div>
+      </ConfirmPromptModal>
+    </>
   );
 };
 

@@ -1072,6 +1072,12 @@
     "planReviewReplicaRepair": "Repair plan metadata replicas",
     "aiConflictAssistantStarted": "AI conflict assistant started",
     "planFinalizationAssistantDescription": "Opened an Implement review conversation and posted the plan finalization blockers.",
+    "mergeWorkflowAutoResolved": "Merge blockers resolved",
+    "mergeWorkflowAutoResolvedDescription": "Macro stashed local repository changes and refreshed the merge review.",
+    "dirtyMergeResolutionTitle": "Local changes need attention",
+    "dirtyMergeResolutionDescription": "Macro found local repository changes blocking the merge. Choose how to handle them before retrying.",
+    "stashAndRetryMerge": "Stash and retry",
+    "openAssistantInstead": "Open assistant instead",
     "noAggregatedDiff": "No aggregated diff between the plan branch and the base branch for this repository.",
     "context": {
       "default": "Focused diff",

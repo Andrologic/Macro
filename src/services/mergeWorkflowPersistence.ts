@@ -199,7 +199,7 @@ export const overlayPersistedMergeWorkflowSession = (params: {
   const persistedById = new Map(
     session.repositories.map((repository) => [repository.id, repository]),
   );
-  const repositories = params.runtime.repositories.map((repository) => {
+  const repositories = params.runtime.repositories.map((repository): MergeWorkflowRepositoryResult => {
     const persisted = persistedById.get(repository.id);
     if (!persisted) {
       return repository;
@@ -207,30 +207,30 @@ export const overlayPersistedMergeWorkflowSession = (params: {
 
     const isMerged = persisted.state === 'merged';
     const isNoChanges = persisted.state === 'no_changes';
-    const isBlocked = persisted.state === 'blocked';
+
+    if (!isMerged && !isNoChanges) {
+      return {
+        ...repository,
+        hadChangesAtStart:
+          repository.hadChangesAtStart || persisted.hadChangesAtStart,
+        mergeAppliedAt: persisted.mergeAppliedAt,
+      };
+    }
 
     return {
       ...repository,
       progressState: persisted.state,
       hadChangesAtStart: persisted.hadChangesAtStart,
       mergeAppliedAt: persisted.mergeAppliedAt,
-      hasChanges: isNoChanges ? false : repository.hasChanges || persisted.hadChangesAtStart,
-      isClean: isMerged || isNoChanges ? true : repository.isClean,
-      mergeable: isMerged || isNoChanges ? true : repository.mergeable,
-      blockingKind: isMerged || isNoChanges ? null : persisted.blockingKind ?? repository.blockingKind,
-      blockingReason: isMerged || isNoChanges ? null : persisted.blockingReason ?? repository.blockingReason,
-      conflictFiles:
-        isMerged || isNoChanges
-          ? []
-          : persisted.conflictFiles.length > 0
-            ? [...persisted.conflictFiles]
-            : repository.conflictFiles,
-      checkStatus:
-        isMerged || isNoChanges
-          ? 'passed'
-          : isBlocked
-            ? 'failed'
-            : repository.checkStatus,
+      hasChanges: isNoChanges
+        ? false
+        : repository.hasChanges || persisted.hadChangesAtStart,
+      isClean: true,
+      mergeable: true,
+      blockingKind: null,
+      blockingReason: null,
+      conflictFiles: [],
+      checkStatus: 'passed',
     };
   });
   const blockedRepositories = repositories.filter(

@@ -1072,6 +1072,12 @@
     "planReviewReplicaRepair": "Réplicas de metadatos del plan de reparación",
     "aiConflictAssistantStarted": "Se inició el asistente de conflictos de IA",
     "planFinalizationAssistantDescription": "Se abrió una conversación de revisión en Implement y se publicaron los bloqueadores de finalización del plan.",
+    "mergeWorkflowAutoResolved": "Bloqueadores de merge resueltos",
+    "mergeWorkflowAutoResolvedDescription": "Macro guardó los cambios locales del repositorio en stash y actualizó la revisión de merge.",
+    "dirtyMergeResolutionTitle": "Los cambios locales necesitan atención",
+    "dirtyMergeResolutionDescription": "Macro encontró cambios locales del repositorio que bloquean el merge. Elige cómo gestionarlos antes de reintentar.",
+    "stashAndRetryMerge": "Guardar en stash y reintentar",
+    "openAssistantInstead": "Abrir el asistente",
     "noAggregatedDiff": "No hay diferencias agregadas entre la rama del plan y la rama base para este repositorio.",
     "context": {
       "default": "Diff focalizado",

@@ -1072,6 +1072,12 @@
     "planReviewReplicaRepair": "Metadatenreplikate des Plans reparieren",
     "aiConflictAssistantStarted": "KI-Konfliktassistent gestartet",
     "planFinalizationAssistantDescription": "Eine Implement-Review-Konversation wurde geoeffnet und die Blocker fuer die Planfinalisierung wurden gepostet.",
+    "mergeWorkflowAutoResolved": "Merge-Blocker behoben",
+    "mergeWorkflowAutoResolvedDescription": "Macro hat lokale Repository-Aenderungen gestasht und die Merge-Pruefung aktualisiert.",
+    "dirtyMergeResolutionTitle": "Lokale Aenderungen brauchen Aufmerksamkeit",
+    "dirtyMergeResolutionDescription": "Macro hat lokale Repository-Aenderungen gefunden, die den Merge blockieren. Waehle, wie sie vor dem erneuten Versuch behandelt werden sollen.",
+    "stashAndRetryMerge": "Stashen und erneut versuchen",
+    "openAssistantInstead": "Assistenten oeffnen",
     "noAggregatedDiff": "Für dieses Repository gibt es keinen aggregierten Unterschied zwischen dem Planzweig und dem Basiszweig.",
     "context": {
       "default": "Fokussierter Diff",
