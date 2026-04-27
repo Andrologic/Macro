@@ -217,9 +217,6 @@ export const createAppBootstrapController = (
         initWithTracking('Task Resume', dependencies.resumeTasksAfterInitialize, 'high', {
           warningOnly: true,
         }),
-        initWithTracking('Chat Resume', dependencies.resumeChatAfterInitialize, 'high', {
-          warningOnly: true,
-        }),
         initWithTracking('Auth Session', dependencies.checkSession, 'high'),
       ]).then(() => {
         if (!dependencies.isPageShuttingDown()) {
@@ -243,6 +240,9 @@ export const createAppBootstrapController = (
               initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
               (async () => {
                 await initWithTracking('Provider Store', dependencies.initializeProviders, 'low');
+                await initWithTracking('Chat Resume', dependencies.resumeChatAfterInitialize, 'low', {
+                  warningOnly: true,
+                });
                 await initWithTracking(
                   'Chat Context Restore',
                   dependencies.restoreChatSelectionAfterProviderInit,
@@ -259,7 +259,7 @@ export const createAppBootstrapController = (
         });
       });
 
-      await Promise.all([highPriorityInit, normalPriorityInit]);
+      await Promise.all([highPriorityInit, normalPriorityInit, lowPriorityInit]);
 
       if (!dependencies.isPageShuttingDown()) {
         const totalDuration = dependencies.now() - startTime;
@@ -275,8 +275,6 @@ export const createAppBootstrapController = (
           dependencies.preloadModeComponents(dependencies.getCurrentMode());
         }
       }
-
-      void lowPriorityInit;
     })();
 
     return startPromise;
