@@ -20,6 +20,7 @@ import {
   PREF_KEYS,
   loadPreference,
   savePreference,
+  savePreferenceDebounced,
 } from '../../../../services/preferences';
 import type { SmartCommitModelConfig } from '../../../../services/smartCommitModelConfig';
 import type { ReasoningEffort } from '../../../../types';
@@ -369,7 +370,7 @@ export const ModelsSettings: React.FC = () => {
               onChange={(event) => {
                 const prompt = event.target.value;
                 setSmartCommitPrompt(prompt);
-                void savePreference(PREF_KEYS.SMART_COMMIT_PROMPT, prompt);
+                savePreferenceDebounced(PREF_KEYS.SMART_COMMIT_PROMPT, prompt);
               }}
               onBlur={() => saveSmartCommitPrompt(smartCommitPrompt)}
             />
