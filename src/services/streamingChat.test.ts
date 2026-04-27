@@ -472,7 +472,7 @@ describe('streamingChat tool rendering helpers', () => {
       })
     );
 
-    expect(messages).toEqual([
+    expect(messages[0]).toEqual(
       expect.objectContaining({
         role: 'assistant',
         content: 'Final answer',
@@ -484,9 +484,255 @@ describe('streamingChat tool rendering helpers', () => {
             function: { name: 'read', arguments: '{"path":"README.md"}' },
           }),
         ],
-      }),
-    ]);
+      })
+    );
+    expect(messages[1]).toEqual({
+      role: 'tool',
+      content: 'Tool execution aborted',
+      tool_call_id: 'call_read',
+    });
     expect(JSON.stringify(messages)).not.toContain('<think>');
+  });
+
+  it('normalizes tool call ids only for providers that need it', async () => {
+    const { __testables } = await loadStreamingChat();
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        tool_calls: [
+          {
+            id: 'call:abc.123',
+            type: 'function' as const,
+            function: { name: 'read', arguments: '{"path":"README.md"}' },
+          },
+        ],
+      },
+      {
+        role: 'tool' as const,
+        content: 'FILE: README.md',
+        tool_call_id: 'call:abc.123',
+      },
+    ];
+
+    const claudeMessages = __testables.buildChatCompletionMessages(
+      messages,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openrouter',
+        modelId: 'anthropic/claude-3.7-sonnet',
+      })
+    );
+    expect(claudeMessages[0]?.tool_calls?.[0]?.id).toBe('call_abc_123');
+    expect(claudeMessages[1]?.tool_call_id).toBe('call_abc_123');
+
+    const mistralMessages = __testables.buildChatCompletionMessages(
+      messages,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openrouter',
+        modelId: 'mistral/devstral-small',
+      })
+    );
+    expect(mistralMessages[0]?.tool_calls?.[0]?.id).toBe('callabc12');
+    expect(mistralMessages[1]?.tool_call_id).toBe('callabc12');
+
+    const defaultMessages = __testables.buildChatCompletionMessages(
+      messages,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'gpt-4.1',
+      })
+    );
+    expect(defaultMessages[0]?.tool_calls?.[0]?.id).toBe('call:abc.123');
+    expect(defaultMessages[1]?.tool_call_id).toBe('call:abc.123');
+  });
+
+  it('repairs dangling tool calls and Mistral tool-user ordering only in API payloads', async () => {
+    const { __testables } = await loadStreamingChat();
+    const capabilities = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openrouter',
+      modelId: 'mistral/devstral-small',
+    });
+
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        { role: 'user', content: 'Inspect README.' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call:abc.123',
+              type: 'function' as const,
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+            },
+          ],
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+      capabilities
+    );
+
+    expect(messages).toEqual([
+      { role: 'user', content: 'Inspect README.' },
+      expect.objectContaining({
+        role: 'assistant',
+        tool_calls: [
+          expect.objectContaining({
+            id: 'callabc12',
+          }),
+        ],
+      }),
+      {
+        role: 'tool',
+        content: 'Tool execution aborted',
+        tool_call_id: 'callabc12',
+      },
+      {
+        role: 'assistant',
+        content: 'Done.',
+      },
+      { role: 'user', content: 'Continue.' },
+    ]);
+  });
+
+  it('injects a hidden noop tool only for LiteLLM proxy payload compatibility', async () => {
+    const { __testables } = await loadStreamingChat();
+    const toolHistoryMessages = [
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call_read',
+            type: 'function',
+            function: { name: 'read', arguments: '{"path":"README.md"}' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: 'FILE: README.md',
+        tool_call_id: 'call_read',
+      },
+    ];
+    const liteLlmCapabilities = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'team-litellm-proxy',
+      baseUrl: 'https://llm.example.com/litellm/v1',
+      modelId: 'openai/gpt-4.1',
+    });
+    const liteLlmBody: Record<string, unknown> = {};
+
+    __testables.applyToolsToChatCompletionsRequest(
+      liteLlmBody,
+      [],
+      liteLlmCapabilities,
+      toolHistoryMessages
+    );
+
+    expect((liteLlmBody.tools as Array<{ function?: { name?: string } }>)[0]?.function?.name).toBe(
+      '_noop'
+    );
+    expect(liteLlmBody.tool_choice).toBe('auto');
+
+    const defaultCapabilities = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      modelId: 'gpt-4.1',
+    });
+    const defaultBody: Record<string, unknown> = {};
+    __testables.applyToolsToChatCompletionsRequest(
+      defaultBody,
+      [],
+      defaultCapabilities,
+      toolHistoryMessages
+    );
+    expect(defaultBody.tools).toBeUndefined();
+  });
+
+  it('classifies context overflow as non-retryable', async () => {
+    const { __testables } = await loadStreamingChat();
+    const statusError = __testables.classifyProviderError('Request failed: 413', 413);
+    const codeError = __testables.classifyProviderError(
+      'prompt too long context_length_exceeded',
+      400
+    );
+
+    expect(statusError.kind).toBe('context_overflow');
+    expect(statusError.retryable).toBe(false);
+    expect(codeError.kind).toBe('context_overflow');
+    expect(codeError.retryable).toBe(false);
+    expect(__testables.isContextOverflowError('model_context_window_exceeded', 400)).toBe(true);
+    expect(__testables.isContextOverflowError('400 (no body)', 400)).toBe(true);
+  });
+
+  it('detects repeated identical tool calls before entering another tool loop', async () => {
+    const { __testables } = await loadStreamingChat();
+    const repeatedCall = {
+      id: 'call_4',
+      type: 'function' as const,
+      function: { name: 'read', arguments: '{"path":"README.md"}' },
+    };
+    const currentMessages = ['call_1', 'call_2', 'call_3'].map((id) => ({
+      role: 'assistant' as const,
+      content: '',
+      tool_calls: [
+        {
+          id,
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"README.md"}' },
+        },
+      ],
+    }));
+
+    expect(__testables.isRepeatedToolCallLoop(currentMessages, repeatedCall)).toBe(true);
+    expect(
+      __testables.isRepeatedToolCallLoop(currentMessages.slice(1), repeatedCall)
+    ).toBe(false);
+    expect(
+      __testables.isRepeatedToolCallLoop(currentMessages, {
+        ...repeatedCall,
+        function: { name: 'read', arguments: '{"path":"CHANGELOG.md"}' },
+      })
+    ).toBe(false);
+  });
+
+  it('does not retry context overflow failures blindly', async () => {
+    const fetchMock = mock(async () => ({
+      ok: false,
+      status: 413,
+      headers: new Headers(),
+      text: async () =>
+        JSON.stringify({
+          error: {
+            message: 'Request entity too large',
+            code: 'context_length_exceeded',
+          },
+        }),
+      json: async () => ({}),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onError = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'openrouter',
+      providerType: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      modelId: 'openai/gpt-4.1',
+      messages: [{ role: 'user', content: 'Huge prompt.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'context_overflow',
+        retryable: false,
+      })
+    );
   });
 
   it('repairs DeepSeek thinking-mode follow-up requests by replaying native reasoning_content', async () => {
