@@ -77,4 +77,15 @@ describe('degradedErrorPresentation', () => {
     expect(presentation.title).toContain('not ready');
     expect(presentation.primaryAction).toBe('open_project_settings');
   });
+
+  it('presents stable backend validation errors without serde serialization noise', () => {
+    const presentation = presentServiceError({
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    });
+
+    expect(presentation.body).toContain('Staged files outside this task were found: src/extra.ts.');
+    expect(presentation.body).not.toContain('cannot serialize tagged newtype variant');
+    expect(presentation.technicalDetails).not.toContain('cannot serialize tagged newtype variant');
+  });
 });

@@ -1,14 +1,12 @@
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 use thiserror::Error;
 
 /// Backend error type that can be serialized and sent to the frontend
-#[derive(Error, Debug, Serialize)]
-#[serde(tag = "code")]
+#[derive(Error, Debug)]
 pub enum BackendError {
     #[error("IO error: {message}")]
     Io {
         message: String,
-        #[serde(skip)]
         #[source]
         source: std::io::Error,
     },
@@ -99,6 +97,88 @@ pub enum BackendError {
 
     #[error("Internal server error: {message}")]
     Internal { message: String },
+}
+
+impl BackendError {
+    fn code(&self) -> &'static str {
+        match self {
+            BackendError::Io { .. } => "Io",
+            BackendError::Database { .. } => "Database",
+            BackendError::Git { .. } => "Git",
+            BackendError::GitRepositoryNotFound { .. } => "GitRepositoryNotFound",
+            BackendError::GitRepositoryNotClean { .. } => "GitRepositoryNotClean",
+            BackendError::GitBranchNotFound { .. } => "GitBranchNotFound",
+            BackendError::GitConflict { .. } => "GitConflict",
+            BackendError::GitMergeConflict { .. } => "GitMergeConflict",
+            BackendError::GitInvalidCommit { .. } => "GitInvalidCommit",
+            BackendError::Filesystem { .. } => "Filesystem",
+            BackendError::FilesystemPathOutsideWorkspace { .. } => {
+                "FilesystemPathOutsideWorkspace"
+            }
+            BackendError::FilesystemNotFound { .. } => "FilesystemNotFound",
+            BackendError::FilesystemPermissionDenied { .. } => "FilesystemPermissionDenied",
+            BackendError::FilesystemDirectoryNotFound { .. } => "FilesystemDirectoryNotFound",
+            BackendError::FilesystemIsDirectory { .. } => "FilesystemIsDirectory",
+            BackendError::FilesystemIsFile { .. } => "FilesystemIsFile",
+            BackendError::FilesystemAlreadyExists { .. } => "FilesystemAlreadyExists",
+            BackendError::FilesystemBinaryFile { .. } => "FilesystemBinaryFile",
+            BackendError::FilesystemFileTooLarge { .. } => "FilesystemFileTooLarge",
+            BackendError::FilesystemInvalidPath { .. } => "FilesystemInvalidPath",
+            BackendError::FilesystemDiskFull { .. } => "FilesystemDiskFull",
+            BackendError::Index { .. } => "Index",
+            BackendError::AI { .. } => "AI",
+            BackendError::Config { .. } => "Config",
+            BackendError::NotFound(_) => "NotFound",
+            BackendError::PermissionDenied(_) => "PermissionDenied",
+            BackendError::Validation(_) => "Validation",
+            BackendError::Internal { .. } => "Internal",
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            BackendError::Io { message, .. }
+            | BackendError::Database { message }
+            | BackendError::Git { message }
+            | BackendError::GitRepositoryNotFound { message }
+            | BackendError::GitRepositoryNotClean { message }
+            | BackendError::GitBranchNotFound { message }
+            | BackendError::GitConflict { message }
+            | BackendError::GitMergeConflict { message }
+            | BackendError::GitInvalidCommit { message }
+            | BackendError::Filesystem { message }
+            | BackendError::FilesystemPathOutsideWorkspace { message }
+            | BackendError::FilesystemNotFound { message }
+            | BackendError::FilesystemPermissionDenied { message }
+            | BackendError::FilesystemDirectoryNotFound { message }
+            | BackendError::FilesystemIsDirectory { message }
+            | BackendError::FilesystemIsFile { message }
+            | BackendError::FilesystemAlreadyExists { message }
+            | BackendError::FilesystemBinaryFile { message }
+            | BackendError::FilesystemFileTooLarge { message }
+            | BackendError::FilesystemInvalidPath { message }
+            | BackendError::FilesystemDiskFull { message }
+            | BackendError::Index { message }
+            | BackendError::AI { message }
+            | BackendError::Config { message }
+            | BackendError::Internal { message } => message,
+            BackendError::NotFound(message)
+            | BackendError::PermissionDenied(message)
+            | BackendError::Validation(message) => message,
+        }
+    }
+}
+
+impl Serialize for BackendError {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("BackendError", 2)?;
+        state.serialize_field("code", self.code())?;
+        state.serialize_field("message", self.message())?;
+        state.end()
+    }
 }
 
 impl From<std::io::Error> for BackendError {

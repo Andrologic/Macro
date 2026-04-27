@@ -1,4 +1,4 @@
-import { getGitFlowBaseBranch, resolveTargetBranch } from './architectPlanService';
+import { getGitFlowBaseBranch } from './architectPlanService';
 
 type StandaloneTaskTargetLike = {
   task_source?: string | null;
@@ -10,7 +10,14 @@ type StandaloneExecutionTargetLike = {
 };
 
 const normalizeBranchCandidate = (value?: string | null): string | null => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
+  const trimmed = typeof value === 'string'
+    ? value
+        .trim()
+        .replace(/\\/g, '/')
+        .replace(/^refs\/heads\//, '')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '')
+    : '';
   return trimmed.length > 0 ? trimmed : null;
 };
 
@@ -30,5 +37,5 @@ export const resolveStandaloneTargetBranchName = (
       ? null
       : getGitFlowBaseBranch());
 
-  return rawBranchName ? resolveTargetBranch(rawBranchName) : null;
+  return rawBranchName;
 };
