@@ -1376,6 +1376,16 @@ export async function gitReset(params: {
   });
 }
 
+export async function gitAbortMerge(params: {
+  repoPath: string;
+  confirm: boolean;
+}): Promise<void> {
+  return invoke("git_abort_merge", {
+    repoPath: params.repoPath,
+    confirm: params.confirm,
+  });
+}
+
 export async function gitStash(params: {
   repoPath: string;
   message?: string;

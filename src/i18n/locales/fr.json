@@ -1076,6 +1076,10 @@
     "dirtyMergeResolutionTitle": "Des changements locaux demandent une décision",
     "dirtyMergeResolutionDescription": "Macro a trouvé des changements locaux qui bloquent le merge. Choisissez comment les gérer avant de réessayer.",
     "stashAndRetryMerge": "Stasher et réessayer",
+    "revertAndRetryMerge": "Revert et réessayer",
+    "mergeInProgressResolutionTitle": "Un merge est déjà en cours",
+    "mergeInProgressResolutionDescription": "Macro a trouvé un merge non terminé qui bloque cette tentative. L’abandonner peut supprimer des résolutions partielles qui n’ont pas été commit.",
+    "abortMergeAndRetry": "Abandonner le merge et réessayer",
     "openAssistantInstead": "Ouvrir l’assistant à la place",
     "noAggregatedDiff": "Aucune différence agrégée entre la branche du plan et la branche de base pour ce référentiel.",
     "context": {

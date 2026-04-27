@@ -36,6 +36,8 @@ const gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
   behind: 0,
 }));
 const gitStashMock = mock(async () => 'stash@{0}');
+const gitAbortMergeMock = mock(async () => undefined);
+const gitRestorePathsMock = mock(async () => undefined);
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
   remote: [],
@@ -98,6 +100,8 @@ mock.module('../services/tauriIpc', () => ({
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
   gitStash: gitStashMock,
+  gitAbortMerge: gitAbortMergeMock,
+  gitRestorePaths: gitRestorePathsMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -112,6 +116,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
   gitStash: gitStashMock,
+  gitAbortMerge: gitAbortMergeMock,
+  gitRestorePaths: gitRestorePathsMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -356,6 +362,8 @@ describe('useTaskStore merge workflow review loading', () => {
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitStashMock.mockClear();
+    gitAbortMergeMock.mockClear();
+    gitRestorePathsMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
     createConversationMock.mockClear();
@@ -595,7 +603,9 @@ describe('useTaskStore merge workflow review loading', () => {
 
     const resolution = await useTaskStore
       .getState()
-      .resolveMergeWorkflowAutomatically('task-1', { dirtyRepositoryAction: 'stash' });
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'stash_dirty',
+      });
 
     expect(resolution).toEqual({
       conversationId: 'conv-1',
@@ -648,7 +658,9 @@ describe('useTaskStore merge workflow review loading', () => {
 
     const resolution = await useTaskStore
       .getState()
-      .resolveMergeWorkflowAutomatically('task-1', { dirtyRepositoryAction: 'stash' });
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'stash_dirty',
+      });
 
     expect(resolution).toEqual({
       conversationId: null,
@@ -658,6 +670,113 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(gitStashMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       message: 'Macro merge blocker: Task 1',
+    });
+    expect(gitStatusMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
+  });
+
+  it('automatically reverts dirty merge blockers before opening the assistant', async () => {
+    let hasRevertedDirtyChanges = false;
+    gitRestorePathsMock.mockImplementation(async () => {
+      hasRevertedDirtyChanges = true;
+    });
+    gitStatusMock.mockImplementation(async () => {
+      return {
+        branch: 'plan/review-actions',
+        is_clean: hasRevertedDirtyChanges,
+        staged_files: hasRevertedDirtyChanges
+          ? []
+          : [{ path: 'src/staged.ts', status: 'modified' }],
+        unstaged_files: hasRevertedDirtyChanges
+          ? []
+          : [{ path: 'src/unstaged.ts', status: 'modified' }],
+        untracked_files: hasRevertedDirtyChanges
+          ? []
+          : [{ path: 'src/new.ts', status: 'added' }],
+        conflicted_files: [],
+        conflictedFiles: [],
+        merge_in_progress: false,
+        mergeInProgress: false,
+      };
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'revert_dirty',
+      });
+
+    expect(resolution).toEqual({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    });
+    expect(gitRestorePathsMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      paths: ['src/staged.ts', 'src/unstaged.ts', 'src/new.ts'],
+      target: 'staged_and_worktree',
+    });
+    expect(gitStatusMock).toHaveBeenCalledTimes(3);
+    expect(gitStashMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
+  });
+
+  it('automatically aborts in-progress merges before opening the assistant', async () => {
+    let hasAbortedMerge = false;
+    gitAbortMergeMock.mockImplementation(async () => {
+      hasAbortedMerge = true;
+    });
+    gitStatusMock.mockImplementation(async () => {
+      return {
+        branch: 'plan/review-actions',
+        is_clean: hasAbortedMerge,
+        conflicted_files: [],
+        conflictedFiles: [],
+        merge_in_progress: !hasAbortedMerge,
+        mergeInProgress: !hasAbortedMerge,
+      };
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'abort_merge',
+      });
+
+    expect(resolution).toEqual({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    });
+    expect(gitAbortMergeMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      confirm: true,
     });
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
     expect(sendMessageMock).not.toHaveBeenCalled();

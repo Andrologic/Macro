@@ -1077,6 +1077,10 @@
     "dirtyMergeResolutionTitle": "Local changes need attention",
     "dirtyMergeResolutionDescription": "Macro found local repository changes blocking the merge. Choose how to handle them before retrying.",
     "stashAndRetryMerge": "Stash and retry",
+    "revertAndRetryMerge": "Revert and retry",
+    "mergeInProgressResolutionTitle": "A merge is already in progress",
+    "mergeInProgressResolutionDescription": "Macro found an unfinished merge blocking this retry. Aborting it can discard partial conflict resolutions that were not committed.",
+    "abortMergeAndRetry": "Abort merge and retry",
     "openAssistantInstead": "Open assistant instead",
     "noAggregatedDiff": "No aggregated diff between the plan branch and the base branch for this repository.",
     "context": {
