@@ -1464,6 +1464,7 @@ const sendArchitectMessageAndGetToolHandler = async (
     content: string;
   }
 ) => {
+  localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
   await useChatStore.getState().sendMessage({
     conversationId: params.conversationId ?? 'plan-conv',
     content: params.content,
@@ -3487,19 +3488,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
       conversationId: 'plan-conv',
       content: 'Refresh the plan context.',
     });
 
-    const onToolCall = (((streamChatMock as unknown as {
-      mock: { calls: Array<Array<unknown>> };
-    }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
-    } | undefined)?.onToolCall;
-
     expect(onToolCall).toBeDefined();
-    await onToolCall?.('plan_update', {
+    await onToolCall('plan_update', {
       plan_id: plan.id,
       description: 'Updated scope',
     });
@@ -3670,19 +3665,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
       conversationId: 'plan-conv',
       content: 'Generate the strategy.',
     });
     updateArchitectPlanMock.mockClear();
 
-    const onToolCall = (((streamChatMock as unknown as {
-      mock: { calls: Array<Array<unknown>> };
-    }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
-    } | undefined)?.onToolCall;
-
-    await onToolCall?.('strategy_generate', {
+    await onToolCall('strategy_generate', {
       nodes: [{ title: 'Implement checkout' }],
     });
 
@@ -4102,19 +4091,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
       conversationId: 'plan-conv',
       content: 'Update the strategy.',
     });
     updateArchitectPlanMock.mockClear();
 
-    const onToolCall = (((streamChatMock as unknown as {
-      mock: { calls: Array<Array<unknown>> };
-    }).mock.calls[0]?.[0]) as {
-      onToolCall?: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
-    } | undefined)?.onToolCall;
-
-    await onToolCall?.('strategy_update', {
+    await onToolCall('strategy_update', {
       replace: true,
       nodes: [{ title: 'Implement checkout' }],
     });
@@ -7119,6 +7102,120 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
     expect(useChatStore.getState().lastError).toBe('Select a provider and model before sending a message.');
     expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('does not start streaming when the user message cannot be persisted', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    createMessageMock.mockImplementationOnce(async () => {
+      throw new Error('database unavailable');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Hello',
+      })
+    ).rejects.toThrow('Failed to save the message before sending: database unavailable');
+
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toHaveLength(0);
+    expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('surfaces assistant persistence failures instead of losing them silently', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    createMessageMock
+      .mockImplementationOnce(
+        async (
+          conversationId: string,
+          role: 'user' | 'assistant',
+          content: string,
+          options?: {
+            hiddenContext?: string;
+            providerInputItems?: unknown[];
+          }
+        ) => ({
+          id: 'db-user-message',
+          conversation_id: conversationId,
+          role,
+          content,
+          created_at: '2026-03-19T00:00:00.000Z',
+          hidden_context: options?.hiddenContext ?? null,
+          provider_input_items_json: options?.providerInputItems
+            ? JSON.stringify(options.providerInputItems)
+            : null,
+        })
+      )
+      .mockImplementationOnce(async () => {
+        throw new Error('assistant write failed');
+      });
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as {
+        onComplete?: (result: {
+          visibleContent: string;
+          toolTraces: unknown[];
+          hiddenContext?: string;
+        }) => void;
+      };
+      options.onComplete?.({
+        visibleContent: 'Persist me',
+        toolTraces: [],
+        hiddenContext: undefined,
+      });
+    }) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Hello',
+    });
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(createMessageMock).toHaveBeenCalledTimes(2);
+    expect(useChatStore.getState().lastError).toBe(
+      'Failed to save assistant response: assistant write failed'
+    );
+    expect(useChatStore.getState().sendState).toBe('error');
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('chat-conv')
+        .some((message: { role: string; content: string }) =>
+          message.role === 'assistant' && message.content === 'Persist me'
+        )
+    ).toBe(true);
   });
 
   it('rejects concurrent sends while an Implement message is still preparing', async () => {
