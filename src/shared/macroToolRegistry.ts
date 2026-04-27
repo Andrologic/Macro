@@ -538,7 +538,7 @@ export const MACRO_TOOL_REGISTRY = [
     },
     required: [],
   }),
-  objectTool("git_commit", "Create commit in repository. The message must follow Conventional Commits: type(scope)?: subject.", {
+  objectTool("git_commit", "Create commit in repository. The message must follow Conventional Commits: type: subject.", {
     type: "object",
     properties: {
       repo_path: { type: "string" },
