@@ -138,6 +138,7 @@ interface ArchitectToolNeedsState {
   addNeed: (need: Omit<Need, "id" | "createdAt" | "updatedAt">) => string;
   updateNeed: (id: string, updates: Partial<Need>) => void;
   deleteNeed: (id: string) => void;
+  flushPendingPersistence?: (planId?: string | null) => Promise<void>;
   getNeed: (id: string) => Need | undefined;
   getNeedsForPlan: (planId: string) => Need[];
 }
@@ -1035,6 +1036,7 @@ export const handleArchitectToolCall = async (
       status: "identified",
       sourceMessageId: assistantMessageId,
     });
+    await needsState.flushPendingPersistence?.(activePlanId);
     const totalNeeds = needsState.getNeedsForPlan(activePlanId).length;
 
     return formatArchitectNeedAddToolResult({
@@ -1213,6 +1215,7 @@ export const handleArchitectToolCall = async (
     }
 
     needsState.updateNeed(needId, updates);
+    await needsState.flushPendingPersistence?.(activePlanId);
     const updatedNeed = getNeedForActivePlan(needId, activePlanId, needsState);
     if (!updatedNeed) {
       return `Need ${needId} became unavailable after update.`;
@@ -1246,6 +1249,7 @@ export const handleArchitectToolCall = async (
     }
 
     needsState.deleteNeed(needId);
+    await needsState.flushPendingPersistence?.(activePlanId);
     const remainingNeeds = needsState.getNeedsForPlan(activePlanId).length;
     return formatArchitectNeedDeleteToolResult({
       planId: activePlanId,
@@ -1533,6 +1537,7 @@ export const handleArchitectToolCall = async (
     if (inputPlanId && inputPlanId !== activePlanId) {
       return `strategy_generate can only update the active plan (${activePlanId}).`;
     }
+    await params.getNeedsState().flushPendingPersistence?.(activePlanId);
 
     const requestedPlanSlug =
       typeof args.plan_slug === "string"
@@ -1638,6 +1643,7 @@ export const handleArchitectToolCall = async (
     if (!activePlanId) {
       return "Cannot update strategy without an active plan. Create or select a plan first.";
     }
+    await params.getNeedsState().flushPendingPersistence?.(activePlanId);
 
     const activePlan = await planService.getArchitectPlan(
       targetBranch,
