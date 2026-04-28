@@ -1470,7 +1470,25 @@ export const createArchitectGitFlowService = (
 
     const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
 
-    if (plan.status === 'deleted' || !crudCapabilities.deleteRequiresCleanup) {
+    if (plan.status === 'deleted') {
+      await deps.deleteArchitectPlan({
+        branchName: params.branchName,
+        planId: params.planId,
+        hardDelete: params.hardDelete !== false,
+      });
+
+      return {
+        deletedBranches: [],
+        deletedWorktreeKeys: [],
+        repositories: [],
+      };
+    }
+
+    if (!crudCapabilities.canDelete) {
+      throw new Error('Archive the plan before deleting it.');
+    }
+
+    if (!crudCapabilities.deleteRequiresCleanup) {
       await deps.deleteArchitectPlan({
         branchName: params.branchName,
         planId: params.planId,
