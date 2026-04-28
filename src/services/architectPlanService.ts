@@ -4306,66 +4306,36 @@ export const updateArchitectPlan = async (input: {
   });
 };
 
-const canBindArchitectPlanConversationLightly = (
-  plan: ArchitectPlanRecord,
-  needs: Need[],
-  chatMessages: ArchitectPlanChatMessage[]
-): boolean =>
-  plan.status === 'draft' &&
-  plan.description.trim().length === 0 &&
-  plan.nodes.length === 0 &&
-  plan.predictedBranches.length === 0 &&
-  needs.length === 0 &&
-  chatMessages.length === 0;
-
-export const bindArchitectPlanConversation = async (params: {
-  branchName: string;
-  planId: string;
+const bindArchitectPlanConversationWithReplicaSet = async (params: {
+  normalizedBranch: string;
+  safeId: string;
   conversationId: string;
-}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
-  const normalizedBranch = normalizeBranchName(params.branchName);
-  assertGitFlowTargetBranch(normalizedBranch);
-  const safeId = sanitizeId(params.planId);
-  const conversationId = params.conversationId.trim();
-  if (!conversationId) {
-    throw new Error('Conversation id is required to bind an architect plan conversation.');
-  }
-
-  const activationPayload = await getArchitectPlanActivationPayload(
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  replicaSet: ArchitectPlanReplicaSet;
+  deps: ResolvedArchitectPlanServiceDependencies;
+}): Promise<ArchitectPlanRecord> => {
+  const {
     normalizedBranch,
     safeId,
-    {},
-    deps
-  );
-  if (!activationPayload || activationPayload.plan.status === 'deleted') {
+    conversationId,
+    registrySnapshot,
+    replicaSet,
+    deps,
+  } = params;
+  const existing = replicaSet.canonical.plan;
+  if (existing.status === 'deleted') {
     throw new Error(`Plan not found: ${safeId}`);
   }
-  if (activationPayload.plan.conversationId === conversationId) {
-    return activationPayload.plan;
+  if (existing.conversationId === conversationId) {
+    return existing;
   }
-  if (
-    (activationPayload.chatMessagesLoaded === false &&
-      (activationPayload.chatMessageCount ?? 0) > 0) ||
-    !canBindArchitectPlanConversationLightly(
-      activationPayload.plan,
-      activationPayload.needs,
-      activationPayload.chatMessages
-    )
-  ) {
-    return updateArchitectPlan({
-      branchName: normalizedBranch,
-      planId: safeId,
-      conversationId,
-    }, deps);
-  }
+  assertPlanReplicaSetWritable(replicaSet, 'bind conversation');
 
-  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
-    ...activationPayload.plan,
+    ...existing,
     conversationId,
     updatedAt: new Date().toISOString(),
-    revision: (activationPayload.plan.revision || 1) + 1,
+    revision: (existing.revision || 1) + 1,
   }, registrySnapshot, {
     logContext: 'plan_bind_conversation',
   });
@@ -4373,21 +4343,21 @@ export const bindArchitectPlanConversation = async (params: {
     throw new Error(`Plan not found: ${safeId}`);
   }
   const nextPlan = nextResult.plan;
-  const scopes = await ensurePlanScopes(
-    nextPlan.expectedProjectIds || nextPlan.projectIds || [],
-    registrySnapshot,
-    deps
-  );
+  const scopes = dedupeScopes(replicaSet.expectedScopes);
 
   await Promise.all(
     scopes.map(async (scope) => {
+      const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, nextPlan.id);
       await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
-        needs: [],
-        chatMessages: [],
+        needs: replicaSet.canonical.needs,
+        chatMessages,
+      });
+      await writePlanNeedsAtScope(scope, normalizedBranch, nextPlan.id, replicaSet.canonical.needs, registrySnapshot, {
+        skipManifest: true,
       });
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
-        needCount: 0,
-        chatMessageCount: 0,
+        needCount: replicaSet.canonical.needs.length,
+        chatMessageCount: chatMessages.length,
       }, registrySnapshot);
     })
   );
@@ -4402,7 +4372,59 @@ export const bindArchitectPlanConversation = async (params: {
     planId: safeId,
   });
 
-  return nextPlan;
+  try {
+    return (await getArchitectPlan(normalizedBranch, safeId, deps)) || nextPlan;
+  } catch (error) {
+    if (isArchitectPlanReplicaDivergenceError(error)) {
+      devLogger.warn(
+        JSON.stringify({
+          event: 'architect_plan_post_update_replica_verification_failed',
+          at: new Date().toISOString(),
+          branchName: normalizedBranch,
+          planId: safeId,
+          reason: error.divergence.reason,
+        })
+      );
+      return {
+        ...nextPlan,
+        hasReplicaDivergence: true,
+        replicationState: 'diverged',
+        replicas: error.divergence.replicas,
+      };
+    }
+    throw error;
+  }
+};
+
+export const bindArchitectPlanConversation = async (params: {
+  branchName: string;
+  planId: string;
+  conversationId: string;
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
+  const normalizedBranch = normalizeBranchName(params.branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(params.planId);
+  const conversationId = params.conversationId.trim();
+  if (!conversationId) {
+    throw new Error('Conversation id is required to bind an architect plan conversation.');
+  }
+
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    return bindArchitectPlanConversationWithReplicaSet({
+      normalizedBranch,
+      safeId,
+      conversationId,
+      registrySnapshot,
+      replicaSet,
+      deps,
+    });
   });
 };
 
