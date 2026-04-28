@@ -5,6 +5,7 @@ import {
   type PermissionRequest,
   type PermissionRequestResult,
   type Tool,
+  type ToolInvocation,
 } from '@github/copilot-sdk';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -22,6 +23,7 @@ const CLI_NAME = 'copilot';
 const MAX_READ_BYTES = 256_000;
 const MAX_GREP_RESULTS = 200;
 const MAX_GLOB_RESULTS = 500;
+const FRONTEND_TOOL_TIMEOUT_MS = 300_000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
 
@@ -61,6 +63,7 @@ interface BridgeChatMessage {
 }
 
 interface BridgeSendRequest {
+  request_id?: string;
   model_id: string;
   reasoning_effort?: string | null;
   messages: BridgeChatMessage[];
@@ -132,6 +135,24 @@ interface ToolTraceSnapshot {
   status: 'running' | 'done';
 }
 
+interface BridgeToolResultMessage {
+  type: 'tool_result';
+  request_id?: string;
+  tool_call_id: string;
+  result?: string;
+  hidden_context?: string | null;
+  visible_content?: string | null;
+  interrupt?: boolean;
+  error?: string;
+}
+
+interface RelayToolResult {
+  result: string;
+  hiddenContext?: string;
+  visibleContent?: string;
+  interrupt?: boolean;
+}
+
 class BridgeError extends Error {
   code: string;
 
@@ -145,22 +166,187 @@ const emitJson = (payload: JsonRecord): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 };
 
-const readStdinJson = async <T>(): Promise<T | null> => {
-  if (process.stdin.isTTY) {
-    return null;
+class BridgeControlChannel {
+  private readonly reader = createInterface({ input: process.stdin });
+  private readonly pendingToolResults = new Map<
+    string,
+    {
+      resolve: (result: RelayToolResult) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private initialMessage: unknown | null = null;
+  private initialError: Error | null = null;
+  private initialClosed = false;
+  private initialResolved = false;
+  private readonly initialWaiters: Array<{
+    resolve: (value: unknown | null) => void;
+    reject: (error: Error) => void;
+  }> = [];
+
+  constructor() {
+    this.reader.on('line', (line) => {
+      this.handleLine(line);
+    });
+    this.reader.on('close', () => {
+      this.initialClosed = true;
+      this.flushInitialWaiters();
+      this.rejectPendingToolResults(
+        new BridgeError('tool_result_channel_closed', 'Copilot tool result channel closed.')
+      );
+    });
   }
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  async readInitialJson<T>(): Promise<T | null> {
+    if (process.stdin.isTTY) {
+      return null;
+    }
+
+    if (this.initialResolved) {
+      if (this.initialError) throw this.initialError;
+      return this.initialMessage as T | null;
+    }
+
+    return new Promise<T | null>((resolve, reject) => {
+      this.initialWaiters.push({
+        resolve: (value) => resolve(value as T | null),
+        reject,
+      });
+      this.flushInitialWaiters();
+    });
   }
 
-  const text = Buffer.concat(chunks).toString('utf8').trim();
-  if (!text) {
-    return null;
+  requestTool(params: {
+    requestId: string;
+    toolCallId: string;
+    toolName: string;
+    args: JsonRecord;
+  }): Promise<RelayToolResult> {
+    if (this.pendingToolResults.has(params.toolCallId)) {
+      return Promise.reject(
+        new BridgeError(
+          'duplicate_tool_call_id',
+          `Duplicate Copilot tool call id "${params.toolCallId}".`
+        )
+      );
+    }
+
+    emitJson({
+      type: 'tool_request',
+      request_id: params.requestId,
+      tool_call_id: params.toolCallId,
+      tool_name: params.toolName,
+      args: params.args,
+    });
+
+    return new Promise<RelayToolResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingToolResults.delete(params.toolCallId);
+        reject(
+          new BridgeError(
+            'tool_result_timeout',
+            `Timed out waiting for Macro to execute tool "${params.toolName}".`
+          )
+        );
+      }, FRONTEND_TOOL_TIMEOUT_MS);
+
+      this.pendingToolResults.set(params.toolCallId, {
+        resolve,
+        reject,
+        timeout,
+      });
+    });
   }
 
-  return JSON.parse(text) as T;
+  close(): void {
+    this.reader.close();
+    this.rejectPendingToolResults(
+      new BridgeError('tool_result_channel_closed', 'Copilot tool result channel closed.')
+    );
+  }
+
+  private handleLine(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let message: unknown;
+    try {
+      message = JSON.parse(trimmed);
+    } catch (error) {
+      const parsedError = new BridgeError(
+        'invalid_control_message',
+        `Invalid Copilot control message: ${error instanceof Error ? error.message : String(error)}`
+      );
+      if (!this.initialResolved) {
+        this.initialError = parsedError;
+        this.initialResolved = true;
+        this.flushInitialWaiters();
+        return;
+      }
+      this.rejectPendingToolResults(parsedError);
+      return;
+    }
+
+    if (!this.initialResolved) {
+      this.initialMessage = message;
+      this.initialResolved = true;
+      this.flushInitialWaiters();
+      return;
+    }
+
+    if (isBridgeToolResultMessage(message)) {
+      this.resolveToolResult(message);
+    }
+  }
+
+  private flushInitialWaiters(): void {
+    if (!this.initialResolved && !this.initialClosed) return;
+    const waiters = this.initialWaiters.splice(0);
+    for (const waiter of waiters) {
+      if (this.initialError) {
+        waiter.reject(this.initialError);
+      } else {
+        waiter.resolve(this.initialResolved ? this.initialMessage : null);
+      }
+    }
+  }
+
+  private resolveToolResult(message: BridgeToolResultMessage): void {
+    const pending = this.pendingToolResults.get(message.tool_call_id);
+    if (!pending) return;
+
+    clearTimeout(pending.timeout);
+    this.pendingToolResults.delete(message.tool_call_id);
+
+    if (message.error) {
+      pending.reject(new BridgeError('tool_result_failed', message.error));
+      return;
+    }
+
+    pending.resolve({
+      result: typeof message.result === 'string' ? message.result : '',
+      hiddenContext:
+        typeof message.hidden_context === 'string' ? message.hidden_context : undefined,
+      visibleContent:
+        typeof message.visible_content === 'string' ? message.visible_content : undefined,
+      interrupt: message.interrupt === true,
+    });
+  }
+
+  private rejectPendingToolResults(error: Error): void {
+    for (const [toolCallId, pending] of this.pendingToolResults) {
+      clearTimeout(pending.timeout);
+      this.pendingToolResults.delete(toolCallId);
+      pending.reject(error);
+    }
+  }
+}
+
+const isBridgeToolResultMessage = (value: unknown): value is BridgeToolResultMessage => {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'tool_result' && typeof record.tool_call_id === 'string';
 };
 
 const normalizePath = (value?: string | null): string | null => {
@@ -1467,80 +1653,6 @@ const grepWorkspace = async (params: {
   return results.join('\n') || '(no matches)';
 };
 
-const writeWorkspaceFile = async (params: {
-  context: WorkspaceContext;
-  pathValue: string;
-  projectId?: string | null;
-  content: string;
-  createDirs?: boolean;
-}): Promise<string> => {
-  const target = await resolveWorkspaceTarget({
-    rawPath: params.pathValue,
-    projectId: params.projectId,
-    context: params.context,
-    preferFocusedProject: true,
-  });
-
-  const workspaceRoot = target.candidate?.workspacePath || params.context.defaultWorkspacePath;
-  if (!workspaceRoot) {
-    throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
-  }
-
-  const absolutePath = ensureWithinWorkspace(workspaceRoot, target.relativePath);
-  if (params.createDirs) {
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-  }
-
-  await fs.writeFile(absolutePath, params.content, 'utf8');
-  const relativeLabel =
-    target.candidate && params.context.virtualRootEnabled
-      ? path.posix.join(target.candidate.mountName, target.relativePath)
-      : target.relativePath;
-
-  return `WROTE: ${relativeLabel}`;
-};
-
-const editWorkspaceFile = async (params: {
-  context: WorkspaceContext;
-  pathValue: string;
-  projectId?: string | null;
-  oldText: string;
-  newText: string;
-  replaceAll?: boolean;
-}): Promise<string> => {
-  const target = await resolveWorkspaceTarget({
-    rawPath: params.pathValue,
-    projectId: params.projectId,
-    context: params.context,
-    preferFocusedProject: true,
-    searchExistingPath: true,
-  });
-
-  const workspaceRoot = target.candidate?.workspacePath || params.context.defaultWorkspacePath;
-  if (!workspaceRoot) {
-    throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
-  }
-
-  const absolutePath = ensureWithinWorkspace(workspaceRoot, target.relativePath);
-  const original = await fs.readFile(absolutePath, 'utf8');
-
-  if (!original.includes(params.oldText)) {
-    throw new BridgeError('edit_target_not_found', 'The specified old_text was not found in the target file.');
-  }
-
-  const updated = params.replaceAll
-    ? original.split(params.oldText).join(params.newText)
-    : original.replace(params.oldText, params.newText);
-
-  await fs.writeFile(absolutePath, updated, 'utf8');
-  const relativeLabel =
-    target.candidate && params.context.virtualRootEnabled
-      ? path.posix.join(target.candidate.mountName, target.relativePath)
-      : target.relativePath;
-
-  return `EDITED: ${relativeLabel}`;
-};
-
 const findReadFileTarget = async (context: WorkspaceContext, fileValue: string): Promise<string> => {
   const normalized = sanitizeRelativePath(fileValue);
   if (normalized.includes('/')) {
@@ -1571,7 +1683,12 @@ const findReadFileTarget = async (context: WorkspaceContext, fileValue: string):
 };
 
 const CHAT_SAFE_TOOL_IDS = new Set(['read_sources', 'read_file', 'web_search', 'web_fetch']);
-const LOCAL_WORKSPACE_TOOL_IDS = new Set(['read_file', 'list', 'read', 'write', 'edit', 'glob', 'grep']);
+const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
+  'write',
+  'edit',
+  'delete',
+  'apply_patch',
+]);
 const TOOL_HOST_TOOL_IDS = new Set([
   'git_status',
   'git_log',
@@ -1589,16 +1706,22 @@ const TOOL_HOST_TOOL_IDS = new Set([
   'terminal_read',
   'terminal_kill',
 ]);
-const LOCAL_BRIDGE_TOOL_IDS = new Set([
-  ...LOCAL_WORKSPACE_TOOL_IDS,
-  'mark_source_passage',
-  'read_sources',
-  'edit_source_passage',
-  'web_fetch',
-]);
+
+const isFrontendRelayToolId = (toolId: string): boolean =>
+  toolId === 'question' ||
+  toolId.startsWith('need_') ||
+  toolId.startsWith('plan_') ||
+  toolId.startsWith('strategy_');
 
 const inferMacroMode = (allowedToolIds: string[]): string => {
-  if (allowedToolIds.some((toolId) => toolId === 'need_add' || toolId.startsWith('plan_') || toolId.startsWith('strategy_'))) {
+  if (
+    allowedToolIds.some(
+      (toolId) =>
+        toolId.startsWith('need_') ||
+        toolId.startsWith('plan_') ||
+        toolId.startsWith('strategy_')
+    )
+  ) {
     return 'Architect';
   }
   if (allowedToolIds.every((toolId) => CHAT_SAFE_TOOL_IDS.has(toolId))) {
@@ -1650,9 +1773,30 @@ const executeCopilotMacroTool = async (
   request: BridgeSendRequest,
   context: WorkspaceContext,
   toolId: string,
-  args: JsonRecord
+  args: JsonRecord,
+  invocation?: ToolInvocation,
+  controlChannel?: BridgeControlChannel,
+  recordRelayResult?: (result: RelayToolResult) => void
 ): Promise<string> => {
   const mode = inferMacroMode(request.allowed_tool_ids || []);
+
+  if (isFrontendRelayToolId(toolId)) {
+    if (!controlChannel) {
+      throw new BridgeError(
+        'frontend_tool_relay_unavailable',
+        `Macro frontend relay is unavailable for tool "${toolId}".`
+      );
+    }
+
+    const result = await controlChannel.requestTool({
+      requestId: request.request_id || invocation?.sessionId || 'copilot',
+      toolCallId: invocation?.toolCallId || `${toolId}_${randomUUID()}`,
+      toolName: toolId,
+      args,
+    });
+    recordRelayResult?.(result);
+    return result.result;
+  }
 
   if (toolId === 'read_file') {
     const fileValue = typeof args.file === 'string' ? args.file : '';
@@ -1689,28 +1833,28 @@ const executeCopilotMacroTool = async (
     });
   }
 
-  if (toolId === 'write') {
-    const pathValue = typeof args.path === 'string' ? args.path : '';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return writeWorkspaceFile({
+  if (TOOL_HOST_WORKSPACE_MUTATION_IDS.has(toolId)) {
+    const rawPath = typeof args.path === 'string' ? args.path : '.';
+    const routed = await routeToolHostTarget({
       context,
-      pathValue,
+      rawPath,
       projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      content: typeof args.content === 'string' ? args.content : '',
-      createDirs: args.create_dirs === true,
+      preferFocusedProject: true,
+      searchExistingPath: toolId === 'edit' || toolId === 'delete',
     });
-  }
 
-  if (toolId === 'edit') {
-    const pathValue = typeof args.path === 'string' ? args.path : '';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return editWorkspaceFile({
-      context,
-      pathValue,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      oldText: typeof args.old_text === 'string' ? args.old_text : '',
-      newText: typeof args.new_text === 'string' ? args.new_text : '',
-      replaceAll: args.replace_all === true,
+    const nextArgs: JsonRecord = { ...args };
+    if (toolId !== 'apply_patch') {
+      nextArgs.path = routed.relativePath || '.';
+    }
+    delete nextArgs.project_id;
+
+    return executeToolHost({
+      mode,
+      toolId,
+      args: nextArgs,
+      workspacePath: routed.workspacePath,
+      workspaceScope: mode === 'Architect' ? 'metadata' : null,
     });
   }
 
@@ -1810,7 +1954,13 @@ const executeCopilotMacroTool = async (
   );
 };
 
-const buildMacroTools = (request: BridgeSendRequest): Tool[] => {
+const buildMacroTools = (
+  request: BridgeSendRequest,
+  options?: {
+    controlChannel?: BridgeControlChannel;
+    recordRelayResult?: (result: RelayToolResult) => void;
+  }
+): Tool[] => {
   const context = buildWorkspaceContext(request);
   const allowedToolIds = filterCopilotSupportedToolIds(request.allowed_tool_ids || []);
 
@@ -1821,10 +1971,20 @@ const buildMacroTools = (request: BridgeSendRequest): Tool[] => {
       defineTool(entry.id, {
         description: entry.description,
         parameters: entry.parameters as JsonSchema & { type: 'object' },
-        overridesBuiltInTool: entry.copilot?.overridesBuiltInTool === true,
-        handler: async (args: JsonRecord) => {
+        ...(entry.copilot?.overridesBuiltInTool === true
+          ? { overridesBuiltInTool: true }
+          : {}),
+        handler: async (args: JsonRecord, invocation: ToolInvocation) => {
           try {
-            return await executeCopilotMacroTool(request, context, entry.id, args);
+            return await executeCopilotMacroTool(
+              request,
+              context,
+              entry.id,
+              args,
+              invocation,
+              options?.controlChannel,
+              options?.recordRelayResult
+            );
           } catch (error) {
             return `Error executing ${entry.id}: ${
               error instanceof Error ? error.message : String(error)
@@ -1906,144 +2066,165 @@ const handleModels = async (): Promise<void> => {
 };
 
 const handleSend = async (): Promise<void> => {
-  const request = await readStdinJson<BridgeSendRequest>();
-  if (!request) {
-    throw new BridgeError('invalid_request', 'Missing Copilot send request payload.');
-  }
+  const controlChannel = new BridgeControlChannel();
 
-  const probe = await probeCli();
-  if (!probe.installed || !probe.versionOk) {
-    throw new BridgeError(
-      probe.installed ? 'cli_version_unsupported' : 'cli_missing',
-      probe.error ||
-        (probe.installed
-          ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
-          : 'GitHub Copilot CLI was not found on PATH.')
-    );
-  }
-
-  const { system, prompt } = serializeConversationPrompt(request.messages);
-  const tools = buildMacroTools(request);
-  const allowedToolNames = new Set(tools.map((tool) => tool.name));
-  const toolTraces = new Map<string, ToolTraceSnapshot>();
-  const hiddenContextBlocks: string[] = [];
-  let finalContent = '';
-  let lastError: string | null = null;
-
-  await withClient(async (client) => {
-    const auth = await client.getAuthStatus();
-    if (!auth.isAuthenticated) {
-      throw new BridgeError('login_required', auth.statusMessage || 'GitHub Copilot CLI is not logged in.');
+  try {
+    const request = await controlChannel.readInitialJson<BridgeSendRequest>();
+    if (!request) {
+      throw new BridgeError('invalid_request', 'Missing Copilot send request payload.');
     }
 
-    const session = await client.createSession({
-      model: request.model_id,
-      ...(request.reasoning_effort ? { reasoningEffort: request.reasoning_effort } : {}),
-      workingDirectory:
-        normalizePath(request.workspace_path) ||
-        normalizePath(request.default_workspace_path) ||
-        undefined,
-      streaming: true,
-      systemMessage: system ? { mode: 'append', content: system } : undefined,
-      tools,
-      availableTools: Array.from(allowedToolNames),
-      onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
-        if (
-          permissionRequest.kind === 'custom-tool' &&
-          typeof permissionRequest.toolName === 'string' &&
-          allowedToolNames.has(permissionRequest.toolName)
-        ) {
-          return { kind: 'approved' };
-        }
+    const probe = await probeCli();
+    if (!probe.installed || !probe.versionOk) {
+      throw new BridgeError(
+        probe.installed ? 'cli_version_unsupported' : 'cli_missing',
+        probe.error ||
+          (probe.installed
+            ? `GitHub Copilot CLI ${MIN_CLI_VERSION}+ is required.`
+            : 'GitHub Copilot CLI was not found on PATH.')
+      );
+    }
 
-        return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
-      },
+    const { system, prompt } = serializeConversationPrompt(request.messages);
+    const toolTraces = new Map<string, ToolTraceSnapshot>();
+    const hiddenContextBlocks: string[] = [];
+    let interruptResult: RelayToolResult | null = null;
+    const recordRelayResult = (result: RelayToolResult) => {
+      if (result.hiddenContext?.trim()) {
+        hiddenContextBlocks.push(result.hiddenContext.trim());
+      }
+      if (result.interrupt) {
+        interruptResult = result;
+      }
+    };
+    const tools = buildMacroTools(request, {
+      controlChannel,
+      recordRelayResult,
     });
+    const allowedToolNames = new Set(tools.map((tool) => tool.name));
+    let finalContent = '';
+    let lastError: string | null = null;
 
-    try {
-      session.on((event) => {
-        if (event.type === 'assistant.message_delta') {
-          if (event.data.deltaContent) {
-            emitJson({ type: 'delta', delta: event.data.deltaContent });
+    await withClient(async (client) => {
+      const auth = await client.getAuthStatus();
+      if (!auth.isAuthenticated) {
+        throw new BridgeError('login_required', auth.statusMessage || 'GitHub Copilot CLI is not logged in.');
+      }
+
+      const session = await client.createSession({
+        model: request.model_id,
+        ...(request.reasoning_effort ? { reasoningEffort: request.reasoning_effort } : {}),
+        workingDirectory:
+          normalizePath(request.workspace_path) ||
+          normalizePath(request.default_workspace_path) ||
+          undefined,
+        streaming: true,
+        systemMessage: system ? { mode: 'append', content: system } : undefined,
+        tools,
+        availableTools: Array.from(allowedToolNames),
+        onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
+          if (
+            permissionRequest.kind === 'custom-tool' &&
+            typeof permissionRequest.toolName === 'string' &&
+            allowedToolNames.has(permissionRequest.toolName)
+          ) {
+            return { kind: 'approved' };
           }
-          return;
-        }
 
-        if (event.type === 'assistant.message') {
-          finalContent = event.data.content || finalContent;
-          return;
-        }
-
-        if (event.type === 'tool.execution_start') {
-          const args = (event.data.arguments || {}) as JsonRecord;
-          const detail = formatToolTraceDetail(event.data.toolName, args);
-          const trace: ToolTraceSnapshot = {
-            tool_call_id: event.data.toolCallId,
-            tool_name: event.data.toolName,
-            detail,
-            status: 'running',
-          };
-          toolTraces.set(event.data.toolCallId, trace);
-          emitJson({ type: 'tool_trace', ...trace });
-          return;
-        }
-
-        if (event.type === 'tool.execution_complete') {
-          const existing = toolTraces.get(event.data.toolCallId);
-          const trace: ToolTraceSnapshot = {
-            tool_call_id: event.data.toolCallId,
-            tool_name: existing?.tool_name || 'tool',
-            detail: existing?.detail,
-            status: 'done',
-          };
-          toolTraces.set(event.data.toolCallId, trace);
-          emitJson({ type: 'tool_trace', ...trace });
-
-          const resultText =
-            event.data.result?.detailedContent ||
-            event.data.result?.content ||
-            '';
-          const block = buildToolContextBlock(
-            event.data.toolCallId,
-            trace.tool_name,
-            trace.detail,
-            resultText
-          );
-          if (block) {
-            hiddenContextBlocks.push(block);
-          }
-          return;
-        }
-
-        if (event.type === 'session.error') {
-          lastError = event.data.message || 'GitHub Copilot session failed.';
-          return;
-        }
-
-        if (event.type === 'session.warning') {
-          if (event.data.message) {
-            lastError = event.data.message;
-          }
-        }
+          return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
+        },
       });
 
-      const assistantMessage = await session.sendAndWait({ prompt }, 300_000);
-      finalContent = assistantMessage?.data.content || finalContent;
-    } finally {
-      await session.disconnect();
+      try {
+        session.on((event) => {
+          if (event.type === 'assistant.message_delta') {
+            if (event.data.deltaContent) {
+              emitJson({ type: 'delta', delta: event.data.deltaContent });
+            }
+            return;
+          }
+
+          if (event.type === 'assistant.message') {
+            finalContent = event.data.content || finalContent;
+            return;
+          }
+
+          if (event.type === 'tool.execution_start') {
+            const args = (event.data.arguments || {}) as JsonRecord;
+            const detail = formatToolTraceDetail(event.data.toolName, args);
+            const trace: ToolTraceSnapshot = {
+              tool_call_id: event.data.toolCallId,
+              tool_name: event.data.toolName,
+              detail,
+              status: 'running',
+            };
+            toolTraces.set(event.data.toolCallId, trace);
+            emitJson({ type: 'tool_trace', ...trace });
+            return;
+          }
+
+          if (event.type === 'tool.execution_complete') {
+            const existing = toolTraces.get(event.data.toolCallId);
+            const trace: ToolTraceSnapshot = {
+              tool_call_id: event.data.toolCallId,
+              tool_name: existing?.tool_name || 'tool',
+              detail: existing?.detail,
+              status: 'done',
+            };
+            toolTraces.set(event.data.toolCallId, trace);
+            emitJson({ type: 'tool_trace', ...trace });
+
+            const resultText =
+              event.data.result?.detailedContent ||
+              event.data.result?.content ||
+              '';
+            const block = buildToolContextBlock(
+              event.data.toolCallId,
+              trace.tool_name,
+              trace.detail,
+              resultText
+            );
+            if (block) {
+              hiddenContextBlocks.push(block);
+            }
+            return;
+          }
+
+          if (event.type === 'session.error') {
+            lastError = event.data.message || 'GitHub Copilot session failed.';
+            return;
+          }
+
+          if (event.type === 'session.warning') {
+            if (event.data.message) {
+              lastError = event.data.message;
+            }
+          }
+        });
+
+        const assistantMessage = await session.sendAndWait({ prompt }, 300_000);
+        finalContent = assistantMessage?.data.content || finalContent;
+      } finally {
+        await session.disconnect();
+      }
+    });
+
+    if (!finalContent && lastError) {
+      throw classifySdkError(new Error(lastError));
     }
-  });
 
-  if (!finalContent && lastError) {
-    throw classifySdkError(new Error(lastError));
+    emitJson({
+      type: 'done',
+      content:
+        interruptResult?.interrupt && interruptResult.visibleContent != null
+          ? interruptResult.visibleContent
+          : finalContent,
+      hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
+      tool_traces: Array.from(toolTraces.values()),
+    });
+  } finally {
+    controlChannel.close();
   }
-
-  emitJson({
-    type: 'done',
-    content: finalContent,
-    hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
-    tool_traces: Array.from(toolTraces.values()),
-  });
 };
 
 const main = async (): Promise<void> => {
@@ -2067,12 +2248,19 @@ const main = async (): Promise<void> => {
   }
 };
 
-void main().catch((error) => {
-  const classified = classifySdkError(error);
-  emitJson({
-    type: 'error',
-    code: classified.code,
-    message: classified.message,
+export const __testables = {
+  buildMacroTools,
+  isFrontendRelayToolId,
+};
+
+if (process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT !== '1') {
+  void main().catch((error) => {
+    const classified = classifySdkError(error);
+    emitJson({
+      type: 'error',
+      code: classified.code,
+      message: classified.message,
+    });
+    process.exitCode = 1;
   });
-  process.exitCode = 1;
-});
+}

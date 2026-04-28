@@ -142,6 +142,35 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("submits Copilot tool results through ai_submit_tool_result", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.aiSubmitToolResult({
+      requestId: "req-1",
+      toolCallId: "call_question",
+      result: "Questionnaire queued.",
+      hiddenContext: "<questionnaire_context />",
+      visibleContent: "Need one choice.",
+      interrupt: true,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "ai_submit_tool_result",
+        payload: {
+          request: {
+            request_id: "req-1",
+            tool_call_id: "call_question",
+            result: "Questionnaire queued.",
+            hidden_context: "<questionnaire_context />",
+            visible_content: "Need one choice.",
+            interrupt: true,
+          },
+        },
+      },
+    ]);
+  });
+
   it("passes conversation scope repairs through db_update_conversation_scope", async () => {
     const tauriIpc = await loadTauriIpc();
 

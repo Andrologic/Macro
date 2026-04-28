@@ -28,6 +28,7 @@ const extractRustPolicyToolIds = (
 
 describe('macroToolRegistry', () => {
   const copilotBuiltInOverrideToolIds = [
+    'web_fetch',
     'read_file',
     'list',
     'read',
@@ -73,9 +74,11 @@ describe('macroToolRegistry', () => {
 
   it('adds Copilot override metadata only for marked tool shapes', () => {
     const grepShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('grep'));
+    const webFetchShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
     const gitShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('git_status'));
 
     expect(grepShape.overridesBuiltInTool).toBe(true);
+    expect(webFetchShape.overridesBuiltInTool).toBe(true);
     expect(gitShape.overridesBuiltInTool).toBeUndefined();
   });
 
@@ -89,10 +92,19 @@ describe('macroToolRegistry', () => {
         'read_file',
         'web_search',
         'plan_get',
+        'need_add',
+        'strategy_generate',
         'git_status',
         'terminal_run',
       ])
-    ).toEqual(['read_file', 'git_status', 'terminal_run']);
+    ).toEqual([
+      'read_file',
+      'plan_get',
+      'need_add',
+      'strategy_generate',
+      'git_status',
+      'terminal_run',
+    ]);
   });
 
   it('keeps the Rust tool policy aligned with the frontend fallback policy', async () => {
