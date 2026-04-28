@@ -232,7 +232,17 @@ pub async fn ai_cancel_stream(
     ai_state: State<'_, AiState>,
     request_id: String,
 ) -> CommandResult<()> {
-    chatgpt::cancel_stream(ai_state.inner(), &request_id)
+    copilot::cancel_stream(ai_state.inner(), &request_id)
+        .await
+        .map_err(|message| CommandError { message })
+}
+
+#[tauri::command]
+pub async fn ai_submit_tool_result(
+    ai_state: State<'_, AiState>,
+    request: copilot::CopilotToolResultRequest,
+) -> CommandResult<()> {
+    copilot::submit_tool_result(ai_state.inner(), request)
         .await
         .map_err(|message| CommandError { message })
 }

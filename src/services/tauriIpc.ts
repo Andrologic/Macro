@@ -427,6 +427,13 @@ export interface AiStreamToolTraceEvent {
   tool_trace: ToolTrace;
 }
 
+export interface AiToolRequestEvent {
+  request_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  args: Record<string, unknown>;
+}
+
 export interface AiStreamDoneEvent {
   request_id: string;
   output_text: string;
@@ -1248,6 +1255,26 @@ export async function aiStreamChat(params: {
 
 export async function aiCancelStream(requestId: string): Promise<void> {
   return invoke("ai_cancel_stream", { requestId });
+}
+
+export async function aiSubmitToolResult(params: {
+  requestId: string;
+  toolCallId: string;
+  result: string;
+  hiddenContext?: string | null;
+  visibleContent?: string | null;
+  interrupt?: boolean;
+}): Promise<void> {
+  return invoke("ai_submit_tool_result", {
+    request: {
+      request_id: params.requestId,
+      tool_call_id: params.toolCallId,
+      result: params.result,
+      hidden_context: params.hiddenContext ?? null,
+      visible_content: params.visibleContent ?? null,
+      interrupt: params.interrupt ?? false,
+    },
+  });
 }
 
 // ============ Git ============
