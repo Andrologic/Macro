@@ -63,6 +63,7 @@ import {
   getArchitectPlanVisibleProjectIds,
   getArchitectPlanNeeds,
   hasPersistedArchitectStrategy,
+  isArchitectPlanReplicaDivergenceError,
   isArchitectPlanSlugAvailable,
   isArchitectPlanSlugMutable,
   listArchitectPlans,
@@ -3417,6 +3418,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       getNeedsState: () => useNeedsStore.getState(),
       getTaskState: () => useTaskStore.getState(),
       ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
+    }).catch((error) => {
+      if (!isArchitectPlanReplicaDivergenceError(error)) {
+        throw error;
+      }
+
+      return [
+        `Plan metadata replica issue for plan ${error.divergence.planId}: ${error.message}`,
+        '',
+        'Structured context:',
+        JSON.stringify(
+          {
+            error: 'architect_plan_replica_divergence',
+            plan_id: error.divergence.planId,
+            branch_name: error.divergence.branchName,
+            reason: error.divergence.reason,
+            repair_action: 'repair_metadata',
+            replicas: error.divergence.replicas,
+          },
+          null,
+          2
+        ),
+      ].join('\n');
     });
 
     if (architectToolResult !== undefined) {

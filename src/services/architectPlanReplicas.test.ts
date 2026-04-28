@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
-import type { Project, ProjectGroup } from '../types';
+import type { Need, Project, ProjectGroup } from '../types';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {
@@ -312,12 +312,21 @@ describe('architectPlanService replicas', () => {
   });
 
   it('auto-heals synthetic session project ids without reporting missing replicas', async () => {
-    const plan = buildPlan();
-    seedReplica('/repos/web', plan);
-    seedReplica('/repos/api', plan);
+    const webPlan = buildPlan({
+      updatedAt: '2026-03-15T00:01:00.000Z',
+    });
+    const apiPlan = buildPlan({
+      updatedAt: '2026-03-15T00:00:00.000Z',
+    });
+    seedReplica('/repos/web', webPlan);
+    seedReplica('/repos/api', apiPlan);
+    writeWorkspaceJson('/repos/web', `branches/develop/plans/${webPlan.id}/runtime.json`, {
+      schemaVersion: 1,
+      strategyPreview: null,
+    });
 
     const { service } = await loadArchitectPlanService();
-    const loaded = await service.getArchitectPlan('develop', plan.id);
+    const loaded = await service.getArchitectPlan('develop', webPlan.id);
 
     expect(loaded).not.toBeNull();
     expect(loaded?.projectIds).toEqual(['web', 'api']);
@@ -325,10 +334,10 @@ describe('architectPlanService replicas', () => {
     expect(loaded?.predictedBranches).toEqual([]);
 
     const sanitizedWebPlan = JSON.parse(
-      readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/plan.json`) || 'null'
+      readWorkspaceFile('/repos/web', `branches/develop/plans/${webPlan.id}/plan.json`) || 'null'
     );
     const sanitizedApiPlan = JSON.parse(
-      readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/plan.json`) || 'null'
+      readWorkspaceFile('/repos/api', `branches/develop/plans/${webPlan.id}/plan.json`) || 'null'
     );
     const sanitizedWebIndex = JSON.parse(
       readWorkspaceFile('/repos/web', 'branches/develop/plans/index.json') || 'null'
@@ -338,6 +347,7 @@ describe('architectPlanService replicas', () => {
     expect(sanitizedApiPlan.projectIds).toEqual(['web', 'api']);
     expect(sanitizedWebPlan.predictedBranches).toEqual([]);
     expect(sanitizedWebIndex.plans[0].projectIds).toEqual(['web', 'api']);
+    expect(readWorkspaceFile('/repos/api', `branches/develop/plans/${webPlan.id}/runtime.json`)).toBeNull();
   });
 
   it('repairs divergent replicas with sanitized canonical metadata', async () => {
@@ -477,6 +487,78 @@ describe('architectPlanService replicas', () => {
     expect(loaded?.expectedProjectIds).toEqual(['web', 'api']);
     expect(loaded?.availableProjectIds).toEqual(['api']);
     expect(loaded?.missingProjectIds).toEqual(['web']);
+  });
+
+  it('ignores operational runtime and chat files when checking replica content divergence', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    writeWorkspaceJson('/repos/web', `branches/develop/plans/${plan.id}/runtime.json`, {
+      schemaVersion: 1,
+      strategyPreview: null,
+    });
+    writeWorkspaceFile(
+      '/repos/api',
+      `branches/develop/plans/${plan.id}/chat.jsonl`,
+      `${JSON.stringify({
+        id: 'chat-1',
+        role: 'assistant',
+        content: 'Operational transcript only.',
+        createdAt: '2026-03-15T00:01:00.000Z',
+      })}\n`
+    );
+
+    const { service } = await loadArchitectPlanService();
+    const loaded = await service.getArchitectPlan('develop', plan.id);
+
+    expect(loaded?.id).toBe(plan.id);
+    expect(loaded?.hasReplicaDivergence).toBe(false);
+  });
+
+  it('serializes concurrent need saves so every replica ends with the same needs', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const firstNeed: Need = {
+      id: 'need-1',
+      planId: plan.id,
+      title: 'First need',
+      description: 'Initial requirement.',
+      category: 'functional',
+      status: 'identified',
+      priority: 'high',
+      tags: [],
+      createdAt: '2026-03-15T00:00:00.000Z',
+      updatedAt: '2026-03-15T00:00:00.000Z',
+    };
+    const secondNeed: Need = {
+      ...firstNeed,
+      id: 'need-2',
+      title: 'Second need',
+      description: 'Follow-up requirement.',
+    };
+
+    const { service } = await loadArchitectPlanService();
+    await Promise.all([
+      service.saveArchitectPlanNeeds('develop', plan.id, [firstNeed]),
+      service.saveArchitectPlanNeeds('develop', plan.id, [firstNeed, secondNeed]),
+    ]);
+
+    const webNeeds = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/needs.json`);
+    const apiNeeds = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/needs.json`);
+    expect(webNeeds).toBe(apiNeeds);
+    expect(JSON.parse(webNeeds || '[]').map((need: Need) => need.id)).toEqual([
+      'need-1',
+      'need-2',
+    ]);
   });
 
   it('keeps reporting true content divergence between repositories', async () => {
