@@ -58,7 +58,7 @@ import {
   createArchitectPlan,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
-  getArchitectPlanChatMessages,
+  getArchitectPlanChatTranscript,
   getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   getArchitectPlanNeeds,
@@ -793,10 +793,16 @@ type PendingToolApprovalResolution =
   | { kind: "allow_conversation" }
   | { kind: "deny"; reason?: string };
 
+type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
+
 interface ChatStore {
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
   messageIndexById: Record<string, number>;
+  messageLoadStatusByConversationId: Record<
+    string,
+    ConversationMessageLoadStatus | undefined
+  >;
   conversations: Conversation[];
   selectedConversationId: string | null;
   selectedConversationIdsByMode: Partial<Record<AppMode, string | null>>;
@@ -874,6 +880,7 @@ interface ChatStore {
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
+  ensureMessagesLoaded: (conversationId: string) => Promise<void>;
   getConversationRuntime: (conversationId: string) => ConversationRuntimeState;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string) => void;
@@ -1385,9 +1392,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
+  const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   let awaitingResponseReconciliationScheduled = false;
   let suppressedSelectionPersistenceCount = 0;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
+  const pendingArchitectConversationDetailsById = new Map<
+    string,
+    {
+      targetBranch: string;
+      planId: string;
+      title: string;
+      fallbackProjectId: string | null;
+      fallbackGroupId: string | null;
+    }
+  >();
   const pendingToolApprovalResolvers = new Map<
     string,
     (resolution: PendingToolApprovalResolution) => void
@@ -1403,13 +1421,85 @@ export const useChatStore = create<ChatStore>((set, get) => {
     planId: string,
   ): string => `${targetBranch}::${planId}`;
 
+  const removePendingArchitectConversationFromState = (conversationId: string) => {
+    messageLoadPromisesByConversationId.delete(conversationId);
+    set((state) => {
+      const nextMessages = state.messages.filter(
+        (message) => message.conversation_id !== conversationId,
+      );
+      const nextSelectedConversationId =
+        state.selectedConversationId === conversationId
+          ? null
+          : state.selectedConversationId;
+      const nextByMode = { ...state.selectedConversationIdsByMode };
+      if (nextByMode.Architect === conversationId) {
+        nextByMode.Architect = null;
+      }
+      const nextConversationRuntimeById = Object.fromEntries(
+        Object.entries(state.conversationRuntimeById).filter(
+          ([candidateId]) => candidateId !== conversationId,
+        ),
+      );
+
+      return {
+        conversations: state.conversations.filter(
+          (conversation) => conversation.id !== conversationId,
+        ),
+        ...buildMessageState(nextMessages),
+        messageLoadStatusByConversationId: Object.fromEntries(
+          Object.entries(state.messageLoadStatusByConversationId).filter(
+            ([candidateId]) => candidateId !== conversationId,
+          ),
+        ),
+        selectedConversationId: nextSelectedConversationId,
+        selectedConversationIdsByMode: nextByMode,
+        conversationRuntimeById: nextConversationRuntimeById,
+        ...buildLegacyStreamingFlags({
+          conversationRuntimeById: nextConversationRuntimeById,
+          selectedConversationId: nextSelectedConversationId,
+        }),
+      };
+    });
+  };
+
   const clearPendingArchitectConversationForPlan = (params: {
     targetBranch: string;
     planId: string;
   }) => {
-    pendingArchitectConversationIdsByPlanKey.delete(
-      getArchitectPlanConversationCacheKey(params.targetBranch, params.planId),
+    const cacheKey = getArchitectPlanConversationCacheKey(
+      params.targetBranch,
+      params.planId,
     );
+    const conversationId = pendingArchitectConversationIdsByPlanKey.get(cacheKey);
+    pendingArchitectConversationIdsByPlanKey.delete(cacheKey);
+    if (
+      conversationId &&
+      pendingArchitectConversationDetailsById.delete(conversationId)
+    ) {
+      removePendingArchitectConversationFromState(conversationId);
+    }
+  };
+
+  const clearPendingArchitectConversationsExcept = (params?: {
+    targetBranch: string;
+    planId: string;
+  }) => {
+    const keepKey = params
+      ? getArchitectPlanConversationCacheKey(params.targetBranch, params.planId)
+      : null;
+    const removedConversationIds: string[] = [];
+    for (const [planKey, conversationId] of Array.from(
+      pendingArchitectConversationIdsByPlanKey.entries(),
+    )) {
+      if (planKey === keepKey) {
+        continue;
+      }
+      pendingArchitectConversationIdsByPlanKey.delete(planKey);
+      if (pendingArchitectConversationDetailsById.delete(conversationId)) {
+        removedConversationIds.push(conversationId);
+      }
+    }
+    removedConversationIds.forEach(removePendingArchitectConversationFromState);
   };
 
   const clearPendingArchitectConversationsForConversationIds = (
@@ -1423,6 +1513,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     for (const [planKey, conversationId] of pendingArchitectConversationIdsByPlanKey) {
       if (removedConversationIds.has(conversationId)) {
         pendingArchitectConversationIdsByPlanKey.delete(planKey);
+        pendingArchitectConversationDetailsById.delete(conversationId);
       }
     }
   };
@@ -2248,6 +2339,122 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await hydrationPromise;
     } catch {
       // A failed hydration already updates store state.
+    }
+  };
+
+  const markConversationMessagesReady = (conversationId: string) => {
+    set((state) => ({
+      messageLoadStatusByConversationId: {
+        ...state.messageLoadStatusByConversationId,
+        [conversationId]: "ready",
+      },
+    }));
+  };
+
+  const replaceLoadedConversationMessages = (
+    conversationId: string,
+    messages: ChatMessage[],
+  ) => {
+    set((state) => {
+      const nextMessages = [
+        ...state.messages.filter(
+          (message) => message.conversation_id !== conversationId,
+        ),
+        ...messages,
+      ];
+      return {
+        ...buildMessageState(nextMessages),
+        messageLoadStatusByConversationId: {
+          ...state.messageLoadStatusByConversationId,
+          [conversationId]: "ready" as const,
+        },
+      };
+    });
+  };
+
+  const ensureMessagesLoadedForConversation = async (
+    conversationId: string,
+  ): Promise<void> => {
+    if (!conversationId) {
+      return;
+    }
+    if (get().hydrationStatus === "hydrating") {
+      await waitForHydration();
+    }
+    const currentStatus =
+      get().messageLoadStatusByConversationId[conversationId] ?? "idle";
+    if (currentStatus === "ready") {
+      return;
+    }
+    const existingPromise =
+      messageLoadPromisesByConversationId.get(conversationId);
+    if (existingPromise) {
+      await existingPromise;
+      return;
+    }
+    const stateBeforeLoad = get();
+    const existingMessages =
+      stateBeforeLoad.messagesByConversationId[conversationId] ??
+      stateBeforeLoad.messages.filter(
+        (message) => message.conversation_id === conversationId,
+      );
+    const knownMessageCount =
+      stateBeforeLoad.conversations.find(
+        (conversation) => conversation.id === conversationId,
+      )?.message_count ?? existingMessages.length;
+    if (knownMessageCount === 0) {
+      markConversationMessagesReady(conversationId);
+      return;
+    }
+    if (existingMessages.length > 0 && existingMessages.length >= knownMessageCount) {
+      markConversationMessagesReady(conversationId);
+      return;
+    }
+
+    const loadPromise = (async () => {
+      set((state) => ({
+        messageLoadStatusByConversationId: {
+          ...state.messageLoadStatusByConversationId,
+          [conversationId]: "loading" as const,
+        },
+      }));
+
+      if (!tauriIpc.isTauriAvailable()) {
+        markConversationMessagesReady(conversationId);
+        return;
+      }
+
+      try {
+        const dbMessages = await tauriIpc.listMessages(conversationId);
+        const conversationById = new Map(
+          get().conversations.map((conversation) => [
+            conversation.id,
+            conversation,
+          ]),
+        );
+        replaceLoadedConversationMessages(
+          conversationId,
+          dbMessages.map((message) =>
+            mapDbMessageToChatMessage(message, conversationById),
+          ),
+        );
+      } catch (error) {
+        set((state) => ({
+          messageLoadStatusByConversationId: {
+            ...state.messageLoadStatusByConversationId,
+            [conversationId]: "error" as const,
+          },
+          lastError: toServiceError(error).message,
+        }));
+        throw error;
+      }
+    })();
+
+    messageLoadPromisesByConversationId.set(conversationId, loadPromise);
+    try {
+      await loadPromise;
+    } finally {
+      messageLoadPromisesByConversationId.delete(conversationId);
     }
   };
 
@@ -3862,6 +4069,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "messages"
     | "messagesByConversationId"
     | "messageIndexById"
+    | "messageLoadStatusByConversationId"
     | "messageImagesByMessageId"
     | "questionnaireDraftsByConversationId"
     | "pendingToolApprovalByConversationId"
@@ -3878,6 +4086,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messages: state.messages,
       messagesByConversationId: state.messagesByConversationId,
       messageIndexById: state.messageIndexById,
+      messageLoadStatusByConversationId: state.messageLoadStatusByConversationId,
       messageImagesByMessageId: state.messageImagesByMessageId,
       questionnaireDraftsByConversationId:
         state.questionnaireDraftsByConversationId,
@@ -3927,6 +4136,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ([conversationId]) => !idsToRemove.has(conversationId),
       ),
     );
+    const nextMessageLoadStatusByConversationId = Object.fromEntries(
+      Object.entries(state.messageLoadStatusByConversationId).filter(
+        ([conversationId]) => !idsToRemove.has(conversationId),
+      ),
+    );
 
     const nextByMode = { ...state.selectedConversationIdsByMode };
     (Object.keys(nextByMode) as AppMode[]).forEach((modeKey) => {
@@ -3966,6 +4180,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return {
       conversations: nextConversations,
       ...buildMessageState(nextMessages),
+      messageLoadStatusByConversationId: nextMessageLoadStatusByConversationId,
       messageImagesByMessageId: nextImages,
       questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
       pendingToolApprovalByConversationId: nextPendingToolApprovals,
@@ -6083,6 +6298,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set((state) => ({
       conversations: [newConversation, ...state.conversations],
+      messagesByConversationId: {
+        ...state.messagesByConversationId,
+        [newConversation.id]: state.messagesByConversationId[newConversation.id] ?? [],
+      },
+      messageLoadStatusByConversationId: {
+        ...state.messageLoadStatusByConversationId,
+        [newConversation.id]: "ready",
+      },
     }));
 
     const previousConversationId = get().selectedConversationId;
@@ -6105,6 +6328,118 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return newConversation;
+  };
+
+  const createPendingArchitectConversationRecord = (params: {
+    planId: string;
+    targetBranch: string;
+    title: string;
+    fallbackProjectId: string | null;
+    fallbackGroupId: string | null;
+  }): Conversation => {
+    const id = `pending-architect-${params.targetBranch}-${params.planId}`;
+    const existing = get().conversations.find(
+      (conversation) => conversation.id === id,
+    );
+    pendingArchitectConversationIdsByPlanKey.set(
+      getArchitectPlanConversationCacheKey(params.targetBranch, params.planId),
+      id,
+    );
+    pendingArchitectConversationDetailsById.set(id, params);
+    if (existing) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
+    const conversation: Conversation = {
+      id,
+      title: params.title,
+      description: "",
+      scope_mode: "Architect",
+      task_id: null,
+      group_id: params.fallbackGroupId,
+      project_id: params.fallbackProjectId,
+      last_message: "",
+      message_count: 0,
+      updated_at: now,
+      is_unread: false,
+    };
+
+    set((state) => ({
+      conversations: [conversation, ...state.conversations],
+      messagesByConversationId: {
+        ...state.messagesByConversationId,
+        [id]: [],
+      },
+      messageLoadStatusByConversationId: {
+        ...state.messageLoadStatusByConversationId,
+        [id]: "ready",
+      },
+    }));
+
+    return conversation;
+  };
+
+  const replacePendingArchitectConversationId = (
+    pendingConversationId: string,
+    materializedConversationId: string,
+  ) => {
+    pendingArchitectConversationDetailsById.delete(pendingConversationId);
+    set((state) => ({
+      conversations: state.conversations.filter(
+        (conversation) => conversation.id !== pendingConversationId,
+      ),
+      selectedConversationId:
+        state.selectedConversationId === pendingConversationId
+          ? materializedConversationId
+          : state.selectedConversationId,
+      selectedConversationIdsByMode: {
+        ...state.selectedConversationIdsByMode,
+        Architect:
+          state.selectedConversationIdsByMode.Architect === pendingConversationId
+            ? materializedConversationId
+            : state.selectedConversationIdsByMode.Architect,
+      },
+      messagesByConversationId: Object.fromEntries(
+        Object.entries(state.messagesByConversationId).filter(
+          ([conversationId]) => conversationId !== pendingConversationId,
+        ),
+      ),
+      messageLoadStatusByConversationId: Object.fromEntries(
+        Object.entries(state.messageLoadStatusByConversationId).filter(
+          ([conversationId]) => conversationId !== pendingConversationId,
+        ),
+      ),
+    }));
+  };
+
+  const materializePendingArchitectConversationIfNeeded = async (
+    conversationId: string,
+  ): Promise<string> => {
+    const pendingDetails =
+      pendingArchitectConversationDetailsById.get(conversationId);
+    if (!pendingDetails) {
+      return conversationId;
+    }
+
+    const materialized = await createConversationRecord({
+      title: pendingDetails.title,
+      taskId: null,
+      projectId: pendingDetails.fallbackProjectId,
+      groupId: pendingDetails.fallbackGroupId,
+      selectConversation: false,
+    });
+    pendingArchitectConversationIdsByPlanKey.set(
+      getArchitectPlanConversationCacheKey(
+        pendingDetails.targetBranch,
+        pendingDetails.planId,
+      ),
+      materialized.id,
+    );
+    replacePendingArchitectConversationId(conversationId, materialized.id);
+    persistSelectionForContext("Architect", materialized.id);
+
+    return materialized.id;
   };
 
   const appendImportedMessagesToState = (
@@ -6157,6 +6492,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     set({
       ...buildMessageState(mergedMessages),
+      messageLoadStatusByConversationId: {
+        ...state.messageLoadStatusByConversationId,
+        [conversationId]: "ready",
+      },
       conversations: state.conversations.map((conversation) =>
         conversation.id === conversationId
           ? { ...conversation, ...conversationMeta }
@@ -6225,6 +6564,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const upsertArchitectConversationSync = async (params: {
+    conversationId: string;
+    planId: string;
+    targetBranch: string;
+    transcriptRevision?: string | null;
+    messageCount: number;
+  }) => {
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+    try {
+      await tauriIpc.dbUpsertArchitectPlanConversationSync({
+        conversation_id: params.conversationId,
+        plan_id: params.planId,
+        target_branch: params.targetBranch,
+        transcript_revision: params.transcriptRevision ?? null,
+        message_count: params.messageCount,
+      });
+    } catch {
+      // Sync stamps are an optimization; transcript reconciliation remains authoritative.
+    }
+  };
+
   const reconcileArchitectPlanConversation = async (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
@@ -6233,6 +6595,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     sharedConversation?: boolean;
     conversationIdHint?: string | null;
     chatMessagesHint?: ArchitectPlanActivationPayload["chatMessages"];
+    chatMessagesLoaded?: boolean;
+    chatTranscriptRevision?: string | null;
+    chatMessageCount?: number;
   }): Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
@@ -6246,6 +6611,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       sharedConversation = false,
       conversationIdHint,
       chatMessagesHint,
+      chatMessagesLoaded = chatMessagesHint !== undefined,
+      chatTranscriptRevision = null,
+      chatMessageCount,
     } = params;
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
@@ -6253,10 +6621,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           (conversation) => conversation.id === resolvedConversationId,
         ) ?? null)
       : null;
-    const transcript =
-      chatMessagesHint ??
-      (await getArchitectPlanChatMessages(targetBranch, plan.id).catch(() => []));
-
     let conversation =
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
@@ -6282,6 +6646,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
       conversation = repairedConversation;
     }
 
+    const expectedTranscriptCount =
+      typeof chatMessageCount === "number" && Number.isFinite(chatMessageCount)
+        ? Math.max(0, Math.floor(chatMessageCount))
+        : (chatMessagesHint?.length ?? 0);
+
+    if (
+      chatMessagesLoaded === false &&
+      !sharedConversation &&
+      !createdConversation &&
+      tauriIpc.isTauriAvailable()
+    ) {
+      const sync = await tauriIpc
+        .dbGetArchitectPlanConversationSync(conversation.id)
+        .catch(() => null);
+      const conversationCount = conversation.message_count;
+      const syncMatches =
+        sync?.plan_id === plan.id &&
+        sync.target_branch === targetBranch &&
+        (sync.transcript_revision ?? null) === (chatTranscriptRevision ?? null) &&
+        sync.message_count === expectedTranscriptCount &&
+        conversationCount === expectedTranscriptCount;
+      if (syncMatches) {
+        return {
+          conversationId: conversation.id,
+          restoredTranscript: false,
+          createdConversation: false,
+        };
+      }
+    }
+
+    const transcriptResult =
+      chatMessagesLoaded === false
+        ? await getArchitectPlanChatTranscript(targetBranch, plan.id).catch(
+            () => null,
+          )
+        : null;
+    const transcript = transcriptResult?.messages ?? chatMessagesHint ?? [];
+    const resolvedTranscriptRevision =
+      transcriptResult?.transcriptRevision ?? chatTranscriptRevision ?? null;
+
+    await ensureMessagesLoadedForConversation(conversation.id);
     const localMessages = getOrderedConversationMessages(conversation.id).map(
       toComparableChatMessage,
     );
@@ -6303,6 +6708,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       restoredTranscript = importedCount > 0;
       if (importedCount > 0) {
+        await upsertArchitectConversationSync({
+          conversationId: conversation.id,
+          planId: plan.id,
+          targetBranch,
+          transcriptRevision: resolvedTranscriptRevision,
+          messageCount: transcriptMessages.length,
+        });
         logArchitectTranscriptEvent(
           "info",
           "architect_transcript_restored_suffix",
@@ -6322,6 +6734,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversationId: conversation.id,
         reason: transcriptState.relation,
       });
+      await upsertArchitectConversationSync({
+        conversationId: conversation.id,
+        planId: plan.id,
+        targetBranch,
+        transcriptRevision: null,
+        messageCount: localMessages.length,
+      });
     } else if (transcriptState.relation === "diverged") {
       logArchitectTranscriptEvent("warn", "architect_transcript_diverged", {
         planId: plan.id,
@@ -6334,6 +6753,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         planId: plan.id,
         conversationId: conversation.id,
         reason: transcriptState.relation,
+      });
+      await upsertArchitectConversationSync({
+        conversationId: conversation.id,
+        planId: plan.id,
+        targetBranch,
+        transcriptRevision: null,
+        messageCount: localMessages.length,
+      });
+    } else {
+      await upsertArchitectConversationSync({
+        conversationId: conversation.id,
+        planId: plan.id,
+        targetBranch,
+        transcriptRevision: resolvedTranscriptRevision,
+        messageCount: transcriptMessages.length,
       });
     }
 
@@ -6358,62 +6792,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const hydrateChatSnapshot = async (): Promise<void> => {
     conversationCompactionStateCache.clear();
+    messageLoadPromisesByConversationId.clear();
     let conversations: Conversation[] = [];
     let messages: ChatMessage[] = [];
 
     if (tauriIpc.isTauriAvailable()) {
       try {
-        const snapshot = await tauriIpc.getChatSnapshot();
+        const snapshot = await tauriIpc.getChatBootstrapSnapshot();
         conversations = snapshot.conversations.map(
           mapDbConversationToConversation,
         );
         const conversationById = new Map(
           conversations.map((conversation) => [conversation.id, conversation]),
         );
-        messages = snapshot.messages.map((message) =>
-          mapDbMessageToChatMessage(message, conversationById),
-        );
-      } catch (snapshotError) {
+        messages = Object.values(snapshot.messages_by_conversation_id)
+          .flatMap((items) => items ?? [])
+          .map((message) => mapDbMessageToChatMessage(message, conversationById));
+      } catch (bootstrapError) {
         console.warn(
-          "Falling back to legacy chat hydration path:",
-          snapshotError,
+          "Falling back to conversation-only chat hydration path:",
+          bootstrapError,
         );
         const dbConversations = await tauriIpc.listConversations();
         conversations = dbConversations.map(mapDbConversationToConversation);
-        const conversationById = new Map(
-          conversations.map((conversation) => [conversation.id, conversation]),
-        );
-        for (const conversation of dbConversations) {
-          const dbMessages = await tauriIpc.listMessages(conversation.id);
-          messages.push(
-            ...dbMessages.map((message) =>
-              mapDbMessageToChatMessage(message, conversationById),
-            ),
-          );
-        }
       }
     }
 
     pruneConversationSelections(conversations);
 
     const loadedImages = loadMessageImagesFromStorage();
-    const existingMessageIds = new Set(messages.map((message) => message.id));
-    const prunedImages: Record<string, MessageImageAttachment[]> = {};
-    Object.entries(loadedImages).forEach(([messageId, items]) => {
-      if (
-        existingMessageIds.has(messageId) &&
-        Array.isArray(items) &&
-        items.length > 0
-      ) {
-        prunedImages[messageId] = items;
-      }
-    });
-    saveMessageImagesToStorage(prunedImages);
+    const loadedConversationIds = new Set(
+      messages.map((message) => message.conversation_id),
+    );
 
     set({
       conversations,
       ...buildMessageState(messages),
-      messageImagesByMessageId: prunedImages,
+      messageLoadStatusByConversationId: Object.fromEntries(
+        Array.from(loadedConversationIds).map((conversationId) => [
+          conversationId,
+          "ready" as const,
+        ]),
+      ),
+      messageImagesByMessageId: loadedImages,
       selectedConversationId: null,
       selectedConversationIdsByMode: {},
       hydrationStatus: "ready",
@@ -6482,7 +6903,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectWorkspaceState &&
       isProjectWorkspaceMissing(architectWorkspaceState)
     ) {
+      clearPendingArchitectConversationsExcept();
       return modeFallback(null);
+    }
+
+    if (mode !== "Architect" || !appState.activeArchitectPlanId) {
+      clearPendingArchitectConversationsExcept();
     }
 
     if (mode === "Architect" && appState.activeArchitectPlanId) {
@@ -6536,6 +6962,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;
           const fallbackGroupId = selectedGroupId ?? null;
+          clearPendingArchitectConversationsExcept({
+            targetBranch,
+            planId: activePlan.id,
+          });
 
           if (
             activationPayload &&
@@ -6560,17 +6990,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
               });
             }
 
-            const blankConversation = await createConversationRecord({
+            const blankConversation = createPendingArchitectConversationRecord({
+              planId: activePlan.id,
+              targetBranch,
               title: getArchitectPlanConversationTitle(activePlan),
-              taskId: null,
-              projectId: fallbackProjectId ?? null,
-              groupId: selectedGroupId ?? null,
-              selectConversation: false,
+              fallbackProjectId: fallbackProjectId ?? null,
+              fallbackGroupId: selectedGroupId ?? null,
             });
-            pendingArchitectConversationIdsByPlanKey.set(
-              getArchitectPlanConversationCacheKey(targetBranch, activePlan.id),
-              blankConversation.id,
-            );
             if (!isCurrentRequest()) {
               return modeFallback(null);
             }
@@ -6626,6 +7052,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sharedConversation: hasSharedConversation,
             conversationIdHint: conversationId,
             chatMessagesHint: activationPayload?.chatMessages,
+            chatMessagesLoaded: activationPayload?.chatMessagesLoaded,
+            chatTranscriptRevision: activationPayload?.chatTranscriptRevision,
+            chatMessageCount: activationPayload?.chatMessageCount,
           });
           if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
@@ -6807,6 +7236,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messages: [],
     messagesByConversationId: {},
     messageIndexById: {},
+    messageLoadStatusByConversationId: {},
     conversations: [],
     selectedConversationId: null,
     selectedConversationIdsByMode: {},
@@ -6866,6 +7296,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messageIndexById: {
             ...state.messageIndexById,
             [message.id]: nextMessages.length - 1,
+          },
+          messageLoadStatusByConversationId: {
+            ...state.messageLoadStatusByConversationId,
+            [message.conversation_id]: "ready",
           },
           conversations,
           questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
@@ -7140,6 +7574,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       set({
         ...buildMessageState([]),
+        messageLoadStatusByConversationId: {},
         conversationRuntimeById: {},
         ...buildLegacyStreamingFlags({
           conversationRuntimeById: {},
@@ -7387,6 +7822,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         previousConversationId,
         conversationId,
       );
+      set({ restoreStatus: "resolving", lastError: null });
+      await ensureMessagesLoadedForConversation(conversationId);
       await runAiSelectionRestore({
         mode,
         conversationId,
@@ -7432,6 +7869,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           persistSelectionForConversationSwitch(
             mode,
             previousConversationId,
+            ensuredConversation.conversationId,
+          );
+          await ensureMessagesLoadedForConversation(
             ensuredConversation.conversationId,
           );
           await runAiSelectionRestore({
@@ -7555,6 +7995,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             latestState.selectedConversationId,
             conversationId,
           );
+          await ensureMessagesLoadedForConversation(conversationId);
           await runAiSelectionRestore({
             mode,
             conversationId,
@@ -7601,6 +8042,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const mode = useAppStore.getState().mode;
       const conversationId =
         get().selectedConversationIdsByMode[mode] ?? get().selectedConversationId;
+      if (conversationId) {
+        await ensureMessagesLoadedForConversation(conversationId);
+      }
       await runAiSelectionRestore({
         mode,
         conversationId: conversationId ?? null,
@@ -7747,6 +8191,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     getConversationMessages: (conversationId) => {
       return getOrderedConversationMessages(conversationId);
     },
+
+    ensureMessagesLoaded: (conversationId) =>
+      ensureMessagesLoadedForConversation(conversationId),
 
     getConversationRuntime: (conversationId) =>
       getConversationRuntimeSnapshot(
@@ -8098,15 +8545,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return result;
     },
 
-    sendMessage: async ({
-      conversationId,
-      content,
-      taskId,
-      images,
-      internalAgentProfile,
-      hiddenContext,
-      providerInputItems,
-    }) => {
+    sendMessage: async (payload) => {
+      let {
+        conversationId,
+        content,
+        taskId,
+        images,
+        internalAgentProfile,
+        hiddenContext,
+        providerInputItems,
+      } = payload;
       let activeSessionId: string | null = null;
       let assistantMessageId: string | null = null;
 
@@ -8124,6 +8572,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
           { globalLastError: null },
         );
+        await ensureMessagesLoadedForConversation(conversationId);
+        const previousConversationId = conversationId;
+        const hasPendingArchitectConversation =
+          pendingArchitectConversationDetailsById.has(conversationId);
+        if (hasPendingArchitectConversation) {
+          conversationId =
+            await materializePendingArchitectConversationIfNeeded(conversationId);
+        }
+        if (hasPendingArchitectConversation && conversationId !== previousConversationId) {
+          setConversationRuntime(previousConversationId, null);
+          setConversationRuntime(
+            conversationId,
+            {
+              phase: "preparing",
+              sessionId: activeSessionId,
+              assistantMessageId: null,
+              abortController: null,
+              lastError: null,
+            },
+            { globalLastError: null },
+          );
+        }
         const providerState = useProviderStore.getState();
         const {
           selectedProviderId,
@@ -8180,19 +8650,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
 
         if (modeAtSend === "Implement" && resolvedTaskId) {
-          manualFeatureDraftRecovery =
-            await maybeFinalizeManualFeatureDraftForAssistantRequest({
-              conversationId,
-              taskId: resolvedTaskId,
-              userContent: content,
-              providerId: selectedProviderId,
-              providerType: providerConfigForUse.providerType,
-              baseUrl: providerConfigForUse.baseUrl,
-              apiKey: providerConfigForUse.apiKey,
-              modelId: selectedModelId,
-              reasoningEffort: selectedReasoningEffort,
-            });
-          finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
+          if (
+            taskForSend?.task_source === "standalone" &&
+            taskForSend.standalone_kind === "manual_feature" &&
+            taskForSend.draft === true
+          ) {
+            manualFeatureDraftRecovery =
+              await maybeFinalizeManualFeatureDraftForAssistantRequest({
+                conversationId,
+                taskId: resolvedTaskId,
+                userContent: content,
+                providerId: selectedProviderId,
+                providerType: providerConfigForUse.providerType,
+                baseUrl: providerConfigForUse.baseUrl,
+                apiKey: providerConfigForUse.apiKey,
+                modelId: selectedModelId,
+                reasoningEffort: selectedReasoningEffort,
+              });
+            finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
+          }
 
           taskForSend =
             (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
@@ -8495,6 +8971,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
+      messageLoadPromisesByConversationId.clear();
+      pendingArchitectConversationIdsByPlanKey.clear();
+      pendingArchitectConversationDetailsById.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},
@@ -8508,6 +8987,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         activeContextKey: null,
         selectionRequestId: 0,
         pendingArchitectPlanSwitchRequestId: null,
+        messageLoadStatusByConversationId: {},
       });
       try {
         aiSelections = normalizeAIContextSelections(
@@ -8530,6 +9010,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({
           conversations: [],
           ...buildMessageState([]),
+          messageLoadStatusByConversationId: {},
           messageImagesByMessageId,
           selectedConversationId: null,
           selectedConversationIdsByMode: {},

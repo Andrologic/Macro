@@ -1,22 +1,22 @@
+pub mod architect;
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
 use crate::db::models::GitWorktreeRecord;
 use crate::git::repo::get_status_options;
-use crate::git::{detect_preferred_git_flow_branches, GitState};
 use crate::git::MACRO_BRANCH_NAME;
+use crate::git::{detect_preferred_git_flow_branches, GitState};
 use chrono::Utc;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
 use metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
-    ManualFeatureMergeWorkflowDto, PlanDto,
-    DebugResetProjectReportDto, ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto,
-    ProjectAccessMigrationSummaryDto, ProjectDto, ProjectGitFlowDetectionDto,
-    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, ProjectRegistryDiagnosticsDto,
-    ProjectRegistryRepairReportDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
-    WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
+    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
+    ManualFeatureMergeWorkflowDto, PlanDto, ProjectAccessChangePreviewDto,
+    ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto, ProjectDto,
+    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
+    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
+    WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
     WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
@@ -1837,10 +1837,7 @@ pub async fn update_manual_feature_merge_workflow(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
 
     feature.merge_workflow = merge_workflow;
@@ -1860,10 +1857,7 @@ pub async fn update_manual_feature_merge_workflow(
         .find(|candidate| candidate.id == normalized_task_id)
         .cloned()
         .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Unknown manual feature id: {}",
-                normalized_task_id
-            ))
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })
 }
 

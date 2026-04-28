@@ -4,7 +4,7 @@ use super::DbResult;
 use serde_json::Value;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
     let Some(raw) = raw else {
@@ -42,7 +42,7 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
         r#"
         SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
-        ORDER BY is_pinned DESC, updated_at DESC
+        ORDER BY is_pinned DESC, updated_at DESC, id ASC
         "#,
     )
     .fetch_all(pool)
@@ -163,7 +163,7 @@ pub async fn refresh_conversation_metadata(
         SELECT content, created_at
         FROM messages
         WHERE conversation_id = ?
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT 1
         "#,
     )
@@ -511,7 +511,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
         SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
         FROM messages
         WHERE conversation_id = ?
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         "#,
     )
     .bind(conversation_id)
@@ -542,7 +542,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
         r#"
         SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
         FROM messages
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         "#,
     )
     .fetch_all(pool)
@@ -574,6 +574,93 @@ pub async fn get_chat_snapshot(pool: &SqlitePool) -> DbResult<ChatSnapshot> {
     Ok(ChatSnapshot {
         conversations,
         messages,
+    })
+}
+
+pub async fn get_chat_bootstrap_snapshot(
+    pool: &SqlitePool,
+    preload_conversation_ids: &[String],
+) -> DbResult<ChatBootstrapSnapshot> {
+    let mut transaction = pool.begin().await?;
+    let conversation_rows = sqlx::query(
+        r#"
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        FROM conversations
+        ORDER BY is_pinned DESC, updated_at DESC, id ASC
+        "#,
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+
+    let conversations = conversation_rows
+        .into_iter()
+        .map(|row| Conversation {
+            id: row.get("id"),
+            title: row.get("title"),
+            description: row.get("description"),
+            scope_mode: row.get("scope_mode"),
+            task_id: row.get("task_id"),
+            group_id: row.get("group_id"),
+            project_id: row.get("project_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            last_message: row.get("last_message"),
+            message_count: row.get("message_count"),
+            is_pinned: row.get::<i32, _>("is_pinned") != 0,
+        })
+        .collect::<Vec<_>>();
+
+    let mut unique_preload_ids = Vec::new();
+    let mut seen_preload_ids = HashSet::new();
+    for conversation_id in preload_conversation_ids {
+        let trimmed = conversation_id.trim();
+        if !trimmed.is_empty() && seen_preload_ids.insert(trimmed.to_string()) {
+            unique_preload_ids.push(trimmed.to_string());
+        }
+    }
+
+    let mut messages_by_conversation_id: HashMap<String, Vec<Message>> = HashMap::new();
+    if !unique_preload_ids.is_empty() {
+        let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
+        let query = format!(
+            r#"
+            SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+            FROM messages
+            WHERE conversation_id IN ({})
+            ORDER BY conversation_id ASC, created_at ASC, id ASC
+            "#,
+            placeholders
+        );
+        let mut statement = sqlx::query(&query);
+        for conversation_id in &unique_preload_ids {
+            statement = statement.bind(conversation_id);
+        }
+        let rows = statement.fetch_all(&mut *transaction).await?;
+        for row in rows {
+            let message = Message {
+                id: row.get("id"),
+                conversation_id: row.get("conversation_id"),
+                role: row.get("role"),
+                content: row.get("content"),
+                created_at: row.get("created_at"),
+                token_count: row.get("token_count"),
+                tool_traces_json: row.get("tool_traces_json"),
+                hidden_context: row.get("hidden_context"),
+                provider_input_items_json: row.get("provider_input_items_json"),
+                provider_turn_state_json: row.get("provider_turn_state_json"),
+            };
+            messages_by_conversation_id
+                .entry(message.conversation_id.clone())
+                .or_default()
+                .push(message);
+        }
+    }
+
+    transaction.commit().await?;
+
+    Ok(ChatBootstrapSnapshot {
+        conversations,
+        messages_by_conversation_id,
     })
 }
 
@@ -682,8 +769,46 @@ pub async fn import_messages(
         });
     }
 
+    if let Some(last_created_at) = last_created_at.as_deref() {
+        let count: i32 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+                .bind(conversation_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        let latest_row = sqlx::query(
+            r#"
+            SELECT content, created_at
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(conversation_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let last_message = latest_row
+            .as_ref()
+            .map(|row| truncate_last_message(&row.get::<String, _>("content")));
+        let updated_at = latest_row
+            .as_ref()
+            .map(|row| row.get::<String, _>("created_at"))
+            .unwrap_or_else(|| last_created_at.to_string());
+        sqlx::query(
+            r#"
+            UPDATE conversations
+            SET last_message = ?, message_count = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(last_message.as_deref())
+        .bind(count)
+        .bind(&updated_at)
+        .bind(conversation_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
-    refresh_conversation_metadata(pool, conversation_id, last_created_at.as_deref()).await?;
 
     Ok(inserted)
 }
@@ -723,7 +848,6 @@ pub async fn delete_messages_after(
     conversation_id: &str,
     after_message_id: &str,
 ) -> DbResult<()> {
-    // Get the created_at of the reference message
     let row = sqlx::query("SELECT created_at FROM messages WHERE id = ?")
         .bind(after_message_id)
         .fetch_one(pool)
@@ -733,14 +857,124 @@ pub async fn delete_messages_after(
 
     sqlx::query(
         r#"
-        DELETE FROM messages 
-        WHERE conversation_id = ? AND created_at > ?
+        DELETE FROM messages
+        WHERE conversation_id = ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
         "#,
     )
     .bind(conversation_id)
     .bind(&created_at)
+    .bind(&created_at)
+    .bind(after_message_id)
     .execute(pool)
     .await?;
+    refresh_conversation_metadata(pool, conversation_id, None).await?;
+
+    Ok(())
+}
+
+// ============ ARCHITECT PLAN CONVERSATION SYNC ============
+
+pub async fn get_architect_plan_conversation_sync(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Option<ArchitectPlanConversationSyncRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT conversation_id, plan_id, target_branch, transcript_revision, message_count, updated_at
+        FROM architect_plan_conversation_sync
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| ArchitectPlanConversationSyncRecord {
+        conversation_id: row.get("conversation_id"),
+        plan_id: row.get("plan_id"),
+        target_branch: row.get("target_branch"),
+        transcript_revision: row.get("transcript_revision"),
+        message_count: row.get("message_count"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn get_architect_plan_conversation_sync_for_plan(
+    pool: &SqlitePool,
+    plan_id: &str,
+    target_branch: &str,
+) -> DbResult<Option<ArchitectPlanConversationSyncRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT conversation_id, plan_id, target_branch, transcript_revision, message_count, updated_at
+        FROM architect_plan_conversation_sync
+        WHERE plan_id = ? AND target_branch = ?
+        ORDER BY updated_at DESC, conversation_id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(plan_id)
+    .bind(target_branch)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| ArchitectPlanConversationSyncRecord {
+        conversation_id: row.get("conversation_id"),
+        plan_id: row.get("plan_id"),
+        target_branch: row.get("target_branch"),
+        transcript_revision: row.get("transcript_revision"),
+        message_count: row.get("message_count"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn upsert_architect_plan_conversation_sync(
+    pool: &SqlitePool,
+    input: UpsertArchitectPlanConversationSyncInput,
+) -> DbResult<ArchitectPlanConversationSyncRecord> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        INSERT INTO architect_plan_conversation_sync (
+            conversation_id, plan_id, target_branch, transcript_revision, message_count, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            plan_id = excluded.plan_id,
+            target_branch = excluded.target_branch,
+            transcript_revision = excluded.transcript_revision,
+            message_count = excluded.message_count,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.conversation_id)
+    .bind(&input.plan_id)
+    .bind(&input.target_branch)
+    .bind(&input.transcript_revision)
+    .bind(input.message_count)
+    .bind(&updated_at)
+    .execute(pool)
+    .await?;
+
+    Ok(ArchitectPlanConversationSyncRecord {
+        conversation_id: input.conversation_id,
+        plan_id: input.plan_id,
+        target_branch: input.target_branch,
+        transcript_revision: input.transcript_revision,
+        message_count: input.message_count,
+        updated_at,
+    })
+}
+
+pub async fn delete_architect_plan_conversation_sync(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<()> {
+    sqlx::query("DELETE FROM architect_plan_conversation_sync WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -2039,4 +2273,140 @@ pub async fn reconcile_project_registry(
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::create_pool;
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn test_pool() -> (TempDir, SqlitePool) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+        (temp_dir, pool)
+    }
+
+    async fn create_test_conversation(pool: &SqlitePool, title: &str) -> Conversation {
+        create_conversation(
+            pool,
+            CreateConversationInput {
+                title: Some(title.to_string()),
+                scope_mode: "Chat".to_string(),
+                task_id: None,
+                group_id: None,
+                project_id: None,
+            },
+        )
+        .await
+        .expect("create conversation")
+    }
+
+    #[tokio::test]
+    async fn chat_bootstrap_preloads_requested_messages_in_deterministic_order() {
+        let (_temp_dir, pool) = test_pool().await;
+        let first = create_test_conversation(&pool, "First").await;
+        let second = create_test_conversation(&pool, "Second").await;
+
+        import_messages(
+            &pool,
+            &first.id,
+            vec![
+                ImportMessageInput {
+                    id: "msg-b".to_string(),
+                    role: "assistant".to_string(),
+                    content: "Second by id".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                },
+                ImportMessageInput {
+                    id: "msg-a".to_string(),
+                    role: "user".to_string(),
+                    content: "First by id".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                },
+            ],
+        )
+        .await
+        .expect("import first messages");
+        import_messages(
+            &pool,
+            &second.id,
+            vec![ImportMessageInput {
+                id: "other-msg".to_string(),
+                role: "user".to_string(),
+                content: "Do not preload".to_string(),
+                created_at: "2026-03-19T00:01:00.000Z".to_string(),
+            }],
+        )
+        .await
+        .expect("import second messages");
+
+        let snapshot = get_chat_bootstrap_snapshot(&pool, &[first.id.clone()])
+            .await
+            .expect("bootstrap snapshot");
+
+        assert_eq!(snapshot.conversations.len(), 2);
+        assert!(!snapshot
+            .messages_by_conversation_id
+            .contains_key(&second.id));
+        let preloaded_ids = snapshot.messages_by_conversation_id[&first.id]
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(preloaded_ids, vec!["msg-a", "msg-b"]);
+    }
+
+    #[tokio::test]
+    async fn delete_messages_after_uses_id_tiebreaker_and_refreshes_metadata() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Thread").await;
+        let created_at = "2026-03-19T00:00:00.000Z".to_string();
+
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "msg-1".to_string(),
+                    role: "user".to_string(),
+                    content: "Keep me".to_string(),
+                    created_at: created_at.clone(),
+                },
+                ImportMessageInput {
+                    id: "msg-2".to_string(),
+                    role: "assistant".to_string(),
+                    content: "Delete me".to_string(),
+                    created_at: created_at.clone(),
+                },
+                ImportMessageInput {
+                    id: "msg-3".to_string(),
+                    role: "assistant".to_string(),
+                    content: "Delete me too".to_string(),
+                    created_at,
+                },
+            ],
+        )
+        .await
+        .expect("import messages");
+
+        delete_messages_after(&pool, &conversation.id, "msg-1")
+            .await
+            .expect("delete after");
+
+        let remaining_ids = list_messages(&pool, &conversation.id)
+            .await
+            .expect("list messages")
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_ids, vec!["msg-1".to_string()]);
+
+        let refreshed = get_conversation(&pool, &conversation.id)
+            .await
+            .expect("get conversation")
+            .expect("conversation");
+        assert_eq!(refreshed.message_count, 1);
+        assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
 }
