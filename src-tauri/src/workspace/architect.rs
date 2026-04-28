@@ -374,6 +374,8 @@ fn build_comparable_summary(summary: &WorkspaceArchitectPlanSummaryDto) -> Value
         "title": summary.title,
         "label": summary.label,
         "description": summary.description,
+        "planKind": summary.plan_kind,
+        "gitFlowPlan": summary.git_flow_plan,
         "status": summary.status,
         "targetBranch": summary.target_branch,
         "targetBranchesByProjectId": summary.target_branches_by_project_id,
@@ -385,7 +387,6 @@ fn build_comparable_summary(summary: &WorkspaceArchitectPlanSummaryDto) -> Value
         "nodeCount": summary.node_count,
         "predictedBranchCount": summary.predicted_branch_count,
         "needCount": summary.need_count,
-        "chatMessageCount": summary.chat_message_count,
         "expectedProjectIds": summary.expected_project_ids,
     })
 }

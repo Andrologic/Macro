@@ -7,8 +7,13 @@ import {
   saveArchitectPlanNeeds,
 } from '../services/architectPlanService';
 
-const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): void => {
-  if (!planId) return;
+const pendingNeedPersistenceByKey = new Map<string, Promise<void>>();
+
+const getNeedPersistenceKey = (targetBranch: string, planId: string): string =>
+  `${targetBranch}::${planId}`;
+
+const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): Promise<void> => {
+  if (!planId) return Promise.resolve();
 
   const appState = useAppStore.getState();
   const activeContext = appState.activePlanContext;
@@ -23,7 +28,29 @@ const persistPlanNeeds = (planId: string | null | undefined, needs: Need[]): voi
     return getGitFlowBaseBranch();
   })();
 
-  void saveArchitectPlanNeeds(targetBranch, planId, needs.filter((need) => need.planId === planId));
+  const persistenceKey = getNeedPersistenceKey(targetBranch, planId);
+  const previous = pendingNeedPersistenceByKey.get(persistenceKey) ?? Promise.resolve();
+  const nextNeeds = needs.filter((need) => need.planId === planId);
+  const next = previous
+    .catch(() => undefined)
+    .then(() => saveArchitectPlanNeeds(targetBranch, planId, nextNeeds));
+
+  pendingNeedPersistenceByKey.set(persistenceKey, next);
+  next.then(
+    () => {
+      if (pendingNeedPersistenceByKey.get(persistenceKey) === next) {
+        pendingNeedPersistenceByKey.delete(persistenceKey);
+      }
+    },
+    (error) => {
+      if (pendingNeedPersistenceByKey.get(persistenceKey) === next) {
+        pendingNeedPersistenceByKey.delete(persistenceKey);
+      }
+      console.warn('Failed to persist architect plan needs:', error);
+    }
+  );
+
+  return next;
 };
 
 const normalizeNeedsForPlan = (
@@ -63,6 +90,7 @@ interface NeedsState {
   beginArchitectPlanSwitch: (planId: string | null) => void;
   hydrateNeedsForPlan: (planId: string, needs: Need[]) => void;
   replaceNeedsForPlan: (planId: string, needs: Need[]) => void;
+  flushPendingPersistence: (planId?: string | null) => Promise<void>;
   getNeedsForPlan: (planId: string) => Need[];
   getActivePlanNeeds: () => Need[];
   
@@ -91,7 +119,7 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
     
     set((state) => {
       const nextNeeds = [...state.needs, newNeed];
-      persistPlanNeeds(newNeed.planId, nextNeeds);
+      void persistPlanNeeds(newNeed.planId, nextNeeds);
       return {
         needs: nextNeeds,
         selectedNeedId: id,
@@ -110,7 +138,7 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
             : n
         );
         const updatedNeed = nextNeeds.find((need) => need.id === id);
-        persistPlanNeeds(updatedNeed?.planId, nextNeeds);
+        void persistPlanNeeds(updatedNeed?.planId, nextNeeds);
         return nextNeeds;
       })(),
     }));
@@ -121,7 +149,7 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
       needs: (() => {
         const deletedNeed = state.needs.find((need) => need.id === id);
         const nextNeeds = state.needs.filter((n) => n.id !== id);
-        persistPlanNeeds(deletedNeed?.planId, nextNeeds);
+        void persistPlanNeeds(deletedNeed?.planId, nextNeeds);
         return nextNeeds;
       })(),
       selectedNeedId: state.selectedNeedId === id ? null : state.selectedNeedId,
@@ -169,7 +197,19 @@ export const useNeedsStore = create<NeedsState>((set, get) => ({
     set((state) => {
       return applyNeedsForPlan(state, planId, normalizedNeeds);
     });
-    persistPlanNeeds(planId, normalizedNeeds);
+    void persistPlanNeeds(planId, normalizedNeeds);
+  },
+
+  flushPendingPersistence: async (planId) => {
+    const pending = Array.from(pendingNeedPersistenceByKey.entries())
+      .filter(([key]) => !planId || key.endsWith(`::${planId}`))
+      .map(([, promise]) => promise);
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    await Promise.all(pending);
   },
 
   getNeedsForPlan: (planId) => {

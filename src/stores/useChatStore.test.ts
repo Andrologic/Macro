@@ -4033,6 +4033,51 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
   });
 
+  it('returns generated strategy nodes when strategy generation changes project scope', async () => {
+    const plan = createPlan({
+      id: 'scope-change-plan',
+      slug: 'scope-change-plan',
+      title: 'scope-change-plan',
+      conversationId: 'plan-conv',
+      status: 'draft',
+      projectId: 'project-1',
+      projectIds: ['project-1'],
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+    updateArchitectPlanMock.mockClear();
+
+    const result = await onToolCall('strategy_generate', {
+      nodes: [
+        {
+          title: 'Implement API release prep',
+          projectId: 'project-2',
+          featureSlug: 'api-release-prep',
+        },
+      ],
+    });
+
+    const lastCall = ((updateArchitectPlanMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
+
+    expect(String(result)).toContain('Strategy updated');
+    expect(String(result)).toContain('Implement API release prep');
+    expect(lastCall.projectIds).toEqual(['project-2']);
+    expect(architectPlans.get(plan.id)?.projectIds).toEqual(['project-2']);
+  });
+
   it('keeps the active plan and conversation stable during strategy generation with blank sibling drafts', async () => {
     const activePlan = createScenarioPlan('started', {
       id: 'started-plan',

@@ -1851,30 +1851,31 @@ const arePlanChatMessagesEquivalent = (
   right: ArchitectPlanChatMessage[]
 ): boolean => areSerializedContentsEqual(toJsonLines(left), toJsonLines(right));
 
-const filterComparableReplicaFiles = (files: Record<string, string>): Record<string, string> =>
-  Object.fromEntries(
-    Object.entries(files).filter(([relativePath]) =>
-      relativePath !== 'manifest.json' &&
-      relativePath !== 'plan.json' &&
-      relativePath !== 'plan.md' &&
-      relativePath !== 'needs.json' &&
-      !relativePath.endsWith('/planned.md')
-    )
-  );
-
 const buildReplicaComparableSnapshot = (snapshot: ArchitectPlanReplicaSnapshot): unknown => ({
-  plan: stripPlanReplicaMetadata(snapshot.plan),
+  plan: buildComparablePlanSnapshot(snapshot.plan),
   needs: snapshot.needs,
-  files: filterComparableReplicaFiles(snapshot.files),
 });
 
 const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown => ({
-  ...summary,
-  availableProjectIds: undefined,
-  missingProjectIds: undefined,
-  replicationState: undefined,
-  replicas: undefined,
-  hasReplicaDivergence: undefined,
+  id: summary.id,
+  slug: summary.slug,
+  title: summary.title,
+  label: summary.label,
+  description: summary.description,
+  planKind: summary.planKind,
+  gitFlowPlan: summary.gitFlowPlan,
+  status: summary.status,
+  targetBranch: summary.targetBranch,
+  targetBranchesByProjectId: summary.targetBranchesByProjectId,
+  conversationId: summary.conversationId,
+  projectId: summary.projectId,
+  projectIds: summary.projectIds,
+  contextProjectIds: summary.contextProjectIds,
+  createdAt: summary.createdAt,
+  nodeCount: summary.nodeCount,
+  predictedBranchCount: summary.predictedBranchCount,
+  needCount: summary.needCount,
+  expectedProjectIds: summary.expectedProjectIds,
 });
 
 const throwReplicaDivergence = (params: {
@@ -1889,6 +1890,34 @@ const throwReplicaDivergence = (params: {
     reason: params.reason,
     replicas: params.replicas,
   });
+};
+
+const architectPlanMutationQueues = new Map<string, Promise<void>>();
+
+const getArchitectPlanMutationQueueKey = (branchName: string, planId: string): string =>
+  `${normalizeBranchName(branchName)}::${sanitizeId(planId)}`;
+
+const enqueueArchitectPlanMutation = async <T>(
+  branchName: string,
+  planId: string,
+  mutation: () => Promise<T>
+): Promise<T> => {
+  const queueKey = getArchitectPlanMutationQueueKey(branchName, planId);
+  const previous = architectPlanMutationQueues.get(queueKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(mutation);
+  const stored = run.then(
+    () => undefined,
+    () => undefined
+  );
+  architectPlanMutationQueues.set(queueKey, stored);
+
+  try {
+    return await run;
+  } finally {
+    if (architectPlanMutationQueues.get(queueKey) === stored) {
+      architectPlanMutationQueues.delete(queueKey);
+    }
+  }
 };
 
 const syncPlanTaskMetadataAtScope = async (
@@ -2983,11 +3012,11 @@ const loadPlanReplicaSet = async (
           return;
         }
 
-        const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl']);
+        const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl', 'runtime.json']);
         await Promise.all(
           Object.entries(canonicalSnapshot.files)
             .filter(([relativePath]) => !skippedFiles.has(relativePath))
-            .filter(([relativePath]) => !relativePath.endsWith('/planned.md'))
+            .filter(([relativePath]) => !relativePath.startsWith('tasks/'))
             .map(([relativePath, content]) =>
               tauriIpc.fsWriteFile({
                 path: `${getPlanDir(normalizedBranch, canonicalSnapshot.plan.id)}/${relativePath}`,
@@ -4037,6 +4066,7 @@ export const updateArchitectPlan = async (input: {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
     registrySnapshot,
@@ -4248,7 +4278,24 @@ export const updateArchitectPlan = async (input: {
     planId: next.id,
   });
 
-  return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+  try {
+    return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+  } catch (error) {
+    if (isArchitectPlanReplicaDivergenceError(error)) {
+      devLogger.warn(
+        JSON.stringify({
+          event: 'architect_plan_post_update_replica_verification_failed',
+          at: new Date().toISOString(),
+          branchName: normalizedBranch,
+          planId: next.id,
+          reason: error.divergence.reason,
+        })
+      );
+      return next;
+    }
+    throw error;
+  }
+  });
 };
 
 const canBindArchitectPlanConversationLightly = (
@@ -4304,6 +4351,7 @@ export const bindArchitectPlanConversation = async (params: {
     }, deps);
   }
 
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...activationPayload.plan,
@@ -4347,6 +4395,7 @@ export const bindArchitectPlanConversation = async (params: {
   });
 
   return nextPlan;
+  });
 };
 
 export const setActiveArchitectPlan = async (
@@ -4569,6 +4618,8 @@ export const saveArchitectPlanChatMessages = async (
 ): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
@@ -4614,6 +4665,7 @@ export const saveArchitectPlanChatMessages = async (
   invalidateArchitectPlanRuntimeCaches({
     branchName: normalizedBranch,
     planId,
+  });
   });
 };
 
@@ -4672,6 +4724,8 @@ export const saveArchitectPlanNeeds = async (
 ): Promise<void> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
     registrySnapshot,
@@ -4714,6 +4768,7 @@ export const saveArchitectPlanNeeds = async (
     branchName: normalizedBranch,
     planId,
   });
+  });
 };
 
 export const repairArchitectPlanReplicas = async (input: {
@@ -4723,6 +4778,8 @@ export const repairArchitectPlanReplicas = async (input: {
 }, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(input.planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, input.planId, {
     allowDivergence: true,
@@ -4757,7 +4814,7 @@ export const repairArchitectPlanReplicas = async (input: {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
   }
 
-  const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl']);
+  const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl', 'runtime.json']);
   await Promise.all(
     dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
       await removePlanAtScope(scope, normalizedBranch, canonicalPlan.id);
@@ -4782,7 +4839,7 @@ export const repairArchitectPlanReplicas = async (input: {
       await Promise.all(
         Object.entries(canonicalSnapshot.files)
           .filter(([relativePath]) => !skippedFiles.has(relativePath))
-          .filter(([relativePath]) => !relativePath.endsWith('/planned.md'))
+          .filter(([relativePath]) => !relativePath.startsWith('tasks/'))
           .map(([relativePath, content]) =>
             tauriIpc.fsWriteFile({
               path: `${getPlanDir(normalizedBranch, canonicalPlan.id)}/${relativePath}`,
@@ -4815,6 +4872,7 @@ export const repairArchitectPlanReplicas = async (input: {
     throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
   }
   return repaired;
+  });
 };
 
 export const writeArchitectTaskExecution = async (params: {
