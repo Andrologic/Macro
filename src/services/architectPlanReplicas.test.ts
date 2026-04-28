@@ -44,6 +44,19 @@ const appState: MockAppState = {
 };
 
 const workspaceFiles = new Map<string, Map<string, string>>();
+const commitSnapshots: Array<{
+  workspacePath: string | null;
+  files: Record<string, string>;
+}> = [];
+const conversationMessages = new Map<
+  string,
+  Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    created_at: string;
+  }>
+>();
 let importCounter = 0;
 let originalConsoleInfo: typeof console.info;
 
@@ -76,6 +89,9 @@ const writeWorkspaceJson = (workspacePath: string | null | undefined, path: stri
 
 const readWorkspaceFile = (workspacePath: string | null | undefined, path: string): string | null =>
   ensureWorkspace(workspacePath).get(normalizeFsPath(path)) ?? null;
+
+const snapshotWorkspaceFiles = (workspacePath: string | null | undefined): Record<string, string> =>
+  Object.fromEntries(ensureWorkspace(workspacePath).entries());
 
 const deleteWorkspacePrefix = (workspacePath: string | null | undefined, path: string): void => {
   const prefix = normalizeFsPath(path);
@@ -136,6 +152,27 @@ const buildPlan = (overrides: Record<string, unknown> = {}) => ({
   ],
   ...overrides,
 });
+
+const buildNeed = (overrides: Partial<Need> = {}): Need => ({
+  id: 'need-1',
+  planId: 'plan-1',
+  title: 'First need',
+  description: 'Initial requirement.',
+  category: 'functional',
+  status: 'identified',
+  priority: 'high',
+  tags: [],
+  createdAt: '2026-03-15T00:00:00.000Z',
+  updatedAt: '2026-03-15T00:00:00.000Z',
+  ...overrides,
+});
+
+const chatLine = (message: {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}): string => `${JSON.stringify(message)}\n`;
 
 const toSummary = (plan: ReturnType<typeof buildPlan>) => ({
   id: plan.id,
@@ -222,15 +259,26 @@ const registerArchitectPlanMocks = () => {
       path: string;
       workspacePath?: string | null;
     }) => listWorkspaceFiles(workspacePath, path),
-    macroBranchCommitIfDirty: async () => ({
-      committed: false,
-      branch: 'develop',
-      ahead: 0,
-      behind: 0,
-      hasConflicts: false,
-      isDirty: false,
-      output: '',
-    }),
+    listMessages: async (conversationId: string) => conversationMessages.get(conversationId) ?? [],
+    macroBranchCommitIfDirty: async ({
+      workspacePath,
+    }: {
+      workspacePath?: string | null;
+    }) => {
+      commitSnapshots.push({
+        workspacePath: workspacePath ?? null,
+        files: snapshotWorkspaceFiles(workspacePath),
+      });
+      return {
+        committed: false,
+        branch: 'develop',
+        ahead: 0,
+        behind: 0,
+        hasConflicts: false,
+        isDirty: false,
+        output: '',
+      };
+    },
     macroBranchPush: async () => ({
       pushed: false,
       branch: 'develop',
@@ -266,6 +314,8 @@ const loadArchitectPlanService = async () => {
 describe('architectPlanService replicas', () => {
   beforeEach(() => {
     workspaceFiles.clear();
+    commitSnapshots.length = 0;
+    conversationMessages.clear();
     originalConsoleInfo = console.info;
     console.info = () => undefined;
   });
@@ -559,6 +609,145 @@ describe('architectPlanService replicas', () => {
       'need-1',
       'need-2',
     ]);
+  });
+
+  it('serializes need saves with archive so replicas stay coherent', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const need = buildNeed({ planId: plan.id });
+
+    const { service } = await loadArchitectPlanService();
+    await Promise.all([
+      service.saveArchitectPlanNeeds('develop', plan.id, [need]),
+      service.archiveArchitectPlan('develop', plan.id),
+    ]);
+
+    const loaded = await service.getArchitectPlan('develop', plan.id);
+    const webNeeds = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/needs.json`);
+    const apiNeeds = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/needs.json`);
+    const webIndex = JSON.parse(readWorkspaceFile('/repos/web', 'branches/develop/plans/index.json') || 'null');
+    const apiIndex = JSON.parse(readWorkspaceFile('/repos/api', 'branches/develop/plans/index.json') || 'null');
+
+    expect(loaded?.status).toBe('archived');
+    expect(webNeeds).toBe(apiNeeds);
+    expect(JSON.parse(webNeeds || '[]').map((item: Need) => item.id)).toEqual(['need-1']);
+    expect(webIndex.plans[0].status).toBe('archived');
+    expect(apiIndex.plans[0].status).toBe('archived');
+  });
+
+  it('serializes chat saves with delete so replicas do not diverge', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const message = {
+      id: 'chat-1',
+      role: 'assistant' as const,
+      content: 'Persist this before delete.',
+      createdAt: '2026-03-15T00:05:00.000Z',
+    };
+
+    const { service } = await loadArchitectPlanService();
+    await Promise.all([
+      service.saveArchitectPlanChatMessages('develop', plan.id, [message]),
+      service.deleteArchitectPlan({
+        branchName: 'develop',
+        planId: plan.id,
+      }),
+    ]);
+
+    const loaded = await service.getArchitectPlan('develop', plan.id);
+    const webPlan = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/plan.json`);
+    const apiPlan = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/plan.json`);
+    const webChat = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/chat.jsonl`);
+    const apiChat = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/chat.jsonl`);
+
+    expect(loaded?.status).toBe('deleted');
+    expect(webPlan).toBe(apiPlan);
+    expect(webChat).toBe(apiChat);
+    expect(webChat).toContain('Persist this before delete.');
+  });
+
+  it('waits for queued mutations before committing plan metadata', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const need = buildNeed({ planId: plan.id });
+
+    const { service } = await loadArchitectPlanService();
+    await Promise.all([
+      service.saveArchitectPlanNeeds('develop', plan.id, [need]),
+      service.commitArchitectPlanMetadata({
+        branchName: 'develop',
+        planId: plan.id,
+        commitMessage: 'commit after queued mutation',
+      }),
+    ]);
+
+    expect(commitSnapshots).toHaveLength(2);
+    for (const snapshot of commitSnapshots) {
+      const needs = snapshot.files[`branches/develop/plans/${plan.id}/needs.json`];
+      expect(needs).toContain('First need');
+    }
+  });
+
+  it('syncs chat from a fresh replica snapshot after queued chat mutations', async () => {
+    const plan = buildPlan({
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const oldMessage = {
+      id: 'chat-old',
+      role: 'assistant' as const,
+      content: 'Database transcript wins.',
+      createdAt: '2026-03-15T00:01:00.000Z',
+    };
+    const staleMessage = {
+      id: 'chat-stale',
+      role: 'assistant' as const,
+      content: 'Queued stale transcript.',
+      createdAt: '2026-03-15T00:02:00.000Z',
+    };
+    writeWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/chat.jsonl`, chatLine(oldMessage));
+    writeWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/chat.jsonl`, chatLine(oldMessage));
+    conversationMessages.set('conversation-1', [
+      {
+        id: oldMessage.id,
+        role: oldMessage.role,
+        content: oldMessage.content,
+        created_at: oldMessage.createdAt,
+      },
+    ]);
+
+    const { service } = await loadArchitectPlanService();
+    await Promise.all([
+      service.saveArchitectPlanChatMessages('develop', plan.id, [staleMessage]),
+      service.syncArchitectPlanChatFromConversation({
+        branchName: 'develop',
+        planId: plan.id,
+      }),
+    ]);
+
+    const webChat = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/chat.jsonl`);
+    const apiChat = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/chat.jsonl`);
+    expect(webChat).toBe(apiChat);
+    expect(webChat).toContain('Database transcript wins.');
+    expect(webChat).not.toContain('Queued stale transcript.');
   });
 
   it('keeps reporting true content divergence between repositories', async () => {
