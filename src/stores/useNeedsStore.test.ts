@@ -201,12 +201,53 @@ describe('useNeedsStore', () => {
       },
     ]);
 
+    await useNeedsStore.getState().flushPendingPersistence('plan-2');
+
     expect(saveArchitectPlanNeedsMock).toHaveBeenCalledTimes(1);
     expect(saveArchitectPlanNeedsMock).toHaveBeenCalledWith('main', 'plan-2', [
       expect.objectContaining({
         id: 'need-2',
         planId: 'plan-2',
       }),
+    ]);
+  });
+
+  it('flushes queued need persistence for successive additions', async () => {
+    const { useNeedsStore } = await loadNeedsStore();
+    useNeedsStore.setState({
+      needs: [],
+      selectedNeedId: null,
+    });
+    appState.activeArchitectPlanId = 'plan-flush';
+
+    useNeedsStore.getState().addNeed({
+      title: 'First requirement',
+      description: 'Capture the first requirement.',
+      category: 'functional',
+      status: 'identified',
+      priority: 'high',
+      tags: [],
+    });
+    useNeedsStore.getState().addNeed({
+      title: 'Second requirement',
+      description: 'Capture the second requirement.',
+      category: 'technical',
+      status: 'identified',
+      priority: 'medium',
+      tags: [],
+    });
+
+    await useNeedsStore.getState().flushPendingPersistence('plan-flush');
+
+    const calls = saveArchitectPlanNeedsMock.mock.calls as unknown as Array<
+      [string, string, Array<{ title: string }>]
+    >;
+    const lastCall = calls.at(-1);
+    expect(lastCall?.[0]).toBe('main');
+    expect(lastCall?.[1]).toBe('plan-flush');
+    expect((lastCall?.[2] as Array<{ title: string }>).map((need) => need.title)).toEqual([
+      'First requirement',
+      'Second requirement',
     ]);
   });
 
@@ -235,6 +276,8 @@ describe('useNeedsStore', () => {
       priority: 'high',
       tags: ['scope', 'approved'],
     });
+
+    await useNeedsStore.getState().flushPendingPersistence('plan-3');
 
     expect(useNeedsStore.getState().getNeed('need-3')).toEqual(
       expect.objectContaining({
@@ -274,6 +317,8 @@ describe('useNeedsStore', () => {
     });
 
     useNeedsStore.getState().deleteNeed('need-4');
+
+    await useNeedsStore.getState().flushPendingPersistence('plan-4');
 
     expect(useNeedsStore.getState().getNeed('need-4')).toBeUndefined();
     expect(useNeedsStore.getState().selectedNeedId).toBeNull();
