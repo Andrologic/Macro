@@ -411,6 +411,14 @@ describe('architectPlanService', () => {
     ).rejects.toThrow('Plan scope and GitFlow metadata are immutable after draft status.');
   });
 
+  it('exposes delete only after a plan has been archived', () => {
+    expect(service.getArchitectPlanCrudCapabilities({ status: 'draft' }).canDelete).toBe(false);
+    expect(service.getArchitectPlanCrudCapabilities({ status: 'validated' }).canDelete).toBe(false);
+    expect(service.getArchitectPlanCrudCapabilities({ status: 'in_progress' }).canDelete).toBe(false);
+    expect(service.getArchitectPlanCrudCapabilities({ status: 'completed' }).canDelete).toBe(false);
+    expect(service.getArchitectPlanCrudCapabilities({ status: 'archived' }).canDelete).toBe(true);
+  });
+
   it('allows archiving and hard deleting canonical draft plans still named new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
