@@ -311,6 +311,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
     return activePlan ? getArchitectPlanPrimaryName(activePlan) : t('architect.planSelector.selectPlan', 'Select plan');
   }, [activePlan, activePlanContext, activePlanId, t]);
+  const displayedActivePlanKind = useMemo<ArchitectPlanKind | null>(() => {
+    if (activePlanContext && activePlanContext.id === activePlanId) {
+      return getArchitectPlanKind(activePlanContext);
+    }
+    return activePlan ? getArchitectPlanKind(activePlan) : null;
+  }, [activePlan, activePlanContext, activePlanId]);
+  const displayedActivePlanKindLabel = displayedActivePlanKind
+    ? displayedActivePlanKind === 'feature'
+      ? t('architect.planSelector.kindFeature', 'Feature')
+      : displayedActivePlanKind === 'release'
+        ? t('architect.planSelector.kindRelease', 'Release')
+        : displayedActivePlanKind === 'hotfix'
+          ? t('architect.planSelector.kindHotfix', 'Hotfix')
+          : t('architect.planSelector.kindBugfix', 'Bugfix')
+    : null;
   const replicaRepairPresentation = useMemo(() => {
     if (!replicaRepair) return null;
     const missingCount = replicaRepair.divergence.replicas.filter((replica) => replica.missing).length;
@@ -1039,7 +1054,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }}
         className="h-8 px-2.5 rounded-md border border-border bg-background/60 hover:bg-accent text-xs flex items-center gap-2"
       >
-        <Icon name="list" size={13} className="text-primary" />
+        {displayedActivePlanKind ? (
+          <span
+            className="shrink-0 inline-flex items-center justify-center"
+            title={displayedActivePlanKindLabel ?? undefined}
+          >
+            <Icon
+              name={planKindIconName[displayedActivePlanKind]}
+              size={13}
+              className={planKindIconClassName[displayedActivePlanKind]}
+            />
+          </span>
+        ) : (
+          <Icon name="list" size={13} className="text-primary" />
+        )}
         <span className="max-w-[140px] truncate text-foreground">
           {displayedActivePlanTitle}
         </span>
