@@ -3258,6 +3258,21 @@ pub async fn db_get_chat_snapshot(pool: State<'_, DbPool>) -> CommandResult<Chat
 }
 
 #[tauri::command]
+pub async fn db_get_chat_bootstrap_snapshot(
+    pool: State<'_, DbPool>,
+    preload_conversation_ids: Option<Vec<String>>,
+) -> CommandResult<ChatBootstrapSnapshot> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_chat_bootstrap_snapshot(
+        &pool,
+        preload_conversation_ids.as_deref().unwrap_or(&[]),
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_get_conversation(
     pool: State<'_, DbPool>,
     id: String,
@@ -3474,6 +3489,55 @@ pub async fn db_delete_messages_after(
     let pool = get_pool(&pool).await?;
 
     repository::delete_messages_after(&pool, &conversation_id, &after_message_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_architect_plan_conversation_sync(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<ArchitectPlanConversationSyncRecord>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_architect_plan_conversation_sync(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_architect_plan_conversation_sync_for_plan(
+    pool: State<'_, DbPool>,
+    plan_id: String,
+    target_branch: String,
+) -> CommandResult<Option<ArchitectPlanConversationSyncRecord>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_architect_plan_conversation_sync_for_plan(&pool, &plan_id, &target_branch)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_upsert_architect_plan_conversation_sync(
+    pool: State<'_, DbPool>,
+    input: UpsertArchitectPlanConversationSyncInput,
+) -> CommandResult<ArchitectPlanConversationSyncRecord> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_architect_plan_conversation_sync(&pool, input)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_architect_plan_conversation_sync(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_architect_plan_conversation_sync(&pool, &conversation_id)
         .await
         .map_err(CommandError::from)
 }

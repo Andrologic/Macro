@@ -137,6 +137,157 @@ pub struct WorkspaceTaskCatalogDto {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanReplicaDto {
+    pub scope_key: String,
+    pub project_id: Option<String>,
+    pub repo_path: Option<String>,
+    pub workspace_path: Option<String>,
+    pub source: String,
+    pub updated_at: Option<String>,
+    pub missing: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanSummaryDto {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    pub label: Option<String>,
+    pub description: String,
+    pub plan_kind: Option<String>,
+    pub git_flow_plan: Option<Value>,
+    pub status: String,
+    pub target_branch: String,
+    pub target_branches_by_project_id: Option<HashMap<String, String>>,
+    pub conversation_id: Option<String>,
+    pub project_id: Option<String>,
+    pub project_ids: Vec<String>,
+    pub context_project_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub node_count: usize,
+    pub predicted_branch_count: Option<usize>,
+    pub need_count: Option<usize>,
+    pub chat_message_count: Option<usize>,
+    pub expected_project_ids: Vec<String>,
+    pub available_project_ids: Vec<String>,
+    pub missing_project_ids: Vec<String>,
+    pub replication_state: Option<String>,
+    pub revision: Option<i64>,
+    pub replicas: Vec<WorkspaceArchitectPlanReplicaDto>,
+    pub has_replica_divergence: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanRecordDto {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    pub label: Option<String>,
+    pub description: String,
+    pub plan_kind: Option<String>,
+    pub git_flow_plan: Option<Value>,
+    pub status: String,
+    pub target_branch: String,
+    pub target_branches_by_project_id: Option<HashMap<String, String>>,
+    pub conversation_id: Option<String>,
+    pub project_id: Option<String>,
+    pub project_ids: Vec<String>,
+    pub context_project_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub nodes: Vec<Value>,
+    pub predicted_branches: Vec<Value>,
+    pub expected_project_ids: Vec<String>,
+    pub available_project_ids: Vec<String>,
+    pub missing_project_ids: Vec<String>,
+    pub replication_state: Option<String>,
+    pub revision: Option<i64>,
+    pub replicas: Vec<WorkspaceArchitectPlanReplicaDto>,
+    pub has_replica_divergence: bool,
+}
+
+pub type WorkspaceArchitectNeedDto = Value;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectChatMessageDto {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanRuntimeStatusDto {
+    pub branch_name: String,
+    pub branch_generation: u64,
+    pub branch_stamp: String,
+    pub plan_count: usize,
+    pub scope_count: usize,
+    pub rebuilt: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanListDto {
+    pub active_plan_id: Option<String>,
+    pub plans: Vec<WorkspaceArchitectPlanSummaryDto>,
+    pub runtime_status: Option<WorkspaceArchitectPlanRuntimeStatusDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanActivationHeadDto {
+    pub plan: WorkspaceArchitectPlanRecordDto,
+    pub needs: Vec<WorkspaceArchitectNeedDto>,
+    pub conversation_id: Option<String>,
+    pub shared_conversation: bool,
+    pub target_branch: String,
+    pub resolution_mode: String,
+    pub chat_transcript_revision: Option<String>,
+    pub chat_message_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectPlanTranscriptDto {
+    pub plan_id: String,
+    pub target_branch: String,
+    pub transcript_revision: Option<String>,
+    pub message_count: usize,
+    pub messages: Vec<WorkspaceArchitectChatMessageDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectListPlansRequestDto {
+    pub branch_name: String,
+    pub include_deleted: bool,
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectActivatePlanHeadRequestDto {
+    pub branch_name: String,
+    pub plan_id: String,
+    pub summary_hint: Option<WorkspaceArchitectPlanSummaryDto>,
+    pub scoped_project_ids_hint: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceArchitectActivatePlanChatRequestDto {
+    pub branch_name: String,
+    pub plan_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceTaskExecutionTargetDto {
     #[serde(rename = "projectId")]

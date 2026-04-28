@@ -19,6 +19,7 @@ import type {
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
   AppMode,
+  Need,
   ProjectMount,
   ProviderTurnState,
   ToolTrace,
@@ -80,6 +81,28 @@ export interface DbImportMessageInput {
 export interface DbChatSnapshot {
   conversations: DbConversation[];
   messages: DbMessage[];
+}
+
+export interface DbChatBootstrapSnapshot {
+  conversations: DbConversation[];
+  messages_by_conversation_id: Record<string, DbMessage[] | undefined>;
+}
+
+export interface DbArchitectPlanConversationSync {
+  conversation_id: string;
+  plan_id: string;
+  target_branch: string;
+  transcript_revision: string | null;
+  message_count: number;
+  updated_at: string;
+}
+
+export interface DbUpsertArchitectPlanConversationSyncInput {
+  conversation_id: string;
+  plan_id: string;
+  target_branch: string;
+  transcript_revision?: string | null;
+  message_count: number;
 }
 
 export interface DbProviderConfig {
@@ -626,6 +649,115 @@ export interface WorkspaceBootstrapDto {
   predictedBranches: PredictedBranch[];
 }
 
+export interface WorkspaceArchitectPlanReplicaDto {
+  scopeKey: string;
+  projectId: string | null;
+  repoPath: string | null;
+  workspacePath: string | null;
+  source: "local" | "project" | "workspace" | string;
+  updatedAt?: string | null;
+  missing?: boolean;
+}
+
+export interface WorkspaceArchitectPlanSummaryDto {
+  id: string;
+  slug: string;
+  title: string;
+  label?: string | null;
+  description: string;
+  planKind?: string | null;
+  gitFlowPlan?: unknown;
+  status: string;
+  targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string> | null;
+  conversationId?: string | null;
+  projectId?: string | null;
+  projectIds?: string[];
+  contextProjectIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+  nodeCount: number;
+  predictedBranchCount?: number | null;
+  needCount?: number | null;
+  chatMessageCount?: number | null;
+  expectedProjectIds?: string[];
+  availableProjectIds?: string[];
+  missingProjectIds?: string[];
+  replicationState?: string | null;
+  revision?: number | null;
+  replicas?: WorkspaceArchitectPlanReplicaDto[];
+  hasReplicaDivergence?: boolean;
+}
+
+export interface WorkspaceArchitectPlanRecordDto {
+  id: string;
+  slug: string;
+  title: string;
+  label?: string | null;
+  description: string;
+  planKind?: string | null;
+  gitFlowPlan?: unknown;
+  status: string;
+  targetBranch: string;
+  targetBranchesByProjectId?: Record<string, string> | null;
+  conversationId?: string | null;
+  projectId?: string | null;
+  projectIds?: string[];
+  contextProjectIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+  nodes: PlanNode[];
+  predictedBranches: PredictedBranch[];
+  expectedProjectIds?: string[];
+  availableProjectIds?: string[];
+  missingProjectIds?: string[];
+  replicationState?: string | null;
+  revision?: number | null;
+  replicas?: WorkspaceArchitectPlanReplicaDto[];
+  hasReplicaDivergence?: boolean;
+}
+
+export interface WorkspaceArchitectPlanRuntimeStatusDto {
+  branchName: string;
+  branchGeneration: number;
+  branchStamp: string;
+  planCount: number;
+  scopeCount: number;
+  rebuilt: boolean;
+}
+
+export interface WorkspaceArchitectPlanListDto {
+  activePlanId: string | null;
+  plans: WorkspaceArchitectPlanSummaryDto[];
+  runtimeStatus?: WorkspaceArchitectPlanRuntimeStatusDto | null;
+}
+
+export interface WorkspaceArchitectPlanActivationHeadDto {
+  plan: WorkspaceArchitectPlanRecordDto;
+  needs: Need[];
+  conversationId: string | null;
+  sharedConversation: boolean;
+  targetBranch: string;
+  resolutionMode: string;
+  chatTranscriptRevision: string | null;
+  chatMessageCount: number;
+}
+
+export interface WorkspaceArchitectChatMessageDto {
+  id: string;
+  role: "user" | "assistant" | string;
+  content: string;
+  createdAt: string;
+}
+
+export interface WorkspaceArchitectPlanTranscriptDto {
+  planId: string;
+  targetBranch: string;
+  transcriptRevision: string | null;
+  messageCount: number;
+  messages: WorkspaceArchitectChatMessageDto[];
+}
+
 export interface WorkspaceMetadataDto {
   workspace_path: string;
   metadata_path: string;
@@ -772,6 +904,14 @@ export async function getChatSnapshot(): Promise<DbChatSnapshot> {
   return invoke<DbChatSnapshot>("db_get_chat_snapshot");
 }
 
+export async function getChatBootstrapSnapshot(params?: {
+  preloadConversationIds?: string[];
+}): Promise<DbChatBootstrapSnapshot> {
+  return invoke<DbChatBootstrapSnapshot>("db_get_chat_bootstrap_snapshot", {
+    preloadConversationIds: params?.preloadConversationIds ?? [],
+  });
+}
+
 export async function getConversation(
   id: string,
 ): Promise<DbConversation | null> {
@@ -847,6 +987,42 @@ export async function listMessages(
   conversationId: string,
 ): Promise<DbMessage[]> {
   return invoke<DbMessage[]>("db_list_messages", { conversationId });
+}
+
+export async function dbGetArchitectPlanConversationSync(
+  conversationId: string,
+): Promise<DbArchitectPlanConversationSync | null> {
+  return invoke<DbArchitectPlanConversationSync | null>(
+    "db_get_architect_plan_conversation_sync",
+    { conversationId },
+  );
+}
+
+export async function dbGetArchitectPlanConversationSyncForPlan(params: {
+  planId: string;
+  targetBranch: string;
+}): Promise<DbArchitectPlanConversationSync | null> {
+  return invoke<DbArchitectPlanConversationSync | null>(
+    "db_get_architect_plan_conversation_sync_for_plan",
+    params,
+  );
+}
+
+export async function dbUpsertArchitectPlanConversationSync(
+  input: DbUpsertArchitectPlanConversationSyncInput,
+): Promise<DbArchitectPlanConversationSync> {
+  return invoke<DbArchitectPlanConversationSync>(
+    "db_upsert_architect_plan_conversation_sync",
+    { input },
+  );
+}
+
+export async function dbDeleteArchitectPlanConversationSync(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_architect_plan_conversation_sync", {
+    conversationId,
+  });
 }
 
 export async function dbGetConversationCompactionState(
@@ -1617,6 +1793,59 @@ export async function workspaceGetMetadata(): Promise<WorkspaceMetadataDto> {
 
 export async function workspaceGetActiveRoot(): Promise<string> {
   return invoke<string>("workspace_get_active_root");
+}
+
+export async function workspaceArchitectListPlans(params: {
+  branchName: string;
+  includeDeleted?: boolean;
+  includeArchived?: boolean;
+}): Promise<WorkspaceArchitectPlanListDto> {
+  return invoke<WorkspaceArchitectPlanListDto>("workspace_architect_list_plans", {
+    request: {
+      branchName: params.branchName,
+      includeDeleted: params.includeDeleted ?? false,
+      includeArchived: params.includeArchived ?? false,
+    },
+  });
+}
+
+export async function workspaceArchitectActivatePlanHead(params: {
+  branchName: string;
+  planId: string;
+  summaryHint?: WorkspaceArchitectPlanSummaryDto | null;
+  scopedProjectIdsHint?: string[];
+}): Promise<WorkspaceArchitectPlanActivationHeadDto | null> {
+  return invoke<WorkspaceArchitectPlanActivationHeadDto | null>(
+    "workspace_architect_activate_plan_head",
+    {
+      request: {
+        branchName: params.branchName,
+        planId: params.planId,
+        summaryHint: params.summaryHint ?? null,
+        scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+      },
+    },
+  );
+}
+
+export async function workspaceArchitectActivatePlanChat(params: {
+  branchName: string;
+  planId: string;
+}): Promise<WorkspaceArchitectPlanTranscriptDto | null> {
+  return invoke<WorkspaceArchitectPlanTranscriptDto | null>(
+    "workspace_architect_activate_plan_chat",
+    {
+      request: params,
+    },
+  );
+}
+
+export async function workspaceArchitectInvalidate(params?: {
+  branchName?: string | null;
+}): Promise<void> {
+  return invoke("workspace_architect_invalidate", {
+    branchName: params?.branchName ?? null,
+  });
 }
 
 export async function workspacePreviewProjectGitSetup(params: {

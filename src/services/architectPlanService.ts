@@ -181,6 +181,9 @@ export interface ArchitectPlanActivationPayload {
   plan: ArchitectPlanRecord;
   needs: Need[];
   chatMessages: ArchitectPlanChatMessage[];
+  chatMessagesLoaded?: boolean;
+  chatTranscriptRevision?: string | null;
+  chatMessageCount?: number;
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
@@ -319,6 +322,8 @@ const planRecordFromActivationSummary = (
     title: summary.title,
     label: summary.label,
     description: summary.description,
+    planKind: summary.planKind,
+    gitFlowPlan: summary.gitFlowPlan,
     status: summary.status,
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: summary.targetBranchesByProjectId,
@@ -547,10 +552,16 @@ const invalidateArchitectPlanRuntimeCaches = (params?: {
   if (!normalizedBranch) {
     architectPlanIndexCache.clear();
     architectPlanActivationCache.clear();
+    if (tauriIpc.isTauriAvailable() && typeof tauriIpc.workspaceArchitectInvalidate === 'function') {
+      void tauriIpc.workspaceArchitectInvalidate().catch(() => undefined);
+    }
     return;
   }
 
   architectPlanIndexCache.delete(getArchitectPlanIndexCacheKey(normalizedBranch));
+  if (tauriIpc.isTauriAvailable() && typeof tauriIpc.workspaceArchitectInvalidate === 'function') {
+    void tauriIpc.workspaceArchitectInvalidate({ branchName: normalizedBranch }).catch(() => undefined);
+  }
 
   if (params?.planId) {
     const activationPrefix = `${normalizedBranch}::${sanitizeId(params.planId)}::`;
@@ -1500,6 +1511,9 @@ const logArchitectPlanActivationLoad = (params: {
     })
   );
 };
+
+const toErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 const sanitizeArchitectPlanRecord = (
   branchName: string,
@@ -3052,6 +3066,123 @@ interface ArchitectPlanActivationSnapshot {
   chatMessageCount: number | null;
 }
 
+const isWorkspaceArchitectRuntimeAvailable = (
+  deps: ResolvedArchitectPlanServiceDependencies
+): boolean =>
+  deps.tauri.isTauriAvailable() &&
+  typeof deps.tauri.workspaceArchitectListPlans === 'function' &&
+  typeof deps.tauri.workspaceArchitectActivatePlanHead === 'function' &&
+  typeof deps.tauri.workspaceArchitectActivatePlanChat === 'function';
+
+const mapRuntimeArchitectPlanSummary = (
+  branchName: string,
+  summary: tauriIpc.WorkspaceArchitectPlanSummaryDto
+): ArchitectPlanSummary =>
+  sanitizeArchitectPlanSummary(
+    branchName,
+    summary as unknown as ArchitectPlanSummary,
+    null
+  ).summary;
+
+const mapRuntimeArchitectPlanRecord = (
+  branchName: string,
+  plan: tauriIpc.WorkspaceArchitectPlanRecordDto
+): ArchitectPlanRecord => {
+  const sanitized = sanitizeArchitectPlanRecord(
+    branchName,
+    plan.id,
+    plan as unknown as ArchitectPlanRecord,
+    null
+  ).plan;
+
+  return sanitized ?? (plan as unknown as ArchitectPlanRecord);
+};
+
+const mapRuntimeArchitectChatMessages = (
+  messages: tauriIpc.WorkspaceArchitectChatMessageDto[]
+): ArchitectPlanChatMessage[] =>
+  messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => ({
+      id: message.id,
+      role: message.role as 'user' | 'assistant',
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
+
+const loadArchitectPlanActivationPayloadFromRuntime = async (
+  branchName: string,
+  planId: string,
+  options: ArchitectPlanActivationOptions,
+  deps: ResolvedArchitectPlanServiceDependencies
+): Promise<ArchitectPlanActivationPayload | null> => {
+  if (!isWorkspaceArchitectRuntimeAvailable(deps)) {
+    return null;
+  }
+
+  const head = await deps.tauri.workspaceArchitectActivatePlanHead({
+    branchName,
+    planId,
+    summaryHint: options.summaryHint
+      ? (options.summaryHint as unknown as tauriIpc.WorkspaceArchitectPlanSummaryDto)
+      : null,
+    scopedProjectIdsHint: options.scopedProjectIdsHint,
+  });
+  if (!head) {
+    return null;
+  }
+
+  return {
+    plan: mapRuntimeArchitectPlanRecord(branchName, head.plan),
+    needs: head.needs,
+    chatMessages: [],
+    chatMessagesLoaded: false,
+    chatTranscriptRevision: head.chatTranscriptRevision,
+    chatMessageCount: head.chatMessageCount,
+    conversationId: head.conversationId,
+    sharedConversation: head.sharedConversation,
+    targetBranch: normalizeBranchName(head.targetBranch || branchName),
+    resolutionMode:
+      head.resolutionMode === 'blank_fast_path' ? 'blank_fast_path' : 'full',
+  };
+};
+
+export const getArchitectPlanChatTranscript = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<{
+  messages: ArchitectPlanChatMessage[];
+  transcriptRevision: string | null;
+  messageCount: number;
+} | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+
+  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+    const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
+      branchName: normalizedBranch,
+      planId: safeId,
+    });
+    if (!transcript) {
+      return null;
+    }
+    return {
+      messages: mapRuntimeArchitectChatMessages(transcript.messages),
+      transcriptRevision: transcript.transcriptRevision,
+      messageCount: transcript.messageCount,
+    };
+  }
+
+  const messages = await getArchitectPlanChatMessages(normalizedBranch, safeId, deps);
+  return {
+    messages,
+    transcriptRevision: null,
+    messageCount: messages.length,
+  };
+};
+
 const buildArchitectPlanActivationSnapshot = async (params: {
   scope: ArchitectMetadataScope;
   branchName: string;
@@ -3190,6 +3321,9 @@ const loadArchitectPlanActivationPayloadImpl = async (
       plan: planRecordFromActivationSummary(fastPathSummary, normalizedBranch),
       needs: [],
       chatMessages: [],
+      chatMessagesLoaded: true,
+      chatTranscriptRevision: null,
+      chatMessageCount: 0,
       conversationId: null,
       sharedConversation: false,
       targetBranch: normalizedBranch,
@@ -3203,6 +3337,35 @@ const loadArchitectPlanActivationPayloadImpl = async (
       durationMs: Date.now() - startedAt,
     });
     return payload;
+  }
+
+  try {
+    const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
+      normalizedBranch,
+      safeId,
+      options,
+      deps
+    );
+    if (runtimePayload) {
+      logArchitectPlanActivationLoad({
+        branchName: normalizedBranch,
+        planId: safeId,
+        resolutionMode: runtimePayload.resolutionMode,
+        sharedConversation: runtimePayload.sharedConversation,
+        durationMs: Date.now() - startedAt,
+      });
+      return runtimePayload;
+    }
+  } catch (error) {
+    devLogger.warn(
+      JSON.stringify({
+        event: 'architect_plan_runtime_activation_fallback',
+        at: new Date().toISOString(),
+        branchName: normalizedBranch,
+        planId: safeId,
+        error: toErrorMessage(error),
+      })
+    );
   }
 
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
@@ -3224,6 +3387,9 @@ const loadArchitectPlanActivationPayloadImpl = async (
       plan: planRecordFromActivationSummary(blankSummary, normalizedBranch),
       needs: [],
       chatMessages: [],
+      chatMessagesLoaded: true,
+      chatTranscriptRevision: null,
+      chatMessageCount: 0,
       conversationId: null,
       sharedConversation: false,
       targetBranch: normalizedBranch,
@@ -3346,6 +3512,9 @@ const loadArchitectPlanActivationPayloadImpl = async (
     plan,
     needs,
     chatMessages,
+    chatMessagesLoaded: true,
+    chatTranscriptRevision: null,
+    chatMessageCount: chatMessages.length,
     conversationId,
     sharedConversation: Boolean(
       conversationId &&
@@ -3379,6 +3548,16 @@ export const getArchitectPlanActivationPayload = async (
 ): Promise<ArchitectPlanActivationPayload | null> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+
+  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+    return await loadArchitectPlanActivationPayloadImpl(
+      normalizedBranch,
+      planId,
+      options,
+      deps
+    );
+  }
+
   const cacheKey = getArchitectPlanActivationCacheKey(
     normalizedBranch,
     planId,
@@ -3627,6 +3806,32 @@ const listArchitectPlansWithDeps = async (
 }> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+
+  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+    try {
+      const runtimeList = await deps.tauri.workspaceArchitectListPlans({
+        branchName: normalizedBranch,
+        includeDeleted,
+        includeArchived,
+      });
+      return {
+        activePlanId: runtimeList.activePlanId,
+        plans: runtimeList.plans.map((summary) =>
+          mapRuntimeArchitectPlanSummary(normalizedBranch, summary)
+        ),
+      };
+    } catch (error) {
+      devLogger.warn(
+        JSON.stringify({
+          event: 'architect_plan_runtime_list_fallback',
+          at: new Date().toISOString(),
+          branchName: normalizedBranch,
+          error: toErrorMessage(error),
+        })
+      );
+    }
+  }
+
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const plans = index.plans.filter((plan) => {
@@ -4084,6 +4289,8 @@ export const bindArchitectPlanConversation = async (params: {
     return activationPayload.plan;
   }
   if (
+    (activationPayload.chatMessagesLoaded === false &&
+      (activationPayload.chatMessageCount ?? 0) > 0) ||
     !canBindArchitectPlanConversationLightly(
       activationPayload.plan,
       activationPayload.needs,
@@ -4655,6 +4862,7 @@ export interface ArchitectPlanService {
   archiveArchitectPlan: typeof archiveArchitectPlan;
   getArchitectPlanNeeds: typeof getArchitectPlanNeeds;
   getArchitectPlanChatMessages: typeof getArchitectPlanChatMessages;
+  getArchitectPlanChatTranscript: typeof getArchitectPlanChatTranscript;
   saveArchitectPlanChatMessages: typeof saveArchitectPlanChatMessages;
   syncArchitectPlanChatFromConversation: typeof syncArchitectPlanChatFromConversation;
   saveArchitectPlanNeeds: typeof saveArchitectPlanNeeds;
@@ -4686,6 +4894,8 @@ export const createArchitectPlanService = (
     getArchitectPlanNeeds: (branchName, planId) => getArchitectPlanNeeds(branchName, planId, deps),
     getArchitectPlanChatMessages: (branchName, planId) =>
       getArchitectPlanChatMessages(branchName, planId, deps),
+    getArchitectPlanChatTranscript: (branchName, planId) =>
+      getArchitectPlanChatTranscript(branchName, planId, deps),
     saveArchitectPlanChatMessages: (branchName, planId, messages) =>
       saveArchitectPlanChatMessages(branchName, planId, messages, deps),
     syncArchitectPlanChatFromConversation: (params) => syncArchitectPlanChatFromConversation(params, deps),
