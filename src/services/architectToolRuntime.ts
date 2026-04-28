@@ -60,6 +60,7 @@ import type {
 } from "./architectStrategyMutationGuard";
 import {
   getFocusedProjectForGroup,
+  getProjectGroupByProjectId,
   getScopedActionableProjectIds,
 } from "./globalProjects";
 
@@ -101,6 +102,15 @@ const ARCHITECT_NEED_STATUSES = new Set<NeedStatus>([
   "refined",
   "validated",
 ]);
+
+const uniqueProjectIds = (items: Array<string | null | undefined>): string[] =>
+  Array.from(
+    new Set(
+      items
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item.length > 0),
+    ),
+  );
 
 type NormalizedArchitectStrategyNodeInput = {
   id?: string;
@@ -376,15 +386,26 @@ const normalizeArchitectStrategyNodeInput = (
         .map((dep) => dep.trim())
         .filter(Boolean)
     : [];
-  const projectIds = Array.isArray(node.projectIds)
+  const rawProjectIds = Array.isArray(node.projectIds)
     ? node.projectIds
+    : Array.isArray(node.project_ids)
+      ? node.project_ids
+      : null;
+  const rawProjectId =
+    typeof node.projectId === "string"
+      ? node.projectId
+      : typeof node.project_id === "string"
+        ? node.project_id
+        : "";
+  const projectIds = rawProjectIds
+    ? rawProjectIds
         .filter(
           (projectId): projectId is string => typeof projectId === "string",
         )
         .map((projectId) => projectId.trim())
         .filter(Boolean)
-    : typeof node.projectId === "string" && node.projectId.trim().length > 0
-      ? [node.projectId.trim()]
+    : rawProjectId.trim().length > 0
+      ? [rawProjectId.trim()]
       : [];
 
   if (!title) {
@@ -450,6 +471,67 @@ const buildArchitectStrategyPredictedBranches = (params: {
     branchType: branch.branchType,
     branchSlug: branch.branchSlug,
   }));
+};
+
+const resolvePlanEditableProjectIds = (
+  plan: Pick<ArchitectPlanRecord, "projectId" | "projectIds">,
+): string[] => uniqueProjectIds([...(plan.projectIds || []), plan.projectId]);
+
+const resolvePlanContextProjectIds = (
+  plan: Pick<ArchitectPlanRecord, "contextProjectIds">,
+): string[] => uniqueProjectIds(plan.contextProjectIds || []);
+
+const resolvePlanGlobalProjectIds = (
+  appState: ArchitectToolAppState,
+  plan: Pick<
+    ArchitectPlanRecord,
+    "projectId" | "projectIds" | "contextProjectIds"
+  >,
+): Set<string> => {
+  const anchorProjectId = uniqueProjectIds([
+    ...(plan.projectIds || []),
+    plan.projectId,
+    ...(plan.contextProjectIds || []),
+  ])[0];
+  const group = getProjectGroupByProjectId(
+    appState.projectGroups,
+    anchorProjectId,
+  );
+
+  return new Set(group?.projects.map((project) => project.id) || []);
+};
+
+const validateStrategyNodeProjectIds = (params: {
+  nodeTitle: string;
+  projectIds: string[];
+  editableProjectIds: string[];
+  contextProjectIds: string[];
+  globalProjectIds: Set<string>;
+}): void => {
+  const editableProjectIdSet = new Set(params.editableProjectIds);
+  const contextProjectIdSet = new Set(params.contextProjectIds);
+
+  params.projectIds.forEach((projectId) => {
+    if (editableProjectIdSet.has(projectId)) {
+      return;
+    }
+
+    if (contextProjectIdSet.has(projectId)) {
+      throw new Error(
+        `Strategy node "${params.nodeTitle}" targets context-only subproject "${projectId}". Context subprojects stay in contextProjectIds and cannot receive executable strategy branches.`,
+      );
+    }
+
+    if (params.globalProjectIds.size > 0 && params.globalProjectIds.has(projectId)) {
+      throw new Error(
+        `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", but that subproject is not in the editable scope of this plan. Add it to projectIds before generating the strategy.`,
+      );
+    }
+
+    throw new Error(
+      `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", which is outside this plan's global project scope.`,
+    );
+  });
 };
 
 const resolveRequestedArchitectPlanSlug = (params: {
@@ -709,16 +791,21 @@ const resolveStrategyForPlan = async (params: {
     appState.selectedGroupId,
     appState.selectedProjectId,
   );
-  const fallbackProjectIds = appState.projectGroups
-    .flatMap((group) => group.projects)
-    .map((project) => project.id);
+  const editablePlanProjectIds = resolvePlanEditableProjectIds(activePlan);
+  const contextPlanProjectIds = resolvePlanContextProjectIds(activePlan);
+  const globalPlanProjectIds = resolvePlanGlobalProjectIds(appState, activePlan);
   const defaultProjectIds = Array.from(
     new Set([
-      ...selectedProjectIds,
-      ...(appState.selectedProjectId ? [appState.selectedProjectId] : []),
-      ...fallbackProjectIds,
+      ...editablePlanProjectIds,
+      ...(editablePlanProjectIds.length === 0 ? selectedProjectIds : []),
     ]),
   ).filter(Boolean);
+
+  if (defaultProjectIds.length === 0) {
+    throw new Error(
+      "Cannot generate a strategy because the active plan has no editable subproject scope.",
+    );
+  }
 
   const planSlug =
     requestedPlanSlug && planService.isArchitectPlanSlugMutable(activePlan)
@@ -748,6 +835,13 @@ const resolveStrategyForPlan = async (params: {
     const preferredId = node.id || existingId;
     const resolvedProjectIds =
       node.projectIds.length > 0 ? node.projectIds : defaultProjectIds;
+    validateStrategyNodeProjectIds({
+      nodeTitle: node.title,
+      projectIds: resolvedProjectIds,
+      editableProjectIds: defaultProjectIds,
+      contextProjectIds: contextPlanProjectIds,
+      globalProjectIds: globalPlanProjectIds,
+    });
     return {
       id:
         preferredId && preferredId.length > 0

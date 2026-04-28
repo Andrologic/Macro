@@ -883,6 +883,28 @@ export const MACRO_TOOL_REGISTRY = [
                 type: "string",
                 enum: ["spec", "feature", "task", "milestone"],
               },
+              projectId: {
+                type: "string",
+                description:
+                  "Optional editable subproject id for this node. If omitted, the node uses the active plan's editable projectIds.",
+              },
+              project_id: {
+                type: "string",
+                description:
+                  "Snake_case alias for projectId.",
+              },
+              projectIds: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Optional editable subproject ids for this node. Must be a subset of the active plan's projectIds; context_project_ids are read-only context and cannot receive executable branches.",
+              },
+              project_ids: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Snake_case alias for projectIds.",
+              },
               branchType: {
                 type: "string",
                 enum: ["feature"],
