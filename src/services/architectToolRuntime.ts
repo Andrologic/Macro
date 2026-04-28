@@ -21,6 +21,7 @@ import type {
 } from "./architectPlanKinds";
 import {
   hasPersistedArchitectStrategy,
+  isArchitectPlanReplicaDivergenceError,
 } from "./architectPlanService";
 import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
@@ -578,6 +579,9 @@ const resolveActivePlanId = (
   appState: ArchitectToolAppState,
 ): string | null => appState.activeArchitectPlanId;
 
+const hasPostWriteReplicaWarning = (plan: ArchitectPlanRecord): boolean =>
+  plan.hasReplicaDivergence === true || plan.replicationState === "diverged";
+
 const resolveArchitectTargetBranch = (
   rawTargetBranch: unknown,
   appState: ArchitectToolAppState,
@@ -936,13 +940,19 @@ const executeStrategyMutation = async (params: {
       plan,
       preview: null,
     });
-    await hydratePlanContext({
-      targetBranch: params.targetBranch,
-      planId: plan.id,
-      planService: params.planService,
-      getAppState: params.getAppState,
-      ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
-    });
+    try {
+      await hydratePlanContext({
+        targetBranch: params.targetBranch,
+        planId: plan.id,
+        planService: params.planService,
+        getAppState: params.getAppState,
+        ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
+      });
+    } catch (error) {
+      if (!hasPostWriteReplicaWarning(plan) || !isArchitectPlanReplicaDivergenceError(error)) {
+        throw error;
+      }
+    }
     await params.getTaskState().refreshFromPlan();
     return {
       outcome: "applied",
@@ -1493,13 +1503,19 @@ export const handleArchitectToolCall = async (
     });
 
     if (resolveActivePlanId(params.getAppState()) === updatedPlan.id) {
-      await hydratePlanContext({
-        targetBranch,
-        planId: updatedPlan.id,
-        planService,
-        getAppState: params.getAppState,
-        ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
-      });
+      try {
+        await hydratePlanContext({
+          targetBranch,
+          planId: updatedPlan.id,
+          planService,
+          getAppState: params.getAppState,
+          ensureArchitectConversationForPlan: params.ensureArchitectConversationForPlan,
+        });
+      } catch (error) {
+        if (!hasPostWriteReplicaWarning(updatedPlan) || !isArchitectPlanReplicaDivergenceError(error)) {
+          throw error;
+        }
+      }
     }
 
     return formatArchitectPlanUpdateToolResult(
@@ -1612,6 +1628,7 @@ export const handleArchitectToolCall = async (
       predictedBranches: decision.plan.predictedBranches,
       resolvedProjectIds: decision.preview.resolvedProjectIds,
       targetBranchesByProjectId: decision.preview.targetBranchesByProjectId,
+      plan: decision.plan,
     });
   }
 
@@ -1870,6 +1887,7 @@ export const handleArchitectToolCall = async (
       planId: activePlanId,
       planNodes: decision.plan.nodes,
       predictedBranches: decision.plan.predictedBranches,
+      plan: decision.plan,
     });
   }
 
