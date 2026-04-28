@@ -48,6 +48,11 @@ const commitSnapshots: Array<{
   workspacePath: string | null;
   files: Record<string, string>;
 }> = [];
+const workspaceWriteHooks: Array<(params: {
+  path: string;
+  content: string;
+  workspacePath?: string | null;
+}) => Promise<void> | void> = [];
 const conversationMessages = new Map<
   string,
   Array<{
@@ -236,6 +241,9 @@ const registerArchitectPlanMocks = () => {
       content: string;
       workspacePath?: string | null;
     }) => {
+      for (const hook of workspaceWriteHooks) {
+        await hook({ path, content, workspacePath });
+      }
       writeWorkspaceFile(workspacePath, path, content);
       return {
         path,
@@ -315,6 +323,7 @@ describe('architectPlanService replicas', () => {
   beforeEach(() => {
     workspaceFiles.clear();
     commitSnapshots.length = 0;
+    workspaceWriteHooks.length = 0;
     conversationMessages.clear();
     originalConsoleInfo = console.info;
     console.info = () => undefined;
@@ -748,6 +757,75 @@ describe('architectPlanService replicas', () => {
     expect(webChat).toBe(apiChat);
     expect(webChat).toContain('Database transcript wins.');
     expect(webChat).not.toContain('Queued stale transcript.');
+  });
+
+  it('binds conversations from a fresh queued plan state without erasing semantic updates', async () => {
+    const plan = buildPlan({
+      conversationId: undefined,
+      description: '',
+      projectIds: ['web', 'api'],
+      nodes: [],
+      predictedBranches: [],
+    });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const freshNode = {
+      id: 'task-fresh',
+      title: 'Fresh queued work',
+      type: 'task' as const,
+      status: 'pending' as const,
+      dependencies: [],
+      projectId: 'web',
+      projectIds: ['web'],
+    };
+    let releaseWrites: () => void = () => undefined;
+    let blockedWriteSeen = false;
+    const releaseWritesPromise = new Promise<void>((resolve) => {
+      releaseWrites = resolve;
+    });
+    const firstPlanWriteBlocked = new Promise<void>((resolve) => {
+      workspaceWriteHooks.push(async ({ path, content }) => {
+        if (
+          path === `branches/develop/plans/${plan.id}/plan.json` &&
+          content.includes('"task-fresh"')
+        ) {
+          if (!blockedWriteSeen) {
+            blockedWriteSeen = true;
+            resolve();
+          }
+          await releaseWritesPromise;
+        }
+      });
+    });
+
+    const { service } = await loadArchitectPlanService();
+    const updatePromise = service.updateArchitectPlan({
+      branchName: 'develop',
+      planId: plan.id,
+      nodes: [freshNode],
+      predictedBranches: [],
+      projectId: 'web',
+      projectIds: ['web', 'api'],
+    });
+    await firstPlanWriteBlocked;
+    const bindPromise = service.bindArchitectPlanConversation({
+      branchName: 'develop',
+      planId: plan.id,
+      conversationId: 'fresh-conversation',
+    });
+    releaseWrites();
+
+    await Promise.all([updatePromise, bindPromise]);
+    const loaded = await service.getArchitectPlan('develop', plan.id);
+    const webPlan = JSON.parse(readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/plan.json`) || 'null');
+    const apiPlan = JSON.parse(readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/plan.json`) || 'null');
+
+    expect(loaded?.conversationId).toBe('fresh-conversation');
+    expect(loaded?.nodes.map((node: { id: string }) => node.id)).toEqual(['task-fresh']);
+    expect(webPlan.conversationId).toBe('fresh-conversation');
+    expect(apiPlan.conversationId).toBe('fresh-conversation');
+    expect(webPlan.nodes.map((node: { id: string }) => node.id)).toEqual(['task-fresh']);
+    expect(apiPlan.nodes.map((node: { id: string }) => node.id)).toEqual(['task-fresh']);
   });
 
   it('keeps reporting true content divergence between repositories', async () => {
