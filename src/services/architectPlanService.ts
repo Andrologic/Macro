@@ -44,6 +44,8 @@ export type ArchitectPlanStatus =
   | 'archived'
   | 'deleted';
 
+export type ArchitectPlanRestorableStatus = Exclude<ArchitectPlanStatus, 'archived' | 'deleted'>;
+
 export type ArchitectPlanReplicationState =
   | 'healthy'
   | 'missing_projects'
@@ -109,6 +111,9 @@ export interface ArchitectPlanRecord {
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   status: ArchitectPlanStatus;
+  archivedAt?: string;
+  archivedFromStatus?: ArchitectPlanRestorableStatus;
+  deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
   conversationId?: string;
@@ -137,6 +142,9 @@ export interface ArchitectPlanSummary {
   planKind?: ArchitectPlanKind;
   gitFlowPlan?: ArchitectPlanGitFlowMetadata;
   status: ArchitectPlanStatus;
+  archivedAt?: string;
+  archivedFromStatus?: ArchitectPlanRestorableStatus;
+  deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
   conversationId?: string;
@@ -174,6 +182,64 @@ export interface ArchitectPlanReplicaDivergence {
   reason: 'content_diverged' | 'missing_replica';
   replicas: ArchitectPlanReplica[];
 }
+
+export interface ArchitectPlanCrudCapabilities {
+  canArchive: boolean;
+  canRestore: boolean;
+  canDelete: boolean;
+  canPurgeLegacyDeleted: boolean;
+  deleteRequiresCleanup: boolean;
+  canEditDetails: boolean;
+  canEditDraftContent: boolean;
+  canEditSlug: boolean;
+  canEditScope: boolean;
+  canEditStrategyDirectly: boolean;
+}
+
+const RESTORABLE_PLAN_STATUS_SET = new Set<ArchitectPlanRestorableStatus>([
+  'draft',
+  'validated',
+  'in_progress',
+  'completed',
+]);
+
+const PLAN_DELETE_CLEANUP_STATUS_SET = new Set<ArchitectPlanStatus>([
+  'validated',
+  'in_progress',
+  'completed',
+  'archived',
+]);
+
+export const isArchitectPlanRestorableStatus = (
+  status: string | null | undefined
+): status is ArchitectPlanRestorableStatus =>
+  Boolean(status && RESTORABLE_PLAN_STATUS_SET.has(status as ArchitectPlanRestorableStatus));
+
+export const getArchitectPlanCrudCapabilities = (
+  plan: Pick<ArchitectPlanRecord | ArchitectPlanSummary, 'status'>
+): ArchitectPlanCrudCapabilities => {
+  const isDeleted = plan.status === 'deleted';
+  const isDraft = plan.status === 'draft';
+  return {
+    canArchive: !isDeleted && plan.status !== 'archived',
+    canRestore: plan.status === 'archived',
+    canDelete: !isDeleted,
+    canPurgeLegacyDeleted: isDeleted,
+    deleteRequiresCleanup: PLAN_DELETE_CLEANUP_STATUS_SET.has(plan.status),
+    canEditDetails: !isDeleted,
+    canEditDraftContent: isDraft,
+    canEditSlug: isDraft,
+    canEditScope: isDraft,
+    canEditStrategyDirectly: isDraft,
+  };
+};
+
+const resolveArchivedArchitectPlanRestoreStatus = (
+  plan: Pick<ArchitectPlanRecord | ArchitectPlanSummary, 'archivedFromStatus'>
+): ArchitectPlanRestorableStatus =>
+  isArchitectPlanRestorableStatus(plan.archivedFromStatus)
+    ? plan.archivedFromStatus
+    : 'draft';
 
 export type ArchitectPlanActivationResolutionMode = 'blank_fast_path' | 'full';
 
@@ -276,16 +342,50 @@ const createGitFlowMetadataNormalizationContext = async (
   }
 };
 
-const assertPlanCanBeArchived = (
-  plan: Pick<ArchitectPlanRecord, 'id' | 'slug' | 'title' | 'label' | 'status'>
-): void => {
-  if (
-    plan.status !== 'draft' &&
-    isCanonicalArchitectPlan(plan) &&
-    isDefaultNewPlanFamilyLabel(plan.label)
-  ) {
-    throw new Error('Rename the plan before archiving it.');
+const applyArchitectPlanLifecycleForStatus = <T extends {
+  status: ArchitectPlanStatus;
+  updatedAt: string;
+  archivedAt?: string;
+  archivedFromStatus?: ArchitectPlanRestorableStatus;
+  deletedAt?: string;
+}>(
+  plan: T,
+  previousStatus?: ArchitectPlanStatus
+): T => {
+  if (plan.status === 'archived') {
+    return {
+      ...plan,
+      archivedAt:
+        typeof plan.archivedAt === 'string' && plan.archivedAt.trim().length > 0
+          ? plan.archivedAt
+          : plan.updatedAt,
+      archivedFromStatus: isArchitectPlanRestorableStatus(plan.archivedFromStatus)
+        ? plan.archivedFromStatus
+        : isArchitectPlanRestorableStatus(previousStatus)
+          ? previousStatus
+          : 'draft',
+      deletedAt: undefined,
+    };
   }
+
+  if (plan.status === 'deleted') {
+    return {
+      ...plan,
+      archivedAt: undefined,
+      archivedFromStatus: undefined,
+      deletedAt:
+        typeof plan.deletedAt === 'string' && plan.deletedAt.trim().length > 0
+          ? plan.deletedAt
+          : plan.updatedAt,
+    };
+  }
+
+  return {
+    ...plan,
+    archivedAt: undefined,
+    archivedFromStatus: undefined,
+    deletedAt: undefined,
+  };
 };
 
 const canUseBlankActivationSummary = (
@@ -1613,7 +1713,7 @@ const sanitizeArchitectPlanRecord = (
     registrySnapshot
   );
 
-  const sanitizedPlan: ArchitectPlanRecord = {
+  const sanitizedPlan: ArchitectPlanRecord = applyArchitectPlanLifecycleForStatus({
     ...normalizedPlan,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
@@ -1636,7 +1736,7 @@ const sanitizeArchitectPlanRecord = (
     ),
     nodes: sanitizedNodes.nodes,
     predictedBranches: sanitizedPredictedBranches.predictedBranches,
-  };
+  });
   const removedInvalidProjectIds = dedupeProjectIdDiagnostics([
     ...sanitizedProjects.removedInvalidProjectIds,
     ...sanitizedNodes.removedInvalidProjectIds,
@@ -1745,7 +1845,7 @@ const sanitizeArchitectPlanSummary = (
     sanitizedProjects.projectIds,
     registrySnapshot
   );
-  const sanitizedSummary: ArchitectPlanSummary = {
+  const sanitizedSummary: ArchitectPlanSummary = applyArchitectPlanLifecycleForStatus({
     ...normalizedSummary,
     projectId: sanitizedProjects.projectId,
     projectIds: sanitizedProjects.projectIds,
@@ -1766,7 +1866,7 @@ const sanitizeArchitectPlanSummary = (
       sanitizedProjects.projectIds,
       normalizedSummary.targetBranch
     ),
-  };
+  });
   const changed =
     stableSerialize({
       ...normalizedSummary,
@@ -1865,6 +1965,9 @@ const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown =
   planKind: summary.planKind,
   gitFlowPlan: summary.gitFlowPlan,
   status: summary.status,
+  archivedAt: summary.archivedAt,
+  archivedFromStatus: summary.archivedFromStatus,
+  deletedAt: summary.deletedAt,
   targetBranch: summary.targetBranch,
   targetBranchesByProjectId: summary.targetBranchesByProjectId,
   conversationId: summary.conversationId,
@@ -2612,6 +2715,9 @@ const toSummary = (
     planKind: getArchitectPlanKind(plan),
     gitFlowPlan: plan.gitFlowPlan,
     status: plan.status,
+    archivedAt: plan.archivedAt,
+    archivedFromStatus: plan.archivedFromStatus,
+    deletedAt: plan.deletedAt,
     targetBranch: plan.targetBranch,
     conversationId: plan.conversationId,
     projectId: plan.projectId,
@@ -3737,12 +3843,26 @@ const removePlanFromScopeIndex = async (
 ): Promise<void> => {
   const safeId = sanitizeId(planId);
   const index = await readIndexAtScope(scope, branchName, registrySnapshot);
+  const removedSummary = index.plans.find((plan) => plan.id === safeId);
   const nextPlans = index.plans.filter((plan) => plan.id !== safeId);
+  const nextPlanSlugs = new Set(
+    nextPlans.map((plan) => slugifyPlanTitle(plan.slug || plan.title || plan.id))
+  );
+  const releasableDraftSlug =
+    removedSummary?.status === 'draft'
+      ? slugifyPlanTitle(removedSummary.slug || removedSummary.title || removedSummary.id)
+      : null;
   await writeIndexAtScope(scope, branchName, {
     ...index,
     version: 3,
     plans: nextPlans,
-    activePlanId: index.activePlanId === safeId ? nextPlans[0]?.id || null : index.activePlanId,
+    activePlanId: index.activePlanId === safeId
+      ? nextPlans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
+      : index.activePlanId,
+    reservedPlanSlugs: index.reservedPlanSlugs.filter((slug) => {
+      const normalizedSlug = slugifyPlanTitle(slug);
+      return normalizedSlug !== releasableDraftSlug || nextPlanSlugs.has(normalizedSlug);
+    }),
   });
 };
 
@@ -3997,7 +4117,7 @@ export const createArchitectPlan = async (input: {
     { preferGitFlow: input.targetBranchesByProjectId === undefined }
   );
 
-  const planResult = sanitizeArchitectPlanRecord(normalizedBranch, planId, {
+  const initialPlanRecord = applyArchitectPlanLifecycleForStatus({
     id: planId,
     slug: canonicalSlug,
     title: planId,
@@ -4018,7 +4138,8 @@ export const createArchitectPlan = async (input: {
     revision: 1,
     nodes: normalizedNodes,
     predictedBranches: normalizedPredictedBranches,
-  }, registrySnapshot, {
+  });
+  const planResult = sanitizeArchitectPlanRecord(normalizedBranch, planId, initialPlanRecord, registrySnapshot, {
     logContext: 'plan_create',
   });
   if (!planResult.plan) {
@@ -4080,10 +4201,6 @@ export const updateArchitectPlan = async (input: {
   assertPlanReplicaSetWritable(replicaSet, 'update');
   const existing = replicaSet.canonical.plan;
   const isCanonicalPlan = isCanonicalArchitectPlan(existing);
-
-  if (input.status === 'archived') {
-    assertPlanCanBeArchived(existing);
-  }
 
   if (!isCanonicalPlan && input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
     const idx = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
@@ -4164,6 +4281,49 @@ export const updateArchitectPlan = async (input: {
     projectIds,
     { preferGitFlow: input.targetBranchesByProjectId === undefined }
   );
+  if (!getArchitectPlanCrudCapabilities(existing).canEditScope) {
+    const existingProjectIds = normalizeProjectIds(existing.projectIds, existing.projectId);
+    const existingContextProjectIds = normalizeContextProjectIds(
+      existing.contextProjectIds,
+      existingProjectIds,
+      registrySnapshot
+    );
+    const existingExpectedProjectIds = normalizeArchitectPlanIdList(
+      existingProjectIds,
+      existingContextProjectIds
+    );
+    const existingTargetBranchesByProjectId = normalizeTargetBranchesByProjectId(
+      existing.targetBranchesByProjectId,
+      existingProjectIds,
+      existing.targetBranch
+    );
+    const existingPlanKind = normalizeArchitectPlanKind(
+      existing.planKind || existing.gitFlowPlan?.planKind
+    );
+    const existingGitFlowPlan = normalizeArchitectPlanGitFlowMetadata({
+      planKind: existingPlanKind,
+      gitFlowPlan: existing.gitFlowPlan,
+      projectIds: existingProjectIds,
+      fallbackSlug: existing.slug,
+      ...gitFlowNormalizationContext,
+    });
+    const scopeChanged =
+      stableSerialize(projectIds) !== stableSerialize(existingProjectIds) ||
+      stableSerialize(contextProjectIds) !== stableSerialize(existingContextProjectIds) ||
+      stableSerialize(expectedProjectIds) !== stableSerialize(existingExpectedProjectIds);
+    const branchMetadataChanged =
+      input.targetBranchesByProjectId !== undefined &&
+      stableSerialize(normalizedTargetBranchesByProjectId) !==
+        stableSerialize(existingTargetBranchesByProjectId);
+    const gitFlowMetadataChanged =
+      (input.gitFlowPlan !== undefined || input.planKind !== undefined) &&
+      (planKind !== existingPlanKind ||
+        stableSerialize(normalizedGitFlowPlan) !== stableSerialize(existingGitFlowPlan));
+
+    if (scopeChanged || branchMetadataChanged || gitFlowMetadataChanged) {
+      throw new Error('Plan scope and GitFlow metadata are immutable after draft status.');
+    }
+  }
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
@@ -4240,11 +4400,12 @@ export const updateArchitectPlan = async (input: {
     return existing;
   }
 
-  const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+  const nextCandidate = applyArchitectPlanLifecycleForStatus({
     ...candidate,
     updatedAt: new Date().toISOString(),
     revision: (existing.revision || 1) + 1,
-  }, registrySnapshot, {
+  }, existing.status);
+  const nextResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, nextCandidate, registrySnapshot, {
     logContext: 'plan_update',
   });
   if (!nextResult.plan) {
@@ -4496,12 +4657,13 @@ export const deleteArchitectPlan = async (input: {
       return;
     }
 
-    const deletedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+    const deletedRecord = applyArchitectPlanLifecycleForStatus({
       ...replicaSet.canonical.plan,
       status: 'deleted' as ArchitectPlanStatus,
       updatedAt: new Date().toISOString(),
       revision: (replicaSet.canonical.plan.revision || 1) + 1,
-    }, registrySnapshot, {
+    }, replicaSet.canonical.plan.status);
+    const deletedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, deletedRecord, registrySnapshot, {
       logContext: 'plan_delete',
     });
     if (!deletedResult.plan) {
@@ -4514,11 +4676,10 @@ export const deleteArchitectPlan = async (input: {
         const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
         const nextPlans = index.plans.map((plan) =>
           plan.id === safeId
-            ? {
-                ...plan,
-                status: 'deleted' as ArchitectPlanStatus,
-                updatedAt: deleted.updatedAt,
-              }
+            ? toSummary(deleted, {
+                needCount: plan.needCount,
+                chatMessageCount: plan.chatMessageCount,
+              })
             : plan
         );
 
@@ -4527,7 +4688,7 @@ export const deleteArchitectPlan = async (input: {
           version: 3,
           plans: nextPlans,
           activePlanId: index.activePlanId === safeId
-            ? nextPlans.find((plan) => plan.status !== 'deleted')?.id || null
+            ? nextPlans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
             : index.activePlanId,
         });
       })
@@ -4547,7 +4708,15 @@ export const restoreArchitectPlan = async (
 ): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  return updateArchitectPlan({ branchName: normalizedBranch, planId, status: 'draft' }, deps);
+  const existing = await getArchitectPlan(normalizedBranch, planId, deps);
+  if (!existing || existing.status === 'deleted') {
+    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+  }
+  const restoredStatus =
+    existing.status === 'archived'
+      ? resolveArchivedArchitectPlanRestoreStatus(existing)
+      : existing.status;
+  return updateArchitectPlan({ branchName: normalizedBranch, planId, status: restoredStatus }, deps);
 };
 
 export const archiveArchitectPlan = async (
@@ -4565,14 +4734,14 @@ export const archiveArchitectPlan = async (
     }, deps);
     if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
     assertPlanReplicaSetWritable(replicaSet, 'archive');
-    assertPlanCanBeArchived(replicaSet.canonical.plan);
     const now = new Date().toISOString();
-    const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+    const archivedRecord = applyArchitectPlanLifecycleForStatus({
       ...replicaSet.canonical.plan,
       status: 'archived',
       updatedAt: now,
       revision: (replicaSet.canonical.plan.revision || 1) + 1,
-    }, registrySnapshot, {
+    }, replicaSet.canonical.plan.status);
+    const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, archivedRecord, registrySnapshot, {
       logContext: 'plan_archive',
     });
     if (!archivedResult.plan) {
@@ -4584,7 +4753,12 @@ export const archiveArchitectPlan = async (
         await writePlanAtScope(scope, normalizedBranch, archived, registrySnapshot);
         const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
         const nextPlans = index.plans.map((plan) =>
-          plan.id === safeId ? { ...plan, status: 'archived' as ArchitectPlanStatus, updatedAt: now } : plan
+          plan.id === safeId
+            ? toSummary(archived, {
+                needCount: plan.needCount,
+                chatMessageCount: plan.chatMessageCount,
+              })
+            : plan
         );
         const nextActivePlanId =
           index.activePlanId === safeId
