@@ -204,9 +204,6 @@ const RESTORABLE_PLAN_STATUS_SET = new Set<ArchitectPlanRestorableStatus>([
 ]);
 
 const PLAN_DELETE_CLEANUP_STATUS_SET = new Set<ArchitectPlanStatus>([
-  'validated',
-  'in_progress',
-  'completed',
   'archived',
 ]);
 
@@ -223,7 +220,7 @@ export const getArchitectPlanCrudCapabilities = (
   return {
     canArchive: !isDeleted && plan.status !== 'archived',
     canRestore: plan.status === 'archived',
-    canDelete: !isDeleted,
+    canDelete: plan.status === 'archived',
     canPurgeLegacyDeleted: isDeleted,
     deleteRequiresCleanup: PLAN_DELETE_CLEANUP_STATUS_SET.has(plan.status),
     canEditDetails: !isDeleted,
