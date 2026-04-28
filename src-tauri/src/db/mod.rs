@@ -218,6 +218,7 @@ async fn upgrade_legacy_schema_to_baseline(pool: &SqlitePool) -> DbResult<()> {
     ensure_legacy_terminal_tabs(pool).await?;
     ensure_legacy_project_context_states(pool).await?;
     ensure_legacy_session_context_state(pool).await?;
+    ensure_architect_plan_conversation_sync(pool).await?;
 
     Ok(())
 }
@@ -409,6 +410,51 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at_id
+        ON messages(conversation_id, created_at, id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_created_at_id
+        ON messages(created_at, id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_architect_plan_conversation_sync(pool: &SqlitePool) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS architect_plan_conversation_sync (
+            conversation_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL,
+            target_branch TEXT NOT NULL,
+            transcript_revision TEXT,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_architect_plan_conversation_sync_plan
+        ON architect_plan_conversation_sync(plan_id, target_branch, updated_at DESC);
         "#,
     )
     .execute(pool)
@@ -1250,6 +1296,7 @@ mod tests {
             FROM sqlite_master
             WHERE type = 'table'
               AND name IN (
+                'architect_plan_conversation_sync',
                 'schema_migrations',
                 'conversations',
                 'messages',
@@ -1279,6 +1326,7 @@ mod tests {
             vec![
                 "ai_models".to_string(),
                 "app_settings".to_string(),
+                "architect_plan_conversation_sync".to_string(),
                 "conversations".to_string(),
                 "git_repositories".to_string(),
                 "git_worktrees".to_string(),
@@ -1294,6 +1342,68 @@ mod tests {
         );
 
         assert_migration_001_applied(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_adds_chat_bootstrap_indexes_and_architect_sync_schema() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        let index_names = sqlx::query(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'idx_messages_conversation_created_at_id',
+                'idx_messages_created_at_id',
+                'idx_architect_plan_conversation_sync_plan'
+              )
+            ORDER BY name ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("index lookup")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            index_names,
+            vec![
+                "idx_architect_plan_conversation_sync_plan".to_string(),
+                "idx_messages_conversation_created_at_id".to_string(),
+                "idx_messages_created_at_id".to_string(),
+            ]
+        );
+
+        let sync_columns = sqlx::query(
+            r#"
+            SELECT name
+            FROM pragma_table_info('architect_plan_conversation_sync')
+            ORDER BY cid ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("sync table columns")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            sync_columns,
+            vec![
+                "conversation_id".to_string(),
+                "plan_id".to_string(),
+                "target_branch".to_string(),
+                "transcript_revision".to_string(),
+                "message_count".to_string(),
+                "updated_at".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
