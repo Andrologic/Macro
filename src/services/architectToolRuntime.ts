@@ -1545,16 +1545,11 @@ export const handleArchitectToolCall = async (
       (!isCanonicalPlan ||
         titleAlias !== existingPlan.title ||
         label !== undefined);
-    const requestedLabelChange =
-      label !== undefined && label !== (existingPlan.label ?? "");
-    const requestedTitleAliasChange =
-      shouldPassTitleAlias && titleAlias !== undefined && titleAlias !== existingPlan.title;
-
     if (
-      hasPersistedArchitectStrategy(existingPlan) &&
-      (requestedLabelChange || requestedTitleAliasChange)
+      existingPlan.status !== "draft" &&
+      (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
     ) {
-      return "plan_update cannot rename a plan after strategy has been created. Only description and mutable draft slug updates remain allowed.";
+      return "plan_update can change plan scope or GitFlow metadata only while the plan is a draft.";
     }
 
     if (

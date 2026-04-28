@@ -3856,7 +3856,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get(blankSibling.id)?.label).toBe(blankSibling.label);
   });
 
-  it('refuses plan label updates after strategy has been created', async () => {
+  it('allows plan label metadata updates after strategy has been created', async () => {
     const activePlan = createPlan({
       id: 'started-plan',
       conversationId: 'plan-conv',
@@ -3893,8 +3893,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       label: 'New label',
     });
 
-    expect(result).toContain('cannot rename a plan after strategy has been created');
-    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(result).toContain('Updated plan');
+    expect(result).toContain('New label');
+    expect(updateArchitectPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: activePlan.id,
+        label: 'New label',
+      }),
+    );
   });
 
   it('does not re-resolve the architect conversation when only the selected task changes', async () => {
@@ -4033,7 +4039,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
   });
 
-  it('returns generated strategy nodes when strategy generation changes project scope', async () => {
+  it('rejects generated strategy nodes that target outside the active plan scope', async () => {
     const plan = createPlan({
       id: 'scope-change-plan',
       slug: 'scope-change-plan',
@@ -4058,24 +4064,19 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     updateArchitectPlanMock.mockClear();
 
-    const result = await onToolCall('strategy_generate', {
-      nodes: [
-        {
-          title: 'Implement API release prep',
-          projectId: 'project-2',
-          featureSlug: 'api-release-prep',
-        },
-      ],
-    });
-
-    const lastCall = ((updateArchitectPlanMock as unknown as {
-      mock: { calls: Array<Array<Record<string, unknown>>> };
-    }).mock.calls.at(-1)?.[0] ?? {}) as Record<string, unknown>;
-
-    expect(String(result)).toContain('Strategy updated');
-    expect(String(result)).toContain('Implement API release prep');
-    expect(lastCall.projectIds).toEqual(['project-2']);
-    expect(architectPlans.get(plan.id)?.projectIds).toEqual(['project-2']);
+    await expect(
+      onToolCall('strategy_generate', {
+        nodes: [
+          {
+            title: 'Implement API release prep',
+            projectId: 'project-2',
+            featureSlug: 'api-release-prep',
+          },
+        ],
+      }),
+    ).rejects.toThrow('outside this plan');
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(architectPlans.get(plan.id)?.projectIds).toEqual(['project-1']);
   });
 
   it('returns strategy_get results when only operational transcript state differs', async () => {
@@ -4416,7 +4417,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
-  it('preserves project scope for strategy_update operations and only rescopes when explicitly requested', async () => {
+  it('uses plan scope for unscoped strategy_update nodes and explicit scope for targeted nodes', async () => {
     const activePlan = createPlan({
       id: 'plan-multi',
       slug: 'checkout',
@@ -4507,7 +4508,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     expect(updatedNodes.find((node) => node.title === 'Checkout docs')).toMatchObject({
       projectId: 'project-1',
-      projectIds: ['project-1'],
+      projectIds: ['project-1', 'project-2'],
     });
 
     expect(predictedBranches).toEqual(
@@ -4532,6 +4533,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           name: 'feature/checkout/checkout-docs',
           branchSlug: 'checkout-docs',
         }),
+        expect.objectContaining({
+          projectId: 'project-2',
+          name: 'feature/checkout/checkout-docs',
+          branchSlug: 'checkout-docs',
+        }),
       ]),
     );
     expect(
@@ -4546,13 +4552,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         (branch) =>
           branch.projectId === 'project-1' &&
           branch.branchSlug === 'api-telemetry',
-      ),
-    ).toBe(false);
-    expect(
-      predictedBranches.some(
-        (branch) =>
-          branch.projectId === 'project-2' &&
-          branch.branchSlug === 'checkout-docs',
       ),
     ).toBe(false);
   });
