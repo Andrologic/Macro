@@ -5,13 +5,15 @@ use crate::db::repository;
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, ImportGitRepoRequest, ManualFeatureDto,
+    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
     ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
-    DebugResetProjectReportDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto,
-    ProjectGitSetupCommitResultDto, ProjectGroupDto, ProjectRegistryDiagnosticsDto,
-    WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceMetadataRecoveryReportDto,
-    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
+    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto,
+    ProjectGroupDto, ProjectRegistryDiagnosticsDto, WorkspaceArchitectActivatePlanChatRequestDto,
+    WorkspaceArchitectActivatePlanHeadRequestDto, WorkspaceArchitectListPlansRequestDto,
+    WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
+    WorkspaceArchitectPlanTranscriptDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto,
+    WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -157,6 +159,48 @@ pub async fn workspace_recover_missing_metadata(
 pub async fn workspace_get_active_root(workspace_root: State<'_, WorkspaceRoot>) -> Result<String> {
     let workspace_path = workspace_root.inner().read().await.clone();
     Ok(workspace_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn workspace_architect_list_plans(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceArchitectListPlansRequestDto,
+) -> Result<WorkspaceArchitectPlanListDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::architect::list_plans(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_architect_activate_plan_head(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceArchitectActivatePlanHeadRequestDto,
+) -> Result<Option<WorkspaceArchitectPlanActivationHeadDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::architect::activate_plan_head(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_architect_activate_plan_chat(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceArchitectActivatePlanChatRequestDto,
+) -> Result<Option<WorkspaceArchitectPlanTranscriptDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::architect::activate_plan_chat(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_architect_invalidate(branch_name: Option<String>) -> Result<()> {
+    workspace::architect::invalidate(branch_name).await;
+    Ok(())
 }
 
 #[tauri::command]

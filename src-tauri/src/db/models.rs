@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -50,6 +51,22 @@ pub struct ConversationCompactionStateRecord {
 pub struct ChatSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatBootstrapSnapshot {
+    pub conversations: Vec<Conversation>,
+    pub messages_by_conversation_id: HashMap<String, Vec<Message>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchitectPlanConversationSyncRecord {
+    pub conversation_id: String,
+    pub plan_id: String,
+    pub target_branch: String,
+    pub transcript_revision: Option<String>,
+    pub message_count: i32,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +197,15 @@ pub struct ImportMessageInput {
     pub role: String,
     pub content: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertArchitectPlanConversationSyncInput {
+    pub conversation_id: String,
+    pub plan_id: String,
+    pub target_branch: String,
+    pub transcript_revision: Option<String>,
+    pub message_count: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

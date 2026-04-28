@@ -1,12 +1,12 @@
+use super::load_or_default_state;
 use super::metadata::{
     WorkspaceArchitectActivatePlanChatRequestDto, WorkspaceArchitectActivatePlanHeadRequestDto,
     WorkspaceArchitectChatMessageDto, WorkspaceArchitectListPlansRequestDto,
-    WorkspaceArchitectNeedDto, WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
-    WorkspaceArchitectPlanRecordDto, WorkspaceArchitectPlanReplicaDto,
-    WorkspaceArchitectPlanRuntimeStatusDto, WorkspaceArchitectPlanSummaryDto,
-    WorkspaceArchitectPlanTranscriptDto,
+    WorkspaceArchitectNeedDto, WorkspaceArchitectPlanActivationHeadDto,
+    WorkspaceArchitectPlanListDto, WorkspaceArchitectPlanRecordDto,
+    WorkspaceArchitectPlanReplicaDto, WorkspaceArchitectPlanRuntimeStatusDto,
+    WorkspaceArchitectPlanSummaryDto, WorkspaceArchitectPlanTranscriptDto,
 };
-use super::load_or_default_state;
 use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
 use chrono::DateTime;
@@ -144,11 +144,12 @@ fn sanitize_id(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut previous_dash = false;
     for character in value.trim().to_lowercase().chars() {
-        let normalized = if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
-            character
-        } else {
-            '-'
-        };
+        let normalized =
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '-'
+            };
         if normalized == '-' {
             if previous_dash {
                 continue;
@@ -176,7 +177,9 @@ fn is_default_new_plan_family_label(value: Option<&str>) -> bool {
     }
     normalized
         .strip_prefix(&format!("{DEFAULT_NEW_PLAN_LABEL} "))
-        .map(|suffix| !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()))
+        .map(|suffix| {
+            !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+        })
         .unwrap_or(false)
 }
 
@@ -288,7 +291,12 @@ fn normalize_plan_record(
     });
     plan.project_ids = normalize_string_vec(&plan.project_ids);
     if let Some(project_id) = plan.project_id.as_ref() {
-        if !project_id.trim().is_empty() && !plan.project_ids.iter().any(|candidate| candidate == project_id) {
+        if !project_id.trim().is_empty()
+            && !plan
+                .project_ids
+                .iter()
+                .any(|candidate| candidate == project_id)
+        {
             plan.project_ids.insert(0, project_id.trim().to_string());
         }
     }
@@ -391,10 +399,10 @@ fn stable_json_string(value: &Value) -> String {
             }
             serde_json::to_string(&sorted).unwrap_or_default()
         }
-        Value::Array(items) => serde_json::to_string(
-            &items.iter().map(stable_json_string).collect::<Vec<_>>(),
-        )
-        .unwrap_or_default(),
+        Value::Array(items) => {
+            serde_json::to_string(&items.iter().map(stable_json_string).collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
         _ => serde_json::to_string(value).unwrap_or_default(),
     }
 }
@@ -420,7 +428,9 @@ fn to_replica_descriptor(
     }
 }
 
-fn merge_plan_summaries(entries: &[ArchitectPlanScopeSummaryEntry]) -> Option<WorkspaceArchitectPlanSummaryDto> {
+fn merge_plan_summaries(
+    entries: &[ArchitectPlanScopeSummaryEntry],
+) -> Option<WorkspaceArchitectPlanSummaryDto> {
     let canonical_entry = pick_canonical_entry(entries)?;
     let mut project_ids = entries
         .iter()
@@ -442,7 +452,11 @@ fn merge_plan_summaries(entries: &[ArchitectPlanScopeSummaryEntry]) -> Option<Wo
     };
     let missing_project_ids = expected_project_ids
         .iter()
-        .filter(|project_id| !available_project_ids.iter().any(|candidate| candidate == *project_id))
+        .filter(|project_id| {
+            !available_project_ids
+                .iter()
+                .any(|candidate| candidate == *project_id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let has_replica_divergence = entries
@@ -501,9 +515,11 @@ async fn read_json_file<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> 
             })
         }
     };
-    serde_json::from_str::<T>(&contents).map(Some).map_err(|error| BackendError::Filesystem {
-        message: format!("Failed to parse {}: {}", path.display(), error),
-    })
+    serde_json::from_str::<T>(&contents)
+        .map(Some)
+        .map_err(|error| BackendError::Filesystem {
+            message: format!("Failed to parse {}: {}", path.display(), error),
+        })
 }
 
 async fn read_json_lines_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
@@ -522,9 +538,10 @@ async fn read_json_lines_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Resu
         if trimmed.is_empty() {
             continue;
         }
-        let value = serde_json::from_str::<T>(trimmed).map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to parse JSONL {}: {}", path.display(), error),
-        })?;
+        let value =
+            serde_json::from_str::<T>(trimmed).map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to parse JSONL {}: {}", path.display(), error),
+            })?;
         values.push(value);
     }
     Ok(values)
@@ -569,8 +586,8 @@ async fn resolve_project_scopes(
     for group in state.project_groups {
         collect_project_paths(&group.projects, &mut project_paths);
     }
-    let resolved_project_scopes = try_join_all(project_paths.into_iter().map(
-        |(project_id, project_path)| {
+    let resolved_project_scopes =
+        try_join_all(project_paths.into_iter().map(|(project_id, project_path)| {
             let git_state = git_state.clone();
             async move {
                 let resolved_repo_path = PathBuf::from(project_path);
@@ -587,9 +604,8 @@ async fn resolve_project_scopes(
                     (project_id, resolved_repo_path, project_metadata_root)
                 }))
             }
-        },
-    ))
-    .await?;
+        }))
+        .await?;
     for (project_id, resolved_repo_path, project_metadata_root) in
         resolved_project_scopes.into_iter().flatten()
     {
@@ -610,7 +626,10 @@ async fn resolve_project_scopes(
     Ok(scopes)
 }
 
-fn collect_project_paths(projects: &[super::metadata::ProjectDto], output: &mut Vec<(String, String)>) {
+fn collect_project_paths(
+    projects: &[super::metadata::ProjectDto],
+    output: &mut Vec<(String, String)>,
+) {
     for project in projects {
         if project.path.trim().is_empty() {
             continue;
@@ -632,10 +651,7 @@ async fn read_index_at_scope(
         .into_iter()
         .map(|summary| normalize_summary(branch_name, summary))
         .collect::<Vec<_>>();
-    Ok(ArchitectPlanIndexFile {
-        plans,
-        ..index
-    })
+    Ok(ArchitectPlanIndexFile { plans, ..index })
 }
 
 async fn build_branch_index(
@@ -651,15 +667,18 @@ async fn build_branch_index(
         let normalized_branch = normalized_branch.clone();
         async move {
             let index = read_index_at_scope(&scope, &normalized_branch).await?;
-            let stamp =
-                file_stamp(&architect_plan_index_path(&scope.metadata_root, &normalized_branch))
-                    .await;
+            let stamp = file_stamp(&architect_plan_index_path(
+                &scope.metadata_root,
+                &normalized_branch,
+            ))
+            .await;
             Ok::<_, BackendError>((scope, index, stamp))
         }
     }))
     .await?;
 
-    let mut plan_entries_by_id: HashMap<String, Vec<ArchitectPlanScopeSummaryEntry>> = HashMap::new();
+    let mut plan_entries_by_id: HashMap<String, Vec<ArchitectPlanScopeSummaryEntry>> =
+        HashMap::new();
     let mut active_plan_ids = HashSet::new();
     let mut index_stamps_by_scope_key = HashMap::new();
     for (scope, index, stamp) in &index_results {
@@ -704,12 +723,7 @@ async fn build_branch_index(
             .cloned()
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| {
-            compare_scope_recency(
-                Some(&left.updated_at),
-                None,
-                Some(&right.updated_at),
-                None,
-            )
+            compare_scope_recency(Some(&left.updated_at), None, Some(&right.updated_at), None)
         });
         if let Some(canonical) = entries.last() {
             blank_canonical_by_scope_key.insert(scope_key.clone(), canonical.id.clone());
@@ -806,7 +820,11 @@ async fn branch_index_is_stale(
         return true;
     }
     for scope in &cached.scopes {
-        let current_stamp = file_stamp(&architect_plan_index_path(&scope.metadata_root, &cached.branch_name)).await;
+        let current_stamp = file_stamp(&architect_plan_index_path(
+            &scope.metadata_root,
+            &cached.branch_name,
+        ))
+        .await;
         let Some(previous_stamp) = cached.index_stamps_by_scope_key.get(&scope.scope_key) else {
             return true;
         };
@@ -843,7 +861,13 @@ async fn load_branch_index(
             .map(|index| index.branch_generation)
             .unwrap_or(0)
     };
-    let rebuilt = build_branch_index(workspace_path, metadata_root, &normalized_branch, previous_generation).await?;
+    let rebuilt = build_branch_index(
+        workspace_path,
+        metadata_root,
+        &normalized_branch,
+        previous_generation,
+    )
+    .await?;
     {
         let mut cache = runtime_cache().write().await;
         cache.insert(cache_key, rebuilt.clone());
@@ -851,15 +875,32 @@ async fn load_branch_index(
     Ok(rebuilt)
 }
 
-fn resolve_effective_plan_id(index: &ArchitectPlanRuntimeBranchIndex, requested_plan_id: &str) -> String {
+pub async fn invalidate(branch_name: Option<String>) {
+    let mut cache = runtime_cache().write().await;
+    let Some(branch_name) = branch_name else {
+        cache.clear();
+        return;
+    };
+    let normalized_branch = normalize_branch_name(&branch_name);
+    let suffix = format!("::{normalized_branch}");
+    cache.retain(|key, _| !key.ends_with(&suffix));
+}
+
+fn resolve_effective_plan_id(
+    index: &ArchitectPlanRuntimeBranchIndex,
+    requested_plan_id: &str,
+) -> String {
     let normalized_plan_id = sanitize_id(requested_plan_id);
-    index.blank_alias_by_plan_id
+    index
+        .blank_alias_by_plan_id
         .get(&normalized_plan_id)
         .cloned()
         .unwrap_or(normalized_plan_id)
 }
 
-fn build_runtime_status(index: &ArchitectPlanRuntimeBranchIndex) -> WorkspaceArchitectPlanRuntimeStatusDto {
+fn build_runtime_status(
+    index: &ArchitectPlanRuntimeBranchIndex,
+) -> WorkspaceArchitectPlanRuntimeStatusDto {
     WorkspaceArchitectPlanRuntimeStatusDto {
         branch_name: index.branch_name.clone(),
         branch_generation: index.branch_generation,
@@ -880,6 +921,8 @@ fn summary_to_blank_head(
             title: summary.title.clone(),
             label: summary.label.clone(),
             description: summary.description.clone(),
+            plan_kind: summary.plan_kind.clone(),
+            git_flow_plan: summary.git_flow_plan.clone(),
             status: summary.status.clone(),
             target_branch: summary.target_branch.clone(),
             target_branches_by_project_id: summary.target_branches_by_project_id.clone(),
@@ -975,7 +1018,8 @@ async fn read_needs_for_snapshot(
         return Ok(Vec::new());
     }
     let plan_id = sanitize_id(&snapshot.plan.id);
-    let path = architect_plan_dir(&snapshot.scope.metadata_root, branch_name, &plan_id).join("needs.json");
+    let path =
+        architect_plan_dir(&snapshot.scope.metadata_root, branch_name, &plan_id).join("needs.json");
     Ok(read_json_file::<Vec<WorkspaceArchitectNeedDto>>(&path)
         .await?
         .unwrap_or_default())
@@ -1035,13 +1079,7 @@ pub async fn list_plans(
         .cloned()
         .collect::<Vec<_>>();
     plans.sort_by(|left, right| {
-        compare_scope_recency(
-            Some(&left.updated_at),
-            None,
-            Some(&right.updated_at),
-            None,
-        )
-        .reverse()
+        compare_scope_recency(Some(&left.updated_at), None, Some(&right.updated_at), None).reverse()
     });
     Ok(WorkspaceArchitectPlanListDto {
         active_plan_id: index.active_plan_id.clone(),
@@ -1062,8 +1100,8 @@ pub async fn activate_plan_head(
         .summary_hint
         .map(|summary| normalize_summary(&normalized_branch, summary))
         .filter(|summary| sanitize_id(&summary.id) == effective_plan_id);
-    let summary = hinted_summary
-        .or_else(|| index.plan_summaries_by_id.get(&effective_plan_id).cloned());
+    let summary =
+        hinted_summary.or_else(|| index.plan_summaries_by_id.get(&effective_plan_id).cloned());
     let Some(summary) = summary else {
         return Ok(None);
     };
@@ -1114,7 +1152,12 @@ pub async fn activate_plan_head(
     plan.available_project_ids = summary.available_project_ids.clone();
     plan.missing_project_ids = summary.missing_project_ids.clone();
     plan.replication_state = summary.replication_state.clone();
-    plan.revision = Some(canonical_snapshot.manifest.revision.max(plan.revision.unwrap_or(1)));
+    plan.revision = Some(
+        canonical_snapshot
+            .manifest
+            .revision
+            .max(plan.revision.unwrap_or(1)),
+    );
     plan.replicas = summary.replicas.clone();
     plan.has_replica_divergence = summary.has_replica_divergence;
     plan.conversation_id = conversation_id.clone();
@@ -1149,9 +1192,12 @@ pub async fn activate_plan_chat(
         return Ok(None);
     };
     let plan_id = sanitize_id(&effective_plan_id);
-    let manifest_path =
-        architect_plan_dir(&chosen_locator.scope.metadata_root, &normalized_branch, &plan_id)
-            .join("manifest.json");
+    let manifest_path = architect_plan_dir(
+        &chosen_locator.scope.metadata_root,
+        &normalized_branch,
+        &plan_id,
+    )
+    .join("manifest.json");
     let manifest = read_json_file::<ArchitectPlanManifestDto>(&manifest_path)
         .await?
         .unwrap_or_default();

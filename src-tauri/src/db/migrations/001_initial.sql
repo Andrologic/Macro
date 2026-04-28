@@ -148,6 +148,16 @@ CREATE TABLE IF NOT EXISTS session_context_state (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS architect_plan_conversation_sync (
+    conversation_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    target_branch TEXT NOT NULL,
+    transcript_revision TEXT,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_scope_mode
 ON conversations(scope_mode, updated_at DESC);
 
@@ -162,6 +172,15 @@ ON conversations(task_id, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
 ON messages(conversation_id);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at_id
+ON messages(conversation_id, created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_messages_created_at_id
+ON messages(created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_architect_plan_conversation_sync_plan
+ON architect_plan_conversation_sync(plan_id, target_branch, updated_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_git_repositories_path
 ON git_repositories(path);

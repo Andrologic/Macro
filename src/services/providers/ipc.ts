@@ -153,9 +153,11 @@ export const listMessages = async (conversationId?: string): Promise<MessagesDto
       )
     ).flat();
 
-  const sortedMessages = messages.sort(
-    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-  );
+  const sortedMessages = messages.sort((a, b) => {
+    const byCreatedAt =
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    return byCreatedAt || a.id.localeCompare(b.id);
+  });
   return { messages: sortedMessages.map(toMessageDto) };
 };
 
