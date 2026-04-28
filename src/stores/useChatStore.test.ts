@@ -4078,6 +4078,166 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get(plan.id)?.projectIds).toEqual(['project-2']);
   });
 
+  it('returns strategy_get results when only operational transcript state differs', async () => {
+    const plan = createPlan({
+      id: 'strategy-readable-plan',
+      conversationId: 'plan-conv',
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Readable strategy node',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+        },
+      ],
+    });
+    architectPlans.set(plan.id, plan);
+    architectPlanMessages.set(plan.id, [
+      createTranscriptEntry({
+        id: 'transcript-only',
+        content: 'Operational transcript mismatch only.',
+      }),
+    ]);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Read the strategy.',
+    });
+
+    const result = await onToolCall('strategy_get', {});
+
+    expect(String(result)).toContain('Loaded strategy');
+    expect(String(result)).toContain('Readable strategy node');
+  });
+
+  it('includes a replica warning when strategy generation writes despite post-write divergence', async () => {
+    const plan = createPlan({
+      id: 'post-write-warning-plan',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    updateArchitectPlanMock.mockImplementationOnce(async (params) => {
+      const existing = architectPlans.get(params.planId);
+      if (!existing) {
+        throw new Error(`Unknown plan ${params.planId}`);
+      }
+      const updated = {
+        ...existing,
+        conversationId: existing.conversationId,
+        label: existing.label,
+        nodes: (params.nodes as ArchitectPlanRecord['nodes'] | undefined) ?? existing.nodes,
+        predictedBranches:
+          (params.predictedBranches as ArchitectPlanRecord['predictedBranches'] | undefined) ??
+          existing.predictedBranches,
+        projectId: existing.projectId,
+        projectIds: params.projectIds ?? existing.projectIds,
+        targetBranchesByProjectId: existing.targetBranchesByProjectId,
+        hasReplicaDivergence: true,
+        replicationState: 'diverged' as const,
+        replicas: [
+          {
+            scopeKey: 'project:project-1:/repos/web',
+            projectId: 'project-1',
+            repoPath: '/repos/web',
+            workspacePath: '/repos/web',
+            source: 'project' as const,
+            updatedAt: '2026-03-19T01:00:00.000Z',
+          },
+        ],
+      };
+      architectPlans.set(params.planId, updated);
+      return updated;
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Generate the strategy.',
+    });
+
+    const result = await onToolCall('strategy_generate', {
+      nodes: [
+        {
+          title: 'Warn after write',
+          projectId: 'project-1',
+          featureSlug: 'warn-after-write',
+        },
+      ],
+    });
+
+    expect(String(result)).toContain('Strategy updated');
+    expect(String(result)).toContain('replica_warning');
+    expect(String(result)).toContain('repair_metadata');
+  });
+
+  it('returns structured repair metadata for true plan replica divergence', async () => {
+    const plan = createPlan({
+      id: 'diverged-plan',
+      conversationId: 'plan-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+
+    const divergenceError = Object.assign(
+      new Error('Plan diverged-plan has diverged metadata replicas across repositories.'),
+      {
+        code: 'ARCHITECT_PLAN_REPLICA_DIVERGENCE',
+        divergence: {
+          branchName: 'develop',
+          planId: plan.id,
+          reason: 'content_diverged',
+          replicas: [
+            {
+              scopeKey: 'project:project-1:/repos/web',
+              projectId: 'project-1',
+              repoPath: '/repos/web',
+              workspacePath: '/repos/web',
+              source: 'project',
+              updatedAt: '2026-03-19T01:00:00.000Z',
+            },
+          ],
+        },
+      }
+    );
+    const { useChatStore } = await loadChatStore();
+    setArchitectStoreState(useChatStore, {
+      conversations: [createConversation('plan-conv')],
+    });
+
+    const onToolCall = await sendArchitectMessageAndGetToolHandler(useChatStore, {
+      conversationId: 'plan-conv',
+      content: 'Read the strategy.',
+    });
+
+    getArchitectPlanMock.mockImplementationOnce(async () => {
+      throw divergenceError;
+    });
+
+    const result = await onToolCall('strategy_get', {});
+
+    expect(String(result)).toContain('architect_plan_replica_divergence');
+    expect(String(result)).toContain('repair_metadata');
+    expect(String(result)).toContain('content_diverged');
+  });
+
   it('keeps the active plan and conversation stable during strategy generation with blank sibling drafts', async () => {
     const activePlan = createScenarioPlan('started', {
       id: 'started-plan',

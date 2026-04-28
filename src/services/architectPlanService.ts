@@ -3796,24 +3796,27 @@ export const commitArchitectPlanMetadata = async (input: {
 }, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<void> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, input.planId, {
-    allowDivergence: true,
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
-  }
+  const safeId = sanitizeId(input.planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      allowDivergence: true,
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
 
-  await commitMetadataScopes(
-    dedupeScopes([
-      ...replicaSet.expectedScopes,
-      ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
-    ]),
-    input.commitMessage,
-    { commit: true },
-    deps
-  );
+    await commitMetadataScopes(
+      dedupeScopes([
+        ...replicaSet.expectedScopes,
+        ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
+      ]),
+      input.commitMessage,
+      { commit: true },
+      deps
+    );
+  });
 };
 
 export const listArchitectPlans = async (branchName: string, includeDeleted = false, includeArchived = false): Promise<{
@@ -4291,7 +4294,12 @@ export const updateArchitectPlan = async (input: {
           reason: error.divergence.reason,
         })
       );
-      return next;
+      return {
+        ...next,
+        hasReplicaDivergence: true,
+        replicationState: 'diverged',
+        replicas: error.divergence.replicas,
+      };
     }
     throw error;
   }
@@ -4406,29 +4414,31 @@ export const setActiveArchitectPlan = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet || replicaSet.canonical.plan.status === 'deleted') {
-    throw new Error(`Cannot activate missing or deleted plan: ${planId}`);
-  }
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet || replicaSet.canonical.plan.status === 'deleted') {
+      throw new Error(`Cannot activate missing or deleted plan: ${planId}`);
+    }
 
-  await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
-      const exists = index.plans.some((plan) => plan.id === safeId && plan.status !== 'deleted');
-      if (!exists || index.activePlanId === safeId) {
-        return;
-      }
-      await writeIndexAtScope(scope, normalizedBranch, {
-        ...index,
-        version: 3,
-        activePlanId: safeId,
-      });
-    })
-  );
-  invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch });
+    await Promise.all(
+      dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+        const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
+        const exists = index.plans.some((plan) => plan.id === safeId && plan.status !== 'deleted');
+        if (!exists || index.activePlanId === safeId) {
+          return;
+        }
+        await writeIndexAtScope(scope, normalizedBranch, {
+          ...index,
+          version: 3,
+          activePlanId: safeId,
+        });
+      })
+    );
+    invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch });
+  });
 };
 
 export const deleteArchitectPlan = async (input: {
@@ -4439,70 +4449,72 @@ export const deleteArchitectPlan = async (input: {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet) {
-    throw new Error(`Plan not found: ${safeId}`);
-  }
-  const scopes = dedupeScopes(replicaSet.expectedScopes);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    const scopes = dedupeScopes(replicaSet.expectedScopes);
 
-  if (input.hardDelete) {
+    if (input.hardDelete) {
+      await Promise.all(
+        scopes.map(async (scope) => {
+          await removePlanAtScope(scope, normalizedBranch, safeId);
+          await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
+        })
+      );
+      await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`, undefined, deps);
+      invalidateArchitectPlanRuntimeCaches({
+        branchName: normalizedBranch,
+        planId: safeId,
+      });
+      return;
+    }
+
+    const deletedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+      ...replicaSet.canonical.plan,
+      status: 'deleted' as ArchitectPlanStatus,
+      updatedAt: new Date().toISOString(),
+      revision: (replicaSet.canonical.plan.revision || 1) + 1,
+    }, registrySnapshot, {
+      logContext: 'plan_delete',
+    });
+    if (!deletedResult.plan) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    const deleted = deletedResult.plan;
     await Promise.all(
       scopes.map(async (scope) => {
-        await removePlanAtScope(scope, normalizedBranch, safeId);
-        await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
+        await writePlanAtScope(scope, normalizedBranch, deleted, registrySnapshot);
+        const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
+        const nextPlans = index.plans.map((plan) =>
+          plan.id === safeId
+            ? {
+                ...plan,
+                status: 'deleted' as ArchitectPlanStatus,
+                updatedAt: deleted.updatedAt,
+              }
+            : plan
+        );
+
+        await writeIndexAtScope(scope, normalizedBranch, {
+          ...index,
+          version: 3,
+          plans: nextPlans,
+          activePlanId: index.activePlanId === safeId
+            ? nextPlans.find((plan) => plan.status !== 'deleted')?.id || null
+            : index.activePlanId,
+        });
       })
     );
-    await commitMetadataScopes(scopes, `chore(metadata): hard delete architect plan ${safeId}`, undefined, deps);
+    await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`, undefined, deps);
     invalidateArchitectPlanRuntimeCaches({
       branchName: normalizedBranch,
       planId: safeId,
     });
-    return;
-  }
-
-  const deletedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
-    ...replicaSet.canonical.plan,
-    status: 'deleted' as ArchitectPlanStatus,
-    updatedAt: new Date().toISOString(),
-    revision: (replicaSet.canonical.plan.revision || 1) + 1,
-  }, registrySnapshot, {
-    logContext: 'plan_delete',
-  });
-  if (!deletedResult.plan) {
-    throw new Error(`Plan not found: ${safeId}`);
-  }
-  const deleted = deletedResult.plan;
-  await Promise.all(
-    scopes.map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, deleted, registrySnapshot);
-      const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
-      const nextPlans = index.plans.map((plan) =>
-        plan.id === safeId
-          ? {
-              ...plan,
-              status: 'deleted' as ArchitectPlanStatus,
-              updatedAt: deleted.updatedAt,
-            }
-          : plan
-      );
-
-      await writeIndexAtScope(scope, normalizedBranch, {
-        ...index,
-        version: 3,
-        plans: nextPlans,
-        activePlanId: index.activePlanId === safeId
-          ? nextPlans.find((plan) => plan.status !== 'deleted')?.id || null
-          : index.activePlanId,
-      });
-    })
-  );
-  await commitMetadataScopes(scopes, `chore(metadata): delete architect plan ${safeId}`, undefined, deps);
-  invalidateArchitectPlanRuntimeCaches({
-    branchName: normalizedBranch,
-    planId: safeId,
   });
 };
 
@@ -4524,56 +4536,58 @@ export const archiveArchitectPlan = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
-  assertPlanReplicaSetWritable(replicaSet, 'archive');
-  assertPlanCanBeArchived(replicaSet.canonical.plan);
-  const now = new Date().toISOString();
-  const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
-    ...replicaSet.canonical.plan,
-    status: 'archived',
-    updatedAt: now,
-    revision: (replicaSet.canonical.plan.revision || 1) + 1,
-  }, registrySnapshot, {
-    logContext: 'plan_archive',
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
+    assertPlanReplicaSetWritable(replicaSet, 'archive');
+    assertPlanCanBeArchived(replicaSet.canonical.plan);
+    const now = new Date().toISOString();
+    const archivedResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
+      ...replicaSet.canonical.plan,
+      status: 'archived',
+      updatedAt: now,
+      revision: (replicaSet.canonical.plan.revision || 1) + 1,
+    }, registrySnapshot, {
+      logContext: 'plan_archive',
+    });
+    if (!archivedResult.plan) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    const archived = archivedResult.plan;
+    await Promise.all(
+      dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+        await writePlanAtScope(scope, normalizedBranch, archived, registrySnapshot);
+        const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
+        const nextPlans = index.plans.map((plan) =>
+          plan.id === safeId ? { ...plan, status: 'archived' as ArchitectPlanStatus, updatedAt: now } : plan
+        );
+        const nextActivePlanId =
+          index.activePlanId === safeId
+            ? nextPlans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
+            : index.activePlanId;
+        await writeIndexAtScope(scope, normalizedBranch, {
+          ...index,
+          version: 3,
+          plans: nextPlans,
+          activePlanId: nextActivePlanId,
+        });
+      })
+    );
+    await commitMetadataScopes(
+      dedupeScopes(replicaSet.expectedScopes),
+      `chore(metadata): archive architect plan ${safeId}`,
+      undefined,
+      deps
+    );
+    invalidateArchitectPlanRuntimeCaches({
+      branchName: normalizedBranch,
+      planId: safeId,
+    });
+    return (await getArchitectPlan(normalizedBranch, safeId, deps)) || archived;
   });
-  if (!archivedResult.plan) {
-    throw new Error(`Plan not found: ${safeId}`);
-  }
-  const archived = archivedResult.plan;
-  await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, archived, registrySnapshot);
-      const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
-      const nextPlans = index.plans.map((plan) =>
-        plan.id === safeId ? { ...plan, status: 'archived' as ArchitectPlanStatus, updatedAt: now } : plan
-      );
-      const nextActivePlanId =
-        index.activePlanId === safeId
-          ? nextPlans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
-          : index.activePlanId;
-      await writeIndexAtScope(scope, normalizedBranch, {
-        ...index,
-        version: 3,
-        plans: nextPlans,
-        activePlanId: nextActivePlanId,
-      });
-    })
-  );
-  await commitMetadataScopes(
-    dedupeScopes(replicaSet.expectedScopes),
-    `chore(metadata): archive architect plan ${safeId}`,
-    undefined,
-    deps
-  );
-  invalidateArchitectPlanRuntimeCaches({
-    branchName: normalizedBranch,
-    planId: safeId,
-  });
-  return (await getArchitectPlan(normalizedBranch, safeId, deps)) || archived;
 };
 
 export const getArchitectPlanNeeds = async (
@@ -4610,28 +4624,29 @@ export const getArchitectPlanChatMessages = async (
   return readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, sanitizeId(planId));
 };
 
-export const saveArchitectPlanChatMessages = async (
-  branchName: string,
-  planId: string,
-  messages: ArchitectPlanChatMessage[],
-  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
-): Promise<void> => {
-  const normalizedBranch = normalizeBranchName(branchName);
-  assertGitFlowTargetBranch(normalizedBranch);
-  const safeId = sanitizeId(planId);
-  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
+const saveArchitectPlanChatMessagesWithReplicaSet = async (params: {
+  normalizedBranch: string;
+  safeId: string;
+  messages: ArchitectPlanChatMessage[];
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  replicaSet: ArchitectPlanReplicaSet;
+  deps: ResolvedArchitectPlanServiceDependencies;
+  action?: string;
+}): Promise<void> => {
+  const {
+    normalizedBranch,
+    safeId,
+    messages,
     registrySnapshot,
-  }, deps);
-  if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
-  }
-  assertPlanReplicaSetWritable(replicaSet, 'save chat transcript');
+    replicaSet,
+    deps,
+    action = 'save chat transcript',
+  } = params;
+  assertPlanReplicaSetWritable(replicaSet, action);
   const nextMessages = messages.map((message) => ({ ...message }));
   const persistedMessages =
     replicaSet.canonical.scope.source === 'local'
-      ? await readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, sanitizeId(planId))
+      ? await readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, safeId)
       : parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || '');
   if (arePlanChatMessagesEquivalent(persistedMessages, nextMessages)) {
     return;
@@ -4647,7 +4662,7 @@ export const saveArchitectPlanChatMessages = async (
         needs: replicaSet.canonical.needs,
         chatMessages: nextMessages,
       });
-      await writePlanChatAtScope(scope, normalizedBranch, planId, nextMessages, registrySnapshot, {
+      await writePlanChatAtScope(scope, normalizedBranch, safeId, nextMessages, registrySnapshot, {
         skipManifest: true,
       });
       await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
@@ -4658,14 +4673,41 @@ export const saveArchitectPlanChatMessages = async (
   );
   await commitMetadataScopes(
     dedupeScopes(replicaSet.expectedScopes),
-    `chore(metadata): update architect plan chat ${sanitizeId(planId)}`,
+    `chore(metadata): update architect plan chat ${safeId}`,
     undefined,
     deps
   );
   invalidateArchitectPlanRuntimeCaches({
     branchName: normalizedBranch,
-    planId,
+    planId: safeId,
   });
+};
+
+export const saveArchitectPlanChatMessages = async (
+  branchName: string,
+  planId: string,
+  messages: ArchitectPlanChatMessage[],
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<void> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    await saveArchitectPlanChatMessagesWithReplicaSet({
+      normalizedBranch,
+      safeId,
+      messages,
+      registrySnapshot,
+      replicaSet,
+      deps,
+    });
   });
 };
 
@@ -4680,40 +4722,51 @@ export const syncArchitectPlanChatFromConversation = async (params: {
 
   const normalizedBranch = normalizeBranchName(params.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, params.planId, {
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(params.planId)}`);
-  }
-  assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
+  const safeId = sanitizeId(params.planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
 
-  const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
-  if (!conversationId) {
-    if (arePlanChatMessagesEquivalent(parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''), [])) {
+    const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
+    if (!conversationId) {
+      await saveArchitectPlanChatMessagesWithReplicaSet({
+        normalizedBranch,
+        safeId,
+        messages: [],
+        registrySnapshot,
+        replicaSet,
+        deps,
+        action: 'sync chat transcript',
+      });
       return;
     }
-    await saveArchitectPlanChatMessages(normalizedBranch, params.planId, [], deps);
-    return;
-  }
 
-  const dbMessages = await deps.tauri.listMessages(conversationId);
-  const transcript = dbMessages
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map((message) => ({
-      id: message.id,
-      role: message.role as 'user' | 'assistant',
-      content: message.content,
-      createdAt: message.created_at,
-    }));
+    const dbMessages = await deps.tauri.listMessages(conversationId);
+    const transcript = dbMessages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .map((message) => ({
+        id: message.id,
+        role: message.role as 'user' | 'assistant',
+        content: message.content,
+        createdAt: message.created_at,
+      }));
 
-  const persistedMessages = parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || '');
-  if (arePlanChatMessagesEquivalent(persistedMessages, transcript)) {
-    return;
-  }
-
-  await saveArchitectPlanChatMessages(normalizedBranch, params.planId, transcript, deps);
+    await saveArchitectPlanChatMessagesWithReplicaSet({
+      normalizedBranch,
+      safeId,
+      messages: transcript,
+      registrySnapshot,
+      replicaSet,
+      deps,
+      action: 'sync chat transcript',
+    });
+  });
 };
 
 export const saveArchitectPlanNeeds = async (
@@ -4726,48 +4779,48 @@ export const saveArchitectPlanNeeds = async (
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
   return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
-    registrySnapshot,
-  }, deps);
-  if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
-  }
-  assertPlanReplicaSetWritable(replicaSet, 'save needs');
-  const normalizedNeeds = normalizeNeedsForPersistence(sanitizeId(planId), needs);
-  if (arePlanNeedsEquivalent(replicaSet.canonical.needs, normalizedNeeds)) {
-    return;
-  }
-  const nextPlan = {
-    ...replicaSet.canonical.plan,
-    updatedAt: new Date().toISOString(),
-    revision: (replicaSet.canonical.plan.revision || 1) + 1,
-  };
-  await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
-        needs: normalizedNeeds,
-        chatMessages: parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''),
-      });
-      await writePlanNeedsAtScope(scope, normalizedBranch, planId, normalizedNeeds, registrySnapshot, {
-        skipManifest: true,
-      });
-      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
-        needCount: normalizedNeeds.length,
-        chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
-      }, registrySnapshot);
-    })
-  );
-  await commitMetadataScopes(
-    dedupeScopes(replicaSet.expectedScopes),
-    `chore(metadata): update architect plan needs ${sanitizeId(planId)}`,
-    undefined,
-    deps
-  );
-  invalidateArchitectPlanRuntimeCaches({
-    branchName: normalizedBranch,
-    planId,
-  });
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+      registrySnapshot,
+    }, deps);
+    if (!replicaSet) {
+      throw new Error(`Plan not found: ${safeId}`);
+    }
+    assertPlanReplicaSetWritable(replicaSet, 'save needs');
+    const normalizedNeeds = normalizeNeedsForPersistence(safeId, needs);
+    if (arePlanNeedsEquivalent(replicaSet.canonical.needs, normalizedNeeds)) {
+      return;
+    }
+    const nextPlan = {
+      ...replicaSet.canonical.plan,
+      updatedAt: new Date().toISOString(),
+      revision: (replicaSet.canonical.plan.revision || 1) + 1,
+    };
+    await Promise.all(
+      dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+        await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
+          needs: normalizedNeeds,
+          chatMessages: parseJsonLines(replicaSet.canonical.files['chat.jsonl'] || ''),
+        });
+        await writePlanNeedsAtScope(scope, normalizedBranch, safeId, normalizedNeeds, registrySnapshot, {
+          skipManifest: true,
+        });
+        await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
+          needCount: normalizedNeeds.length,
+          chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+        }, registrySnapshot);
+      })
+    );
+    await commitMetadataScopes(
+      dedupeScopes(replicaSet.expectedScopes),
+      `chore(metadata): update architect plan needs ${safeId}`,
+      undefined,
+      deps
+    );
+    invalidateArchitectPlanRuntimeCaches({
+      branchName: normalizedBranch,
+      planId: safeId,
+    });
   });
 };
 
