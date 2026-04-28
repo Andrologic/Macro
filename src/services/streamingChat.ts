@@ -1832,6 +1832,8 @@ const streamNativeTurnViaTauri = async (params: {
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
   onToolTrace?: (toolTrace: ToolTrace) => void;
+  onToolCall?: StreamingChatOptions['onToolCall'];
+  onToolResult?: StreamingChatOptions['onToolResult'];
 }): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
@@ -1846,6 +1848,7 @@ const streamNativeTurnViaTauri = async (params: {
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
+    let questionToolRequestCount = 0;
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -1886,6 +1889,69 @@ const streamNativeTurnViaTauri = async (params: {
           listen<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
             if (event.payload.request_id !== requestId) return;
             params.onToolTrace?.(event.payload.tool_trace);
+          }),
+          listen<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
+            if (event.payload.request_id !== requestId) return;
+
+            void (async () => {
+              const toolName = event.payload.tool_name;
+              const toolCallId = event.payload.tool_call_id;
+              const args =
+                event.payload.args && typeof event.payload.args === 'object'
+                  ? event.payload.args
+                  : {};
+
+              try {
+                let toolResult = '';
+                let hiddenContext: string | undefined;
+                let visibleContent: string | undefined;
+                let interrupt = false;
+
+                if (toolName === 'question') {
+                  questionToolRequestCount += 1;
+                }
+
+                if (toolName === 'question' && questionToolRequestCount > 1) {
+                  toolResult =
+                    'Error executing tool question: only one question tool call is allowed per assistant turn.';
+                } else if (!params.onToolCall) {
+                  toolResult = `Tool ${toolName} is unavailable in this provider context.`;
+                } else {
+                  const resolution = normalizeToolCallResolution(
+                    await params.onToolCall(toolName, args, toolCallId)
+                  );
+
+                  if (isToolInterruptResolution(resolution)) {
+                    toolResult = resolution.result;
+                    hiddenContext = resolution.hiddenContext;
+                    visibleContent = resolution.visibleContent;
+                    interrupt = true;
+                  } else if (resolution?.kind === 'result') {
+                    toolResult = resolution.result;
+                  }
+                }
+
+                await tauriIpc.aiSubmitToolResult({
+                  requestId,
+                  toolCallId,
+                  result: toolResult,
+                  hiddenContext,
+                  visibleContent,
+                  interrupt,
+                });
+                params.onToolResult?.(toolName, toolResult);
+              } catch (error) {
+                const toolResult = `Error executing tool ${toolName}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`;
+                await tauriIpc.aiSubmitToolResult({
+                  requestId,
+                  toolCallId,
+                  result: toolResult,
+                }).catch(() => undefined);
+                params.onToolResult?.(toolName, toolResult);
+              }
+            })();
           }),
           listen<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (event.payload.request_id !== requestId) return;
@@ -2088,6 +2154,8 @@ const streamChatViaNativeToolCallingProvider = async (
         onToolTrace: (toolTrace) => {
           streamAccumulator.upsertToolTrace(toolTrace);
         },
+        onToolCall,
+        onToolResult,
       });
       turnResult.toolTraces?.forEach((toolTrace) => {
         streamAccumulator.upsertToolTrace(toolTrace);

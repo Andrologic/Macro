@@ -91,6 +91,24 @@ const loadStreamingChat = async (
     }),
     aiCancelStream: async (requestId: string) =>
       invokeImpl('ai_cancel_stream', { requestId }),
+    aiSubmitToolResult: async (params: {
+      requestId: string;
+      toolCallId: string;
+      result: string;
+      hiddenContext?: string | null;
+      visibleContent?: string | null;
+      interrupt?: boolean;
+    }) =>
+      invokeImpl('ai_submit_tool_result', {
+        request: {
+          request_id: params.requestId,
+          tool_call_id: params.toolCallId,
+          result: params.result,
+          hidden_context: params.hiddenContext ?? null,
+          visible_content: params.visibleContent ?? null,
+          interrupt: params.interrupt ?? false,
+        },
+      }),
   };
   mock.module('./tauriIpc', () => tauriIpcMock);
   mock.module('../services/tauriIpc', () => tauriIpcMock);
@@ -1177,6 +1195,106 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('relays Copilot bridge tool requests to frontend tool handlers', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:tool-request')?.({
+            payload: {
+              request_id: request.request_id,
+              tool_call_id: 'call_need',
+              tool_name: 'need_add',
+              args: {
+                title: 'Clarify release scope',
+              },
+            },
+          });
+        });
+      }
+
+      if (command === 'ai_submit_tool_result') {
+        const request = (payload as {
+          request: {
+            request_id: string;
+            result: string;
+          };
+        }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: 'Need recorded.',
+              tool_calls: [],
+              hidden_context: `<tool_context tool_call_id="call_need" tool="need_add">\n${request.result}\n</tool_context>`,
+            },
+          });
+        });
+      }
+
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const onToolCall = mock(async (toolName: string, args: Record<string, unknown>) => ({
+      kind: 'result' as const,
+      result: `${toolName}:${args.title}`,
+    }));
+    const onComplete = mock((_result: unknown) => undefined);
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'Ajoute un besoin.' }],
+      allowedToolIds: ['need_add'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(onToolCall).toHaveBeenCalledWith(
+      'need_add',
+      { title: 'Clarify release scope' },
+      'call_need',
+    );
+
+    const submitCall = invokeMock.mock.calls.find((call) => call[0] === 'ai_submit_tool_result');
+    expect(submitCall?.[1]).toEqual({
+      request: {
+        request_id: expect.any(String),
+        tool_call_id: 'call_need',
+        result: 'need_add:Clarify release scope',
+        hidden_context: null,
+        visible_content: null,
+        interrupt: false,
+      },
+    });
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Need recorded.',
+        hiddenContext: expect.stringContaining('need_add:Clarify release scope'),
+      })
+    );
+  });
+
   it('sends Copilot built-in override metadata only for shadowing tools', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
@@ -1214,9 +1332,9 @@ describe('streamingChat tool rendering helpers', () => {
       baseUrl: 'copilot://cli',
       modelId: 'gpt-5',
       messages: [{ role: 'user', content: 'Search and inspect git status.' }],
-      allowedToolIds: ['grep', 'git_status'],
+      allowedToolIds: ['grep', 'web_fetch', 'git_status'],
       enableWebSearch: false,
-      enableWebFetch: false,
+      enableWebFetch: true,
       onToken: () => undefined,
       onComplete: () => undefined,
       onError: (error: Error) => {
@@ -1234,9 +1352,11 @@ describe('streamingChat tool rendering helpers', () => {
     };
     const tools = invokePayload.request?.tools ?? [];
     const grepTool = tools.find((tool) => tool.function?.name === 'grep');
+    const webFetchTool = tools.find((tool) => tool.function?.name === 'web_fetch');
     const gitStatusTool = tools.find((tool) => tool.function?.name === 'git_status');
 
     expect(grepTool?.overridesBuiltInTool).toBe(true);
+    expect(webFetchTool?.overridesBuiltInTool).toBe(true);
     expect(gitStatusTool?.overridesBuiltInTool).toBeUndefined();
   });
 
