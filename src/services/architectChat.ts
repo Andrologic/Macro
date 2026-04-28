@@ -105,6 +105,21 @@ const summarizeNeed = (need: Need) => ({
 const formatArchitectToolResult = (summary: string, payload?: unknown): string =>
   `${summary.trim()}${payload === undefined ? '' : compactJsonBlock(payload)}`.trim();
 
+const buildArchitectReplicaWarning = (
+  plan?: Pick<ArchitectPlanRecord, 'hasReplicaDivergence' | 'replicationState' | 'replicas'> | null
+) => {
+  if (!plan?.hasReplicaDivergence && plan?.replicationState !== 'diverged') {
+    return undefined;
+  }
+
+  return {
+    state: plan.replicationState ?? 'diverged',
+    repair_action: 'repair_metadata',
+    message: 'Plan metadata was written, but one or more replicas still need repair.',
+    replicas: plan.replicas ?? [],
+  };
+};
+
 const countRootNodes = (nodes: PlanNode[]): number =>
   nodes.filter((node) => node.dependencies.length === 0).length;
 
@@ -280,8 +295,9 @@ export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): str
 export const formatArchitectPlanUpdateToolResult = (
   plan: ArchitectPlanRecord,
   activePlanId: string | null
-): string =>
-  formatArchitectToolResult(
+): string => {
+  const replicaWarning = buildArchitectReplicaWarning(plan);
+  return formatArchitectToolResult(
     `Updated plan ${getArchitectPlanDisplayName(plan)}. Description and label metadata are now in sync; active=${plan.id === activePlanId ? 'yes' : 'no'}.`,
     {
       id: plan.id,
@@ -295,8 +311,10 @@ export const formatArchitectPlanUpdateToolResult = (
       status: plan.status,
       target_branch: plan.targetBranch,
       active: plan.id === activePlanId,
+      ...(replicaWarning ? { replica_warning: replicaWarning } : {}),
     }
   );
+};
 
 export const formatArchitectStrategyGenerateToolResult = (params: {
   planId: string;
@@ -306,11 +324,13 @@ export const formatArchitectStrategyGenerateToolResult = (params: {
   predictedBranches: PredictedBranch[];
   resolvedProjectIds: string[];
   targetBranchesByProjectId: Record<string, string>;
+  plan?: Pick<ArchitectPlanRecord, 'hasReplicaDivergence' | 'replicationState' | 'replicas'>;
 }): string => {
   const nodeCount = params.planNodes.length;
   const branchCount = params.predictedBranches.length;
   const rootCount = countRootNodes(params.planNodes);
   const projectCount = params.resolvedProjectIds.length;
+  const replicaWarning = buildArchitectReplicaWarning(params.plan);
 
   return formatArchitectToolResult(
     `Strategy updated for ${params.planTitle || params.planId}: ${nodeCount} node${nodeCount === 1 ? '' : 's'}, ${branchCount} branch${branchCount === 1 ? '' : 'es'}, ${rootCount} root node${rootCount === 1 ? '' : 's'}, across ${projectCount} project${projectCount === 1 ? '' : 's'}.`,
@@ -325,6 +345,7 @@ export const formatArchitectStrategyGenerateToolResult = (params: {
       target_branches_by_project_id: params.targetBranchesByProjectId,
       nodes: params.planNodes.map(summarizePlanNode),
       predicted_branches: params.predictedBranches.map(summarizePredictedBranch),
+      ...(replicaWarning ? { replica_warning: replicaWarning } : {}),
     }
   );
 };
@@ -353,9 +374,11 @@ export const formatArchitectStrategyUpdateToolResult = (params: {
   planId: string;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
+  plan?: Pick<ArchitectPlanRecord, 'hasReplicaDivergence' | 'replicationState' | 'replicas'>;
 }): string => {
   const nodeCount = params.planNodes.length;
   const branchCount = params.predictedBranches.length;
+  const replicaWarning = buildArchitectReplicaWarning(params.plan);
   return formatArchitectToolResult(
     `Updated strategy for plan ${params.planId}: ${nodeCount} node${nodeCount === 1 ? '' : 's'} and ${branchCount} branch${branchCount === 1 ? '' : 'es'}.`,
     {
@@ -364,6 +387,7 @@ export const formatArchitectStrategyUpdateToolResult = (params: {
       branch_count: branchCount,
       nodes: params.planNodes.map(summarizePlanNode),
       predicted_branches: params.predictedBranches.map(summarizePredictedBranch),
+      ...(replicaWarning ? { replica_warning: replicaWarning } : {}),
     }
   );
 };
