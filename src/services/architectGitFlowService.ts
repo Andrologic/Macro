@@ -5,6 +5,7 @@ import {
   archiveArchitectPlan,
   deleteArchitectPlan,
   getArchitectPlanTargetBranchForProject,
+  getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
   getArchitectPlan,
   updateArchitectPlan,
@@ -727,8 +728,6 @@ export const cleanupPlanBranches = async (
   }
 ): Promise<CleanupPlanRepositoryResult[]> =>
   getDefaultArchitectGitFlowService().cleanupPlanBranches(plan, explicitRepoPath, options);
-
-const PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE = 'Archive the plan before deleting it.';
 
 export const deletePlanAndCleanupBranches = async (params: {
   branchName: string;
@@ -1469,11 +1468,9 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
-    if (plan.status !== 'archived' && plan.status !== 'deleted') {
-      throw new Error(PLAN_DELETE_REQUIRES_ARCHIVE_MESSAGE);
-    }
+    const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
 
-    if (plan.status === 'deleted') {
+    if (plan.status === 'deleted' || !crudCapabilities.deleteRequiresCleanup) {
       await deps.deleteArchitectPlan({
         branchName: params.branchName,
         planId: params.planId,

@@ -378,7 +378,40 @@ describe('architectPlanService', () => {
     ).rejects.toThrow('Plan slug is immutable and cannot be changed after creation.');
   });
 
-  it('allows archiving and deleting canonical draft plans still named new plan', async () => {
+  it('allows safe metadata but rejects scope changes after draft status', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000015',
+      slug: 'checkout-refresh',
+      projectIds: ['web'],
+    });
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      status: 'validated',
+    });
+
+    const relabeled = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      label: 'Release checkout',
+      description: 'Ready for implementation',
+    });
+
+    expect(relabeled.label).toBe('Release checkout');
+    expect(relabeled.description).toBe('Ready for implementation');
+
+    await expect(
+      service.updateArchitectPlan({
+        branchName,
+        planId: created.id,
+        projectIds: ['web', 'api'],
+      })
+    ).rejects.toThrow('Plan scope and GitFlow metadata are immutable after draft status.');
+  });
+
+  it('allows archiving and hard deleting canonical draft plans still named new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000011',
@@ -392,14 +425,37 @@ describe('architectPlanService', () => {
       service.deleteArchitectPlan({
         branchName,
         planId: created.id,
+        hardDelete: true,
       })
     ).resolves.toBeUndefined();
 
     const reloaded = await service.getArchitectPlan(branchName, created.id);
-    expect(reloaded?.status).toBe('deleted');
+    expect(reloaded).toBeNull();
   });
 
-  it('refuses to archive non-draft canonical plans still named new plan', async () => {
+  it('releases a draft plan slug after hard delete', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000011-delete-draft',
+      slug: 'scratch-plan',
+    });
+
+    await service.deleteArchitectPlan({
+      branchName,
+      planId: created.id,
+      hardDelete: true,
+    });
+
+    const recreated = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000011-delete-draft-recreated',
+      slug: 'scratch-plan',
+    });
+
+    expect(recreated.slug).toBe('scratch-plan');
+  });
+
+  it('archives and restores non-draft canonical plans still named new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000011-validated',
@@ -412,20 +468,18 @@ describe('architectPlanService', () => {
       status: 'validated',
     });
 
-    await expect(service.archiveArchitectPlan(branchName, created.id)).rejects.toThrow(
-      'Rename the plan before archiving it.'
-    );
+    const archived = await service.archiveArchitectPlan(branchName, created.id);
+    expect(archived.status).toBe('archived');
+    expect(archived.archivedFromStatus).toBe('validated');
+    expect(archived.archivedAt).toBeTruthy();
 
-    await expect(
-      service.updateArchitectPlan({
-        branchName,
-        planId: created.id,
-        status: 'archived',
-      })
-    ).rejects.toThrow('Rename the plan before archiving it.');
+    const restored = await service.restoreArchitectPlan(branchName, created.id);
+    expect(restored.status).toBe('validated');
+    expect(restored.archivedAt).toBeUndefined();
+    expect(restored.archivedFromStatus).toBeUndefined();
   });
 
-  it('allows archiving and deleting a renamed canonical plan', async () => {
+  it('allows archiving and hard deleting a renamed canonical plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,
       planId: '1710000000011-renamed',
@@ -447,11 +501,12 @@ describe('architectPlanService', () => {
       service.deleteArchitectPlan({
         branchName,
         planId: created.id,
+        hardDelete: true,
       })
     ).resolves.toBeUndefined();
 
     const reloaded = await service.getArchitectPlan(branchName, created.id);
-    expect(reloaded?.status).toBe('deleted');
+    expect(reloaded).toBeNull();
   });
 
   it('allows explicitly expanding expected project ids on update', async () => {

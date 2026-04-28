@@ -1024,7 +1024,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "plan_update",
-    "Update the optional display label/title alias, description, or mutable draft slug for an existing plan. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
+    "Update safe plan metadata such as display label/title alias or description. Draft plans can also update slug, scope, and GitFlow metadata. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
     {
       type: "object",
       properties: {
