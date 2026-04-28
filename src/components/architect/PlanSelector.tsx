@@ -3,10 +3,10 @@ import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
   getArchitectPlan,
+  getArchitectPlanCrudCapabilities,
   getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
   getGitFlowMainBranch,
-  hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   repairArchitectPlanReplicas,
@@ -52,7 +52,6 @@ import {
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
-  isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
@@ -767,9 +766,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!plan) {
       return;
     }
-    const hasStrategy =
-      plan.nodeCount > 0 || (plan.predictedBranchCount ?? 0) > 0;
-    if (hasStrategy) {
+    if (!getArchitectPlanCrudCapabilities(plan).canEditDetails) {
       return;
     }
     setFormError(null);
@@ -787,15 +784,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
         );
       }
-      if (hasPersistedArchitectStrategy(latestPlan)) {
-        throw new Error(
-          t(
-            'architect.planSelector.renameAfterStrategyBlocked',
-            'Rename is unavailable after strategy has been created for this plan.'
-          )
-        );
-      }
-
       const existingValue = getArchitectPlanEditableName(latestPlan);
       if (value === existingValue) {
         setPlanFormModal(null);
@@ -880,16 +868,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const handleConfirmDeletePlan = async () => {
     if (!planToDelete) return;
-    if (planToDelete.status !== 'archived' && planToDelete.status !== 'deleted') {
-      const message = t(
-        'architect.planSelector.archiveBeforeDelete',
-        'Archive the plan before deleting it.'
-      );
-      setError(message);
-      notify.error(message);
-      setPlanToDelete(null);
-      return;
-    }
 
     setError(null);
     setIsDeleting(true);
@@ -1043,6 +1021,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     document.addEventListener('mousedown', onDocumentMouseDown);
     return () => document.removeEventListener('mousedown', onDocumentMouseDown);
   }, [creatingPlanKind, isOpen]);
+
+  const planToDeleteCrudCapabilities = planToDelete
+    ? getArchitectPlanCrudCapabilities(planToDelete)
+    : null;
 
   return (
     <div ref={rootRef} className={cn('relative', className)}>
@@ -1262,6 +1244,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const secondaryLabel = getArchitectPlanSecondaryLabel(plan);
               const secondaryText = secondaryLabel || (!isCanonicalPlan ? plan.id : null);
               const planKind = getArchitectPlanKind(plan);
+              const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
               const planKindLabel =
                 planKind === 'feature'
                   ? t('architect.planSelector.kindFeature', 'Feature')
@@ -1270,15 +1253,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     : planKind === 'hotfix'
                       ? t('architect.planSelector.kindHotfix', 'Hotfix')
                       : t('architect.planSelector.kindBugfix', 'Bugfix');
-              const canDeletePlan = plan.status === 'archived' || plan.status === 'deleted';
-              const canRenamePlan =
-                plan.status !== 'deleted' &&
-                plan.nodeCount === 0 &&
-                (plan.predictedBranchCount ?? 0) === 0;
-              const canArchivePlan =
-                plan.status === 'archived' ||
-                plan.status === 'draft' ||
-                !(isCanonicalPlan && isDefaultNewPlanFamilyLabel(plan.label));
+              const canDeletePlan = crudCapabilities.canDelete;
+              const canRenamePlan = crudCapabilities.canEditDetails;
+              const canArchivePlan = crudCapabilities.canArchive || crudCapabilities.canRestore;
               const effectiveTargetBranch =
                 (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
               const hasMixedTargetBranches =
@@ -1296,7 +1273,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const renameLabel = isCanonicalPlan
                 ? t('architect.planSelector.editPlanLabel', 'Edit plan label')
                 : t('architect.planSelector.renamePlan', 'Rename plan');
-              const canActivatePlan = !isUnavailable && !isBusy;
+              const canActivatePlan = !isUnavailable && plan.status !== 'archived' && !isBusy;
 
               return (
                 <div
@@ -1354,12 +1331,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           event.stopPropagation();
                           handleRenamePlan(plan.id);
                         }}
-                        disabled={isMissingProjects || !canRenamePlan}
+                        disabled={!canRenamePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                         title={!canRenamePlan
                           ? t(
-                              'architect.planSelector.renameAfterStrategyBlocked',
-                              'Rename is unavailable after strategy has been created for this plan.'
+                              'architect.planSelector.renameUnavailable',
+                              'Plan details cannot be edited for this status.'
                             )
                           : renameLabel}
                       >
@@ -1378,14 +1355,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                           }
                           void handleArchivePlan(plan);
                         }}
-                        disabled={isMissingProjects || !canArchivePlan}
+                        disabled={!canArchivePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                         title={plan.status === 'archived'
                           ? t('architect.planSelector.unarchivePlan', 'Unarchive plan')
                           : !canArchivePlan
                             ? t(
-                                'architect.planSelector.renameBeforeArchivePlan',
-                                'Rename the plan before archiving it'
+                                'architect.planSelector.archiveUnavailable',
+                                'Archive is unavailable for this status'
                               )
                             : t('architect.planSelector.archivePlan', 'Archive plan')}
                       >
@@ -1469,17 +1446,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             ? t('architect.planSelector.deleteDialogDescription', {
               title: getArchitectPlanDisplayName(planToDelete),
               defaultValue:
-                planToDelete.status === 'archived' || planToDelete.status === 'deleted'
-                  ? `This will permanently remove "${getArchitectPlanDisplayName(planToDelete)}" from plan storage.`
-                  : `Archive "${getArchitectPlanDisplayName(planToDelete)}" before deleting it.`,
+                planToDeleteCrudCapabilities?.deleteRequiresCleanup
+                  ? `This will permanently remove "${getArchitectPlanDisplayName(planToDelete)}" and clean local Macro worktrees and branches. Remote branches will not be deleted.`
+                  : `This will permanently remove "${getArchitectPlanDisplayName(planToDelete)}" from plan storage.`,
             })
             : t('architect.planSelector.deleteDialogFallback', 'This action cannot be undone.')
         }
         confirmLabel={isDeleting
           ? t('architect.planSelector.deleting', 'Deleting...')
-          : (planToDelete?.status === 'archived' || planToDelete?.status === 'deleted'
-            ? t('architect.planSelector.purgePlan', 'Purge permanently')
-            : t('architect.planSelector.archiveFirstShort', 'Archive first'))}
+          : planToDeleteCrudCapabilities?.deleteRequiresCleanup
+            ? t('architect.planSelector.deleteAndCleanup', 'Delete and clean up')
+            : t('architect.planSelector.purgePlan', 'Delete permanently')}
         cancelLabel={t('common.cancel', 'Cancel')}
         confirmVariant="error"
         onCancel={() => {

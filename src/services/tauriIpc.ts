@@ -668,6 +668,9 @@ export interface WorkspaceArchitectPlanSummaryDto {
   planKind?: string | null;
   gitFlowPlan?: unknown;
   status: string;
+  archivedAt?: string | null;
+  archivedFromStatus?: string | null;
+  deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
   conversationId?: string | null;
@@ -698,6 +701,9 @@ export interface WorkspaceArchitectPlanRecordDto {
   planKind?: string | null;
   gitFlowPlan?: unknown;
   status: string;
+  archivedAt?: string | null;
+  archivedFromStatus?: string | null;
+  deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
   conversationId?: string | null;
