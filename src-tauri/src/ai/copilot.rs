@@ -11,18 +11,19 @@ use flate2::read::GzDecoder;
 use futures::StreamExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use tar::Archive;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -79,6 +80,13 @@ enum BridgeSendEvent {
     ToolTrace {
         #[serde(flatten)]
         tool_trace: AiToolTrace,
+    },
+    ToolRequest {
+        request_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        #[serde(default)]
+        args: Value,
     },
     Done {
         content: String,
@@ -200,6 +208,24 @@ pub struct CopilotAuthErrorEvent {
     pub provider_id: String,
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CopilotToolRequestEvent {
+    pub request_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopilotToolResultRequest {
+    pub request_id: String,
+    pub tool_call_id: String,
+    pub result: String,
+    pub hidden_context: Option<String>,
+    pub visible_content: Option<String>,
+    pub interrupt: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -1783,7 +1809,7 @@ pub async fn stream_chat(
     ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
-    crate::ai::chatgpt::cancel_stream(&ai_state, &request.request_id).await?;
+    cancel_stream(&ai_state, &request.request_id).await?;
 
     let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
@@ -1805,10 +1831,64 @@ pub async fn stream_chat(
 
         let mut tasks = state_for_task.stream_tasks.lock().await;
         tasks.remove(&task_request_id);
+        let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
+        tool_writers.remove(&task_request_id);
     });
 
     let mut tasks = ai_state.stream_tasks.lock().await;
     tasks.insert(request_id, handle);
+    Ok(())
+}
+
+pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
+    {
+        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
+        tool_writers.remove(request_id);
+    }
+
+    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await
+}
+
+pub async fn submit_tool_result(
+    ai_state: &AiState,
+    request: CopilotToolResultRequest,
+) -> Result<(), String> {
+    let writer = {
+        let tool_writers = ai_state.copilot_tool_writers.lock().await;
+        tool_writers.get(&request.request_id).cloned()
+    }
+    .ok_or_else(|| {
+        format!(
+            "No active Copilot stream is waiting for tool result {}.",
+            request.tool_call_id
+        )
+    })?;
+
+    let payload = json!({
+        "type": "tool_result",
+        "request_id": request.request_id,
+        "tool_call_id": request.tool_call_id,
+        "result": request.result,
+        "hidden_context": request.hidden_context,
+        "visible_content": request.visible_content,
+        "interrupt": request.interrupt.unwrap_or(false),
+    });
+    let line = serde_json::to_string(&payload)
+        .map_err(|error| format!("Failed to serialize Copilot tool result: {}", error))?;
+
+    let mut stdin = writer.lock().await;
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|error| format!("Failed to send Copilot tool result: {}", error))?;
+    stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|error| format!("Failed to send Copilot tool result newline: {}", error))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("Failed to flush Copilot tool result: {}", error))?;
     Ok(())
 }
 
@@ -1841,11 +1921,29 @@ async fn stream_chat_inner(
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
     let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "AI runtime stdin is unavailable.".to_string())?;
+    let stdin = Arc::new(Mutex::new(stdin));
+    {
+        let mut writer = stdin.lock().await;
+        writer
             .write_all(payload.as_bytes())
             .await
             .map_err(|error| format!("Failed to send AI runtime request: {}", error))?;
+        writer
+            .write_all(b"\n")
+            .await
+            .map_err(|error| format!("Failed to send AI runtime request newline: {}", error))?;
+        writer
+            .flush()
+            .await
+            .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
+    }
+    {
+        let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
+        tool_writers.insert(request.request_id.clone(), stdin);
     }
 
     let stdout = child
@@ -1935,6 +2033,24 @@ async fn stream_chat_inner(
                         AiStreamToolTraceEvent {
                             request_id: request.request_id.clone(),
                             tool_trace,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            BridgeSendEvent::ToolRequest {
+                request_id,
+                tool_call_id,
+                tool_name,
+                args,
+            } => {
+                app_handle
+                    .emit(
+                        "ai:tool-request",
+                        CopilotToolRequestEvent {
+                            request_id,
+                            tool_call_id,
+                            tool_name,
+                            args,
                         },
                     )
                     .map_err(|error| error.to_string())?;

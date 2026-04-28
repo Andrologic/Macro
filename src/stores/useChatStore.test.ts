@@ -4355,6 +4355,59 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
+  it('keeps Architect action tools available for Copilot in strict mode', async () => {
+    providerState.providerConfigs = [
+      {
+        id: 'copilot',
+        name: 'GitHub Copilot',
+        providerType: 'copilot',
+        isEnabled: true,
+        isLocal: false,
+        hasStoredApiKey: false,
+        apiKeyLoaded: false,
+        apiKey: '',
+      },
+    ];
+    providerState.selectedProviderId = 'copilot';
+    providerState.selectedModelId = 'claude-haiku-4.5';
+    providerState.modelsByProvider = {
+      copilot: [{ id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', isEnabled: true }],
+    };
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('strict'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Ajoute les besoins structurés.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      allowedToolIds: string[];
+    };
+    expect(streamOptions.allowedToolIds).toContain('need_add');
+    expect(streamOptions.allowedToolIds).toContain('need_update');
+    expect(streamOptions.allowedToolIds).toContain('strategy_generate');
+    expect(streamOptions.allowedToolIds).toContain('plan_update');
+    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
+  });
+
   it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {
     tauriAvailable = true;
     providerState.selectedSupportsNativeToolCalling = () => true;

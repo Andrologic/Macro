@@ -57,6 +57,17 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "terminal_run",
   "terminal_read",
   "terminal_kill",
+  "need_add",
+  "need_list",
+  "need_get",
+  "need_update",
+  "strategy_generate",
+  "strategy_get",
+  "strategy_update",
+  "plan_create",
+  "plan_list",
+  "plan_get",
+  "plan_update",
 ]);
 
 const objectTool = (
@@ -95,7 +106,7 @@ export const MACRO_TOOL_REGISTRY = [
       required: ["query"],
     },
   ),
-  objectTool("web_fetch", "Fetch and read the content of a specific URL.", {
+  copilotBuiltInOverrideTool("web_fetch", "Fetch and read the content of a specific URL.", {
     type: "object",
     properties: {
       url: {
