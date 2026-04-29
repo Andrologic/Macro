@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-const loadPreferenceMock = mock(async (_key?: string) => 'balanced');
+const loadPreferenceMock = mock(async (_key?: string): Promise<unknown> => 'balanced');
 const loadSettingsMock = mock(async () => undefined);
 const toggleToolMock = mock(async () => undefined);
 const toggleMcpServerMock = mock(() => undefined);
@@ -85,9 +85,6 @@ const loadToolsView = async () => {
   const actualPreferences = await import(
     `../../../services/preferences.ts?tools-view-test=${importCounter + 1}`
   );
-  const actualWebSearchSettings = await import(
-    `../../../services/webSearchSettings.ts?tools-view-test=${importCounter + 1}`
-  );
 
   mock.module('../../../services/preferences', () => ({
     ...actualPreferences,
@@ -95,7 +92,6 @@ const loadToolsView = async () => {
   }));
 
   const webSearchSettingsModule = {
-    ...actualWebSearchSettings,
     getWebSearchSettings: () => ({
       provider: 'tavily',
       tavilyApiKey: 'tvly-key',
@@ -113,7 +109,16 @@ const loadToolsView = async () => {
   }));
 
   mock.module('../../ui/Input', () => ({
-    Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
+    Input: ({
+      onChange,
+      ...props
+    }: React.InputHTMLAttributes<HTMLInputElement>) => (
+      <input
+        {...props}
+        onChange={onChange}
+        onInput={(event) => onChange?.(event as unknown as React.ChangeEvent<HTMLInputElement>)}
+      />
+    ),
   }));
 
   mock.module('../../ui/Switch', () => ({
@@ -199,6 +204,7 @@ describe('ToolsView', () => {
 
     expect(container?.textContent).toContain('Web Search');
     expect(container?.textContent).toContain('Built-in Tools');
+    expect(container?.textContent).not.toContain('Max agent turns');
     expect(container?.textContent).not.toContain('Security & approvals');
     expect(container?.textContent).not.toContain('Architect Tool Autonomy');
     expect(loadSettingsMock).toHaveBeenCalledTimes(1);

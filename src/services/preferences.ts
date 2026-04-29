@@ -10,6 +10,10 @@ import type { AppMode, ToolRiskLevel } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
+  CHAT_MAX_TURNS_DEFAULT,
+  isValidChatMaxTurnsPreference,
+} from './chatTurnLimits';
+import {
   DEFAULT_TOOL_RISK_LEVEL,
   TOOL_RISK_LEVELS,
 } from './toolSecurityPolicy';
@@ -52,6 +56,7 @@ export const PREF_KEYS = {
   PROMPT_PLAN_EXPLORER: "promptPlanExplorer",
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
+  CHAT_MAX_TURNS: "chatMaxTurns",
   TOOL_RISK_LEVEL: "toolRiskLevel",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
@@ -229,6 +234,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
+  [PREF_KEYS.CHAT_MAX_TURNS]: CHAT_MAX_TURNS_DEFAULT,
   [PREF_KEYS.TOOL_RISK_LEVEL]:
     DEFAULT_TOOL_RISK_LEVEL satisfies ToolRiskLevel,
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
@@ -277,6 +283,16 @@ const LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY =
 const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
   typeof value === "string" &&
   (TOOL_RISK_LEVELS as readonly string[]).includes(value);
+
+const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
+  if (key === PREF_KEYS.TOOL_RISK_LEVEL) {
+    return isToolRiskLevel(value);
+  }
+  if (key === PREF_KEYS.CHAT_MAX_TURNS) {
+    return isValidChatMaxTurnsPreference(value);
+  }
+  return true;
+};
 
 const migrateLegacyArchitectToolAutonomyProfile = (
   value: unknown,
@@ -417,7 +433,7 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
     const localValue = localStorage.getItem(localStorageKey);
     if (localValue) {
       const parsed = JSON.parse(localValue) as T;
-      if (key !== PREF_KEYS.TOOL_RISK_LEVEL || isToolRiskLevel(parsed)) {
+      if (isValidPreferenceValue(key, parsed)) {
         return parsed;
       }
     }
@@ -428,7 +444,7 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
       if (
         value !== null &&
         value !== undefined &&
-        (key !== PREF_KEYS.TOOL_RISK_LEVEL || isToolRiskLevel(value))
+        isValidPreferenceValue(key, value)
       ) {
         return value;
       }

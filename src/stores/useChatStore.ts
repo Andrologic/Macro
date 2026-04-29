@@ -43,6 +43,10 @@ import {
   PREF_KEYS,
   savePreference,
 } from "../services/preferences";
+import {
+  type ChatMaxTurnsPreference,
+  normalizeChatMaxTurns,
+} from "../services/chatTurnLimits";
 import { useNeedsStore } from "./useNeedsStore";
 import { useTerminalStore } from "./useTerminalStore";
 import { devLogger } from "../utils/devLogger";
@@ -841,6 +845,7 @@ interface ChatStore {
         | "hidden_context"
         | "provider_input_items"
         | "provider_turn_state"
+        | "completion_reason"
       >
     >,
   ) => void;
@@ -5071,6 +5076,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       hidden_context: result.hiddenContext,
       provider_input_items: result.providerInputItems,
       provider_turn_state: result.providerTurnState,
+      ...(result.completionReason ? { completion_reason: result.completionReason } : {}),
     });
     get().updateMessageContent(messageId, result.visibleContent);
   };
@@ -5258,6 +5264,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       allowedToolIds,
       fileToolContext,
     });
+    const maxTurns = normalizeChatMaxTurns(
+      await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
+    );
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,
@@ -5275,6 +5284,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebFetch,
       webSearchOptions,
       guidedToolRetry,
+      maxTurns,
     };
   };
 
@@ -5635,6 +5645,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         enableWebSearch: streamLaunch.enableWebSearch,
         enableWebFetch: streamLaunch.enableWebFetch,
         webSearchOptions: streamLaunch.webSearchOptions,
+        maxTurns: streamLaunch.maxTurns,
       });
     } catch (error) {
       if (params.manualFeatureDraftRecovery) {
@@ -5729,6 +5740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     webSearchOptions: ReturnType<
       typeof getStreamingWebSearchConfig
     >["webSearchOptions"];
+    maxTurns: ChatMaxTurnsPreference;
   }) => {
     const abortController = new AbortController();
     setConversationRuntime(
@@ -5839,6 +5851,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enableWebSearch: params.enableWebSearch,
           enableWebFetch: params.enableWebFetch,
           webSearchOptions: params.webSearchOptions,
+          maxTurns: params.maxTurns,
           sessionId: params.sessionId,
           signal: abortController.signal,
           onToken: (token) => {
@@ -8812,6 +8825,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             enableWebSearch: streamLaunch.enableWebSearch,
             enableWebFetch: streamLaunch.enableWebFetch,
             webSearchOptions: streamLaunch.webSearchOptions,
+            maxTurns: streamLaunch.maxTurns,
           });
         } catch (error) {
           if (manualFeatureDraftRecovery) {
