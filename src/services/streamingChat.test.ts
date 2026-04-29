@@ -114,8 +114,12 @@ const loadStreamingChat = async (
   mock.module('./tauriIpc', () => tauriIpcMock);
   mock.module('../services/tauriIpc', () => tauriIpcMock);
   mock.module('./architectChat', () => ({
+    ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION:
+      'After using an Architect tool, always answer in natural language with a concise recap.',
     ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT:
       'After using tools, provide a concise recap to the user.',
+    ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX:
+      'Keep every strategy node inside the active plan subproject scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.',
   }));
 
   streamingChatImportCounter += 1;
@@ -873,7 +877,7 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
-  it('forces one final no-tool turn when the configured max turn budget is reached', async () => {
+  it('stops immediately when the configured max turn budget is reached', async () => {
     const encoder = new TextEncoder();
     const requestBodies: Array<Record<string, unknown>> = [];
     let requestCount = 0;
@@ -938,26 +942,20 @@ describe('streamingChat tool rendering helpers', () => {
         `FILE: ${args.path}\n\nok`,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(requestBodies[3]?.tools).toBeUndefined();
-    expect(requestBodies[3]?.tool_choice).toBeUndefined();
-    expect(JSON.stringify(requestBodies[3]?.messages)).toContain(
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(requestBodies[2]?.tools).toBeDefined();
+    expect(requestBodies[2]?.tool_choice).toBe('auto');
+    expect(JSON.stringify(requestBodies)).not.toContain(
       'Finish the answer now in natural language without using tools.'
     );
-    expect(onComplete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        completionReason: 'tool_turn_limit',
-        visibleContent: expect.stringContaining('Limite de tours atteinte'),
-      })
-    );
-    expect(onComplete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        visibleContent: expect.stringContaining('Final summary.'),
-      })
-    );
+    const finalResult = onComplete.mock.calls[0]?.[0];
+    expect(finalResult?.completionReason).toBe('tool_turn_limit');
+    expect(finalResult?.visibleContent).not.toContain('[Macro]');
+    expect(finalResult?.visibleContent).not.toContain('Limite de tours atteinte');
+    expect(finalResult?.visibleContent).not.toContain('Final summary.');
   });
 
-  it('falls back visibly when the forced final no-tool turn is empty or asks for tools', async () => {
+  it('does not emit a post-tool fallback when stopping at the max turn budget', async () => {
     const encoder = new TextEncoder();
     let requestCount = 0;
     const fetchMock = mock(async () => {
@@ -983,7 +981,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
     const onToolCall = mock(async () => 'FILE: README.md\n\nok');
-    const onComplete = mock(() => undefined);
+    const onComplete = mock((_: StreamCompletionResult) => undefined);
 
     await streamChat({
       providerId: 'provider-1',
@@ -1003,16 +1001,14 @@ describe('streamingChat tool rendering helpers', () => {
       onToolCall,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(onToolCall).toHaveBeenCalledTimes(3);
-    expect(onComplete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        completionReason: 'post_tool_empty_fallback',
-        visibleContent: expect.stringContaining(
-          "Le dernier tour sans outils n'a pas fourni de reponse finale exploitable."
-        ),
-      })
+    const finalResult = onComplete.mock.calls[0]?.[0];
+    expect(finalResult?.completionReason).toBe('tool_turn_limit');
+    expect(finalResult?.visibleContent).not.toContain(
+      "Le dernier tour sans outils n'a pas fourni de reponse finale exploitable."
     );
+    expect(finalResult?.visibleContent).not.toContain('[Macro]');
   });
 
   it('does not force a final no-tool turn when max turns is disabled', async () => {
@@ -1085,6 +1081,7 @@ describe('streamingChat tool rendering helpers', () => {
     const finalResult = onComplete.mock.calls[0]?.[0];
     expect(finalResult?.completionReason).toBeUndefined();
     expect(finalResult?.visibleContent).not.toContain('Limite de tours atteinte');
+    expect(finalResult?.visibleContent).not.toContain('[Macro]');
     expect(finalResult?.visibleContent).toContain('Final after tools.');
   });
 

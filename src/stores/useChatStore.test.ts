@@ -5741,6 +5741,88 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('keeps the tool-turn-limit notice out of the next model request', async () => {
+    appState.mode = 'Architect';
+    appState.selectedTaskId = null;
+
+    const { streamChat } = await import('../services/streamingChat');
+    const streamChatMockForTest = streamChat as unknown as {
+      mockImplementationOnce: (implementation: (options: {
+        messages: Array<{ role: string; content: string }>;
+        onComplete?: (result: {
+          visibleContent: string;
+          toolTraces: unknown[];
+          hiddenContext?: unknown;
+          completionReason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
+        }) => void;
+      }) => Promise<void>) => void;
+      mock: {
+        calls: Array<Array<{
+          messages: Array<{ role: string; content: string }>;
+        }>>;
+      };
+    };
+    streamChatMockForTest.mockImplementationOnce(async ({ onComplete }) => {
+      onComplete?.({
+        visibleContent: 'Plan prêt.',
+        toolTraces: [],
+        hiddenContext: undefined,
+        completionReason: 'tool_turn_limit',
+      });
+    });
+    streamChatMockForTest.mockImplementationOnce(async ({ onComplete }) => {
+      onComplete?.({
+        visibleContent: 'Suite prête.',
+        toolTraces: [],
+        hiddenContext: undefined,
+        completionReason: 'completed',
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('conv-1')],
+      messages: [],
+      selectedConversationId: 'conv-1',
+      selectedConversationIdsByMode: { Architect: 'conv-1' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'conv-1',
+      content: 'Inspecte avec des outils.',
+    });
+    await Promise.resolve();
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'conv-1',
+      content: 'Continue.',
+    });
+    await Promise.resolve();
+
+    const calls = streamChatMockForTest.mock.calls;
+    const secondRequest = calls[1]?.[0];
+    const serializedMessages = JSON.stringify(secondRequest?.messages ?? []);
+
+    expect(serializedMessages).toContain('Plan prêt.');
+    expect(serializedMessages).not.toContain('Tool turn limit reached');
+    expect(serializedMessages).not.toContain('Macro stopped the agent loop');
+    expect(serializedMessages).not.toContain('Limite de tours');
+    expect(
+      secondRequest?.messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.content === 'Plan prêt.' &&
+          !('completion_reason' in message)
+      )
+    ).toBe(true);
+  });
+
   it('moves an implement task to awaiting response when the assistant reply contains valid quick replies', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
