@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS ai_models (
 CREATE TABLE IF NOT EXISTS provider_settings (
     provider_id TEXT PRIMARY KEY,
     filter_free_models INTEGER DEFAULT 0,
+    copilot_send_timeout_ms INTEGER,
     FOREIGN KEY (provider_id) REFERENCES provider_configs(id) ON DELETE CASCADE
 );
 

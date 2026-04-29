@@ -138,7 +138,45 @@ describe("tauriIpc executeWorkspaceTool", () => {
             virtual_root_enabled: null,
             focused_project_id: null,
             allowed_tool_ids: [],
+            copilot_send_timeout_ms: null,
           },
+        },
+      },
+    ]);
+  });
+
+  it("passes Copilot send timeout through ai_stream_chat", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.aiStreamChat({
+      requestId: "req-1",
+      providerId: "copilot",
+      modelId: "gpt-5",
+      messages: [{ role: "user", content: "Hello" }],
+      copilotSendTimeoutMs: 1_800_000,
+    });
+
+    expect((invokeCalls[0]?.payload as { request?: Record<string, unknown> }).request)
+      .toMatchObject({
+        provider_id: "copilot",
+        copilot_send_timeout_ms: 1_800_000,
+      });
+  });
+
+  it("updates provider settings partially", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.updateProviderSettings({
+      providerId: "copilot",
+      copilotSendTimeoutMs: 2_400_000,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_update_provider_settings",
+        payload: {
+          providerId: "copilot",
+          copilotSendTimeoutMs: 2_400_000,
         },
       },
     ]);

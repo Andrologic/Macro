@@ -278,6 +278,7 @@ describe('FileChangesPanel', () => {
       ],
       branchWorktrees: {},
       finishTask: finishTaskMock,
+      loadMergeWorkflowReview: mock(async () => null),
       ...options.taskStoreOverrides,
     });
 
@@ -315,11 +316,11 @@ describe('FileChangesPanel', () => {
 
   const buildBlockedMergeWorkflowRuntime = (
     overrides: Partial<{
-      blockingKind: 'repository_dirty' | 'merge_conflict' | 'merge_in_progress';
-      nextAction: 'clean_repository' | 'resolve_conflicts' | 'finish_or_abort_merge';
+      blockingKind: 'repository_dirty' | 'merge_conflict' | 'merge_in_progress' | null;
+      nextAction: 'clean_repository' | 'resolve_conflicts' | 'finish_or_abort_merge' | null;
       mergeInProgress: boolean;
       conflictFiles: string[];
-      blockingReason: string;
+      blockingReason: string | null;
     }> = {}
   ) => {
     const dirtyRepository = {
@@ -333,14 +334,21 @@ describe('FileChangesPanel', () => {
       mergeAppliedAt: null,
       isClean: false,
       hasChanges: true,
+      ahead: 1,
+      behind: 0,
       mergeable: false,
       conflictFiles: [],
+      dirtyFiles: [{ path: 'src/local.ts', status: 'modified', area: 'unstaged' }],
       mergeInProgress: false,
       diff: '',
       checkStatus: 'not_run',
       blockingKind: 'repository_dirty',
       nextAction: 'clean_repository',
       blockingReason: 'Cannot continue merge because /repos/project has uncommitted changes.',
+      isSourcePublished: false,
+      mergeStrategy: 'dirty',
+      recommendedAction: 'stash_dirty',
+      availableActions: ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'],
       ...overrides,
     };
 
@@ -1043,6 +1051,161 @@ describe('FileChangesPanel', () => {
 
     expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
       blockerResolutionAction: 'stash_dirty',
+    });
+  });
+
+  it('asks before fast-forwarding ready merge repositories', async () => {
+    const runMergeWorkflowMock = mock(async () => undefined);
+    const mergeWorkflowRuntime = {
+      ...buildBlockedMergeWorkflowRuntime(),
+      phase: 'ready',
+      taskStatus: 'InProgress',
+      blockedRepositories: [],
+      message: null,
+    };
+    mergeWorkflowRuntime.repositories = [
+      {
+        ...mergeWorkflowRuntime.repositories[0],
+        progressState: 'pending',
+        isClean: true,
+        mergeable: true,
+        blockingKind: null,
+        nextAction: null,
+        blockingReason: null,
+        dirtyFiles: [],
+        mergeStrategy: 'fast_forward_available',
+        recommendedAction: 'fast_forward',
+        availableActions: ['fast_forward', 'merge_commit'],
+      },
+    ];
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'InProgress',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: runMergeWorkflowMock,
+        resolveMergeWorkflowAutomatically: mock(async () => ({
+          conversationId: null,
+          autoResolvedRepositoryCount: 0,
+          remainingBlockedRepositoryCount: 0,
+        })),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const chooseButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Choose merge strategy'));
+
+    await act(async () => {
+      chooseButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Fast-forward available');
+
+    const fastForwardButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Fast-forward and continue'));
+
+    await act(async () => {
+      fastForwardButton?.click();
+      await flushRender();
+    });
+
+    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+  });
+
+  it('opens the assistant when a rebase strategy fails', async () => {
+    const runMergeWorkflowMock = mock(async () => {
+      throw new Error('rebase conflict');
+    });
+    const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
+      conversationId: 'conversation-1',
+      autoResolvedRepositoryCount: 0,
+      remainingBlockedRepositoryCount: 1,
+    }));
+    const mergeWorkflowRuntime = {
+      ...buildBlockedMergeWorkflowRuntime(),
+      phase: 'ready',
+      taskStatus: 'InProgress',
+      blockedRepositories: [],
+      message: null,
+    };
+    mergeWorkflowRuntime.repositories = [
+      {
+        ...mergeWorkflowRuntime.repositories[0],
+        progressState: 'pending',
+        isClean: true,
+        mergeable: true,
+        blockingKind: null,
+        nextAction: null,
+        blockingReason: null,
+        dirtyFiles: [],
+        mergeStrategy: 'rebase_available',
+        recommendedAction: 'rebase_then_continue',
+        availableActions: ['rebase_then_continue', 'merge_commit', 'assistant'],
+        isSourcePublished: false,
+      },
+    ];
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'InProgress',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: runMergeWorkflowMock,
+        resolveMergeWorkflowAutomatically: resolveMergeWorkflowAutomaticallyMock,
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const chooseButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Choose merge strategy'));
+
+    await act(async () => {
+      chooseButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Rebase available');
+
+    const rebaseButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Rebase then continue'));
+
+    await act(async () => {
+      rebaseButton?.click();
+      await flushRender();
+    });
+
+    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
+      mergeStrategyAction: 'rebase_then_continue',
+    });
+    expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
+      blockerResolutionAction: 'assistant',
     });
   });
 

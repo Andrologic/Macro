@@ -142,6 +142,7 @@ fn build_responses_request_maps_system_and_history() {
         virtual_root_enabled: None,
         focused_project_id: None,
         allowed_tool_ids: Vec::new(),
+        copilot_send_timeout_ms: None,
     })
     .expect("request");
 
@@ -214,6 +215,7 @@ fn build_responses_request_flattens_tools_and_maps_tool_outputs() {
         virtual_root_enabled: None,
         focused_project_id: None,
         allowed_tool_ids: Vec::new(),
+        copilot_send_timeout_ms: None,
     })
     .expect("request");
 
@@ -257,6 +259,7 @@ fn build_responses_request_is_stateless_without_previous_response_id() {
         virtual_root_enabled: None,
         focused_project_id: None,
         allowed_tool_ids: Vec::new(),
+        copilot_send_timeout_ms: None,
     })
     .expect("request");
 
@@ -327,6 +330,7 @@ fn build_responses_request_replays_chatgpt_provider_turn_output_items() {
         virtual_root_enabled: None,
         focused_project_id: None,
         allowed_tool_ids: Vec::new(),
+        copilot_send_timeout_ms: None,
     })
     .expect("request");
 
@@ -392,6 +396,7 @@ fn build_responses_request_drops_unreplayable_reasoning_items_without_encrypted_
         virtual_root_enabled: None,
         focused_project_id: None,
         allowed_tool_ids: Vec::new(),
+        copilot_send_timeout_ms: None,
     })
     .expect("request");
 

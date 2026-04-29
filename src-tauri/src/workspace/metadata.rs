@@ -309,6 +309,13 @@ pub struct WorkspaceTaskExecutionTargetDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualFeatureMergeWorkflowDirtyFileDto {
+    pub path: String,
+    pub status: String,
+    pub area: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualFeatureMergeWorkflowRepositoryDto {
     pub id: String,
     #[serde(rename = "projectId")]
@@ -330,6 +337,20 @@ pub struct ManualFeatureMergeWorkflowRepositoryDto {
     pub blocking_reason: Option<String>,
     #[serde(default, rename = "conflictFiles")]
     pub conflict_files: Vec<String>,
+    #[serde(default, rename = "dirtyFiles")]
+    pub dirty_files: Vec<ManualFeatureMergeWorkflowDirtyFileDto>,
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    #[serde(default, rename = "isSourcePublished")]
+    pub is_source_published: bool,
+    #[serde(default, rename = "mergeStrategy")]
+    pub merge_strategy: Option<String>,
+    #[serde(default, rename = "recommendedAction")]
+    pub recommended_action: Option<String>,
+    #[serde(default, rename = "availableActions")]
+    pub available_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

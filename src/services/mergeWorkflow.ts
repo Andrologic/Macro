@@ -21,6 +21,30 @@ export type MergeWorkflowPhase =
 
 export type MergeWorkflowBlockingKind = PlanFinalizationBlockingKind;
 export type MergeWorkflowNextAction = PlanFinalizationNextAction;
+export type MergeWorkflowStrategy =
+  | 'dirty'
+  | 'fast_forward_available'
+  | 'rebase_available'
+  | 'merge_commit_available'
+  | 'file_conflict'
+  | 'merge_in_progress'
+  | 'no_source_changes';
+
+export type MergeWorkflowResolutionAction =
+  | 'stash_dirty'
+  | 'revert_dirty'
+  | 'abort_merge'
+  | 'assistant'
+  | 'fast_forward'
+  | 'rebase_then_continue'
+  | 'merge_commit'
+  | 'retry_check';
+
+export interface MergeWorkflowDirtyFile {
+  path: string;
+  status: string;
+  area: 'staged' | 'unstaged' | 'untracked';
+}
 
 export interface MergeWorkflowRepositoryResult {
   id: string;
@@ -33,14 +57,21 @@ export interface MergeWorkflowRepositoryResult {
   mergeAppliedAt: string | null;
   isClean: boolean;
   hasChanges: boolean;
+  ahead: number;
+  behind: number;
   mergeable: boolean;
   conflictFiles: string[];
+  dirtyFiles: MergeWorkflowDirtyFile[];
   mergeInProgress: boolean;
   diff: string;
   checkStatus: 'not_run' | 'passed' | 'failed';
   blockingKind: MergeWorkflowBlockingKind | null;
   nextAction: MergeWorkflowNextAction | null;
   blockingReason: string | null;
+  isSourcePublished: boolean;
+  mergeStrategy: MergeWorkflowStrategy;
+  recommendedAction: MergeWorkflowResolutionAction | null;
+  availableActions: MergeWorkflowResolutionAction[];
 }
 
 export interface MergeWorkflowReviewContext {
@@ -114,6 +145,12 @@ interface MergeWorkflowFocusableTargetLike {
 
 interface MergeWorkflowGitStatusLike {
   is_clean: boolean;
+  staged_files?: Array<{ path: string; status?: string | null }>;
+  stagedFiles?: Array<{ path: string; status?: string | null }>;
+  unstaged_files?: Array<{ path: string; status?: string | null }>;
+  unstagedFiles?: Array<{ path: string; status?: string | null }>;
+  untracked_files?: Array<{ path: string; status?: string | null }>;
+  untrackedFiles?: Array<{ path: string; status?: string | null }>;
   conflicted_files?: string[];
   conflictedFiles?: string[];
   merge_in_progress?: boolean;
@@ -123,7 +160,24 @@ interface MergeWorkflowGitStatusLike {
 interface MergeWorkflowMergeCheckLike {
   mergeable: boolean;
   conflictFiles: string[];
+  hasChanges?: boolean;
+  ahead?: number;
+  behind?: number;
 }
+
+interface MergeWorkflowRebaseCheckLike {
+  rebaseable: boolean;
+  conflictFiles?: string[];
+}
+
+interface MergeWorkflowBranchListLike {
+  remote?: Array<{ name: string }>;
+}
+
+export type MergeWorkflowMergeExecutionAction = Extract<
+  MergeWorkflowResolutionAction,
+  'fast_forward' | 'rebase_then_continue' | 'merge_commit'
+>;
 
 export const isRepositoryRootExecutionTarget = (
   target: Pick<TaskExecutionTarget, 'executionKind'>
@@ -176,6 +230,155 @@ export const mergeMergeWorkflowRuntimeState = (
   ...nextState,
 });
 
+const mapDirtyStatusFiles = (
+  files: Array<{ path: string; status?: string | null }> | undefined,
+  area: MergeWorkflowDirtyFile['area']
+): MergeWorkflowDirtyFile[] =>
+  (files || [])
+    .filter((file) => file.path.trim().length > 0)
+    .map((file) => ({
+      path: file.path,
+      status: file.status || (area === 'untracked' ? 'untracked' : 'modified'),
+      area,
+    }));
+
+export const collectMergeWorkflowDirtyFiles = (
+  status: MergeWorkflowGitStatusLike
+): MergeWorkflowDirtyFile[] => [
+  ...mapDirtyStatusFiles(status.stagedFiles || status.staged_files, 'staged'),
+  ...mapDirtyStatusFiles(status.unstagedFiles || status.unstaged_files, 'unstaged'),
+  ...mapDirtyStatusFiles(status.untrackedFiles || status.untracked_files, 'untracked'),
+];
+
+export const isMergeWorkflowSourcePublished = (
+  branches: MergeWorkflowBranchListLike | null | undefined,
+  sourceBranchName: string
+): boolean =>
+  Boolean(
+    branches?.remote?.some(
+      (branch) =>
+        branch.name === `origin/${sourceBranchName}` ||
+        branch.name.endsWith(`/${sourceBranchName}`)
+    )
+  );
+
+export const shouldCheckMergeWorkflowRebase = (params: {
+  status: { is_clean: boolean };
+  mergeCheck: { mergeable: boolean; ahead?: number; behind?: number };
+  isSourcePublished: boolean;
+}): boolean =>
+  params.status.is_clean &&
+  params.mergeCheck.mergeable &&
+  (params.mergeCheck.ahead ?? 0) > 0 &&
+  (params.mergeCheck.behind ?? 0) > 0 &&
+  !params.isSourcePublished;
+
+export const resolveMergeWorkflowStrategy = (params: {
+  status: MergeWorkflowGitStatusLike;
+  mergeCheck: MergeWorkflowMergeCheckLike;
+  isSourcePublished?: boolean;
+  rebaseCheck?: MergeWorkflowRebaseCheckLike | null;
+}): {
+  mergeStrategy: MergeWorkflowStrategy;
+  recommendedAction: MergeWorkflowResolutionAction | null;
+  availableActions: MergeWorkflowResolutionAction[];
+  dirtyFiles: MergeWorkflowDirtyFile[];
+  ahead: number;
+  behind: number;
+} => {
+  const conflictFiles = getMergeWorkflowConflictFiles(params.status);
+  const mergeInProgress = isMergeWorkflowMergeInProgress(params.status);
+  const dirtyFiles = collectMergeWorkflowDirtyFiles(params.status);
+  const ahead = params.mergeCheck.ahead ?? (params.mergeCheck.hasChanges === false ? 0 : 1);
+  const behind = params.mergeCheck.behind ?? 0;
+
+  if (conflictFiles.length > 0) {
+    return {
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (mergeInProgress) {
+    return {
+      mergeStrategy: 'merge_in_progress',
+      recommendedAction: 'abort_merge',
+      availableActions: ['abort_merge', 'assistant', 'retry_check'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (!params.status.is_clean) {
+    return {
+      mergeStrategy: 'dirty',
+      recommendedAction: 'stash_dirty',
+      availableActions: ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (!params.mergeCheck.mergeable) {
+    return {
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (params.mergeCheck.hasChanges === false || ahead === 0) {
+    return {
+      mergeStrategy: 'no_source_changes',
+      recommendedAction: null,
+      availableActions: ['retry_check'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (behind === 0) {
+    return {
+      mergeStrategy: 'fast_forward_available',
+      recommendedAction: 'fast_forward',
+      availableActions: ['fast_forward', 'merge_commit'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  if (!params.isSourcePublished && params.rebaseCheck?.rebaseable) {
+    return {
+      mergeStrategy: 'rebase_available',
+      recommendedAction: 'rebase_then_continue',
+      availableActions: ['rebase_then_continue', 'merge_commit', 'assistant'],
+      dirtyFiles,
+      ahead,
+      behind,
+    };
+  }
+
+  return {
+    mergeStrategy: 'merge_commit_available',
+    recommendedAction: 'merge_commit',
+    availableActions: ['merge_commit'],
+    dirtyFiles,
+    ahead,
+    behind,
+  };
+};
+
 export const toMergeWorkflowRepositoryResult = (
   repository: PlanReviewRepositoryResult
 ): MergeWorkflowRepositoryResult => ({
@@ -189,14 +392,51 @@ export const toMergeWorkflowRepositoryResult = (
   mergeAppliedAt: null,
   isClean: repository.isClean,
   hasChanges: repository.hasChanges,
+  ahead: repository.ahead ?? (repository.hasChanges ? 1 : 0),
+  behind: repository.behind ?? 0,
   mergeable: repository.mergeable,
   conflictFiles: repository.conflictFiles,
+  dirtyFiles: repository.dirtyFiles ?? [],
   mergeInProgress: repository.mergeInProgress,
   diff: repository.diff,
   checkStatus: repository.checkStatus,
   blockingKind: repository.blockingKind,
   nextAction: repository.nextAction,
   blockingReason: repository.blockingReason,
+  isSourcePublished: repository.isSourcePublished ?? false,
+  mergeStrategy:
+    repository.mergeStrategy ??
+    (repository.blockingKind === 'repository_dirty'
+      ? 'dirty'
+      : repository.blockingKind === 'merge_in_progress'
+        ? 'merge_in_progress'
+        : repository.blockingKind === 'merge_conflict'
+          ? 'file_conflict'
+          : repository.hasChanges
+            ? 'merge_commit_available'
+            : 'no_source_changes'),
+  recommendedAction:
+    repository.recommendedAction ??
+    (repository.blockingKind === 'repository_dirty'
+      ? 'stash_dirty'
+      : repository.blockingKind === 'merge_in_progress'
+        ? 'abort_merge'
+        : repository.blockingKind === 'merge_conflict'
+          ? 'assistant'
+          : repository.hasChanges
+            ? 'merge_commit'
+            : null),
+  availableActions:
+    repository.availableActions ??
+    (repository.blockingKind === 'repository_dirty'
+      ? ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check']
+      : repository.blockingKind === 'merge_in_progress'
+        ? ['abort_merge', 'assistant', 'retry_check']
+        : repository.blockingKind === 'merge_conflict'
+          ? ['assistant', 'retry_check']
+          : repository.hasChanges
+            ? ['merge_commit']
+            : ['retry_check']),
 });
 
 export const toPlanFinalizationMergeWorkflowRuntimeState = (params: {
@@ -274,14 +514,23 @@ export const toPendingMergeWorkflowRepositoryResult = (params: {
   mergeAppliedAt: null,
   isClean: true,
   hasChanges: params.hasChanges !== false,
+  ahead: params.hasChanges === false ? 0 : 1,
+  behind: 0,
   mergeable: true,
   conflictFiles: [],
+  dirtyFiles: [],
   mergeInProgress: false,
   diff: '',
   checkStatus: 'not_run',
   blockingKind: null,
   nextAction: null,
   blockingReason: null,
+  isSourcePublished: false,
+  mergeStrategy: params.hasChanges === false
+    ? 'no_source_changes'
+    : 'merge_commit_available',
+  recommendedAction: params.hasChanges === false ? null : 'merge_commit',
+  availableActions: params.hasChanges === false ? ['retry_check'] : ['merge_commit'],
 });
 
 const getMergeWorkflowConflictFiles = (
@@ -497,6 +746,25 @@ export const buildMergeWorkflowFailureState = (
         },
   };
 };
+
+export const isMergeWorkflowRepositoryActionableByModal = (
+  repository: Pick<
+    MergeWorkflowRepositoryResult,
+    'recommendedAction' | 'mergeStrategy' | 'progressState'
+  >
+): boolean =>
+  repository.progressState === 'pending' &&
+  (repository.recommendedAction === 'fast_forward' ||
+    repository.recommendedAction === 'rebase_then_continue');
+
+export const mergeWorkflowNeedsUserDecision = (
+  runtime: Pick<MergeWorkflowRuntimeState, 'repositories' | 'blockedRepositories'> | null | undefined
+): boolean =>
+  Boolean(
+    runtime &&
+      (runtime.blockedRepositories.length > 0 ||
+        runtime.repositories.some(isMergeWorkflowRepositoryActionableByModal))
+  );
 
 export const resolveMergeWorkflowViewState = (
   runtime: MergeWorkflowRuntimeState | null | undefined,

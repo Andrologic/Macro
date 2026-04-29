@@ -38,6 +38,13 @@ const gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
 const gitStashMock = mock(async () => 'stash@{0}');
 const gitAbortMergeMock = mock(async () => undefined);
 const gitRestorePathsMock = mock(async () => undefined);
+const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/review-actions');
+const gitRebaseCheckMock = mock(async () => ({
+  rebaseable: true,
+  conflictFiles: [],
+  output: 'Successfully rebased',
+}));
+const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
   remote: [],
@@ -102,6 +109,9 @@ mock.module('../services/tauriIpc', () => ({
   gitStash: gitStashMock,
   gitAbortMerge: gitAbortMergeMock,
   gitRestorePaths: gitRestorePathsMock,
+  gitFastForward: gitFastForwardMock,
+  gitRebaseCheck: gitRebaseCheckMock,
+  gitRebaseBranch: gitRebaseBranchMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -118,6 +128,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitStash: gitStashMock,
   gitAbortMerge: gitAbortMergeMock,
   gitRestorePaths: gitRestorePathsMock,
+  gitFastForward: gitFastForwardMock,
+  gitRebaseCheck: gitRebaseCheckMock,
+  gitRebaseBranch: gitRebaseBranchMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -364,6 +377,9 @@ describe('useTaskStore merge workflow review loading', () => {
     gitStashMock.mockClear();
     gitAbortMergeMock.mockClear();
     gitRestorePathsMock.mockClear();
+    gitFastForwardMock.mockClear();
+    gitRebaseCheckMock.mockClear();
+    gitRebaseBranchMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
     createConversationMock.mockClear();
@@ -426,14 +442,21 @@ describe('useTaskStore merge workflow review loading', () => {
       mergeAppliedAt: null,
       isClean: true,
       hasChanges: true,
+      ahead: 1,
+      behind: 1,
       mergeable: false,
       conflictFiles: ['src/main.ts'],
+      dirtyFiles: [],
       mergeInProgress: false,
       diff: 'diff --git a/src/main.ts b/src/main.ts',
       checkStatus: 'failed' as const,
       blockingKind: 'merge_conflict' as const,
       nextAction: 'resolve_conflicts' as const,
       blockingReason: 'Cannot continue merge because /repos/web would conflict in: src/main.ts.',
+      isSourcePublished: false,
+      mergeStrategy: 'file_conflict' as const,
+      recommendedAction: 'assistant' as const,
+      availableActions: ['assistant', 'retry_check'] as const,
     };
 
     return {

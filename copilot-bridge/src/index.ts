@@ -24,6 +24,8 @@ const MAX_READ_BYTES = 256_000;
 const MAX_GREP_RESULTS = 200;
 const MAX_GLOB_RESULTS = 500;
 const FRONTEND_TOOL_TIMEOUT_MS = 300_000;
+const DEFAULT_COPILOT_SEND_TIMEOUT_MS = 30 * 60 * 1000;
+const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
 
@@ -73,6 +75,7 @@ interface BridgeSendRequest {
   project_mounts?: BridgeProjectMount[];
   virtual_root_enabled?: boolean;
   focused_project_id?: string | null;
+  copilot_send_timeout_ms?: number | null;
 }
 
 interface ToolHostClient {
@@ -219,6 +222,11 @@ const getCopilotReasoningSummary = (
   optionalTrimmedText(state.streamedReasoning) ||
   optionalTrimmedText(state.completeReasoning) ||
   optionalTrimmedText(state.messageReasoning);
+
+const normalizeCopilotSendTimeoutMs = (value?: number | null): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= MIN_COPILOT_SEND_TIMEOUT_MS
+    ? Math.floor(value)
+    : DEFAULT_COPILOT_SEND_TIMEOUT_MS;
 
 const handleCopilotAssistantMessage = (
   state: CopilotSessionEventState,
@@ -2333,7 +2341,10 @@ const handleSend = async (): Promise<void> => {
           });
         });
 
-        const assistantMessage = await session.sendAndWait({ prompt }, 300_000);
+        const assistantMessage = await session.sendAndWait(
+          { prompt },
+          normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms)
+        );
         handleCopilotAssistantMessage(eventState, assistantMessage?.data, emitJson);
       } finally {
         await session.disconnect();
@@ -2387,6 +2398,7 @@ export const __testables = {
   createCopilotSessionEventState,
   getCopilotReasoningSummary,
   handleCopilotSessionEvent,
+  normalizeCopilotSendTimeoutMs,
   isFrontendRelayToolId,
 };
 

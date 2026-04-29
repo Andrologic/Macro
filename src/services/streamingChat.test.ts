@@ -34,6 +34,9 @@ const loadStreamingChat = async (
       }),
   }));
   mock.module('../stores/useProviderStore', () => ({
+    isLinkedProviderType: (providerType?: string | null) =>
+      providerType === 'chatgpt' || providerType === 'copilot',
+    providerHasAuthSession: () => false,
     providerHasCredentials: () => true,
     useProviderStore: {
       getState: () => ({
@@ -65,6 +68,7 @@ const loadStreamingChat = async (
       virtualRootEnabled?: boolean | null;
       focusedProjectId?: string | null;
       allowedToolIds?: string[];
+      copilotSendTimeoutMs?: number | null;
     }) =>
       invokeImpl('ai_stream_chat', {
         request: {
@@ -88,6 +92,7 @@ const loadStreamingChat = async (
           virtual_root_enabled: params.virtualRootEnabled ?? null,
           focused_project_id: params.focusedProjectId ?? null,
           allowed_tool_ids: params.allowedToolIds ?? [],
+          copilot_send_timeout_ms: params.copilotSendTimeoutMs ?? null,
         },
     }),
     aiCancelStream: async (requestId: string) =>
@@ -1574,6 +1579,61 @@ describe('streamingChat tool rendering helpers', () => {
         hiddenContext: expect.stringContaining('need_add:Clarify release scope'),
       })
     );
+  });
+
+  it('relays Copilot send timeout to the desktop backend', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: 'Done.',
+              tool_calls: [],
+            },
+          });
+        });
+      }
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'Hello' }],
+      allowedToolIds: [],
+      copilotSendTimeoutMs: 2_400_000,
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    const streamCall = invokeMock.mock.calls.find((call) => call[0] === 'ai_stream_chat');
+    expect((streamCall?.[1] as { request?: Record<string, unknown> }).request)
+      .toMatchObject({
+        provider_id: 'copilot',
+        copilot_send_timeout_ms: 2_400_000,
+      });
   });
 
   it('sends Copilot built-in override metadata only for shadowing tools', async () => {

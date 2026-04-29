@@ -90,6 +90,11 @@ const gitMergeCheckMock = mock(async (_params: { repoPath: string }) => ({
   conflictFiles: [],
   hasChanges: true,
 }));
+const gitRebaseCheckMock = mock(async (_params: { repoPath: string; branchName: string; ontoBranch: string }) => ({
+  rebaseable: true,
+  conflictFiles: [],
+  output: '',
+}));
 const gitMergeMock = mock(async (_params: { repoPath: string; branchName?: string; intoBranch?: string }) => 'merge-ok');
 const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
   branch: _params.branch || 'develop',
@@ -299,6 +304,12 @@ describe('architectGitFlowService', () => {
       conflictFiles: [],
       hasChanges: repoPath === '/repos/web',
     }));
+    gitRebaseCheckMock.mockReset();
+    gitRebaseCheckMock.mockImplementation(async () => ({
+      rebaseable: true,
+      conflictFiles: [],
+      output: '',
+    }));
 
     gitMergeMock.mockReset();
     gitMergeMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => `merged:${repoPath}`);
@@ -367,6 +378,7 @@ describe('architectGitFlowService', () => {
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
+        gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
@@ -1122,6 +1134,7 @@ describe('architectGitFlowService', () => {
         gitStatus: gitStatusMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
+        gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
