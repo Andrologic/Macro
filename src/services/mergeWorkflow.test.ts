@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   collectMergeWorkflowDirtyFiles,
+  isMergeWorkflowFileConflictRepository,
   resolveMergeWorkflowStrategy,
 } from './mergeWorkflow';
 
@@ -101,5 +102,23 @@ describe('mergeWorkflow strategy resolution', () => {
       { path: 'b.ts', status: 'modified', area: 'unstaged' },
       { path: 'c.ts', status: 'untracked', area: 'untracked' },
     ]);
+  });
+
+  it('does not treat dirty repositories as file-conflict repositories', () => {
+    expect(
+      isMergeWorkflowFileConflictRepository({
+        mergeStrategy: 'dirty',
+        blockingKind: 'repository_dirty',
+        conflictFiles: ['src/conflict.ts'],
+      })
+    ).toBe(false);
+
+    expect(
+      isMergeWorkflowFileConflictRepository({
+        mergeStrategy: 'file_conflict',
+        blockingKind: 'merge_conflict',
+        conflictFiles: ['src/conflict.ts'],
+      })
+    ).toBe(true);
   });
 });

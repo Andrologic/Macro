@@ -26,6 +26,7 @@ const DEFAULT_LOG_LIMIT: usize = 50;
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
     "Commit message must follow Conventional Commits: type: subject";
+const MAX_CONFLICT_FILE_BYTES: usize = 1_000_000;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -162,6 +163,33 @@ pub struct GitFilePairDto {
     pub worktree_content: String,
     pub original_content: String,
     pub modified_content: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStartMergeResolutionDto {
+    pub status: String,
+    pub conflict_files: Vec<String>,
+    pub output: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictFileSideDto {
+    pub exists: bool,
+    pub content: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictFileDto {
+    pub path: String,
+    pub base: GitConflictFileSideDto,
+    pub ours: GitConflictFileSideDto,
+    pub theirs: GitConflictFileSideDto,
+    pub worktree: GitConflictFileSideDto,
+    pub is_binary: bool,
+    pub too_large: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1943,6 +1971,223 @@ fn collect_command_conflict_files(cwd: &Path) -> Vec<String> {
     }
 }
 
+fn has_binary_marker(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| *byte == 0)
+}
+
+fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
+    let Some(bytes) = bytes else {
+        return GitConflictFileSideDto {
+            exists: false,
+            content: String::new(),
+        };
+    };
+
+    if bytes.len() > MAX_CONFLICT_FILE_BYTES || has_binary_marker(bytes) {
+        return GitConflictFileSideDto {
+            exists: true,
+            content: String::new(),
+        };
+    }
+
+    GitConflictFileSideDto {
+        exists: true,
+        content: String::from_utf8_lossy(bytes).to_string(),
+    }
+}
+
+fn read_conflict_entry_side(
+    repo: &Repository,
+    entry: Option<&git2::IndexEntry>,
+) -> Result<(GitConflictFileSideDto, bool, bool)> {
+    let Some(entry) = entry else {
+        return Ok((
+            GitConflictFileSideDto {
+                exists: false,
+                content: String::new(),
+            },
+            false,
+            false,
+        ));
+    };
+
+    if entry.id == Oid::zero() {
+        return Ok((
+            GitConflictFileSideDto {
+                exists: false,
+                content: String::new(),
+            },
+            false,
+            false,
+        ));
+    }
+
+    let blob = repo.find_blob(entry.id)?;
+    let content = blob.content();
+    let too_large = content.len() > MAX_CONFLICT_FILE_BYTES;
+    let is_binary = has_binary_marker(content);
+
+    Ok((conflict_side_from_bytes(Some(content)), is_binary, too_large))
+}
+
+fn read_worktree_conflict_side(
+    repo_root: &Path,
+    relative_path: &Path,
+) -> Result<(GitConflictFileSideDto, bool, bool)> {
+    let absolute_path = repo_root.join(relative_path);
+
+    match fs::read(&absolute_path) {
+        Ok(bytes) => {
+            let too_large = bytes.len() > MAX_CONFLICT_FILE_BYTES;
+            let is_binary = has_binary_marker(&bytes);
+            Ok((conflict_side_from_bytes(Some(&bytes)), is_binary, too_large))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((
+            GitConflictFileSideDto {
+                exists: false,
+                content: String::new(),
+            },
+            false,
+            false,
+        )),
+        Err(error) => Err(BackendError::Io {
+            message: format!(
+                "Failed to read worktree conflict file {:?}: {}",
+                absolute_path, error
+            ),
+            source: error,
+        }),
+    }
+}
+
+fn index_entry_path(entry: &git2::IndexEntry) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(&entry.path).to_string())
+}
+
+fn conflict_matches_path(conflict: &git2::IndexConflict, relative_path: &Path) -> bool {
+    conflict
+        .our
+        .as_ref()
+        .or(conflict.their.as_ref())
+        .or(conflict.ancestor.as_ref())
+        .map(|entry| index_entry_path(entry) == relative_path)
+        .unwrap_or(false)
+}
+
+fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<()> {
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "add".to_string(),
+            "--".to_string(),
+            relative_path.to_string_lossy().to_string(),
+        ],
+    )?;
+
+    if !output.success {
+        let details = command_output_text(&output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git add failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    Ok(())
+}
+
+pub(crate) fn start_merge_resolution_repo(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+) -> Result<GitStartMergeResolutionDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+    resolve_commit(repo, branch_name)?;
+    resolve_commit(repo, into_branch)?;
+
+    if is_merge_in_progress(repo) || repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
+        return Ok(GitStartMergeResolutionDto {
+            status: "conflicted".to_string(),
+            conflict_files: collect_command_conflict_files(&repo_root(repo)?),
+            output: "Merge already in progress.".to_string(),
+        });
+    }
+
+    ensure_clean(repo)?;
+
+    let original_branch = get_branch_name(repo)?;
+    if original_branch.as_deref() != Some(into_branch) {
+        checkout_repo(repo, into_branch, false)?;
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            branch_name.to_string(),
+        ],
+    )?;
+    let details = command_output_text(&output);
+
+    if output.success {
+        if let Some(original_branch) = original_branch.as_deref() {
+            if original_branch != into_branch {
+                checkout_repo(repo, original_branch, false)?;
+            }
+        }
+
+        return Ok(GitStartMergeResolutionDto {
+            status: "merged".to_string(),
+            conflict_files: Vec::new(),
+            output: if details.is_empty() {
+                format!("Merged {} into {}", branch_name, into_branch)
+            } else {
+                details
+            },
+        });
+    }
+
+    let mut conflict_files = collect_command_conflict_files(&root)
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    conflict_files.sort();
+
+    if conflict_files.is_empty() && !is_merge_in_progress(repo) {
+        if let Some(original_branch) = original_branch.as_deref() {
+            if original_branch != into_branch {
+                let _ = checkout_repo(repo, original_branch, false);
+            }
+        }
+
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git merge failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    Ok(GitStartMergeResolutionDto {
+        status: "conflicted".to_string(),
+        conflict_files,
+        output: if details.is_empty() {
+            "Merge stopped with file conflicts.".to_string()
+        } else {
+            details
+        },
+    })
+}
+
 fn cleanup_temp_worktree(root: &Path, worktree_path: &Path) {
     let remove_output = run_git_command(
         root,
@@ -2533,6 +2778,171 @@ pub(crate) fn read_git_file_pair(
     })
 }
 
+pub(crate) fn read_git_conflict_file(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+) -> Result<GitConflictFileDto> {
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let conflicts = index.conflicts().map_err(|e| BackendError::Git {
+        message: e.to_string(),
+    })?;
+
+    for conflict in conflicts {
+        let conflict = conflict.map_err(|e| BackendError::Git {
+            message: e.to_string(),
+        })?;
+        if !conflict_matches_path(&conflict, relative_path) {
+            continue;
+        }
+
+        let (base, base_binary, base_too_large) =
+            read_conflict_entry_side(repo, conflict.ancestor.as_ref())?;
+        let (ours, ours_binary, ours_too_large) =
+            read_conflict_entry_side(repo, conflict.our.as_ref())?;
+        let (theirs, theirs_binary, theirs_too_large) =
+            read_conflict_entry_side(repo, conflict.their.as_ref())?;
+        let (worktree, worktree_binary, worktree_too_large) =
+            read_worktree_conflict_side(repo_root, relative_path)?;
+
+        return Ok(GitConflictFileDto {
+            path: relative_path.to_string_lossy().to_string(),
+            base,
+            ours,
+            theirs,
+            worktree,
+            is_binary: base_binary || ours_binary || theirs_binary || worktree_binary,
+            too_large: base_too_large || ours_too_large || theirs_too_large || worktree_too_large,
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "No unresolved conflict found for {}",
+            relative_path.to_string_lossy()
+        ),
+    })
+}
+
+pub(crate) fn write_git_conflict_resolution(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    content: &str,
+    stage: bool,
+) -> Result<()> {
+    let absolute_path = repo_root.join(relative_path);
+    if let Some(parent) = absolute_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| BackendError::Io {
+            message: format!("Failed to create parent directory {:?}: {}", parent, error),
+            source: error,
+        })?;
+    }
+
+    fs::write(&absolute_path, content).map_err(|error| BackendError::Io {
+        message: format!("Failed to write conflict resolution {:?}: {}", absolute_path, error),
+        source: error,
+    })?;
+
+    if stage {
+        stage_repo_relative_path(repo, relative_path)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn accept_git_conflict_side(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    side: &str,
+) -> Result<()> {
+    let conflict_file = read_git_conflict_file(repo, repo_root, relative_path)?;
+    let selected = match side {
+        "ours" => conflict_file.ours,
+        "theirs" => conflict_file.theirs,
+        other => {
+            return Err(BackendError::Validation(format!(
+                "Invalid conflict side: {}",
+                other
+            )))
+        }
+    };
+    let absolute_path = repo_root.join(relative_path);
+
+    if selected.exists {
+        write_git_conflict_resolution(repo, repo_root, relative_path, &selected.content, true)?;
+    } else {
+        match fs::remove_file(&absolute_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!("Failed to remove conflict file {:?}: {}", absolute_path, error),
+                    source: error,
+                })
+            }
+        }
+        stage_repo_relative_path(repo, relative_path)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn complete_merge_repo(repo: &Repository) -> Result<String> {
+    if !is_merge_in_progress(repo) {
+        return Err(BackendError::Git {
+            message: "No merge in progress".to_string(),
+        });
+    }
+
+    let mut index = repo.index()?;
+    index.read(true)?;
+    if index.has_conflicts() {
+        let conflict_files = collect_index_conflict_paths(&index)?;
+        return Err(BackendError::GitMergeConflict {
+            message: if conflict_files.is_empty() {
+                "Resolve all conflicts before completing the merge.".to_string()
+            } else {
+                format!(
+                    "Resolve all conflicts before completing the merge: {}",
+                    conflict_files.join(", ")
+                )
+            },
+        });
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "-c".to_string(),
+            "user.name=Macro".to_string(),
+            "-c".to_string(),
+            "user.email=macro@local".to_string(),
+            "commit".to_string(),
+            "--no-edit".to_string(),
+        ],
+    )?;
+    let details = command_output_text(&output);
+    if !output.success {
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git commit --no-edit failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    if details.is_empty() {
+        Ok("Merge completed.".to_string())
+    } else {
+        Ok(details)
+    }
+}
+
 pub fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<PredictedGitTreeDto> {
     let branch_name = if let Some(branch) = branch {
         validate_refspec(branch)?;
@@ -2815,6 +3225,31 @@ pub async fn git_merge(
         })?;
 
         merge_repo(&repo, &branch_name, &into_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Start a real merge so users can resolve materialized file conflicts manually.
+pub async fn git_start_merge_resolution(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+) -> Result<GitStartMergeResolutionDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        start_merge_resolution_repo(&repo, &branch_name, &into_branch)
     })
     .await
     .map_err(to_join_error)?
@@ -3118,6 +3553,113 @@ pub async fn git_read_file_pair(
         })?;
 
         read_git_file_pair(&repo, &validated, &relative_path)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Read base/ours/theirs/worktree contents for an unresolved conflict file.
+pub async fn git_read_conflict_file(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    path: String,
+) -> Result<GitConflictFileDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        read_git_conflict_file(&repo, &validated, &relative_path)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Write a resolved conflict file and optionally stage it.
+pub async fn git_write_conflict_resolution(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    path: String,
+    content: String,
+    stage: Option<bool>,
+) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        write_git_conflict_resolution(
+            &repo,
+            &validated,
+            &relative_path,
+            &content,
+            stage.unwrap_or(true),
+        )
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Accept either the target branch version (ours) or source branch version (theirs).
+pub async fn git_accept_conflict_side(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    path: String,
+    side: String,
+) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        accept_git_conflict_side(&repo, &validated, &relative_path, &side)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Complete the merge commit after all file conflicts have been resolved.
+pub async fn git_complete_merge(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+) -> Result<String> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        complete_merge_repo(&repo)
     })
     .await
     .map_err(to_join_error)?
@@ -4003,6 +4545,99 @@ mod tests {
         assert!(check.conflict_files.iter().any(|path| path == "README.md"));
         assert_eq!(check.ahead, 1);
         assert_eq!(check.behind, 1);
+    }
+
+    #[test]
+    fn test_start_merge_resolution_materializes_conflict_stages() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+
+        assert_eq!(result.status, "conflicted");
+        assert!(result
+            .conflict_files
+            .iter()
+            .any(|path| path == "README.md"));
+
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(file.base.content, "hello");
+        assert_eq!(file.ours.content, "base branch change");
+        assert_eq!(file.theirs.content, "feature branch change");
+        assert!(file.worktree.content.contains("<<<<<<<"));
+        assert!(!file.is_binary);
+        assert!(!file.too_large);
+    }
+
+    #[test]
+    fn test_write_conflict_resolution_and_complete_merge() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+
+        write_git_conflict_resolution(
+            &repo,
+            temp.path(),
+            Path::new("README.md"),
+            "resolved merge content\n",
+            true,
+        )
+        .unwrap();
+        let status = build_git_status(&repo).unwrap();
+        assert!(status.conflicted_files.is_empty());
+        assert!(status.merge_in_progress);
+
+        let output = complete_merge_repo(&repo).unwrap();
+        assert!(!output.is_empty());
+        let status = build_git_status(&repo).unwrap();
+        assert!(status.is_clean);
+        assert!(!status.merge_in_progress);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "resolved merge content\n"
+        );
+    }
+
+    #[test]
+    fn test_accept_conflict_side_stages_selected_version() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+
+        let status = build_git_status(&repo).unwrap();
+        assert!(status.conflicted_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "feature branch change"
+        );
     }
 
     #[test]

@@ -221,6 +221,27 @@ export interface GitFilePairDto {
   modifiedContent: string;
 }
 
+export interface GitStartMergeResolutionDto {
+  status: "merged" | "conflicted" | string;
+  conflictFiles: string[];
+  output: string;
+}
+
+export interface GitConflictFileSideDto {
+  exists: boolean;
+  content: string;
+}
+
+export interface GitConflictFileDto {
+  path: string;
+  base: GitConflictFileSideDto;
+  ours: GitConflictFileSideDto;
+  theirs: GitConflictFileSideDto;
+  worktree: GitConflictFileSideDto;
+  isBinary: boolean;
+  tooLarge: boolean;
+}
+
 export type MacroSyncState = "clean" | "pending" | "failed" | "conflict";
 export type MacroSyncReason =
   | "clean"
@@ -1560,6 +1581,18 @@ export async function gitMerge(params: {
   });
 }
 
+export async function gitStartMergeResolution(params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+}): Promise<GitStartMergeResolutionDto> {
+  return invoke<GitStartMergeResolutionDto>("git_start_merge_resolution", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.intoBranch,
+  });
+}
+
 export async function gitMergeCheck(params: {
   repoPath: string;
   branchName: string;
@@ -1700,6 +1733,50 @@ export async function gitReadFilePair(params: {
   return invoke<GitFilePairDto>("git_read_file_pair", {
     repoPath: params.repoPath,
     path: params.path,
+  });
+}
+
+export async function gitReadConflictFile(params: {
+  repoPath: string;
+  path: string;
+}): Promise<GitConflictFileDto> {
+  return invoke<GitConflictFileDto>("git_read_conflict_file", {
+    repoPath: params.repoPath,
+    path: params.path,
+  });
+}
+
+export async function gitWriteConflictResolution(params: {
+  repoPath: string;
+  path: string;
+  content: string;
+  stage?: boolean;
+}): Promise<void> {
+  return invoke("git_write_conflict_resolution", {
+    repoPath: params.repoPath,
+    path: params.path,
+    content: params.content,
+    stage: params.stage ?? true,
+  });
+}
+
+export async function gitAcceptConflictSide(params: {
+  repoPath: string;
+  path: string;
+  side: "ours" | "theirs";
+}): Promise<void> {
+  return invoke("git_accept_conflict_side", {
+    repoPath: params.repoPath,
+    path: params.path,
+    side: params.side,
+  });
+}
+
+export async function gitCompleteMerge(params: {
+  repoPath: string;
+}): Promise<string> {
+  return invoke<string>("git_complete_merge", {
+    repoPath: params.repoPath,
   });
 }
 
