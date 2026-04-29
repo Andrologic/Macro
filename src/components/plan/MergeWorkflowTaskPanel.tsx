@@ -190,6 +190,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const resolveAutomaticallyLabel = hasFileConflict
     ? t('implement.resolveWithAi', 'Resolve with AI')
     : t('implement.resolveAutomatically', 'Resolve automatically');
+  const hasSimpleResolution = Boolean(simpleBlockerResolutionAction);
+  const blockedPrimaryButtonLabel = hasSimpleResolution
+    ? t('implement.resolveBlocker', 'Resolve')
+    : t('implement.retryMerge', 'Retry merge');
 
   const openBlockerResolutionModal = useCallback((
     intent: MergeBlockerResolutionIntent,
@@ -431,22 +435,26 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       tone: selectedRepositoryBlockingPresentation.severity === 'danger' ? 'error' : 'warning',
       actions: [
         {
-          label: t('implement.retryMerge', 'Retry merge'),
+          label: blockedPrimaryButtonLabel,
           onClick: () => handleRetryMerge(),
           dismissOnSuccess: false,
         },
-        {
-          label: resolveAutomaticallyLabel,
-          variant: 'secondary',
-          onClick: () => handleResolveAutomatically(),
-          dismissOnSuccess: true,
-        },
+        ...(!hasSimpleResolution
+          ? [{
+              label: resolveAutomaticallyLabel,
+              variant: 'secondary' as const,
+              onClick: () => handleResolveAutomatically(),
+              dismissOnSuccess: true,
+            }]
+          : []),
       ],
     });
   }, [
     blockingNotificationKey,
+    blockedPrimaryButtonLabel,
     handleResolveAutomatically,
     handleRetryMerge,
+    hasSimpleResolution,
     selectedRepository,
     selectedRepositoryBlockingPresentation,
     resolveAutomaticallyLabel,
@@ -691,9 +699,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     );
   };
 
-  const blockedActionGridClassName = isCompact
+  const showResolveAutomaticallyButton = isBlocked && !hasSimpleResolution;
+  const blockedActionCount =
+    1 + (showResolveAutomaticallyButton ? 1 : 0) + (isPlanFinalizationTask ? 1 : 0);
+  const blockedActionGridClassName = isCompact || blockedActionCount <= 1
     ? 'grid-cols-1'
-    : isPlanFinalizationTask && isBlocked
+    : blockedActionCount === 3
       ? 'grid-cols-3'
       : 'grid-cols-2';
   const readyActionGridClassName = isCompact
@@ -766,6 +777,27 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const canUseMergeCommitResolution =
     blockerResolutionAction === 'fast_forward' ||
     blockerResolutionAction === 'rebase_then_continue';
+  const modalRepositoryCount = modalRepositories.length;
+  const modalRepositoryScopeMessage = modalRepositoryCount > 1
+    ? t(
+        'implement.mergeResolutionMultipleRepositories',
+        'This action applies to {{count}} repositories with the same blocker. Any remaining blockers will stay visible after Macro refreshes the review.',
+        { count: modalRepositoryCount }
+      )
+    : null;
+  const runBlockerResolutionChoice = (
+    action: MergeWorkflowBlockerResolutionAction
+  ) => {
+    if (action === 'merge_commit' && blockerResolutionIntent !== 'retry_merge') {
+      void handleMerge('merge_commit');
+      return;
+    }
+    if (blockerResolutionIntent === 'retry_merge') {
+      void handleRetryMerge(action);
+      return;
+    }
+    void handleResolveAutomatically(action);
+  };
   return (
     <>
       <aside
@@ -867,9 +899,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               )}
             >
               <Icon name="rotate-ccw" size={14} className="shrink-0" />
-              <span className="truncate">{t('implement.retryMerge', 'Retry merge')}</span>
+              <span className="truncate">{blockedPrimaryButtonLabel}</span>
             </button>
-            {isBlocked && (
+            {showResolveAutomaticallyButton && (
               <button
                 type="button"
                 onClick={() => void handleResolveAutomatically()}
@@ -966,6 +998,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         confirmLabel={blockerResolutionConfirmLabel}
         cancelLabel={t('common.cancel', 'Cancel')}
         isSubmitting={isResolvingAutomatically}
+        showConfirmButton={false}
         onCancel={() => {
           if (!isResolvingAutomatically) {
             setBlockerResolutionAction(null);
@@ -983,6 +1016,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         }}
       >
         <div className="space-y-3">
+          {modalRepositoryScopeMessage && (
+            <p className="text-xs text-muted-foreground">
+              {modalRepositoryScopeMessage}
+            </p>
+          )}
           <div className="max-h-28 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
             {modalRepositories.map((repository) => (
               <div key={repository.id} className="truncate" title={repository.repoPath}>
@@ -990,6 +1028,21 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               </div>
             ))}
           </div>
+          <Button
+            type="button"
+            variant={blockerResolutionAction === 'abort_merge' ? 'error' : 'primary'}
+            size="sm"
+            className="w-full"
+            disabled={isResolvingAutomatically || !blockerResolutionAction}
+            onClick={() => {
+              if (!blockerResolutionAction) {
+                return;
+              }
+              runBlockerResolutionChoice(blockerResolutionAction);
+            }}
+          >
+            {blockerResolutionConfirmLabel}
+          </Button>
           {canRevertDirtyResolution && (
             <Button
               type="button"
@@ -998,11 +1051,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               className="w-full"
               disabled={isResolvingAutomatically}
               onClick={() => {
-                if (blockerResolutionIntent === 'retry_merge') {
-                  void handleRetryMerge('revert_dirty');
-                  return;
-                }
-                void handleResolveAutomatically('revert_dirty');
+                runBlockerResolutionChoice('revert_dirty');
               }}
             >
               {t('implement.revertAndRetryMerge', 'Revert and retry')}
@@ -1016,11 +1065,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               className="w-full"
               disabled={isResolvingAutomatically}
               onClick={() => {
-                if (blockerResolutionIntent === 'retry_merge') {
-                  void handleRetryMerge('merge_commit');
-                  return;
-                }
-                void handleMerge('merge_commit');
+                runBlockerResolutionChoice('merge_commit');
               }}
             >
               {t('implement.useMergeCommit', 'Use merge commit')}
