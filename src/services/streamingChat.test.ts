@@ -1408,6 +1408,74 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('streams and persists Copilot readable thinking as a think block', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command === 'ai_stream_chat') {
+        const request = (payload as { request: { request_id: string } }).request;
+        queueMicrotask(() => {
+          for (const delta of ['<think>', 'Inspecting files.', '</think>\n', 'Done.']) {
+            listeners.get('ai:stream')?.({
+              payload: {
+                request_id: request.request_id,
+                delta,
+              },
+            });
+          }
+          listeners.get('ai:done')?.({
+            payload: {
+              request_id: request.request_id,
+              output_text: 'Done.',
+              reasoning_summary: 'Inspecting files.',
+              tool_calls: [],
+            },
+          });
+        });
+      }
+
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const streamed: string[] = [];
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'Explain the change.' }],
+      allowedToolIds: [],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => {
+        streamed.push(token);
+      },
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(streamed.join('')).toBe('<think>Inspecting files.</think>\nDone.');
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: '<think>Inspecting files.</think>\nDone.',
+      })
+    );
+  });
+
   it('relays Copilot bridge tool requests to frontend tool handlers', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {

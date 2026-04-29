@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
+const actualCore = await import("@tauri-apps/api/core");
 const invokeCalls: Array<{ command: string; payload: unknown }> = [];
 const invokeMock = mock(async (command: string, payload?: unknown) => {
   invokeCalls.push({ command, payload });
@@ -9,6 +10,7 @@ const invokeMock = mock(async (command: string, payload?: unknown) => {
 const registerTauriIpcMocks = () => {
   mock.restore();
   mock.module("@tauri-apps/api/core", () => ({
+    ...actualCore,
     invoke: invokeMock,
   }));
 };
