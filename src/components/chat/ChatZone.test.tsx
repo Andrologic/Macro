@@ -42,6 +42,7 @@ type MockMessage = {
       free_text_placeholder?: string;
     }>;
   };
+  completion_reason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
 };
 
 type MockChatState = {
@@ -280,6 +281,10 @@ const translationMock = {
       'chat.typeMessage': 'Type your message',
       'chat.stop': 'Stop',
       'chat.newConversation': 'New Conversation',
+      'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
+      'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
+      'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
+      'chat.toolTurnLimitFallbackDescription': 'Macro showed a fallback summary.',
     };
     if (key in explicitTranslations) {
       return explicitTranslations[key]!;
@@ -359,7 +364,9 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../ui/Icon', () => ({
-    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+    Icon: ({ name, className }: { name: string; className?: string }) => (
+      <span data-icon={name} className={className} />
+    ),
   }));
 
   mock.module('../ai/ProviderDropdown', () => ({
@@ -377,7 +384,7 @@ const loadChatZoneModule = async () => {
   mock.module('./MarkdownRenderer', () => ({
     MarkdownRenderer: ({ content }: { content: string }) => {
       markdownRendererContentMock(content);
-      return <div>{content}</div>;
+      return <div data-testid="markdown-renderer">{content}</div>;
     },
   }));
 
@@ -705,6 +712,102 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
     expect(requireContainer().textContent).toContain('Stop');
+  });
+
+  it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Inspecte ce projet' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Voici le bilan final.',
+          completion_reason: 'tool_turn_limit',
+          tool_traces: [],
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const notice = requireContainer().querySelector(
+      '[data-chat-completion-notice="tool_turn_limit"]'
+    );
+    const markdown = requireContainer().querySelector('[data-testid="markdown-renderer"]');
+    const messageShell = notice?.closest('.group');
+    const noticeIcon = notice?.querySelector('[data-icon="triangle-alert"]');
+    expect(notice?.textContent).toContain('Tool turn limit reached');
+    expect(notice?.textContent).toContain('Macro stopped the agent loop.');
+    expect(notice?.textContent).toContain('Settings > General > Max agent turns');
+    expect(notice?.className).toContain('border-border');
+    expect(notice?.className).toContain('bg-card');
+    expect(notice?.className).toContain('px-2.5');
+    expect(notice?.className).toContain('py-2');
+    expect(notice?.className).toContain('mt-3');
+    expect(noticeIcon?.className).toContain('left-1/2');
+    expect(noticeIcon?.className).toContain('top-1/2');
+    expect(noticeIcon?.className).toContain('-translate-x-1/2');
+    expect(noticeIcon?.className).toContain('-translate-y-1/2');
+    expect(messageShell?.className).toContain('pb-10');
+    expect(markdown?.compareDocumentPosition(notice as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain(
+      'Voici le bilan final.'
+    );
+  });
+
+  it('renders the tool turn limit notice even when the assistant content is empty', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Inspecte ce projet' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: '',
+          completion_reason: 'tool_turn_limit',
+          tool_traces: [],
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const notice = requireContainer().querySelector(
+      '[data-chat-completion-notice="tool_turn_limit"]'
+    );
+    expect(notice?.textContent).toContain('Tool turn limit reached');
+    expect(notice?.className).toContain('mt-0');
+    expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('');
+  });
+
+  it('renders a fallback notice when the final no-tool pass is unusable', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Inspecte ce projet' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: "La limite de 3 tours agent a ete atteinte.\nOutils utilises avant l'arret: read.",
+          completion_reason: 'post_tool_empty_fallback',
+          tool_traces: [],
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const notice = requireContainer().querySelector(
+      '[data-chat-completion-notice="post_tool_empty_fallback"]'
+    );
+    expect(notice?.textContent).toContain('Macro showed a fallback summary.');
   });
 
   it('shows assistant activity while a retry is preparing', async () => {

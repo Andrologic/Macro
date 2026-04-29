@@ -349,6 +349,10 @@
     "toolbox": "Werkzeugkasten",
     "enterUrl": "Geben Sie eine URL ein.",
     "invalidUrl": "Ungültige URL",
+    "toolTurnLimitNoticeTitle": "Tool-Turn-Limit erreicht",
+    "toolTurnLimitNoticeDescription": "Macro hat die Agent-Schleife nach dem konfigurierten Turn-Limit gestoppt. Ändere oder deaktiviere es unter Einstellungen > Allgemein > Maximale Agent-Turns und sende dann eine neue Nachricht, um fortzufahren.",
+    "toolTurnLimitFallbackTitle": "Tool-Turn-Limit erreicht",
+    "toolTurnLimitFallbackDescription": "Der letzte Durchlauf ohne Tools hat keine verwendbare Antwort erzeugt, daher zeigt Macro eine Ersatz-Zusammenfassung.",
     "thinking": "Denken...",
     "tool": "Werkzeug",
     "runningTools": "Laufende Tools",
@@ -492,11 +496,11 @@
     "metadataAutoPushDesc": "Pushen Sie den @macro-Zweig automatisch, nachdem bei Abschluss des Streams Metadaten-Commits erstellt wurden.",
     "agentLoop": {
       "limitEnabledLabel": "Agent-Turns begrenzen",
-      "limitEnabledDescription": "Stoppt lange Tool-Schleifen, indem nach einer konfigurierten Anzahl von Zyklen eine finale Antwort erzwungen wird.",
+      "limitEnabledDescription": "Stoppt lange Tool-Schleifen nach einer konfigurierten Anzahl von KI/Tool-Zyklen.",
       "limitEnabledOn": "Aktiviert",
       "limitEnabledOff": "Deaktiviert",
       "maxTurnsLabel": "Maximale Agent-Turns",
-      "maxTurnsDescription": "Maximale Anzahl von KI/Tool-Zyklen, bevor Macro eine finale Antwort ohne Tools erzwingt."
+      "maxTurnsDescription": "Maximale Anzahl von KI/Tool-Zyklen, bevor Macro die Agent-Schleife stoppt und einen Hinweis im Chat anzeigt."
     },
     "theme": "Thema",
     "zoom": "Zoomen",
@@ -1525,7 +1529,7 @@
     "nativeToolSupportWarning": "Der ausgewählte Provider oder das Modell unterstützt kein natives Tool-Calling. Die Tools bleiben hier konfigurierbar, werden aber erst nach Auswahl eines kompatiblen Modells injiziert.",
     "agentLoop": {
       "maxTurnsLabel": "Maximale Agent-Turns",
-      "maxTurnsDescription": "Maximale Anzahl von KI/Tool-Zyklen, bevor Macro eine finale Antwort ohne Tools erzwingt."
+      "maxTurnsDescription": "Maximale Anzahl von KI/Tool-Zyklen, bevor Macro die Agent-Schleife stoppt und einen Hinweis im Chat anzeigt."
     },
     "architectMacroOnly": "Architect: nur @macro",
     "architectFullOnly": "Architect Full",

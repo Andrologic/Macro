@@ -349,6 +349,10 @@
     "toolbox": "Caja de herramientas",
     "enterUrl": "Introduzca una URL.",
     "invalidUrl": "URL no válida",
+    "toolTurnLimitNoticeTitle": "Límite de turnos de herramientas alcanzado",
+    "toolTurnLimitNoticeDescription": "Macro detuvo el bucle del agente tras alcanzar el límite de turnos configurado. Cámbialo o desactívalo en Ajustes > General > Turnos máximos del agente y luego envía un nuevo mensaje para continuar.",
+    "toolTurnLimitFallbackTitle": "Límite de turnos de herramientas alcanzado",
+    "toolTurnLimitFallbackDescription": "El último paso sin herramientas no produjo una respuesta utilizable, así que Macro mostró un resumen de respaldo.",
     "thinking": "Pensando...",
     "tool": "Herramienta",
     "runningTools": "Herramientas en curso",
@@ -492,11 +496,11 @@
     "metadataAutoPushDesc": "Empuje automáticamente la rama @macro después de que se creen los compromisos de metadatos al finalizar la transmisión.",
     "agentLoop": {
       "limitEnabledLabel": "Limitar turnos del agente",
-      "limitEnabledDescription": "Detiene bucles largos de herramientas forzando una respuesta final tras un número configurado de ciclos.",
+      "limitEnabledDescription": "Detiene bucles largos de herramientas tras un número configurado de ciclos IA/herramientas.",
       "limitEnabledOn": "Activado",
       "limitEnabledOff": "Desactivado",
       "maxTurnsLabel": "Turnos máximos del agente",
-      "maxTurnsDescription": "Número máximo de ciclos IA/herramientas antes de que Macro fuerce una respuesta final sin herramientas."
+      "maxTurnsDescription": "Número máximo de ciclos IA/herramientas antes de que Macro detenga el bucle del agente y muestre un aviso en el chat."
     },
     "theme": "Tema",
     "zoom": "Ampliar",
@@ -1525,7 +1529,7 @@
     "nativeToolSupportWarning": "El provider o modelo seleccionado no soporta tool calling nativo. Las tools siguen configurables aquí, pero no se inyectarán hasta elegir un modelo compatible.",
     "agentLoop": {
       "maxTurnsLabel": "Turnos máximos del agente",
-      "maxTurnsDescription": "Número máximo de ciclos IA/herramientas antes de que Macro fuerce una respuesta final sin herramientas."
+      "maxTurnsDescription": "Número máximo de ciclos IA/herramientas antes de que Macro detenga el bucle del agente y muestre un aviso en el chat."
     },
     "architectMacroOnly": "Architect: solo @macro",
     "architectFullOnly": "Architect Full",
