@@ -806,12 +806,25 @@ async fn ensure_legacy_provider_settings(pool: &SqlitePool) -> DbResult<()> {
         CREATE TABLE IF NOT EXISTS provider_settings (
             provider_id TEXT PRIMARY KEY,
             filter_free_models INTEGER DEFAULT 0,
+            copilot_send_timeout_ms INTEGER,
             FOREIGN KEY (provider_id) REFERENCES provider_configs(id) ON DELETE CASCADE
         );
         "#,
     )
     .execute(pool)
     .await?;
+
+    let columns = table_columns(pool, "provider_settings").await?;
+    if !columns.contains("copilot_send_timeout_ms") {
+        sqlx::query(
+            r#"
+            ALTER TABLE provider_settings
+            ADD COLUMN copilot_send_timeout_ms INTEGER
+            "#,
+        )
+        .execute(pool)
+        .await?;
+    }
 
     Ok(())
 }
@@ -1132,8 +1145,8 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_db_path, apply_migration, create_pool, ensure_schema_migrations_table,
-        MIGRATION_001_NAME, MIGRATION_001_SQL, MIGRATION_001_VERSION,
+        app_db_path, apply_migration, create_pool, ensure_schema_migrations_table, stamp_migration,
+        table_columns, MIGRATION_001_NAME, MIGRATION_001_SQL, MIGRATION_001_VERSION,
     };
     use sqlx::Row;
     use std::path::Path;
@@ -1602,6 +1615,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_pool_backfills_copilot_timeout_provider_setting_for_already_migrated_db() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("legacy pool");
+
+        ensure_schema_migrations_table(&pool)
+            .await
+            .expect("schema migrations table");
+        stamp_migration(&pool, MIGRATION_001_VERSION, MIGRATION_001_NAME)
+            .await
+            .expect("stamp baseline");
+        sqlx::query(
+            r#"
+            CREATE TABLE provider_settings (
+                provider_id TEXT PRIMARY KEY,
+                filter_free_models INTEGER DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy provider_settings");
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        let columns = table_columns(&migrated_pool, "provider_settings")
+            .await
+            .expect("provider_settings columns");
+
+        assert!(columns.contains("copilot_send_timeout_ms"));
+    }
+
+    #[tokio::test]
     async fn create_pool_backfills_conversation_scope_mode() {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
@@ -1818,10 +1870,7 @@ mod tests {
         let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
         assert_conversation_scopes_and_indexes(
             &migrated_pool,
-            &[
-                ("blank-scope", "Chat"),
-                ("invalid-scope", "Architect"),
-            ],
+            &[("blank-scope", "Chat"), ("invalid-scope", "Architect")],
         )
         .await;
     }

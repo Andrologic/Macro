@@ -26,6 +26,15 @@ afterEach(() => {
 });
 
 describe('copilot bridge tool registration', () => {
+  it('normalizes the Copilot send timeout with a 30 minute default', async () => {
+    const { __testables } = await loadBridge();
+
+    expect(__testables.normalizeCopilotSendTimeoutMs(undefined)).toBe(1_800_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(null)).toBe(1_800_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(30_000)).toBe(1_800_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(1_800_500.8)).toBe(1_800_500);
+  });
+
   it('passes Copilot built-in override metadata for web_fetch', async () => {
     const { __testables } = await loadBridge();
 

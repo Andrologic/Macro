@@ -4,6 +4,7 @@ import {
   type PersistedMergeWorkflowSession,
 } from './mergeWorkflowPersistence';
 import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
+import type { MergeWorkflowResolutionAction } from './mergeWorkflow';
 
 const buildRuntime = (
   overrides: Partial<MergeWorkflowRuntimeState['repositories'][number]> = {}
@@ -19,14 +20,21 @@ const buildRuntime = (
     mergeAppliedAt: null,
     isClean: true,
     hasChanges: true,
+    ahead: 1,
+    behind: 0,
     mergeable: true,
     conflictFiles: [],
+    dirtyFiles: [],
     mergeInProgress: false,
     diff: 'diff',
     checkStatus: 'passed' as const,
     blockingKind: null,
     nextAction: null,
     blockingReason: null,
+    isSourcePublished: false,
+    mergeStrategy: 'merge_commit_available' as const,
+    recommendedAction: 'merge_commit' as const,
+    availableActions: ['merge_commit'] as MergeWorkflowResolutionAction[],
     ...overrides,
   };
 

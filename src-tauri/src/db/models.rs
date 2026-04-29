@@ -121,6 +121,7 @@ pub struct AiModel {
 pub struct ProviderSettings {
     pub provider_id: String,
     pub filter_free_models: bool,
+    pub copilot_send_timeout_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

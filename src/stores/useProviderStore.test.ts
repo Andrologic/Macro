@@ -44,7 +44,9 @@ const createProviderConfigMock = mock(async () => ({
 const getProviderSettingsMock = mock(async () => ({
   provider_id: 'provider-openai',
   filter_free_models: false,
+  copilot_send_timeout_ms: 1_800_000,
 }));
+const updateProviderSettingsMock = mock(async () => undefined);
 const listProviderModelsMock = mock(async () => []);
 const fetchModelsFromProviderMock = mock(async () => ({
   success: true,
@@ -112,6 +114,7 @@ const loadProviderStore = async () => {
       timestamp: '2026-04-04T00:00:00.000Z',
     })),
     getProviderSettings: getProviderSettingsMock,
+    updateProviderSettings: updateProviderSettingsMock,
     listProviderModels: listProviderModelsMock,
     getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
     listConversations: mock(async () => []),
@@ -151,6 +154,7 @@ describe('useProviderStore secret resolution', () => {
     updateProviderConfigMock.mockClear();
     createProviderConfigMock.mockClear();
     getProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
     fetchModelsFromProviderMock.mockClear();
     probeModelsEndpointMock.mockClear();
@@ -256,6 +260,25 @@ describe('useProviderStore secret resolution', () => {
     expect(listProviderModelsMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('persists provider settings partially', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().updateProviderSettings('provider-openai', {
+      copilotSendTimeoutMs: 2_400_000,
+    });
+
+    expect(updateProviderSettingsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      copilotSendTimeoutMs: 2_400_000,
+    });
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({
+        filterFreeModels: false,
+        copilotSendTimeoutMs: 2_400_000,
+      });
   });
 
   it('persists providerType and isLocal when updating an existing provider', async () => {

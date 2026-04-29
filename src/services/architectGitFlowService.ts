@@ -34,6 +34,14 @@ import {
   normalizeProjectRegistryPath,
 } from './validProjectRegistry';
 import { devLogger } from '../utils/devLogger';
+import {
+  isMergeWorkflowSourcePublished,
+  resolveMergeWorkflowStrategy,
+  shouldCheckMergeWorkflowRebase,
+  type MergeWorkflowDirtyFile,
+  type MergeWorkflowResolutionAction,
+  type MergeWorkflowStrategy,
+} from './mergeWorkflow';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -247,14 +255,21 @@ export interface PlanReviewRepositoryResult {
   baseBranchName: string;
   isClean: boolean;
   hasChanges: boolean;
+  ahead?: number;
+  behind?: number;
   mergeable: boolean;
   conflictFiles: string[];
+  dirtyFiles?: MergeWorkflowDirtyFile[];
   mergeInProgress: boolean;
   diff: string;
   checkStatus: 'not_run' | 'passed' | 'failed';
   blockingKind: PlanFinalizationBlockingKind | null;
   nextAction: PlanFinalizationNextAction | null;
   blockingReason: string | null;
+  isSourcePublished?: boolean;
+  mergeStrategy?: MergeWorkflowStrategy;
+  recommendedAction?: MergeWorkflowResolutionAction | null;
+  availableActions?: MergeWorkflowResolutionAction[];
 }
 
 export interface PlanReviewResult {
@@ -318,6 +333,12 @@ interface ArchitectGitFlowProjectGroup {
 interface ArchitectGitFlowGitStatus {
   branch: string;
   is_clean: boolean;
+  staged_files?: Array<{ path: string; status?: string | null }>;
+  stagedFiles?: Array<{ path: string; status?: string | null }>;
+  unstaged_files?: Array<{ path: string; status?: string | null }>;
+  unstagedFiles?: Array<{ path: string; status?: string | null }>;
+  untracked_files?: Array<{ path: string; status?: string | null }>;
+  untrackedFiles?: Array<{ path: string; status?: string | null }>;
   conflicted_files?: string[];
   conflictedFiles?: string[];
   merge_in_progress?: boolean;
@@ -334,7 +355,7 @@ interface ArchitectGitFlowGitBranches {
   current: string | null;
 }
 
-type ArchitectGitFlowMergeCheck = Pick<tauriIpc.GitMergeCheckDto, 'mergeable' | 'conflictFiles' | 'hasChanges'>;
+type ArchitectGitFlowMergeCheck = Pick<tauriIpc.GitMergeCheckDto, 'mergeable' | 'conflictFiles' | 'hasChanges' | 'ahead' | 'behind'>;
 
 type ArchitectGitFlowTauriDeps = Pick<
   typeof tauriIpc,
@@ -348,6 +369,7 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitWorktreeInspect'
   | 'gitWorktreeRemove'
   | 'gitPull'
+  | 'gitRebaseCheck'
 > & {
   gitStatus: (repoPath: string) => Promise<ArchitectGitFlowGitStatus>;
   gitMergeCheck: (params: {
@@ -1065,7 +1087,31 @@ export const createArchitectGitFlowService = (
             mergeable: false,
             conflictFiles: [],
             hasChanges: diff.trim().length > 0,
+            ahead: 0,
+            behind: 0,
           };
+        const branches = await deps.tauri.gitBranchList(repository.repoPath).catch(() => null);
+        const isSourcePublished = branches
+          ? isMergeWorkflowSourcePublished(branches, repositoryPlanBranchName)
+          : true;
+        const rebaseCheck =
+          shouldCheckMergeWorkflowRebase({
+            status,
+            mergeCheck,
+            isSourcePublished,
+          })
+            ? await deps.tauri.gitRebaseCheck({
+                repoPath: repository.repoPath,
+                branchName: repositoryPlanBranchName,
+                ontoBranch: repositoryBaseBranchName,
+              }).catch(() => null)
+            : null;
+        const strategy = resolveMergeWorkflowStrategy({
+          status,
+          mergeCheck,
+          isSourcePublished,
+          rebaseCheck,
+        });
         const blocking = buildPlanRepositoryBlockingState({
           repositoryPath: repository.repoPath,
           status,
@@ -1079,15 +1125,22 @@ export const createArchitectGitFlowService = (
           planBranchName: repositoryPlanBranchName,
           baseBranchName: repositoryBaseBranchName,
           isClean: status.is_clean,
-          hasChanges: mergeCheck.hasChanges,
+          hasChanges: strategy.mergeStrategy !== 'no_source_changes' && mergeCheck.hasChanges,
+          ahead: strategy.ahead,
+          behind: strategy.behind,
           mergeable: mergeCheck.mergeable,
           conflictFiles: blocking.conflictFiles,
+          dirtyFiles: strategy.dirtyFiles,
           mergeInProgress: blocking.mergeInProgress,
           diff,
           checkStatus: 'not_run' as const,
           blockingKind: blocking.blockingKind,
           nextAction: blocking.nextAction,
           blockingReason: blocking.blockingReason,
+          isSourcePublished,
+          mergeStrategy: strategy.mergeStrategy,
+          recommendedAction: strategy.recommendedAction,
+          availableActions: strategy.availableActions,
         };
       })
     );

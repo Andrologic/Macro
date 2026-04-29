@@ -68,7 +68,12 @@ import {
   mergeMergeWorkflowRuntimeState,
   resolveMergeWorkflowPhaseFromRepositories,
   resolveMergeWorkflowTaskStatus,
+  resolveMergeWorkflowStrategy,
+  isMergeWorkflowSourcePublished,
+  shouldCheckMergeWorkflowRebase,
   type MergeWorkflowKind,
+  type MergeWorkflowMergeExecutionAction,
+  type MergeWorkflowResolutionAction,
   type MergeWorkflowRepositoryResult,
   type MergeWorkflowRuntimeState,
 } from '../services/mergeWorkflow';
@@ -109,16 +114,13 @@ export interface MergeWorkflowAutomaticResolutionResult {
   remainingBlockedRepositoryCount: number;
 }
 
-export type MergeWorkflowBlockerResolutionAction =
-  | 'stash_dirty'
-  | 'revert_dirty'
-  | 'abort_merge'
-  | 'assistant';
+export type MergeWorkflowBlockerResolutionAction = MergeWorkflowResolutionAction;
 
 interface CompleteTaskOptions {
   allowWithoutCodeChanges?: boolean;
   skipIntegration?: boolean;
   repositories?: TaskCompletionRepositoryRecord[];
+  mergeStrategyAction?: MergeWorkflowBlockerResolutionAction;
 }
 
 export interface TaskMissingBaseBranchIssue {
@@ -423,6 +425,71 @@ const resolveMergeWorkflowBlockers = async (
   return 0;
 };
 
+const isMergeExecutionAction = (
+  action: MergeWorkflowBlockerResolutionAction | null | undefined
+): action is MergeWorkflowMergeExecutionAction =>
+  action === 'fast_forward' ||
+  action === 'rebase_then_continue' ||
+  action === 'merge_commit';
+
+const resolveRepositoryMergeStrategyAction = (
+  repository: MergeWorkflowRepositoryResult,
+  preferredAction: MergeWorkflowBlockerResolutionAction | null | undefined
+): MergeWorkflowMergeExecutionAction | null => {
+  if (!repository.hasChanges || repository.progressState === 'no_changes') {
+    return null;
+  }
+
+  if (
+    isMergeExecutionAction(preferredAction) &&
+    repository.availableActions.includes(preferredAction)
+  ) {
+    return preferredAction;
+  }
+
+  // Preserve the old default history shape unless the user explicitly accepts
+  // fast-forward or rebase from the modal.
+  return repository.availableActions.includes('merge_commit') ? 'merge_commit' : null;
+};
+
+const runRepositoryMergeStrategy = async (
+  repository: MergeWorkflowRepositoryResult,
+  preferredAction: MergeWorkflowBlockerResolutionAction | null | undefined
+): Promise<string | undefined> => {
+  const action = resolveRepositoryMergeStrategyAction(repository, preferredAction);
+  if (!action) {
+    return undefined;
+  }
+
+  if (action === 'fast_forward') {
+    return tauriIpc.gitFastForward({
+      repoPath: repository.repoPath,
+      sourceBranch: repository.sourceBranchName,
+      targetBranch: repository.targetBranchName,
+    });
+  }
+
+  if (action === 'rebase_then_continue') {
+    await tauriIpc.gitRebaseBranch({
+      repoPath: repository.repoPath,
+      branchName: repository.sourceBranchName,
+      ontoBranch: repository.targetBranchName,
+      confirm: true,
+    });
+    return tauriIpc.gitFastForward({
+      repoPath: repository.repoPath,
+      sourceBranch: repository.sourceBranchName,
+      targetBranch: repository.targetBranchName,
+    });
+  }
+
+  return tauriIpc.gitMerge({
+    repoPath: repository.repoPath,
+    branchName: repository.sourceBranchName,
+    intoBranch: repository.targetBranchName,
+  });
+};
+
 const updateMergeWorkflowRuntimeState = (
   current: Record<string, MergeWorkflowRuntimeState>,
   taskId: string,
@@ -541,6 +608,13 @@ const toWorkspaceManualFeatureMergeWorkflowDto = (
           blockingKind: repository.blockingKind,
           blockingReason: repository.blockingReason,
           conflictFiles: repository.conflictFiles,
+          dirtyFiles: repository.dirtyFiles,
+          ahead: repository.ahead,
+          behind: repository.behind,
+          isSourcePublished: repository.isSourcePublished,
+          mergeStrategy: repository.mergeStrategy,
+          recommendedAction: repository.recommendedAction,
+          availableActions: repository.availableActions,
         })),
       }
     : null;
@@ -1488,7 +1562,31 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
           mergeable: false,
           conflictFiles: [],
           hasChanges: diff.trim().length > 0,
+          ahead: 0,
+          behind: 0,
         };
+    const branches = await tauriIpc.gitBranchList(target.repoPath).catch(() => null);
+    const isSourcePublished = branches
+      ? isMergeWorkflowSourcePublished(branches, target.branchName)
+      : true;
+    const rebaseCheck =
+      shouldCheckMergeWorkflowRebase({
+        status,
+        mergeCheck,
+        isSourcePublished,
+      })
+        ? await tauriIpc.gitRebaseCheck({
+            repoPath: target.repoPath,
+            branchName: target.branchName,
+            ontoBranch: integrationBranchName,
+          }).catch(() => null)
+        : null;
+    const strategy = resolveMergeWorkflowStrategy({
+      status,
+      mergeCheck,
+      isSourcePublished,
+      rebaseCheck,
+    });
     const blocking = buildMergeWorkflowRepositoryBlockingState({
       repositoryPath: target.repoPath,
       status,
@@ -1501,13 +1599,16 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       repoPath: target.repoPath,
       sourceBranchName: target.branchName,
       targetBranchName: integrationBranchName,
-      progressState: mergeCheck.hasChanges ? 'pending' : 'no_changes',
-      hadChangesAtStart: mergeCheck.hasChanges,
+      progressState: strategy.mergeStrategy === 'no_source_changes' ? 'no_changes' : 'pending',
+      hadChangesAtStart: strategy.mergeStrategy !== 'no_source_changes' && mergeCheck.hasChanges,
       mergeAppliedAt: null,
       isClean: status.is_clean,
-      hasChanges: mergeCheck.hasChanges,
+      hasChanges: strategy.mergeStrategy !== 'no_source_changes' && mergeCheck.hasChanges,
+      ahead: strategy.ahead,
+      behind: strategy.behind,
       mergeable: mergeCheck.mergeable,
       conflictFiles: blocking.conflictFiles,
+      dirtyFiles: strategy.dirtyFiles,
       mergeInProgress: blocking.mergeInProgress,
       diff,
       checkStatus: status.is_clean
@@ -1518,6 +1619,10 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       blockingKind: blocking.blockingKind,
       nextAction: blocking.nextAction,
       blockingReason: blocking.blockingReason,
+      isSourcePublished,
+      mergeStrategy: strategy.mergeStrategy,
+      recommendedAction: strategy.recommendedAction,
+      availableActions: strategy.availableActions,
     });
   }
 
@@ -3258,11 +3363,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }
 
           try {
-            await tauriIpc.gitMerge({
-              repoPath: repository.repoPath,
-              branchName: repository.sourceBranchName,
-              intoBranch: repository.targetBranchName,
-            });
+            await runRepositoryMergeStrategy(
+              repository,
+              options?.mergeStrategyAction
+            );
           } catch (error) {
             await reloadAfterMergeFailure(error);
             throw error;
@@ -3473,12 +3577,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         try {
           const mergeOutput = allowWithoutCodeChanges
             ? undefined
-            : await mergeFeatureBranchIntoPlanBranch({
-                projectId: repository.projectId,
-                branchName: repository.sourceBranchName,
-                planBranchName: repository.targetBranchName,
-                repoPath: repository.repoPath,
-              });
+            : isMergeExecutionAction(options?.mergeStrategyAction)
+              ? await runRepositoryMergeStrategy(
+                  repository,
+                  options.mergeStrategyAction
+                )
+              : await mergeFeatureBranchIntoPlanBranch({
+                  projectId: repository.projectId,
+                  branchName: repository.sourceBranchName,
+                  planBranchName: repository.targetBranchName,
+                  repoPath: repository.repoPath,
+                });
           if (mergeOutput) {
             mergedRepositoryCount += 1;
           }

@@ -25,6 +25,7 @@ interface EditingProvider {
   isEnabled: boolean;
   isLocal: boolean;
   providerType: string;
+  copilotSendTimeoutMinutes: string;
 }
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -40,6 +41,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 const COPILOT_TROUBLESHOOT_DOCS_URL =
   'https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/troubleshoot-copilot-cli-auth';
 const COPILOT_DEVICE_FLOW_URL = 'https://github.com/login/device';
+const DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES = 30;
 
 const formatBytes = (value: number): string => {
   if (value <= 0) return '0 B';
@@ -55,6 +57,19 @@ const formatCopilotAuthSource = (authSource?: string | null): string | null => {
   if (authSource === 'env') return 'environment token';
   if (authSource === 'unknown') return 'another terminal session';
   return null;
+};
+
+const timeoutMsToMinutesInput = (timeoutMs?: number | null): string =>
+  String(
+    timeoutMs && Number.isFinite(timeoutMs) && timeoutMs >= 60_000
+      ? Math.max(1, Math.round(timeoutMs / 60_000))
+      : DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES
+  );
+
+const normalizeTimeoutMinutesInput = (value: string): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES;
+  return Math.max(1, Math.round(parsed));
 };
 
 const providerTypeOptions = [
@@ -74,7 +89,9 @@ export const ProvidersSettings: React.FC = () => {
     copilotStatusByProvider,
     copilotDownloadStateByProvider,
     copilotAuthStateByProvider,
+    providerSettingsById,
     updateProviderConfig,
+    updateProviderSettings,
     createProviderConfig,
     deleteProviderConfig,
     startChatGptAuth,
@@ -404,6 +421,7 @@ export const ProvidersSettings: React.FC = () => {
   };
 
   const handleEdit = (config: ProviderConfig) => {
+    const providerSettings = providerSettingsById[config.id];
     setEditingProvider({
       id: config.id,
       name: config.name,
@@ -415,6 +433,7 @@ export const ProvidersSettings: React.FC = () => {
       isEnabled: config.isEnabled,
       isLocal: config.isLocal,
       providerType: config.providerType,
+      copilotSendTimeoutMinutes: timeoutMsToMinutesInput(providerSettings?.copilotSendTimeoutMs),
     });
     setIsCreating(false);
     setTestResult(null);
@@ -432,6 +451,7 @@ export const ProvidersSettings: React.FC = () => {
       isEnabled: true,
       isLocal: false,
       providerType: 'openai',
+      copilotSendTimeoutMinutes: String(DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES),
     });
     setIsCreating(true);
     setTestResult(null);
@@ -465,6 +485,14 @@ export const ProvidersSettings: React.FC = () => {
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
+        if (editingProvider.providerType === 'copilot') {
+          const timeoutMinutes = normalizeTimeoutMinutesInput(
+            editingProvider.copilotSendTimeoutMinutes
+          );
+          await updateProviderSettings(editingProvider.id, {
+            copilotSendTimeoutMs: timeoutMinutes * 60_000,
+          });
+        }
         notify.success(t('providers.updated', 'Provider updated'));
       }
       setEditingProvider(null);
@@ -628,10 +656,18 @@ export const ProvidersSettings: React.FC = () => {
               <select
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
+                disabled={isLinkedProviderType(editingProvider.providerType)}
                 onChange={(event) =>
                   setEditingProvider({ ...editingProvider, providerType: event.target.value })
                 }
               >
+                {isLinkedProviderType(editingProvider.providerType) && (
+                  <option value={editingProvider.providerType}>
+                    {editingProvider.providerType === 'copilot'
+                      ? t('providers.types.copilot', 'GitHub Copilot')
+                      : t('providers.types.chatgpt', 'ChatGPT')}
+                  </option>
+                )}
                 {providerTypeOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {t(option.labelKey, option.fallback)}
@@ -749,6 +785,39 @@ export const ProvidersSettings: React.FC = () => {
             </>
           )}
 
+          {editingProvider.providerType === 'copilot' && (
+            <div className="space-y-1">
+              <label className="text-sm font-medium">
+                {t('providers.form.copilotResponseTimeoutLabel', 'Copilot response timeout')}
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min="1"
+                  step="any"
+                  value={editingProvider.copilotSendTimeoutMinutes}
+                  onChange={(event) =>
+                    setEditingProvider({
+                      ...editingProvider,
+                      copilotSendTimeoutMinutes: event.target.value,
+                    })
+                  }
+                  onBlur={() =>
+                    setEditingProvider({
+                      ...editingProvider,
+                      copilotSendTimeoutMinutes: String(
+                        normalizeTimeoutMinutesInput(editingProvider.copilotSendTimeoutMinutes)
+                      ),
+                    })
+                  }
+                />
+                <span className="text-sm text-muted-foreground">
+                  {t('common.minutes', 'minutes')}
+                </span>
+              </div>
+            </div>
+          )}
+
           {testResult && (
             <div
               className={cn(
@@ -767,8 +836,15 @@ export const ProvidersSettings: React.FC = () => {
 
           <div className="flex items-center justify-end gap-3 pt-4">
             {showLinkedFields && (
-              <Button variant="secondary" onClick={handleTest} isLoading={testingId === 'current'}>
-                {t('providers.testConnection', 'Test Connection')}
+              <Button
+                variant="secondary"
+                onClick={handleTest}
+                isLoading={testingId === 'current'}
+                className="h-9 w-9 p-0"
+                aria-label={t('providers.testConnection', 'Test Connection')}
+                title={t('providers.testConnection', 'Test Connection')}
+              >
+                {testingId !== 'current' && <Icon name="refresh-cw" size={16} />}
               </Button>
             )}
             <Button onClick={handleSave} isLoading={saving}>
@@ -963,10 +1039,19 @@ export const ProvidersSettings: React.FC = () => {
                       <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>
                     </div>
 
+                    <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
+                      {t('common.edit', 'Edit')}
+                    </Button>
+
                     {isRefreshingCopilotStatus ? (
-                      <Button variant="ghost" size="sm" isLoading>
-                        {t('providers.status.checking', 'Checking')}
-                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        isLoading
+                        className="h-8 w-8 p-0"
+                        aria-label={t('providers.status.checking', 'Checking')}
+                        title={t('providers.status.checking', 'Checking')}
+                      />
                     ) : isCopilotDownloading ? (
                       <Button
                         variant="ghost"
@@ -1066,9 +1151,12 @@ export const ProvidersSettings: React.FC = () => {
                       <Button
                         variant="ghost"
                         size="sm"
+                        className="h-8 w-8 p-0"
                         onClick={() => void refreshCopilotProviderStatus(provider.id)}
+                        aria-label={t('providers.copilot.recheckStatus', 'Re-check status')}
+                        title={t('providers.copilot.recheckStatus', 'Re-check status')}
                       >
-                        {t('providers.copilot.recheckStatus', 'Re-check status')}
+                        <Icon name="refresh-cw" size={15} />
                       </Button>
                     ) : null}
 

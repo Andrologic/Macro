@@ -3866,13 +3866,19 @@ pub async fn db_get_provider_settings(
 pub async fn db_update_provider_settings(
     pool: State<'_, DbPool>,
     provider_id: String,
-    filter_free_models: bool,
+    filter_free_models: Option<bool>,
+    copilot_send_timeout_ms: Option<Option<i64>>,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
-    repository::update_provider_settings(&pool, &provider_id, filter_free_models)
-        .await
-        .map_err(Into::into)
+    repository::update_provider_settings(
+        &pool,
+        &provider_id,
+        filter_free_models,
+        copilot_send_timeout_ms,
+    )
+    .await
+    .map_err(Into::into)
 }
 
 #[tauri::command]
