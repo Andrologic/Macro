@@ -4010,6 +4010,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
+    if (repository.mergeInProgress && repository.conflictFiles.length > 0) {
+      return {
+        status: 'conflicted',
+        conflictFiles: repository.conflictFiles,
+        output: '',
+      };
+    }
+
     const result = await tauriIpc.gitStartMergeResolution({
       repoPath: repository.repoPath,
       branchName: repository.sourceBranchName,

@@ -115,14 +115,21 @@ const loadFileChangesPanelModules = async () => {
 
   const reactModule = await import('react');
   mock.module('../modals/MergeWorkflowConflictResolverModal', () => ({
-    MergeWorkflowConflictResolverModal: ({ repository }: { repository: { id: string; conflictFiles: string[] } }) =>
+    MergeWorkflowConflictResolverModal: ({
+      repository,
+      onClose,
+    }: {
+      repository: { id: string; conflictFiles: string[] };
+      onClose: () => void;
+    }) =>
       reactModule.createElement(
         'div',
         {
           'data-merge-conflict-resolver-modal': 'true',
           'data-repository-id': repository.id,
         },
-        repository.conflictFiles.join('\n')
+        repository.conflictFiles.join('\n'),
+        reactModule.createElement('button', { onClick: onClose }, 'Close resolver')
       ),
   }));
 
@@ -1565,6 +1572,139 @@ describe('FileChangesPanel', () => {
     expect(modal?.textContent).not.toContain('first-only.ts');
   });
 
+  it('blocks manual conflict resolution only while the scoped AI assistant is active', async () => {
+    const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
+      conversationId: 'conversation-1',
+      autoResolvedRepositoryCount: 0,
+      remainingBlockedRepositoryCount: 1,
+    }));
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/conflict.ts'],
+      blockingReason: 'Cannot continue merge because /repos/project would conflict in: src/conflict.ts.',
+    });
+    const repository = {
+      ...mergeWorkflowRuntime.repositories[0],
+      isClean: true,
+      dirtyFiles: [],
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+    };
+    mergeWorkflowRuntime.repositories = [repository];
+    mergeWorkflowRuntime.blockedRepositories = [repository];
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: resolveMergeWorkflowAutomaticallyMock,
+      },
+    });
+    seedActiveAssistantRuntime();
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const resolveWithAiButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve with AI'));
+
+    await act(async () => {
+      resolveWithAiButton?.click();
+      await flushRender();
+    });
+
+    const resolvingButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('AI resolving'));
+
+    expect(resolvingButton).toBeDefined();
+    expect(resolvingButton?.disabled).toBe(true);
+
+    await act(async () => {
+      finishAssistantRuntime();
+      await flushRender();
+    });
+
+    const manualButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve manually'));
+
+    expect(manualButton).toBeDefined();
+    expect(manualButton?.disabled).toBe(false);
+  });
+
+  it('refreshes the merge review when closing the manual conflict resolver', async () => {
+    const loadMergeWorkflowReviewMock = mock(async () => null);
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/conflict.ts'],
+      blockingReason: 'Cannot continue merge because /repos/project would conflict in: src/conflict.ts.',
+    });
+    const repository = {
+      ...mergeWorkflowRuntime.repositories[0],
+      isClean: true,
+      dirtyFiles: [],
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+    };
+    mergeWorkflowRuntime.repositories = [repository];
+    mergeWorkflowRuntime.blockedRepositories = [repository];
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => null),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const resolveManuallyButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve manually'));
+
+    await act(async () => {
+      resolveManuallyButton?.click();
+      await flushRender();
+    });
+
+    const closeButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Close resolver'));
+
+    await act(async () => {
+      closeButton?.click();
+      await flushRender();
+    });
+
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith('task-1', { force: true });
+    expect(document.body.querySelector('[data-merge-conflict-resolver-modal="true"]')).toBeNull();
+  });
+
   it('asks before stashing dirty merge blockers from retry merge and then retries', async () => {
     const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
       conversationId: null,
@@ -1635,6 +1775,15 @@ describe('FileChangesPanel', () => {
       mergeInProgress: true,
       blockingReason: 'Cannot continue merge because /repos/project already has a merge in progress.',
     });
+    mergeWorkflowRuntime.repositories = mergeWorkflowRuntime.repositories.map((repository) => ({
+      ...repository,
+      isClean: true,
+      dirtyFiles: [],
+      mergeStrategy: 'merge_in_progress',
+      recommendedAction: 'abort_merge',
+      availableActions: ['abort_merge', 'assistant', 'retry_check'],
+    }));
+    mergeWorkflowRuntime.blockedRepositories = mergeWorkflowRuntime.repositories;
 
     seedStores(buildRepository(false), {
       taskOverrides: {
@@ -1682,6 +1831,61 @@ describe('FileChangesPanel', () => {
       blockerResolutionAction: 'abort_merge',
     });
     expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1');
+  });
+
+  it('does not render an empty repository list in the abort merge modal', async () => {
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_in_progress',
+      nextAction: null,
+      mergeInProgress: true,
+      blockingReason: 'Cannot continue merge because /repos/project already has a merge in progress.',
+    });
+    mergeWorkflowRuntime.repositories = mergeWorkflowRuntime.repositories.map((repository) => ({
+      ...repository,
+      isClean: true,
+      dirtyFiles: [],
+      mergeStrategy: 'merge_in_progress',
+      recommendedAction: 'abort_merge',
+      availableActions: ['abort_merge', 'assistant', 'retry_check'],
+    }));
+    mergeWorkflowRuntime.blockedRepositories = mergeWorkflowRuntime.repositories;
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => ({
+          conversationId: null,
+          autoResolvedRepositoryCount: 0,
+          remainingBlockedRepositoryCount: 1,
+        })),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const resolveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve'));
+
+    await act(async () => {
+      resolveButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('A merge is already in progress');
+    expect(document.body.querySelector('[data-merge-resolution-repository-list="true"]')).toBeNull();
   });
 
   it('loads the merge review once when an existing runtime has no review yet', async () => {
