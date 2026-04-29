@@ -757,6 +757,20 @@ export const isMergeWorkflowRepositoryActionableByModal = (
   (repository.recommendedAction === 'fast_forward' ||
     repository.recommendedAction === 'rebase_then_continue');
 
+export const isMergeWorkflowFileConflictRepository = (
+  repository: Pick<
+    MergeWorkflowRepositoryResult,
+    'mergeStrategy' | 'blockingKind' | 'conflictFiles'
+  >
+): boolean =>
+  repository.mergeStrategy !== 'dirty' &&
+  repository.blockingKind !== 'repository_dirty' &&
+  (
+    repository.mergeStrategy === 'file_conflict' ||
+    repository.blockingKind === 'merge_conflict' ||
+    repository.conflictFiles.length > 0
+  );
+
 export const mergeWorkflowNeedsUserDecision = (
   runtime: Pick<MergeWorkflowRuntimeState, 'repositories' | 'blockedRepositories'> | null | undefined
 ): boolean =>

@@ -8,10 +8,11 @@ import {
 } from '../../stores/useTaskStore';
 import { toServiceError } from '../../services/contracts/errors';
 import {
+  isMergeWorkflowFileConflictRepository,
   resolveMergeWorkflowViewState,
   type MergeWorkflowRepositoryResult,
 } from '../../services/mergeWorkflow';
-import { MergeWorkflowDiffModal } from '../modals/MergeWorkflowDiffModal';
+import { MergeWorkflowConflictResolverModal } from '../modals/MergeWorkflowConflictResolverModal';
 import { Icon } from '../ui/Icon';
 import { Button, type ButtonProps } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -26,17 +27,28 @@ interface MergeWorkflowTaskPanelProps {
 }
 
 type MergeBlockerResolutionIntent = 'retry_merge' | 'resolve_automatically';
+type MergeWorkflowActionOutcome = 'completed' | 'blocked' | 'failed' | 'assistant_started';
 type IncidentTone = 'danger' | 'warning' | 'info' | 'success' | 'muted';
+type IncidentKind =
+  | 'dirty'
+  | 'file_conflict'
+  | 'merge_in_progress'
+  | 'strategy'
+  | 'state';
 
 interface RepositoryIncident {
+  kind: IncidentKind;
   statusLabel: string;
   title: string;
   description: string;
   tone: IncidentTone;
   affectedFiles: string[];
+  localChangeCount?: number;
   primaryLabel: string | null;
-  primaryAction: MergeWorkflowBlockerResolutionAction | 'assistant' | null;
+  primaryAction: MergeWorkflowBlockerResolutionAction | 'assistant' | 'manual_conflict' | null;
   primaryVariant: ButtonProps['variant'];
+  secondaryLabel?: string | null;
+  secondaryAction?: MergeWorkflowBlockerResolutionAction | 'assistant' | null;
 }
 
 const COMPACT_PANEL_WIDTH = 520;
@@ -124,6 +136,7 @@ const getRepositoryIncident = (
 
   if (repository.mergeInProgress || repository.blockingKind === 'merge_in_progress') {
     return {
+      kind: 'merge_in_progress',
       statusLabel: t('implement.mergeInProgress', 'Merge in progress'),
       title: t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress'),
       description: t(
@@ -140,27 +153,26 @@ const getRepositoryIncident = (
 
   if (repository.mergeStrategy === 'dirty' || repository.blockingKind === 'repository_dirty') {
     return {
+      kind: 'dirty',
       statusLabel: t('implement.localChangesStatus', 'Local changes'),
-      title: t('implement.localChangesBlockingMerge', 'Local changes blocking merge'),
+      title: t('implement.targetBranchDirtyTitle', 'Target branch has local changes'),
       description: t(
-        'implement.localChangesBlockingMergeDescription',
-        '{{count}} local file(s) need a decision before Macro can merge this repository.',
-        { count: dirtyFiles.length }
+        'implement.targetBranchDirtyDescription',
+        '{{branchName}} is not clean. Resolve the local state before Macro merges into it.',
+        { branchName: repository.targetBranchName }
       ),
       tone: 'warning',
-      affectedFiles: dirtyFiles.map((file) => file.path),
+      affectedFiles: [],
+      localChangeCount: dirtyFiles.length,
       primaryLabel: t('implement.resolveBlocker', 'Resolve'),
       primaryAction: 'stash_dirty',
       primaryVariant: 'primary',
     };
   }
 
-  if (
-    repository.mergeStrategy === 'file_conflict' ||
-    repository.blockingKind === 'merge_conflict' ||
-    conflictFiles.length > 0
-  ) {
+  if (isMergeWorkflowFileConflictRepository(repository)) {
     return {
+      kind: 'file_conflict',
       statusLabel: t('implement.fileConflictsStatus', 'File conflicts'),
       title: t('implement.fileConflictsBlockingMerge', 'File conflicts need resolution'),
       description: t(
@@ -170,14 +182,17 @@ const getRepositoryIncident = (
       ),
       tone: 'danger',
       affectedFiles: conflictFiles,
-      primaryLabel: t('implement.resolveWithAi', 'Resolve with AI'),
-      primaryAction: 'assistant',
+      primaryLabel: t('implement.resolveManually', 'Resolve manually'),
+      primaryAction: 'manual_conflict',
       primaryVariant: 'primary',
+      secondaryLabel: t('implement.resolveWithAi', 'Resolve with AI'),
+      secondaryAction: 'assistant',
     };
   }
 
   if (isFastForwardMergeRepository(repository)) {
     return {
+      kind: 'strategy',
       statusLabel: t('implement.fastForwardResolutionTitle', 'Fast-forward available'),
       title: t('implement.fastForwardAvailableInline', 'Fast-forward is available for this repository.'),
       description: t(
@@ -194,6 +209,7 @@ const getRepositoryIncident = (
 
   if (isRebaseMergeRepository(repository)) {
     return {
+      kind: 'strategy',
       statusLabel: t('implement.rebaseResolutionTitle', 'Rebase available'),
       title: t('implement.rebaseAvailableInline', 'This local branch can be rebased before continuing.'),
       description: t(
@@ -210,6 +226,7 @@ const getRepositoryIncident = (
 
   if (repository.progressState === 'merged') {
     return {
+      kind: 'state',
       statusLabel: t('implement.repositoryCommitted', 'Committed'),
       title: t('implement.mergeRepositoryAlreadyMerged', 'Already merged'),
       description: t('implement.mergeRepositoryAlreadyMergedDescription', 'This repository is already merged.'),
@@ -223,6 +240,7 @@ const getRepositoryIncident = (
 
   if (repository.progressState === 'no_changes' || !repository.hasChanges) {
     return {
+      kind: 'state',
       statusLabel: t('implement.repositoryNoChanges', 'No changes'),
       title: t('implement.repositoryNoChanges', 'No changes'),
       description: t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.'),
@@ -235,6 +253,7 @@ const getRepositoryIncident = (
   }
 
   return {
+    kind: 'state',
     statusLabel: t('implement.mergeWorkflowReady', 'Ready to merge'),
     title: t('implement.mergeRepositoryReadyTitle', 'Merge ready'),
     description: t('implement.mergeRepositoryReadyDescription', 'This repository is clean and ready for the merge action.'),
@@ -267,11 +286,13 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   );
   const [isArchiving, setIsArchiving] = useState(false);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
+  const [pendingBlockerResolutionAction, setPendingBlockerResolutionAction] =
+    useState<MergeWorkflowBlockerResolutionAction | null>(null);
   const [blockerResolutionAction, setBlockerResolutionAction] =
     useState<MergeWorkflowBlockerResolutionAction | null>(null);
   const [blockerResolutionIntent, setBlockerResolutionIntent] =
     useState<MergeBlockerResolutionIntent>('retry_merge');
-  const [diffRepositoryId, setDiffRepositoryId] = useState<string | null>(null);
+  const [manualResolutionRepositoryId, setManualResolutionRepositoryId] = useState<string | null>(null);
   const lastBlockingNotificationKeyRef = useRef<string | null>(null);
 
   const hasMergeRuntime = Boolean(runtime);
@@ -289,9 +310,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     () => resolveSimpleBlockerAction(repositories),
     [repositories]
   );
-  const diffRepository = useMemo(
-    () => repositories.find((repository) => repository.id === diffRepositoryId) ?? null,
-    [diffRepositoryId, repositories]
+  const manualResolutionRepository = useMemo(
+    () => repositories.find((repository) => repository.id === manualResolutionRepositoryId) ?? null,
+    [manualResolutionRepositoryId, repositories]
   );
   const primaryBlockedRepository = useMemo(
     () =>
@@ -326,11 +347,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   }, [hasMergeRuntime, hasRuntimeReview, loadMergeWorkflowReview, runtimePhase, task.id]);
 
   useEffect(() => {
-    if (!diffRepositoryId) return;
-    if (!repositories.some((repository) => repository.id === diffRepositoryId)) {
-      setDiffRepositoryId(null);
+    if (!manualResolutionRepositoryId) return;
+    if (!repositories.some((repository) => repository.id === manualResolutionRepositoryId)) {
+      setManualResolutionRepositoryId(null);
     }
-  }, [diffRepositoryId, repositories]);
+  }, [manualResolutionRepositoryId, repositories]);
 
   const openBlockerResolutionModal = useCallback((
     intent: MergeBlockerResolutionIntent,
@@ -377,10 +398,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const handleMerge = useCallback(async (
     action?: MergeWorkflowBlockerResolutionAction,
     options: { skipStrategyPrompt?: boolean } = {}
-  ) => {
+  ): Promise<MergeWorkflowActionOutcome> => {
     if (!options.skipStrategyPrompt && !action && simpleBlockerResolutionAction) {
       openBlockerResolutionModal('retry_merge', simpleBlockerResolutionAction);
-      return;
+      return 'blocked';
     }
 
     try {
@@ -397,6 +418,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
           category: 'task_completed',
         }
       );
+      return 'completed';
     } catch (error) {
       const nextRuntime = useTaskStore.getState().getMergeWorkflowRuntime(task.id);
       const nextViewState = resolveMergeWorkflowViewState(nextRuntime, {
@@ -408,14 +430,17 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
             blockerResolutionAction: 'assistant',
           });
           notifyAutomaticResolutionResult(resolution);
+          return 'assistant_started';
         } catch (assistantError) {
           notify.error(toServiceError(assistantError).message);
+          return 'failed';
         }
-        return;
       }
       if (!nextViewState.isBlocked && !nextViewState.isFailed) {
         notify.error(toServiceError(error).message);
+        return 'failed';
       }
+      return nextViewState.isFailed ? 'failed' : 'blocked';
     }
   }, [
     isPlanFinalizationTask,
@@ -446,7 +471,6 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   ): Promise<MergeWorkflowAutomaticResolutionResult | null> => {
     setIsResolvingAutomatically(true);
     try {
-      setBlockerResolutionAction(null);
       const resolution = await resolveMergeWorkflowAutomatically(task.id, {
         blockerResolutionAction: action,
       });
@@ -466,15 +490,15 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
   const handleRetryMerge = useCallback(async (
     action?: MergeWorkflowBlockerResolutionAction
-  ) => {
+  ): Promise<MergeWorkflowActionOutcome> => {
     try {
       const nextRuntime = await loadMergeWorkflowReview(task.id, { force: true });
-      if (!nextRuntime) return;
+      if (!nextRuntime) return 'blocked';
 
       const nextSimpleAction = resolveSimpleBlockerAction(nextRuntime.repositories);
       if (!action && nextSimpleAction) {
         openBlockerResolutionModal('retry_merge', nextSimpleAction);
-        return;
+        return 'blocked';
       }
 
       if (action === 'stash_dirty' || action === 'revert_dirty' || action === 'abort_merge') {
@@ -484,10 +508,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
           resolution.remainingBlockedRepositoryCount > 0 ||
           resolution.conversationId
         ) {
-          return;
+          return resolution?.conversationId ? 'assistant_started' : 'blocked';
         }
-        await handleMerge(undefined, { skipStrategyPrompt: true });
-        return;
+        return handleMerge(undefined, { skipStrategyPrompt: true });
       }
 
       if (
@@ -495,16 +518,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         action === 'rebase_then_continue' ||
         action === 'merge_commit'
       ) {
-        await handleMerge(action);
-        return;
+        return handleMerge(action);
       }
 
       if (nextRuntime.blockedRepositories.length > 0 || nextRuntime.phase === 'failed') {
-        return;
+        return nextRuntime.phase === 'failed' ? 'failed' : 'blocked';
       }
-      await handleMerge();
+      return handleMerge();
     } catch (error) {
       notify.error(toServiceError(error).message);
+      return 'failed';
     }
   }, [
     handleMerge,
@@ -516,29 +539,50 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
   const handleResolveAutomatically = useCallback(async (
     action?: MergeWorkflowBlockerResolutionAction
-  ) => {
+  ): Promise<MergeWorkflowActionOutcome | null> => {
     if (!action && simpleBlockerResolutionAction) {
       openBlockerResolutionModal('resolve_automatically', simpleBlockerResolutionAction);
-      return;
+      return 'blocked';
     }
 
-    await runAutomaticResolution(action);
+    const resolution = await runAutomaticResolution(action);
+    if (!resolution) return 'failed';
+    if (resolution.conversationId) return 'assistant_started';
+    return resolution.remainingBlockedRepositoryCount > 0 ? 'blocked' : null;
   }, [
     openBlockerResolutionModal,
     runAutomaticResolution,
     simpleBlockerResolutionAction,
   ]);
 
-  const handleIncidentPrimaryAction = useCallback((
-    action: RepositoryIncident['primaryAction']
+  const handleIncidentAction = useCallback((
+    repository: MergeWorkflowRepositoryResult,
+    action: RepositoryIncident['primaryAction'] | RepositoryIncident['secondaryAction']
   ) => {
     if (!action) return;
+    if (action === 'manual_conflict') {
+      setManualResolutionRepositoryId(repository.id);
+      return;
+    }
     if (action === 'assistant') {
-      void handleResolveAutomatically('assistant');
+      setIsResolvingAutomatically(true);
+      void resolveMergeWorkflowAutomatically(task.id, {
+        blockerResolutionAction: 'assistant',
+        repositoryId: repository.id,
+      }).then(notifyAutomaticResolutionResult).catch((error) => {
+        notify.error(toServiceError(error).message);
+      }).finally(() => {
+        setIsResolvingAutomatically(false);
+      });
       return;
     }
     openBlockerResolutionModal('retry_merge', action);
-  }, [handleResolveAutomatically, openBlockerResolutionModal]);
+  }, [
+    notifyAutomaticResolutionResult,
+    openBlockerResolutionModal,
+    resolveMergeWorkflowAutomatically,
+    task.id,
+  ]);
 
   const blockingNotificationKey = useMemo(() => {
     if (!primaryBlockedRepository || !primaryBlockingPresentation || !isBlocked) return null;
@@ -585,7 +629,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         : [{
             label: t('implement.resolveWithAi', 'Resolve with AI'),
             variant: 'secondary' as const,
-            onClick: () => handleResolveAutomatically('assistant'),
+            onClick: () => {
+              void handleResolveAutomatically('assistant');
+            },
             dismissOnSuccess: true,
           }],
     });
@@ -691,19 +737,33 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         { count: modalRepositories.length }
       )
     : null;
-  const runBlockerResolutionChoice = (
+  const isBlockerResolutionSubmitting = Boolean(pendingBlockerResolutionAction) || isResolvingAutomatically;
+  const runBlockerResolutionChoice = useCallback(async (
     action: MergeWorkflowBlockerResolutionAction
   ) => {
-    if (action === 'merge_commit' && blockerResolutionIntent !== 'retry_merge') {
-      void handleMerge('merge_commit');
-      return;
+    if (pendingBlockerResolutionAction) return;
+    setPendingBlockerResolutionAction(action);
+    try {
+      if (action === 'merge_commit' && blockerResolutionIntent !== 'retry_merge') {
+        await handleMerge('merge_commit');
+        return;
+      }
+      if (blockerResolutionIntent === 'retry_merge') {
+        await handleRetryMerge(action);
+        return;
+      }
+      await handleResolveAutomatically(action);
+    } finally {
+      setPendingBlockerResolutionAction(null);
+      setBlockerResolutionAction(null);
     }
-    if (blockerResolutionIntent === 'retry_merge') {
-      void handleRetryMerge(action);
-      return;
-    }
-    void handleResolveAutomatically(action);
-  };
+  }, [
+    blockerResolutionIntent,
+    handleMerge,
+    handleResolveAutomatically,
+    handleRetryMerge,
+    pendingBlockerResolutionAction,
+  ]);
 
   return (
     <>
@@ -777,11 +837,14 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                 const incident = getRepositoryIncident(repository, translate);
                 const affectedFiles = incident.affectedFiles.slice(0, 4);
                 const hiddenFileCount = Math.max(0, incident.affectedFiles.length - affectedFiles.length);
+                const isDirtyIncident = incident.kind === 'dirty';
+                const isFileConflictIncident = incident.kind === 'file_conflict';
 
                 return (
                   <section
                     key={repository.id}
                     className="rounded-xl border border-border bg-background/50 p-3"
+                    data-merge-incident-kind={incident.kind}
                   >
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0 space-y-1">
@@ -808,8 +871,29 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                         <div className="mt-1 text-xs text-muted-foreground">{incident.description}</div>
                       </div>
 
-                      {affectedFiles.length > 0 && (
-                        <div className="space-y-1 rounded-lg bg-muted/30 px-2 py-2">
+                      {isDirtyIncident && (
+                        <div
+                          className="text-[11px] text-muted-foreground"
+                          data-merge-dirty-state-summary="true"
+                        >
+                          {t(
+                            'implement.targetCheckoutLocalChangesCount',
+                            '{{count}} local change(s) detected in the target checkout.',
+                            { count: incident.localChangeCount ?? 0 }
+                          )}
+                        </div>
+                      )}
+
+                      {!isDirtyIncident && affectedFiles.length > 0 && (
+                        <div
+                          className="space-y-1 rounded-lg bg-muted/30 px-2 py-2"
+                          data-merge-affected-files="true"
+                        >
+                          {isFileConflictIncident && (
+                            <div className="pb-1 text-[11px] font-medium uppercase text-red-300/80">
+                              {t('implement.conflictingFiles', 'Conflicting files')}
+                            </div>
+                          )}
                           {affectedFiles.map((file) => (
                             <div key={file} className="truncate text-xs text-muted-foreground" title={file}>
                               {file}
@@ -830,19 +914,20 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                             size="sm"
                             variant={incident.primaryVariant}
                             disabled={isResolvingAutomatically || isArchiving}
-                            onClick={() => handleIncidentPrimaryAction(incident.primaryAction)}
+                            onClick={() => handleIncidentAction(repository, incident.primaryAction)}
                           >
                             {incident.primaryLabel}
                           </Button>
                         )}
-                        {repository.hasChanges && (
+                        {incident.secondaryLabel && (
                           <Button
                             type="button"
                             size="sm"
-                            variant="ghost"
-                            onClick={() => setDiffRepositoryId(repository.id)}
+                            variant="secondary"
+                            disabled={isResolvingAutomatically || isArchiving}
+                            onClick={() => handleIncidentAction(repository, incident.secondaryAction)}
                           >
-                            {t('implement.viewDiff', 'View diff')}
+                            {incident.secondaryLabel}
                           </Button>
                         )}
                       </div>
@@ -899,10 +984,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         </div>
       </aside>
 
-      {diffRepository && (
-        <MergeWorkflowDiffModal
-          repository={diffRepository}
-          onClose={() => setDiffRepositoryId(null)}
+      {manualResolutionRepository && (
+        <MergeWorkflowConflictResolverModal
+          taskId={task.id}
+          repository={manualResolutionRepository}
+          onClose={() => setManualResolutionRepositoryId(null)}
         />
       )}
 
@@ -912,20 +998,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         description={blockerResolutionDescription}
         confirmLabel={blockerResolutionConfirmLabel}
         cancelLabel={t('common.cancel', 'Cancel')}
-        isSubmitting={isResolvingAutomatically}
+        isSubmitting={isBlockerResolutionSubmitting}
         showConfirmButton={false}
         onCancel={() => {
-          if (!isResolvingAutomatically) {
+          if (!isBlockerResolutionSubmitting) {
             setBlockerResolutionAction(null);
           }
         }}
         onConfirm={() => {
           if (!blockerResolutionAction) return;
-          if (blockerResolutionIntent === 'retry_merge') {
-            void handleRetryMerge(blockerResolutionAction);
-            return;
-          }
-          void handleResolveAutomatically(blockerResolutionAction);
+          void runBlockerResolutionChoice(blockerResolutionAction);
         }}
       >
         <div className="space-y-3">
@@ -946,10 +1028,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
             variant={blockerResolutionAction === 'abort_merge' ? 'error' : 'primary'}
             size="sm"
             className="w-full"
-            disabled={isResolvingAutomatically || !blockerResolutionAction}
+            disabled={isBlockerResolutionSubmitting || !blockerResolutionAction}
+            isLoading={pendingBlockerResolutionAction === blockerResolutionAction}
             onClick={() => {
               if (!blockerResolutionAction) return;
-              runBlockerResolutionChoice(blockerResolutionAction);
+              void runBlockerResolutionChoice(blockerResolutionAction);
             }}
           >
             {blockerResolutionConfirmLabel}
@@ -960,8 +1043,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               variant="error"
               size="sm"
               className="w-full"
-              disabled={isResolvingAutomatically}
-              onClick={() => runBlockerResolutionChoice('revert_dirty')}
+              disabled={isBlockerResolutionSubmitting}
+              isLoading={pendingBlockerResolutionAction === 'revert_dirty'}
+              onClick={() => void runBlockerResolutionChoice('revert_dirty')}
             >
               {t('implement.revertAndRetryMerge', 'Revert and retry')}
             </Button>
@@ -972,8 +1056,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               variant="secondary"
               size="sm"
               className="w-full"
-              disabled={isResolvingAutomatically}
-              onClick={() => runBlockerResolutionChoice('merge_commit')}
+              disabled={isBlockerResolutionSubmitting}
+              isLoading={pendingBlockerResolutionAction === 'merge_commit'}
+              onClick={() => void runBlockerResolutionChoice('merge_commit')}
             >
               {t('implement.useMergeCommit', 'Use merge commit')}
             </Button>
@@ -984,10 +1069,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               variant="secondary"
               size="sm"
               className="w-full"
-              disabled={isResolvingAutomatically}
-              onClick={() => {
-                void handleResolveAutomatically('assistant');
-              }}
+              disabled={isBlockerResolutionSubmitting}
+              isLoading={pendingBlockerResolutionAction === 'assistant'}
+              onClick={() => void runBlockerResolutionChoice('assistant')}
             >
               {t('implement.openAssistantInstead', 'Open assistant instead')}
             </Button>
