@@ -798,12 +798,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     setCommitMessageGenerationError(null);
 
     try {
-      const result = await commitAllReadyTaskRepositories(options);
-      notify.success(
-        t('implement.taskRepositoriesCommitSuccess', 'Created commits for {{count}} repository(ies).', {
-          count: result.commits.length,
-        })
-      );
+      await commitAllReadyTaskRepositories(options);
       setCommitMessageEditState(null);
     } catch (error) {
       const messageText = toServiceError(error).message;
