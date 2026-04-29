@@ -84,7 +84,7 @@ describe('preferences legacy cleanup', () => {
 
     const value = await loadPreference(PREF_KEYS.CHAT_MAX_TURNS);
 
-    expect(value).toBe(20);
+    expect(value).toBe(50);
   });
 
   it('preserves null chat max turns as the disabled limit preference', async () => {
