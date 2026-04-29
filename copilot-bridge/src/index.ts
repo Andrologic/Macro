@@ -153,6 +153,15 @@ interface RelayToolResult {
   interrupt?: boolean;
 }
 
+interface CopilotSessionEventState {
+  finalContent: string;
+  lastError: string | null;
+  streamedReasoning: string;
+  completeReasoning: string;
+  messageReasoning: string;
+  thinkingOpen: boolean;
+}
+
 class BridgeError extends Error {
   code: string;
 
@@ -164,6 +173,185 @@ class BridgeError extends Error {
 
 const emitJson = (payload: JsonRecord): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
+};
+
+const createCopilotSessionEventState = (): CopilotSessionEventState => ({
+  finalContent: '',
+  lastError: null,
+  streamedReasoning: '',
+  completeReasoning: '',
+  messageReasoning: '',
+  thinkingOpen: false,
+});
+
+const optionalTrimmedText = (value?: string | null): string | undefined => {
+  const trimmed = (value || '').trim();
+  return trimmed || undefined;
+};
+
+const appendCopilotReasoningDelta = (
+  state: CopilotSessionEventState,
+  delta: string,
+  emit: (payload: JsonRecord) => void
+): void => {
+  if (!delta) return;
+  if (!state.thinkingOpen) {
+    emit({ type: 'delta', delta: '<think>' });
+    state.thinkingOpen = true;
+  }
+  state.streamedReasoning += delta;
+  emit({ type: 'delta', delta });
+};
+
+const closeCopilotThinkingBlock = (
+  state: CopilotSessionEventState,
+  emit: (payload: JsonRecord) => void,
+  beforeResponse: boolean
+): void => {
+  if (!state.thinkingOpen) return;
+  emit({ type: 'delta', delta: beforeResponse ? '</think>\n' : '</think>' });
+  state.thinkingOpen = false;
+};
+
+const getCopilotReasoningSummary = (
+  state: CopilotSessionEventState
+): string | undefined =>
+  optionalTrimmedText(state.streamedReasoning) ||
+  optionalTrimmedText(state.completeReasoning) ||
+  optionalTrimmedText(state.messageReasoning);
+
+const handleCopilotAssistantMessage = (
+  state: CopilotSessionEventState,
+  data: {
+    content?: string;
+    reasoningText?: string;
+  } | null | undefined,
+  emit: (payload: JsonRecord) => void
+): void => {
+  if (!data) return;
+  const content = typeof data.content === 'string' ? data.content : '';
+  closeCopilotThinkingBlock(state, emit, Boolean(content));
+  if (content) {
+    state.finalContent = content;
+  }
+  const reasoningText = optionalTrimmedText(data.reasoningText);
+  if (reasoningText) {
+    state.messageReasoning = reasoningText;
+  }
+};
+
+const handleCopilotSessionEvent = (params: {
+  event: {
+    type: string;
+    data?: Record<string, unknown>;
+  };
+  state: CopilotSessionEventState;
+  toolTraces: Map<string, ToolTraceSnapshot>;
+  hiddenContextBlocks: string[];
+  emit: (payload: JsonRecord) => void;
+}): void => {
+  const { event, state, toolTraces, hiddenContextBlocks, emit } = params;
+  const data = (event.data || {}) as Record<string, unknown>;
+
+  if (event.type === 'assistant.reasoning_delta') {
+    appendCopilotReasoningDelta(
+      state,
+      typeof data.deltaContent === 'string' ? data.deltaContent : '',
+      emit
+    );
+    return;
+  }
+
+  if (event.type === 'assistant.reasoning') {
+    const content = typeof data.content === 'string' ? data.content : '';
+    if (content) {
+      state.completeReasoning = content;
+      if (!optionalTrimmedText(state.streamedReasoning)) {
+        appendCopilotReasoningDelta(state, content, emit);
+      }
+    }
+    return;
+  }
+
+  if (event.type === 'assistant.message_delta') {
+    const delta = typeof data.deltaContent === 'string' ? data.deltaContent : '';
+    if (delta) {
+      closeCopilotThinkingBlock(state, emit, true);
+      emit({ type: 'delta', delta });
+    }
+    return;
+  }
+
+  if (event.type === 'assistant.message') {
+    handleCopilotAssistantMessage(
+      state,
+      {
+        content: typeof data.content === 'string' ? data.content : '',
+        reasoningText: typeof data.reasoningText === 'string' ? data.reasoningText : undefined,
+      },
+      emit
+    );
+    return;
+  }
+
+  if (event.type === 'tool.execution_start') {
+    const args = ((data.arguments || {}) as JsonRecord);
+    const toolName = typeof data.toolName === 'string' ? data.toolName : 'tool';
+    const toolCallId = typeof data.toolCallId === 'string' ? data.toolCallId : randomUUID();
+    const detail = formatToolTraceDetail(toolName, args);
+    const trace: ToolTraceSnapshot = {
+      tool_call_id: toolCallId,
+      tool_name: toolName,
+      detail,
+      status: 'running',
+    };
+    toolTraces.set(toolCallId, trace);
+    emit({ type: 'tool_trace', ...trace });
+    return;
+  }
+
+  if (event.type === 'tool.execution_complete') {
+    const toolCallId = typeof data.toolCallId === 'string' ? data.toolCallId : '';
+    const existing = toolTraces.get(toolCallId);
+    const trace: ToolTraceSnapshot = {
+      tool_call_id: toolCallId,
+      tool_name: existing?.tool_name || 'tool',
+      detail: existing?.detail,
+      status: 'done',
+    };
+    toolTraces.set(toolCallId, trace);
+    emit({ type: 'tool_trace', ...trace });
+
+    const result = data.result as
+      | {
+          detailedContent?: unknown;
+          content?: unknown;
+        }
+      | undefined;
+    const resultText =
+      (typeof result?.detailedContent === 'string' ? result.detailedContent : '') ||
+      (typeof result?.content === 'string' ? result.content : '');
+    const block = buildToolContextBlock(
+      toolCallId,
+      trace.tool_name,
+      trace.detail,
+      resultText
+    );
+    if (block) {
+      hiddenContextBlocks.push(block);
+    }
+    return;
+  }
+
+  if (event.type === 'session.error') {
+    state.lastError =
+      (typeof data.message === 'string' ? data.message : '') || 'GitHub Copilot session failed.';
+    return;
+  }
+
+  if (event.type === 'session.warning' && typeof data.message === 'string') {
+    state.lastError = data.message;
+  }
 };
 
 class BridgeControlChannel {
@@ -2088,6 +2276,7 @@ const handleSend = async (): Promise<void> => {
     const { system, prompt } = serializeConversationPrompt(request.messages);
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
+    const eventState = createCopilotSessionEventState();
     let interruptResult: RelayToolResult | null = null;
     const recordRelayResult = (result: RelayToolResult) => {
       if (result.hiddenContext?.trim()) {
@@ -2102,8 +2291,6 @@ const handleSend = async (): Promise<void> => {
       recordRelayResult,
     });
     const allowedToolNames = new Set(tools.map((tool) => tool.name));
-    let finalContent = '';
-    let lastError: string | null = null;
 
     await withClient(async (client) => {
       const auth = await client.getAuthStatus();
@@ -2137,88 +2324,34 @@ const handleSend = async (): Promise<void> => {
 
       try {
         session.on((event) => {
-          if (event.type === 'assistant.message_delta') {
-            if (event.data.deltaContent) {
-              emitJson({ type: 'delta', delta: event.data.deltaContent });
-            }
-            return;
-          }
-
-          if (event.type === 'assistant.message') {
-            finalContent = event.data.content || finalContent;
-            return;
-          }
-
-          if (event.type === 'tool.execution_start') {
-            const args = (event.data.arguments || {}) as JsonRecord;
-            const detail = formatToolTraceDetail(event.data.toolName, args);
-            const trace: ToolTraceSnapshot = {
-              tool_call_id: event.data.toolCallId,
-              tool_name: event.data.toolName,
-              detail,
-              status: 'running',
-            };
-            toolTraces.set(event.data.toolCallId, trace);
-            emitJson({ type: 'tool_trace', ...trace });
-            return;
-          }
-
-          if (event.type === 'tool.execution_complete') {
-            const existing = toolTraces.get(event.data.toolCallId);
-            const trace: ToolTraceSnapshot = {
-              tool_call_id: event.data.toolCallId,
-              tool_name: existing?.tool_name || 'tool',
-              detail: existing?.detail,
-              status: 'done',
-            };
-            toolTraces.set(event.data.toolCallId, trace);
-            emitJson({ type: 'tool_trace', ...trace });
-
-            const resultText =
-              event.data.result?.detailedContent ||
-              event.data.result?.content ||
-              '';
-            const block = buildToolContextBlock(
-              event.data.toolCallId,
-              trace.tool_name,
-              trace.detail,
-              resultText
-            );
-            if (block) {
-              hiddenContextBlocks.push(block);
-            }
-            return;
-          }
-
-          if (event.type === 'session.error') {
-            lastError = event.data.message || 'GitHub Copilot session failed.';
-            return;
-          }
-
-          if (event.type === 'session.warning') {
-            if (event.data.message) {
-              lastError = event.data.message;
-            }
-          }
+          handleCopilotSessionEvent({
+            event,
+            state: eventState,
+            toolTraces,
+            hiddenContextBlocks,
+            emit: emitJson,
+          });
         });
 
         const assistantMessage = await session.sendAndWait({ prompt }, 300_000);
-        finalContent = assistantMessage?.data.content || finalContent;
+        handleCopilotAssistantMessage(eventState, assistantMessage?.data, emitJson);
       } finally {
         await session.disconnect();
       }
     });
 
-    if (!finalContent && lastError) {
-      throw classifySdkError(new Error(lastError));
+    if (!eventState.finalContent && eventState.lastError) {
+      throw classifySdkError(new Error(eventState.lastError));
     }
 
+    closeCopilotThinkingBlock(eventState, emitJson, Boolean(eventState.finalContent));
     emitJson({
       type: 'done',
       content:
         interruptResult?.interrupt && interruptResult.visibleContent != null
           ? interruptResult.visibleContent
-          : finalContent,
+          : eventState.finalContent,
+      reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
       tool_traces: Array.from(toolTraces.values()),
     });
@@ -2250,6 +2383,10 @@ const main = async (): Promise<void> => {
 
 export const __testables = {
   buildMacroTools,
+  closeCopilotThinkingBlock,
+  createCopilotSessionEventState,
+  getCopilotReasoningSummary,
+  handleCopilotSessionEvent,
   isFrontendRelayToolId,
 };
 
