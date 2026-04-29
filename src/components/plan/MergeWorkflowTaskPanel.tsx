@@ -20,6 +20,7 @@ import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { presentGitFlowBlockingIssue } from '../../services/degradedErrorPresentation';
 import { useElementSize } from '../../hooks/useElementSize';
+import { useChatStore } from '../../stores/useChatStore';
 
 interface MergeWorkflowTaskPanelProps {
   task: ImplementTask;
@@ -28,6 +29,7 @@ interface MergeWorkflowTaskPanelProps {
 
 type MergeBlockerResolutionIntent = 'retry_merge' | 'resolve_automatically';
 type MergeWorkflowActionOutcome = 'completed' | 'blocked' | 'failed' | 'assistant_started';
+type RepositoryResolutionState = 'ai_resolving' | 'manual_preparing' | 'manual_open';
 type IncidentTone = 'danger' | 'warning' | 'info' | 'success' | 'muted';
 type IncidentKind =
   | 'dirty'
@@ -65,9 +67,7 @@ const isAbortableMergeInProgressRepository = (
   repository: MergeWorkflowRepositoryResult
 ): boolean =>
   repository.blockingKind === 'merge_in_progress' &&
-  repository.nextAction === 'finish_or_abort_merge' &&
-  repository.mergeInProgress &&
-  repository.conflictFiles.length === 0;
+  repository.nextAction === 'finish_or_abort_merge';
 
 const isFastForwardMergeRepository = (
   repository: MergeWorkflowRepositoryResult
@@ -127,29 +127,33 @@ const toneClassName = (tone: IncidentTone): string => {
   }
 };
 
+const canOpenManualConflictResolver = (
+  repository: MergeWorkflowRepositoryResult,
+  resolvingState: RepositoryResolutionState | null
+): boolean =>
+  isMergeWorkflowFileConflictRepository(repository) &&
+  resolvingState !== 'ai_resolving' &&
+  resolvingState !== 'manual_preparing';
+
+const getResolutionBusyLabel = (
+  resolvingState: RepositoryResolutionState | null,
+  t: (key: string, fallback: string, options?: Record<string, unknown>) => string
+): string | null => {
+  if (resolvingState === 'ai_resolving') {
+    return t('implement.aiResolvingConflict', 'AI resolving...');
+  }
+  if (resolvingState === 'manual_preparing') {
+    return t('implement.preparingConflictResolution', 'Preparing merge conflicts...');
+  }
+  return null;
+};
+
 const getRepositoryIncident = (
   repository: MergeWorkflowRepositoryResult,
   t: (key: string, fallback: string, options?: Record<string, unknown>) => string
 ): RepositoryIncident => {
   const dirtyFiles = repository.dirtyFiles ?? [];
   const conflictFiles = repository.conflictFiles ?? [];
-
-  if (repository.mergeInProgress || repository.blockingKind === 'merge_in_progress') {
-    return {
-      kind: 'merge_in_progress',
-      statusLabel: t('implement.mergeInProgress', 'Merge in progress'),
-      title: t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress'),
-      description: t(
-        'implement.mergeInProgressCardDescription',
-        'This repository has an unfinished merge. Resolve it before retrying the workflow.'
-      ),
-      tone: 'warning',
-      affectedFiles: conflictFiles,
-      primaryLabel: t('implement.resolveBlocker', 'Resolve'),
-      primaryAction: 'abort_merge',
-      primaryVariant: 'primary',
-    };
-  }
 
   if (repository.mergeStrategy === 'dirty' || repository.blockingKind === 'repository_dirty') {
     return {
@@ -187,6 +191,23 @@ const getRepositoryIncident = (
       primaryVariant: 'primary',
       secondaryLabel: t('implement.resolveWithAi', 'Resolve with AI'),
       secondaryAction: 'assistant',
+    };
+  }
+
+  if (repository.mergeInProgress || repository.blockingKind === 'merge_in_progress') {
+    return {
+      kind: 'merge_in_progress',
+      statusLabel: t('implement.mergeInProgress', 'Merge in progress'),
+      title: t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress'),
+      description: t(
+        'implement.mergeInProgressCardDescription',
+        'This repository has an unfinished merge. Resolve it before retrying the workflow.'
+      ),
+      tone: 'warning',
+      affectedFiles: conflictFiles,
+      primaryLabel: t('implement.resolveBlocker', 'Resolve'),
+      primaryAction: 'abort_merge',
+      primaryVariant: 'primary',
     };
   }
 
@@ -284,8 +305,19 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const resolveMergeWorkflowAutomatically = useTaskStore(
     (state) => state.resolveMergeWorkflowAutomatically
   );
+  const isTaskAssistantActive = useChatStore((state) =>
+    state.conversations.some((conversation) => {
+      if (conversation.scope_mode !== 'Implement' || conversation.task_id !== task.id) {
+        return false;
+      }
+      const runtime = state.conversationRuntimeById[conversation.id];
+      return runtime?.phase === 'preparing' || runtime?.phase === 'streaming';
+    })
+  );
   const [isArchiving, setIsArchiving] = useState(false);
   const [isResolvingAutomatically, setIsResolvingAutomatically] = useState(false);
+  const [repositoryResolutionStateById, setRepositoryResolutionStateById] =
+    useState<Record<string, RepositoryResolutionState>>({});
   const [pendingBlockerResolutionAction, setPendingBlockerResolutionAction] =
     useState<MergeWorkflowBlockerResolutionAction | null>(null);
   const [blockerResolutionAction, setBlockerResolutionAction] =
@@ -352,6 +384,30 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       setManualResolutionRepositoryId(null);
     }
   }, [manualResolutionRepositoryId, repositories]);
+
+  useEffect(() => {
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    setRepositoryResolutionStateById((current) => {
+      let changed = false;
+      const next: Record<string, RepositoryResolutionState> = {};
+      for (const [repositoryId, state] of Object.entries(current)) {
+        if (!repositoryIds.has(repositoryId)) {
+          changed = true;
+          continue;
+        }
+        if (state === 'ai_resolving' && !isTaskAssistantActive) {
+          changed = true;
+          continue;
+        }
+        if (state === 'manual_open' && repositoryId !== manualResolutionRepositoryId) {
+          changed = true;
+          continue;
+        }
+        next[repositoryId] = state;
+      }
+      return changed ? next : current;
+    });
+  }, [isTaskAssistantActive, manualResolutionRepositoryId, repositories]);
 
   const openBlockerResolutionModal = useCallback((
     intent: MergeBlockerResolutionIntent,
@@ -561,15 +617,36 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   ) => {
     if (!action) return;
     if (action === 'manual_conflict') {
+      if (!canOpenManualConflictResolver(
+        repository,
+        repositoryResolutionStateById[repository.id] ?? null
+      )) {
+        return;
+      }
+      setRepositoryResolutionStateById((current) => ({
+        ...current,
+        [repository.id]: 'manual_open',
+      }));
       setManualResolutionRepositoryId(repository.id);
       return;
     }
     if (action === 'assistant') {
+      setRepositoryResolutionStateById((current) => ({
+        ...current,
+        [repository.id]: 'ai_resolving',
+      }));
       setIsResolvingAutomatically(true);
       void resolveMergeWorkflowAutomatically(task.id, {
         blockerResolutionAction: 'assistant',
         repositoryId: repository.id,
       }).then(notifyAutomaticResolutionResult).catch((error) => {
+        setRepositoryResolutionStateById((current) => {
+          const next = { ...current };
+          if (next[repository.id] === 'ai_resolving') {
+            delete next[repository.id];
+          }
+          return next;
+        });
         notify.error(toServiceError(error).message);
       }).finally(() => {
         setIsResolvingAutomatically(false);
@@ -580,9 +657,25 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   }, [
     notifyAutomaticResolutionResult,
     openBlockerResolutionModal,
+    repositoryResolutionStateById,
     resolveMergeWorkflowAutomatically,
     task.id,
   ]);
+
+  const handleManualResolutionClose = useCallback(() => {
+    const repositoryId = manualResolutionRepositoryId;
+    setManualResolutionRepositoryId(null);
+    if (repositoryId) {
+      setRepositoryResolutionStateById((current) => {
+        const next = { ...current };
+        if (next[repositoryId] === 'manual_open' || next[repositoryId] === 'manual_preparing') {
+          delete next[repositoryId];
+        }
+        return next;
+      });
+    }
+    void loadMergeWorkflowReview(task.id, { force: true }).catch(() => undefined);
+  }, [loadMergeWorkflowReview, manualResolutionRepositoryId, task.id]);
 
   const blockingNotificationKey = useMemo(() => {
     if (!primaryBlockedRepository || !primaryBlockingPresentation || !isBlocked) return null;
@@ -839,6 +932,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                 const hiddenFileCount = Math.max(0, incident.affectedFiles.length - affectedFiles.length);
                 const isDirtyIncident = incident.kind === 'dirty';
                 const isFileConflictIncident = incident.kind === 'file_conflict';
+                const resolutionState = repositoryResolutionStateById[repository.id] ?? null;
+                const busyResolutionLabel = getResolutionBusyLabel(resolutionState, translate);
+                const canUsePrimaryAction =
+                  incident.primaryAction !== 'manual_conflict' ||
+                  canOpenManualConflictResolver(repository, resolutionState);
 
                 return (
                   <section
@@ -913,10 +1011,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                             type="button"
                             size="sm"
                             variant={incident.primaryVariant}
-                            disabled={isResolvingAutomatically || isArchiving}
+                            disabled={
+                              isResolvingAutomatically ||
+                              isArchiving ||
+                              !canUsePrimaryAction
+                            }
                             onClick={() => handleIncidentAction(repository, incident.primaryAction)}
                           >
-                            {incident.primaryLabel}
+                            {busyResolutionLabel && incident.primaryAction === 'manual_conflict'
+                              ? busyResolutionLabel
+                              : incident.primaryLabel}
                           </Button>
                         )}
                         {incident.secondaryLabel && (
@@ -924,10 +1028,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
                             type="button"
                             size="sm"
                             variant="secondary"
-                            disabled={isResolvingAutomatically || isArchiving}
+                            disabled={
+                              isResolvingAutomatically ||
+                              isArchiving ||
+                              resolutionState === 'ai_resolving'
+                            }
                             onClick={() => handleIncidentAction(repository, incident.secondaryAction)}
                           >
-                            {incident.secondaryLabel}
+                            {resolutionState === 'ai_resolving'
+                              ? t('implement.openAssistant', 'Open assistant')
+                              : incident.secondaryLabel}
                           </Button>
                         )}
                       </div>
@@ -988,7 +1098,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         <MergeWorkflowConflictResolverModal
           taskId={task.id}
           repository={manualResolutionRepository}
-          onClose={() => setManualResolutionRepositoryId(null)}
+          onClose={handleManualResolutionClose}
         />
       )}
 
@@ -1016,13 +1126,18 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               {modalRepositoryScopeMessage}
             </p>
           )}
-          <div className="max-h-28 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-            {modalRepositories.map((repository) => (
-              <div key={repository.id} className="truncate" title={repository.repoPath}>
-                {repository.repoPath}
-              </div>
-            ))}
-          </div>
+          {modalRepositories.length > 0 && (
+            <div
+              className="max-h-28 overflow-y-auto rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground"
+              data-merge-resolution-repository-list="true"
+            >
+              {modalRepositories.map((repository) => (
+                <div key={repository.id} className="truncate" title={repository.repoPath}>
+                  {repository.repoPath}
+                </div>
+              ))}
+            </div>
+          )}
           <Button
             type="button"
             variant={blockerResolutionAction === 'abort_merge' ? 'error' : 'primary'}
