@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { StreamCompletionResult } from './streamingChat';
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
@@ -759,7 +760,7 @@ describe('streamingChat tool rendering helpers', () => {
     let requestCount = 0;
     const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
       requestCount += 1;
-      requestBodies.push(JSON.parse(init?.body ?? '{}'));
+      requestBodies.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
 
       if (requestCount === 1) {
         return {
@@ -833,7 +834,7 @@ describe('streamingChat tool rendering helpers', () => {
       };
     });
     const { streamChat } = await loadStreamingChat(fetchMock);
-    const onComplete = mock(() => undefined);
+    const onComplete = mock((_: StreamCompletionResult) => undefined);
 
     await streamChat({
       providerId: 'openrouter',
@@ -870,6 +871,221 @@ describe('streamingChat tool rendering helpers', () => {
         ]),
       })
     );
+  });
+
+  it('forces one final no-tool turn when the configured max turn budget is reached', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestCount += 1;
+      requestBodies.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
+
+      if (requestCount <= 3) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              const path = requestCount === 1 ? 'README.md' : 'package.json';
+              controller.enqueue(
+                encoder.encode(
+                  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read_${requestCount}","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"${path}\\"}"}}]}}]}\n\n`
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Final summary."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock((_: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Inspect files.' }],
+      allowedToolIds: ['read'],
+      maxTurns: 3,
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async (_toolName: string, args: Record<string, unknown>) =>
+        `FILE: ${args.path}\n\nok`,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(requestBodies[3]?.tools).toBeUndefined();
+    expect(requestBodies[3]?.tool_choice).toBeUndefined();
+    expect(JSON.stringify(requestBodies[3]?.messages)).toContain(
+      'Finish the answer now in natural language without using tools.'
+    );
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionReason: 'tool_turn_limit',
+        visibleContent: expect.stringContaining('Limite de tours atteinte'),
+      })
+    );
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: expect.stringContaining('Final summary.'),
+      })
+    );
+  });
+
+  it('falls back visibly when the forced final no-tool turn is empty or asks for tools', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            const path = `README-${requestCount}.md`;
+            controller.enqueue(
+              encoder.encode(
+                `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read_${requestCount}","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"${path}\\"}"}}]}}]}\n\n`
+              )
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onToolCall = mock(async () => 'FILE: README.md\n\nok');
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Inspect files.' }],
+      allowedToolIds: ['read'],
+      maxTurns: 3,
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(onToolCall).toHaveBeenCalledTimes(3);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionReason: 'post_tool_empty_fallback',
+        visibleContent: expect.stringContaining(
+          "Le dernier tour sans outils n'a pas fourni de reponse finale exploitable."
+        ),
+      })
+    );
+  });
+
+  it('does not force a final no-tool turn when max turns is disabled', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: RequestInit) => {
+      requestCount += 1;
+      requestBodies.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
+
+      if (requestCount <= 4) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read_${requestCount}","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"file-${requestCount}.md\\"}"}}]}}]}\n\n`
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Final after tools."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onToolCall = mock(async () => 'FILE: file.md\n\nok');
+    const onComplete = mock((_: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Inspect files.' }],
+      allowedToolIds: ['read'],
+      maxTurns: null,
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(onToolCall).toHaveBeenCalledTimes(4);
+    expect(requestBodies[4]?.tools).toBeDefined();
+    const finalResult = onComplete.mock.calls[0]?.[0];
+    expect(finalResult?.completionReason).toBeUndefined();
+    expect(finalResult?.visibleContent).not.toContain('Limite de tours atteinte');
+    expect(finalResult?.visibleContent).toContain('Final after tools.');
   });
 
   it('silently retries recoverable provider errors before streaming visible output', async () => {
