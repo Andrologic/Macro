@@ -15,6 +15,7 @@ interface ConfirmPromptModalProps {
   inputPlaceholder?: string;
   requireInput?: boolean;
   isSubmitting?: boolean;
+  showConfirmButton?: boolean;
   onCancel: () => void;
   onConfirm: (value?: string) => void;
 }
@@ -31,6 +32,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   inputPlaceholder,
   requireInput = false,
   isSubmitting = false,
+  showConfirmButton = true,
   onCancel,
   onConfirm,
 }) => {
@@ -93,14 +95,16 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
-          <Button
-            variant={confirmVariant === 'error' ? 'error' : 'primary'}
-            size="sm"
-            onClick={() => onConfirm(showInput ? value.trim() : undefined)}
-            disabled={confirmDisabled}
-          >
-            {isSubmitting ? '...' : confirmLabel}
-          </Button>
+          {showConfirmButton && (
+            <Button
+              variant={confirmVariant === 'error' ? 'error' : 'primary'}
+              size="sm"
+              onClick={() => onConfirm(showInput ? value.trim() : undefined)}
+              disabled={confirmDisabled}
+            >
+              {isSubmitting ? '...' : confirmLabel}
+            </Button>
+          )}
         </div>
       </div>
     </div>
