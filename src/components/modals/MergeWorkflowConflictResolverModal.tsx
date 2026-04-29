@@ -23,6 +23,7 @@ interface MergeWorkflowConflictResolverModalProps {
 }
 
 type ConflictReferenceSide = 'ours' | 'theirs' | 'base';
+const CONFLICT_OPERATION_TIMEOUT_MS = 15_000;
 
 const getRepositoryDisplayName = (repository: MergeWorkflowRepositoryResult): string => {
   const normalized = repository.repoPath.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -65,6 +66,27 @@ const sideContent = (file: GitConflictFileDto | null, side: ConflictReferenceSid
 const createInitialDraft = (file: GitConflictFileDto | null): string =>
   file?.worktree.content || file?.theirs.content || file?.ours.content || '';
 
+const shouldPrepareManualMerge = (repository: MergeWorkflowRepositoryResult): boolean =>
+  !(repository.mergeInProgress && repository.conflictFiles.length > 0);
+
+const withTimeout = async <T,>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictResolverModalProps> = ({
   taskId,
   repository,
@@ -87,6 +109,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const [isSaving, setIsSaving] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileLoadRetryToken, setFileLoadRetryToken] = useState(0);
   const knownFilesRef = useRef<string[]>(repository.conflictFiles);
 
   const isBusy = isPreparing || isLoadingFile || isSaving || isCompleting;
@@ -99,10 +122,10 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     files.length === 0 &&
     listedFiles.every((file) => resolvedPaths.has(file));
   const selectedResolved = selectedPath ? resolvedPaths.has(selectedPath) : false;
-  const canRenderFile = currentFile && !currentFile.isBinary && !currentFile.tooLarge;
+  const canRenderFile = Boolean(currentFile && !currentFile.isBinary && !currentFile.tooLarge);
   const referenceOptions: Array<{ side: ConflictReferenceSide; label: string }> = [
-    { side: 'ours', label: t('implement.conflictOurs', 'Ours') },
-    { side: 'theirs', label: t('implement.conflictTheirs', 'Theirs') },
+    { side: 'ours', label: t('implement.conflictCurrent', 'Current') },
+    { side: 'theirs', label: t('implement.conflictIncoming', 'Incoming') },
     { side: 'base', label: t('implement.conflictBase', 'Base') },
   ];
 
@@ -150,10 +173,23 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     let cancelled = false;
 
     const prepare = async () => {
-      setIsPreparing(true);
       setError(null);
+      if (!shouldPrepareManualMerge(repository)) {
+        setFiles(repository.conflictFiles);
+        setSelectedPath((current) => current ?? repository.conflictFiles[0] ?? null);
+        return;
+      }
+
+      setIsPreparing(true);
       try {
-        const result = await startManualResolution(taskId, repository.id);
+        const result = await withTimeout(
+          startManualResolution(taskId, repository.id),
+          CONFLICT_OPERATION_TIMEOUT_MS,
+          t(
+            'implement.prepareConflictResolutionTimeout',
+            'Preparing conflict resolution is taking too long. Refresh the conflicts or try again.'
+          )
+        );
         if (cancelled) return;
         if (result?.status === 'merged') {
           notify.success(t('implement.mergeCompleted', 'Merge completed.'));
@@ -180,7 +216,10 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   }, [
     onClose,
     refreshConflictStatus,
+    repository,
     repository.id,
+    repository.conflictFiles,
+    repository.mergeInProgress,
     startManualResolution,
     t,
     taskId,
@@ -198,10 +237,17 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
       setIsLoadingFile(true);
       setError(null);
       try {
-        const file = await gitReadConflictFile({
-          repoPath: repository.repoPath,
-          path: selectedPath,
-        });
+        const file = await withTimeout(
+          gitReadConflictFile({
+            repoPath: repository.repoPath,
+            path: selectedPath,
+          }),
+          CONFLICT_OPERATION_TIMEOUT_MS,
+          t(
+            'implement.loadConflictFileTimeout',
+            'Loading this conflict file is taking too long. Retry the file or refresh conflicts.'
+          )
+        );
         if (cancelled) return;
         setCurrentFile(file);
         setDraft(createInitialDraft(file));
@@ -221,7 +267,25 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     return () => {
       cancelled = true;
     };
-  }, [repository.repoPath, resolvedPaths, selectedPath]);
+  }, [fileLoadRetryToken, repository.repoPath, resolvedPaths, selectedPath, t]);
+
+  const handleRetryFile = useCallback(() => {
+    setError(null);
+    setFileLoadRetryToken((current) => current + 1);
+  }, []);
+
+  const handleRefreshConflicts = useCallback(async () => {
+    if (isBusy) return;
+    setIsLoadingFile(true);
+    setError(null);
+    try {
+      await refreshConflictStatus();
+    } catch (cause) {
+      setError(toServiceError(cause).message);
+    } finally {
+      setIsLoadingFile(false);
+    }
+  }, [isBusy, refreshConflictStatus]);
 
   const handleSave = useCallback(async () => {
     if (!selectedPath || !currentFile || isBusy) return;
@@ -401,11 +465,6 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
           </header>
 
           <div className="relative min-h-0 flex-1 bg-muted/5" data-merge-conflict-viewer="true" data-selected-file-path={selectedPath ?? ''}>
-            {error && (
-              <div className="absolute inset-x-4 top-4 z-20 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                {error}
-              </div>
-            )}
             {isPreparing || isLoadingFile ? (
               <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 p-6">
                 <div className="flex items-center gap-3">
@@ -415,6 +474,31 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                       ? t('implement.preparingConflictResolution', 'Preparing merge conflicts...')
                       : t('implement.loadingFileDiff', 'Loading file diff...')}
                   </span>
+                </div>
+              </div>
+            ) : error ? (
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
+                <div className="max-w-lg rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-center">
+                  <p className="text-sm text-destructive">{error}</p>
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleRetryFile}
+                      disabled={!selectedPath}
+                    >
+                      {t('implement.retryFile', 'Retry file')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleRefreshConflicts()}
+                    >
+                      {t('implement.refreshConflicts', 'Refresh conflicts')}
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : selectedResolved ? (
@@ -459,10 +543,10 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               {!allFilesResolved && (
                 <>
                   <Button variant="secondary" size="sm" onClick={() => void handleAcceptSide('ours')} disabled={isBusy || !selectedPath}>
-                    {t('implement.acceptOurs', 'Accept ours')}
+                    {t('implement.acceptCurrentChange', 'Accept current')}
                   </Button>
                   <Button variant="secondary" size="sm" onClick={() => void handleAcceptSide('theirs')} disabled={isBusy || !selectedPath}>
-                    {t('implement.acceptTheirs', 'Accept theirs')}
+                    {t('implement.acceptIncomingChange', 'Accept incoming')}
                   </Button>
                   <Button variant="primary" size="sm" onClick={() => void handleSave()} disabled={isBusy || !canRenderFile}>
                     {t('implement.markResolved', 'Mark resolved')}

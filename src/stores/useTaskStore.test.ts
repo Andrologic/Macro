@@ -799,6 +799,39 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
+  it('does not start a second manual merge resolution when conflicts are already materialized', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    runtime.repositories = runtime.repositories.map((repository) => ({
+      ...repository,
+      mergeInProgress: true,
+      conflictFiles: ['src/main.ts'],
+    }));
+    runtime.blockedRepositories = runtime.repositories;
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': runtime,
+      },
+      loadMergeWorkflowReview: mock(async () => runtime),
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const startResult = await useTaskStore
+      .getState()
+      .startMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
+
+    expect(startResult).toEqual({
+      status: 'conflicted',
+      conflictFiles: ['src/main.ts'],
+      output: '',
+    });
+    expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
+  });
+
   it('automatically stashes dirty merge blockers before opening the assistant', async () => {
     let hasStashedDirtyChanges = false;
     gitStashMock.mockImplementation(async () => {
