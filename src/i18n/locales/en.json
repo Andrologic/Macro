@@ -349,6 +349,10 @@
     "toolbox": "Toolbox",
     "enterUrl": "Enter a URL.",
     "invalidUrl": "Invalid URL",
+    "toolTurnLimitNoticeTitle": "Tool turn limit reached",
+    "toolTurnLimitNoticeDescription": "Macro stopped the agent loop after the configured turn limit. Change or disable it in Settings > General > Max agent turns, then send a new message to continue.",
+    "toolTurnLimitFallbackTitle": "Tool turn limit reached",
+    "toolTurnLimitFallbackDescription": "The final no-tool pass did not produce a usable answer, so Macro showed a fallback summary.",
     "thinking": "Thinking...",
     "tool": "Tool",
     "runningTools": "Running tools",
@@ -586,11 +590,11 @@
     "metadataAutoPushDesc": "Automatically push the @macro branch after metadata commits created at stream completion.",
     "agentLoop": {
       "limitEnabledLabel": "Limit agent turns",
-      "limitEnabledDescription": "Stop long tool loops by forcing a final answer after a configured number of cycles.",
+      "limitEnabledDescription": "Stop long tool loops after a configured number of AI/tool cycles.",
       "limitEnabledOn": "Enabled",
       "limitEnabledOff": "Disabled",
       "maxTurnsLabel": "Max agent turns",
-      "maxTurnsDescription": "Maximum AI/tool cycles before Macro forces a final answer without tools."
+      "maxTurnsDescription": "Maximum AI/tool cycles before Macro stops the agent loop and shows a chat notice."
     },
     "theme": "Theme",
     "zoom": "Zoom",
@@ -1525,7 +1529,7 @@
     "nativeToolSupportWarning": "The currently selected provider or model does not support native tool calling. Tools remain configurable here, but they will not be injected until a compatible model is selected.",
     "agentLoop": {
       "maxTurnsLabel": "Max agent turns",
-      "maxTurnsDescription": "Maximum AI/tool cycles before Macro forces a final answer without tools."
+      "maxTurnsDescription": "Maximum AI/tool cycles before Macro stops the agent loop and shows a chat notice."
     },
     "architectMacroOnly": "Architect: @macro only",
     "architectFullOnly": "Architect Full",

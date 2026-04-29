@@ -87,7 +87,7 @@ export const GeneralView: React.FC = () => {
             const normalizedMaxTurns = normalizeChatMaxTurns(maxTurns);
             if (normalizedMaxTurns === CHAT_MAX_TURNS_DISABLED) {
                 setIsChatMaxTurnsEnabled(false);
-                setChatMaxTurnsDraft(String(chatMaxTurns));
+                setChatMaxTurnsDraft(String(CHAT_MAX_TURNS_DEFAULT));
                 return;
             }
 

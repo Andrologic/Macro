@@ -349,6 +349,10 @@
     "toolbox": "ツールボックス",
     "enterUrl": "URLを入力します。",
     "invalidUrl": "無効な URL",
+    "toolTurnLimitNoticeTitle": "ツールターンの上限に達しました",
+    "toolTurnLimitNoticeDescription": "Macro は設定されたターン上限に達したためエージェントループを停止しました。設定 > 一般 > エージェント最大ターン数 で変更または無効化してから、新しいメッセージを送って続行してください。",
+    "toolTurnLimitFallbackTitle": "ツールターンの上限に達しました",
+    "toolTurnLimitFallbackDescription": "最後のツールなしの処理で利用可能な回答が得られなかったため、Macro が代替サマリーを表示しました。",
     "thinking": "考え...",
     "tool": "道具",
     "runningTools": "実行中のツール",
@@ -492,11 +496,11 @@
     "metadataAutoPushDesc": "ストリームの完了時に作成されたメタデータのコミット後に @macro ブランチを自動的にプッシュします。",
     "agentLoop": {
       "limitEnabledLabel": "エージェントターンを制限",
-      "limitEnabledDescription": "設定したサイクル数の後に最終回答を強制して、長いツールループを止めます。",
+      "limitEnabledDescription": "設定した AI/ツール サイクル数に達したら、長いツールループを停止します。",
       "limitEnabledOn": "有効",
       "limitEnabledOff": "無効",
       "maxTurnsLabel": "エージェント最大ターン数",
-      "maxTurnsDescription": "Macro がツールなしの最終回答を強制するまでの AI/ツール サイクルの最大数。"
+      "maxTurnsDescription": "Macro がエージェントループを停止し、チャットに通知を表示するまでの AI/ツール サイクルの最大数。"
     },
     "theme": "テーマ",
     "zoom": "ズーム",
@@ -1525,7 +1529,7 @@
     "nativeToolSupportWarning": "現在選択されているプロバイダーまたはモデルはネイティブのツール呼び出しをサポートしていません。ここで tools を設定することはできますが、互換性のあるモデルを選ぶまで inject されません。",
     "agentLoop": {
       "maxTurnsLabel": "エージェント最大ターン数",
-      "maxTurnsDescription": "Macro がツールなしの最終回答を強制するまでの AI/ツール サイクルの最大数。"
+      "maxTurnsDescription": "Macro がエージェントループを停止し、チャットに通知を表示するまでの AI/ツール サイクルの最大数。"
     },
     "architectMacroOnly": "Architect: @macro のみ",
     "architectFullOnly": "Architect Full",

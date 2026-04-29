@@ -61,6 +61,68 @@ const ComposerFallbackStatus: React.FC = () => (
 
 const EMPTY_RENDER_MESSAGES: ChatMessage[] = [];
 
+const getAssistantCompletionNotice = (
+  completionReason: ChatMessage['completion_reason'] | undefined,
+  t: ReturnType<typeof useTranslation>['t']
+): { title: string; description: string } | null => {
+  switch (completionReason) {
+    case 'tool_turn_limit':
+      return {
+        title: t('chat.toolTurnLimitNoticeTitle', 'Tool turn limit reached'),
+        description: t(
+          'chat.toolTurnLimitNoticeDescription',
+          'Macro stopped the agent loop after the configured turn limit. Change or disable it in Settings > General > Max agent turns, then send a new message to continue.'
+        ),
+      };
+    case 'post_tool_empty_fallback':
+      return {
+        title: t('chat.toolTurnLimitFallbackTitle', 'Tool turn limit reached'),
+        description: t(
+          'chat.toolTurnLimitFallbackDescription',
+          'The final no-tool pass did not produce a usable answer, so Macro showed a fallback summary.'
+        ),
+      };
+    default:
+      return null;
+  }
+};
+
+const AssistantCompletionNotice: React.FC<{
+  completionReason: ChatMessage['completion_reason'] | undefined;
+  hasPreviousContent: boolean;
+}> = ({ completionReason, hasPreviousContent }) => {
+  const { t } = useTranslation();
+  const notice = getAssistantCompletionNotice(completionReason, t);
+
+  if (!notice) {
+    return null;
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-chat-completion-notice={completionReason}
+      className={cn(
+        'flex items-start gap-2 rounded-lg border border-border bg-card/40 px-2.5 py-2 text-xs text-muted-foreground',
+        hasPreviousContent ? 'mt-3' : 'mt-0'
+      )}
+    >
+      <span className="relative mt-0.5 h-5 w-5 shrink-0 rounded-md border border-destructive/20 bg-destructive/10">
+        <Icon
+          name="triangle-alert"
+          size={12}
+          className="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-destructive"
+        />
+      </span>
+      <div className="min-w-0">
+        <div className="font-medium leading-snug text-foreground">{notice.title}</div>
+        <div className="mt-0.5 leading-relaxed">{notice.description}</div>
+      </div>
+    </div>
+  );
+};
+
 interface RenderedMessageItem {
   index: number;
   key: React.Key;
@@ -124,6 +186,13 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const isStreamingMessage = streamingAssistantMessageId === message.id;
+  const hasAssistantCompletionNotice =
+    message.role === 'assistant' &&
+    Boolean(message.completion_reason && message.completion_reason !== 'completed');
+  const hasAssistantVisibleBody =
+    message.role === 'assistant' &&
+    (message.content.trim().length > 0 ||
+      (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
 
   return (
     <div
@@ -157,7 +226,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             isEditing
               ? 'p-2'
               : message.role === 'assistant'
-                ? 'p-2 pb-6'
+                ? hasAssistantCompletionNotice
+                  ? 'p-2 pb-10'
+                  : 'p-2 pb-6'
                 : 'p-2 pb-9'
           )}
         >
@@ -216,11 +287,17 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
               {message.role === 'assistant' ? (
-                <MarkdownRenderer
-                  content={message.content}
-                  toolTraces={showToolTraces ? message.tool_traces : undefined}
-                  isStreaming={isStreamingMessage}
-                />
+                <>
+                  <MarkdownRenderer
+                    content={message.content}
+                    toolTraces={showToolTraces ? message.tool_traces : undefined}
+                    isStreaming={isStreamingMessage}
+                  />
+                  <AssistantCompletionNotice
+                    completionReason={message.completion_reason}
+                    hasPreviousContent={hasAssistantVisibleBody}
+                  />
+                </>
               ) : questionnaireResponseSummary ? (
                 <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (

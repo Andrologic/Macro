@@ -348,6 +348,10 @@
     "toolbox": "Boîte à outils",
     "enterUrl": "Saisissez une URL.",
     "invalidUrl": "URL invalide",
+    "toolTurnLimitNoticeTitle": "Limite de tours d'outils atteinte",
+    "toolTurnLimitNoticeDescription": "Macro a arrêté la boucle agent après la limite de tours configurée. Modifiez ou désactivez-la dans Paramètres > Général > Tours agent maximum, puis envoyez un nouveau message pour continuer.",
+    "toolTurnLimitFallbackTitle": "Limite de tours d'outils atteinte",
+    "toolTurnLimitFallbackDescription": "Le dernier passage sans outils n'a pas produit de réponse exploitable, donc Macro a affiché un résumé de secours.",
     "thinking": "En pensant...",
     "tool": "Outil",
     "runningTools": "Outils en cours",
@@ -491,11 +495,11 @@
     "metadataAutoPushDesc": "Poussez automatiquement la branche @macro après la création des validations de métadonnées à la fin du flux.",
     "agentLoop": {
       "limitEnabledLabel": "Limiter les tours agent",
-      "limitEnabledDescription": "Arrête les longues boucles d’outils en forçant une réponse finale après un nombre de cycles configuré.",
+      "limitEnabledDescription": "Arrête les longues boucles d’outils après un nombre configuré de cycles IA/outils.",
       "limitEnabledOn": "Activé",
       "limitEnabledOff": "Désactivé",
       "maxTurnsLabel": "Tours agent max",
-      "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro force une réponse finale sans outils."
+      "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
     "theme": "Thème",
     "zoom": "Zoomer",
@@ -1524,7 +1528,7 @@
     "nativeToolSupportWarning": "Le provider ou modèle sélectionné ne prend pas en charge le tool calling natif. Les tools restent configurables ici, mais ils ne seront injectés qu'après sélection d'un modèle compatible.",
     "agentLoop": {
       "maxTurnsLabel": "Tours agent maximum",
-      "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro force une réponse finale sans outils."
+      "maxTurnsDescription": "Nombre maximal de cycles IA/outils avant que Macro arrête la boucle agent et affiche une notice dans le chat."
     },
     "architectMacroOnly": "Architect : @macro uniquement",
     "architectFullOnly": "Architect Full",

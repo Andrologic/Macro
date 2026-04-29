@@ -323,29 +323,6 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   toolTraces: [],
 });
 
-const TOOL_TURN_LIMIT_NOTICE =
-  "\n\n[Macro] Limite de tours atteinte. Je termine maintenant sans utiliser d'outils.\n\n";
-const TOOL_TURN_LIMIT_FINAL_SYSTEM_PROMPT =
-  'You reached the maximum number of tool turns. Finish the answer now in natural language without using tools.';
-
-const buildToolTurnLimitFallback = (params: {
-  maxTurns: number;
-  toolNames: Set<string>;
-}): string => {
-  const toolNames = Array.from(params.toolNames).sort();
-  const usedToolsLine =
-    toolNames.length > 0
-      ? `Outils utilises avant l'arret: ${toolNames.join(', ')}.`
-      : "Aucun outil n'a ete enregistre avant l'arret.";
-
-  return [
-    '',
-    `[Macro] La limite de ${params.maxTurns} tours agent a ete atteinte.`,
-    "Le dernier tour sans outils n'a pas fourni de reponse finale exploitable.",
-    usedToolsLine,
-  ].join('\n');
-};
-
 const isReasoningUnsupportedError = (message: string): boolean => {
   const normalized = message.toLowerCase();
   return (
@@ -1163,6 +1140,7 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     appendSystemChunk(chunk: string, markToolsDone = false) {
       appendVisibleChunk(chunk, markToolsDone);
     },
+    markRunningToolTracesDone,
     upsertToolTrace,
     upsertRunningToolTrace(toolCallId: string, toolName: string, detail?: string) {
       const existingTrace = toolTraces.get(toolCallId);
@@ -2126,17 +2104,7 @@ const streamChatViaNativeToolCallingProvider = async (
   let guidedRetryCount = 0;
   let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
-  let finalizingAfterToolTurnLimit = false;
-  let toolTurnLimitNoticeAppended = false;
   const architectToolNamesUsed = new Set<string>();
-
-  const appendToolTurnLimitNotice = () => {
-    if (toolTurnLimitNoticeAppended) {
-      return;
-    }
-    toolTurnLimitNoticeAppended = true;
-    streamAccumulator.appendSystemChunk(TOOL_TURN_LIMIT_NOTICE, true);
-  };
 
   const completeNativeStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -2171,16 +2139,12 @@ const streamChatViaNativeToolCallingProvider = async (
   };
 
   try {
-    while (maxTurns === null || turnCount < maxTurns || finalizingAfterToolTurnLimit) {
+    while (maxTurns === null || turnCount < maxTurns) {
       if (options.signal?.aborted) {
         completeNativeStream();
         return;
       }
 
-      const turnTools = finalizingAfterToolTurnLimit ? [] : tools;
-      const turnAllowedToolIds = finalizingAfterToolTurnLimit ? [] : options.allowedToolIds;
-      const turnOnToolCall = finalizingAfterToolTurnLimit ? undefined : onToolCall;
-      const turnOnToolResult = finalizingAfterToolTurnLimit ? undefined : onToolResult;
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
       const turnResult = await streamNativeTurnViaTauri({
@@ -2191,8 +2155,8 @@ const streamChatViaNativeToolCallingProvider = async (
         reasoningEffort: options.reasoningEffort,
         conversationId: options.conversationId,
         messages: currentMessages,
-        tools: turnTools,
-        allowedToolIds: turnAllowedToolIds,
+        tools,
+        allowedToolIds: options.allowedToolIds,
         workspacePath: options.workspacePath,
         defaultWorkspacePath: options.defaultWorkspacePath,
         projectMounts: options.projectMounts,
@@ -2208,8 +2172,8 @@ const streamChatViaNativeToolCallingProvider = async (
         onToolTrace: (toolTrace) => {
           streamAccumulator.upsertToolTrace(toolTrace);
         },
-        onToolCall: turnOnToolCall,
-        onToolResult: turnOnToolResult,
+        onToolCall,
+        onToolResult,
       });
       turnResult.toolTraces?.forEach((toolTrace) => {
         streamAccumulator.upsertToolTrace(toolTrace);
@@ -2230,7 +2194,6 @@ const streamChatViaNativeToolCallingProvider = async (
         buildAssistantProviderInputItemsFromTurn(turnContent, validToolCalls);
 
       if (
-        !finalizingAfterToolTurnLimit &&
         shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)
       ) {
         guidedRetryCount += 1;
@@ -2256,28 +2219,6 @@ const streamChatViaNativeToolCallingProvider = async (
         }
       }
       streamAccumulator.flushProviderDelta();
-
-      if (finalizingAfterToolTurnLimit) {
-        if (
-          validToolCalls.length > 0 ||
-          !hasMeaningfulVisibleAssistantText(turnContent)
-        ) {
-          streamAccumulator.appendSystemChunk(
-            buildToolTurnLimitFallback({
-              maxTurns: maxTurns ?? 0,
-              toolNames: architectToolNamesUsed,
-            }),
-            true,
-          );
-          completeNativeStream('post_tool_empty_fallback');
-          return;
-        }
-        if (turnProviderInputItems.length > 0) {
-          assistantTranscriptItems.push(...turnProviderInputItems);
-        }
-        completeNativeStream('tool_turn_limit');
-        return;
-      }
 
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems.length > 0) {
@@ -2636,13 +2577,9 @@ const streamChatViaNativeToolCallingProvider = async (
 
       turnCount++;
       if (maxTurns !== null && toolResults.length > 0 && turnCount >= maxTurns) {
-        appendToolTurnLimitNotice();
-        currentMessages.push({
-          role: 'system',
-          content: TOOL_TURN_LIMIT_FINAL_SYSTEM_PROMPT,
-        });
-        finalizingAfterToolTurnLimit = true;
-        continue;
+        streamAccumulator.markRunningToolTracesDone();
+        completeNativeStream('tool_turn_limit');
+        return;
       }
     }
 
@@ -2777,18 +2714,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let guidedRetryCount = 0;
   let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
-  let finalizingAfterToolTurnLimit = false;
-  let toolTurnLimitNoticeAppended = false;
   const architectToolNamesUsed = new Set<string>();
   let consecutiveStreamRetryCount = 0;
-
-  const appendToolTurnLimitNotice = () => {
-    if (toolTurnLimitNoticeAppended) {
-      return;
-    }
-    toolTurnLimitNoticeAppended = true;
-    streamAccumulator.appendSystemChunk(TOOL_TURN_LIMIT_NOTICE, true);
-  };
 
   const completeGenericStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -2822,7 +2749,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   };
 
   try {
-    while (maxTurns === null || turnCount < maxTurns || finalizingAfterToolTurnLimit) {
+    while (maxTurns === null || turnCount < maxTurns) {
       if (options.signal?.aborted) {
         completeGenericStream();
         return;
@@ -2835,13 +2762,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         const requestMessages = buildChatCompletionMessages(currentMessages, capabilities);
         requestBody.messages = requestMessages;
         applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-        if (finalizingAfterToolTurnLimit) {
-          delete requestBody.tools;
-          delete requestBody.tool_choice;
-          delete requestBody.parallel_tool_calls;
-        } else {
-          applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
-        }
+        applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
 
         try {
           const candidateResponse = await fetchWithTimeout(
@@ -3105,7 +3026,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const validToolCalls = getValidToolCalls(toolCalls);
 
       if (
-        !finalizingAfterToolTurnLimit &&
         shouldRetryMissingRequiredTool(options.guidedToolRetry, validToolCalls, guidedRetryCount)
       ) {
         guidedRetryCount += 1;
@@ -3131,28 +3051,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         toolCalls: validToolCalls,
       });
       const turnProviderInputItems = assistantProviderItem ? [assistantProviderItem] : undefined;
-
-      if (finalizingAfterToolTurnLimit) {
-        if (
-          validToolCalls.length > 0 ||
-          !hasMeaningfulVisibleAssistantText(turnContent)
-        ) {
-          streamAccumulator.appendSystemChunk(
-            buildToolTurnLimitFallback({
-              maxTurns: maxTurns ?? 0,
-              toolNames: architectToolNamesUsed,
-            }),
-            true,
-          );
-          completeGenericStream('post_tool_empty_fallback');
-          return;
-        }
-        if (turnProviderInputItems) {
-          assistantTranscriptItems.push(...deepCloneJsonValue(turnProviderInputItems));
-        }
-        completeGenericStream('tool_turn_limit');
-        return;
-      }
 
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems) {
@@ -3552,13 +3450,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       turnCount++;
       if (maxTurns !== null && validToolCalls.length > 0 && turnCount >= maxTurns) {
-        appendToolTurnLimitNotice();
-        currentMessages.push({
-          role: 'system',
-          content: TOOL_TURN_LIMIT_FINAL_SYSTEM_PROMPT,
-        });
-        finalizingAfterToolTurnLimit = true;
-        continue;
+        streamAccumulator.markRunningToolTracesDone();
+        completeGenericStream('tool_turn_limit');
+        return;
       }
     }
 
