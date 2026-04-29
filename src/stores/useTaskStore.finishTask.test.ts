@@ -92,6 +92,13 @@ const gitMergeCheckMock = mock(async () => ({
   conflictFiles: [] as string[],
   hasChanges: true,
 }));
+const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/checkout');
+const gitRebaseCheckMock = mock(async () => ({
+  rebaseable: true,
+  conflictFiles: [] as string[],
+  output: 'Successfully rebased',
+}));
+const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitBranchDeleteRemoteMock = mock(async () => undefined);
 const gitPullMock = mock(async () => undefined);
@@ -187,6 +194,9 @@ mock.module('../services/tauriIpc', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitFastForward: gitFastForwardMock,
+  gitRebaseCheck: gitRebaseCheckMock,
+  gitRebaseBranch: gitRebaseBranchMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -207,6 +217,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitFastForward: gitFastForwardMock,
+  gitRebaseCheck: gitRebaseCheckMock,
+  gitRebaseBranch: gitRebaseBranchMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -346,7 +359,12 @@ describe('useTaskStore.finishTask', () => {
       mergeable: true,
       conflictFiles: [],
       hasChanges: true,
+      ahead: 1,
+      behind: 1,
     }));
+    gitFastForwardMock.mockClear();
+    gitRebaseCheckMock.mockClear();
+    gitRebaseBranchMock.mockClear();
     gitPullMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
@@ -414,6 +432,74 @@ describe('useTaskStore.finishTask', () => {
     expect(writeArchitectTaskExecutionMock).toHaveBeenCalledTimes(1);
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
+
+  it('uses fast-forward when the merge workflow action requests it', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(gitFastForwardMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      sourceBranch: 'feature/task-1',
+      targetBranch: 'plan/checkout',
+    });
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+  });
+
+  it('rebases a local branch then fast-forwards when requested', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 1,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'rebase_then_continue',
+    });
+
+    expect(gitRebaseBranchMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      ontoBranch: 'plan/checkout',
+      confirm: true,
+    });
+    expect(gitFastForwardMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      sourceBranch: 'feature/task-1',
+      targetBranch: 'plan/checkout',
+    });
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
   });
 
   it('keeps architect tasks open when the merge workflow is blocked', async () => {

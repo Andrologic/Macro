@@ -304,6 +304,7 @@ export interface StreamingChatOptions {
     snippet?: string;
   }>;
   allowedToolIds?: string[];
+  copilotSendTimeoutMs?: number | null;
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
   projectMounts?: ProjectMount[];
@@ -1847,6 +1848,7 @@ const streamNativeTurnViaTauri = async (params: {
   messages: StreamMessage[];
   tools: unknown[];
   allowedToolIds?: string[];
+  copilotSendTimeoutMs?: number | null;
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
   projectMounts?: ProjectMount[];
@@ -2044,6 +2046,7 @@ const streamNativeTurnViaTauri = async (params: {
           virtualRootEnabled: params.virtualRootEnabled,
           focusedProjectId: params.focusedProjectId,
           allowedToolIds: params.allowedToolIds,
+          copilotSendTimeoutMs: params.copilotSendTimeoutMs,
         });
       } catch (error) {
         if (params.signal) {
@@ -2172,6 +2175,7 @@ const streamChatViaNativeToolCallingProvider = async (
         projectMounts: options.projectMounts,
         virtualRootEnabled: options.virtualRootEnabled,
         focusedProjectId: options.focusedProjectId,
+        copilotSendTimeoutMs: options.copilotSendTimeoutMs,
         signal: options.signal,
         onDelta: (delta) => {
           streamedTurnContent += delta;

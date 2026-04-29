@@ -41,6 +41,8 @@ pub struct AiChatRequest {
     pub focused_project_id: Option<String>,
     #[serde(default)]
     pub allowed_tool_ids: Vec<String>,
+    #[serde(default)]
+    pub copilot_send_timeout_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

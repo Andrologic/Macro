@@ -3,10 +3,13 @@ import {
   resolveMergeWorkflowPhaseFromRepositories,
   resolveMergeWorkflowTaskStatus,
   type MergeWorkflowBlockingKind,
+  type MergeWorkflowDirtyFile,
   type MergeWorkflowKind,
   type MergeWorkflowPhase,
+  type MergeWorkflowResolutionAction,
   type MergeWorkflowRepositoryResult,
   type MergeWorkflowRuntimeState,
+  type MergeWorkflowStrategy,
 } from './mergeWorkflow';
 
 export interface PersistedMergeWorkflowRepositoryState {
@@ -21,6 +24,13 @@ export interface PersistedMergeWorkflowRepositoryState {
   blockingKind: MergeWorkflowBlockingKind | null;
   blockingReason: string | null;
   conflictFiles: string[];
+  dirtyFiles?: MergeWorkflowDirtyFile[];
+  ahead?: number;
+  behind?: number;
+  isSourcePublished?: boolean;
+  mergeStrategy?: MergeWorkflowStrategy;
+  recommendedAction?: MergeWorkflowResolutionAction | null;
+  availableActions?: MergeWorkflowResolutionAction[];
 }
 
 export interface PersistedMergeWorkflowSession {
@@ -60,6 +70,13 @@ const toPersistedRepositoryState = (
   blockingKind: repository.blockingKind,
   blockingReason: repository.blockingReason,
   conflictFiles: [...repository.conflictFiles],
+  dirtyFiles: [...repository.dirtyFiles],
+  ahead: repository.ahead,
+  behind: repository.behind,
+  isSourcePublished: repository.isSourcePublished,
+  mergeStrategy: repository.mergeStrategy,
+  recommendedAction: repository.recommendedAction,
+  availableActions: [...repository.availableActions],
 });
 
 export const toPersistedMergeWorkflowSession = (params: {
@@ -101,8 +118,11 @@ const toRuntimeRepository = (
   mergeAppliedAt: repository.mergeAppliedAt,
   isClean: repository.state !== 'blocked',
   hasChanges: repository.hadChangesAtStart,
+  ahead: repository.ahead ?? (repository.hadChangesAtStart ? 1 : 0),
+  behind: repository.behind ?? 0,
   mergeable: repository.state !== 'blocked',
   conflictFiles: [...repository.conflictFiles],
+  dirtyFiles: [...(repository.dirtyFiles || [])],
   mergeInProgress: repository.blockingKind === 'merge_in_progress',
   diff: '',
   checkStatus:
@@ -121,6 +141,28 @@ const toRuntimeRepository = (
           ? 'finish_or_abort_merge'
           : null,
   blockingReason: repository.blockingReason,
+  isSourcePublished: repository.isSourcePublished ?? false,
+  mergeStrategy:
+    repository.mergeStrategy ??
+    (repository.state === 'blocked'
+      ? 'dirty'
+      : repository.hadChangesAtStart
+        ? 'merge_commit_available'
+        : 'no_source_changes'),
+  recommendedAction:
+    repository.recommendedAction ??
+    (repository.state === 'blocked'
+      ? 'assistant'
+      : repository.hadChangesAtStart
+        ? 'merge_commit'
+        : null),
+  availableActions:
+    repository.availableActions ??
+    (repository.state === 'blocked'
+      ? ['assistant', 'retry_check']
+      : repository.hadChangesAtStart
+        ? ['merge_commit']
+        : ['retry_check']),
 });
 
 export const buildMergeWorkflowRuntimeFromPersistedSession = (params: {
@@ -230,6 +272,13 @@ export const overlayPersistedMergeWorkflowSession = (params: {
       blockingKind: null,
       blockingReason: null,
       conflictFiles: [],
+      dirtyFiles: [],
+      ahead: repository.ahead,
+      behind: repository.behind,
+      isSourcePublished: repository.isSourcePublished,
+      mergeStrategy: repository.mergeStrategy,
+      recommendedAction: repository.recommendedAction,
+      availableActions: repository.availableActions,
       checkStatus: 'passed',
     };
   });
@@ -250,6 +299,13 @@ export const overlayPersistedMergeWorkflowSession = (params: {
       blockingKind: repository.blockingKind,
       blockingReason: repository.blockingReason,
       conflictFiles: repository.conflictFiles,
+      dirtyFiles: repository.dirtyFiles,
+      ahead: repository.ahead,
+      behind: repository.behind,
+      isSourcePublished: repository.isSourcePublished,
+      mergeStrategy: repository.mergeStrategy,
+      recommendedAction: repository.recommendedAction,
+      availableActions: repository.availableActions,
     })),
   );
 
