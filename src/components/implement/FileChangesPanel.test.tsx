@@ -1031,7 +1031,7 @@ describe('FileChangesPanel', () => {
     });
 
     const resolveButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Resolve automatically'));
+      .find((button) => button.textContent?.includes('Resolve'));
 
     await act(async () => {
       resolveButton?.click();
@@ -1240,7 +1240,7 @@ describe('FileChangesPanel', () => {
     });
 
     const resolveButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Resolve automatically'));
+      .find((button) => button.textContent?.includes('Resolve'));
 
     await act(async () => {
       resolveButton?.click();
@@ -1291,11 +1291,11 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const retryButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Retry merge'));
+    const resolveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve'));
 
     await act(async () => {
-      retryButton?.click();
+      resolveButton?.click();
       await flushRender();
     });
 
@@ -1353,11 +1353,11 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const retryButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Retry merge'));
+    const resolveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve'));
 
     await act(async () => {
-      retryButton?.click();
+      resolveButton?.click();
       await flushRender();
     });
 
