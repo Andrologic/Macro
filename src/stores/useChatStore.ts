@@ -5841,6 +5841,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           messages: params.messagesForRequest,
           fileToolContext: params.fileToolContext,
           allowedToolIds: params.allowedToolIds,
+          copilotSendTimeoutMs:
+            params.providerConfig.providerType === "copilot"
+              ? (useProviderStore.getState().providerSettingsById[params.selectedProviderId]
+                  ?.copilotSendTimeoutMs ?? null)
+              : null,
           workspacePath: params.executionContext.workspacePath,
           defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
           projectMounts: params.executionContext.projectMounts,

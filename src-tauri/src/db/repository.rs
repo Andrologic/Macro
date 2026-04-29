@@ -1725,7 +1725,7 @@ pub async fn get_provider_settings(
 
     let row = sqlx::query(
         r#"
-        SELECT provider_id, filter_free_models
+        SELECT provider_id, filter_free_models, copilot_send_timeout_ms
         FROM provider_settings
         WHERE provider_id = ?
         "#,
@@ -1737,27 +1737,45 @@ pub async fn get_provider_settings(
     Ok(ProviderSettings {
         provider_id: row.get("provider_id"),
         filter_free_models: row.get::<i32, _>("filter_free_models") != 0,
+        copilot_send_timeout_ms: row.get("copilot_send_timeout_ms"),
     })
 }
 
 pub async fn update_provider_settings(
     pool: &SqlitePool,
     provider_id: &str,
-    filter_free_models: bool,
+    filter_free_models: Option<bool>,
+    copilot_send_timeout_ms: Option<Option<i64>>,
 ) -> DbResult<()> {
     ensure_provider_settings(pool, provider_id).await?;
 
-    sqlx::query(
-        r#"
-        UPDATE provider_settings
-        SET filter_free_models = ?
-        WHERE provider_id = ?
-        "#,
-    )
-    .bind(filter_free_models as i32)
-    .bind(provider_id)
-    .execute(pool)
-    .await?;
+    if let Some(filter_free_models) = filter_free_models {
+        sqlx::query(
+            r#"
+            UPDATE provider_settings
+            SET filter_free_models = ?
+            WHERE provider_id = ?
+            "#,
+        )
+        .bind(filter_free_models as i32)
+        .bind(provider_id)
+        .execute(pool)
+        .await?;
+    }
+
+    if let Some(copilot_send_timeout_ms) = copilot_send_timeout_ms {
+        sqlx::query(
+            r#"
+            UPDATE provider_settings
+            SET copilot_send_timeout_ms = ?
+            WHERE provider_id = ?
+            "#,
+        )
+        .bind(copilot_send_timeout_ms)
+        .bind(provider_id)
+        .execute(pool)
+        .await?;
+    }
 
     Ok(())
 }
@@ -2301,6 +2319,35 @@ mod tests {
         )
         .await
         .expect("create conversation")
+    }
+
+    #[tokio::test]
+    async fn provider_settings_preserve_fields_on_partial_updates() {
+        let (_temp_dir, pool) = test_pool().await;
+
+        let initial = get_provider_settings(&pool, "copilot")
+            .await
+            .expect("initial settings");
+        assert!(!initial.filter_free_models);
+        assert_eq!(initial.copilot_send_timeout_ms, None);
+
+        update_provider_settings(&pool, "copilot", None, Some(Some(1_800_000)))
+            .await
+            .expect("update timeout");
+        let after_timeout = get_provider_settings(&pool, "copilot")
+            .await
+            .expect("settings after timeout");
+        assert!(!after_timeout.filter_free_models);
+        assert_eq!(after_timeout.copilot_send_timeout_ms, Some(1_800_000));
+
+        update_provider_settings(&pool, "copilot", Some(true), None)
+            .await
+            .expect("update filter");
+        let after_filter = get_provider_settings(&pool, "copilot")
+            .await
+            .expect("settings after filter");
+        assert!(after_filter.filter_free_models);
+        assert_eq!(after_filter.copilot_send_timeout_ms, Some(1_800_000));
     }
 
     #[tokio::test]

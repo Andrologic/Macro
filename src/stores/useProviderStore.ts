@@ -1508,6 +1508,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const normalized: ProviderSettings = {
           providerId: settings.provider_id,
           filterFreeModels: settings.filter_free_models,
+          copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
         };
         set((state) => ({
           providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
@@ -1520,7 +1521,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
     }
 
-    const fallback: ProviderSettings = { providerId, filterFreeModels: false };
+    const fallback: ProviderSettings = {
+      providerId,
+      filterFreeModels: false,
+      copilotSendTimeoutMs: null,
+    };
     set((state) => ({
       providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
     }));
@@ -1531,13 +1536,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const current = get().providerSettingsById[providerId] ?? {
       providerId,
       filterFreeModels: false,
+      copilotSendTimeoutMs: null,
     };
     const next: ProviderSettings = { ...current, ...updates, providerId };
 
     if (tauriIpc.isTauriAvailable()) {
       await tauriIpc.updateProviderSettings({
         providerId,
-        filterFreeModels: next.filterFreeModels,
+        ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
+          ? { filterFreeModels: next.filterFreeModels }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
+          ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
+          : {}),
       });
     }
 

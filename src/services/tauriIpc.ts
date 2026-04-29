@@ -204,6 +204,12 @@ export interface GitMergeCheckDto {
   behind?: number;
 }
 
+export interface GitRebaseCheckDto {
+  rebaseable: boolean;
+  conflictFiles: string[];
+  output: string;
+}
+
 export interface GitFilePairDto {
   headExists: boolean;
   headContent: string;
@@ -277,6 +283,7 @@ export interface DbAiModel {
 export interface DbProviderSettings {
   provider_id: string;
   filter_free_models: boolean;
+  copilot_send_timeout_ms: number | null;
 }
 
 export interface DevProviderOverrideConfig {
@@ -790,6 +797,13 @@ export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
   blockingKind?: string | null;
   blockingReason?: string | null;
   conflictFiles?: string[];
+  dirtyFiles?: Array<{ path: string; status: string; area: string }>;
+  ahead?: number;
+  behind?: number;
+  isSourcePublished?: boolean;
+  mergeStrategy?: string;
+  recommendedAction?: string | null;
+  availableActions?: string[];
 }
 
 export interface WorkspaceManualFeatureMergeWorkflowDto {
@@ -1408,6 +1422,7 @@ export async function aiStreamChat(params: {
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
   allowedToolIds?: string[];
+  copilotSendTimeoutMs?: number | null;
 }): Promise<void> {
   return invoke("ai_stream_chat", {
     request: {
@@ -1431,6 +1446,7 @@ export async function aiStreamChat(params: {
       virtual_root_enabled: params.virtualRootEnabled ?? null,
       focused_project_id: params.focusedProjectId ?? null,
       allowed_tool_ids: params.allowedToolIds ?? [],
+      copilot_send_timeout_ms: params.copilotSendTimeoutMs ?? null,
     },
   });
 }
@@ -1553,6 +1569,44 @@ export async function gitMergeCheck(params: {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
+  });
+}
+
+export async function gitFastForward(params: {
+  repoPath: string;
+  sourceBranch: string;
+  targetBranch: string;
+}): Promise<string> {
+  return invoke<string>("git_fast_forward", {
+    repoPath: params.repoPath,
+    sourceBranch: params.sourceBranch,
+    targetBranch: params.targetBranch,
+  });
+}
+
+export async function gitRebaseCheck(params: {
+  repoPath: string;
+  branchName: string;
+  ontoBranch: string;
+}): Promise<GitRebaseCheckDto> {
+  return invoke<GitRebaseCheckDto>("git_rebase_check", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    ontoBranch: params.ontoBranch,
+  });
+}
+
+export async function gitRebaseBranch(params: {
+  repoPath: string;
+  branchName: string;
+  ontoBranch: string;
+  confirm: boolean;
+}): Promise<string> {
+  return invoke<string>("git_rebase_branch", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    ontoBranch: params.ontoBranch,
+    confirm: params.confirm,
   });
 }
 
@@ -2307,12 +2361,19 @@ export async function getProviderSettings(
 
 export async function updateProviderSettings(params: {
   providerId: string;
-  filterFreeModels: boolean;
+  filterFreeModels?: boolean;
+  copilotSendTimeoutMs?: number | null;
 }): Promise<void> {
-  return invoke("db_update_provider_settings", {
+  const payload: Record<string, unknown> = {
     providerId: params.providerId,
-    filterFreeModels: params.filterFreeModels,
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(params, "filterFreeModels")) {
+    payload.filterFreeModels = params.filterFreeModels;
+  }
+  if (Object.prototype.hasOwnProperty.call(params, "copilotSendTimeoutMs")) {
+    payload.copilotSendTimeoutMs = params.copilotSendTimeoutMs ?? null;
+  }
+  return invoke("db_update_provider_settings", payload);
 }
 
 // ============ Local App State ============

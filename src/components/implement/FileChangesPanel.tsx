@@ -26,7 +26,10 @@ import {
   isProjectWorkspaceMissing,
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
-import { resolveMergeWorkflowViewState } from '../../services/mergeWorkflow';
+import {
+  mergeWorkflowNeedsUserDecision,
+  resolveMergeWorkflowViewState,
+} from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
 import {
   isSmartCommitMessageGenerationError,
@@ -471,9 +474,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       .join('|');
   });
   const finishTask = useTaskStore((state) => state.finishTask);
+  const loadMergeWorkflowReview = useTaskStore((state) => state.loadMergeWorkflowReview);
   const providerStore = useProviderStore();
-  const providerConfigs = providerStore.providerConfigs ?? [];
-  const modelsByProvider = providerStore.modelsByProvider ?? {};
+  const providerConfigs = providerStore.providerConfigs;
+  const modelsByProvider = providerStore.modelsByProvider;
   const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? (() => []);
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
@@ -946,6 +950,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const handleFinishTask = async () => {
     if (!currentTask || isCommitting || isGeneratingCommitMessages) return;
     try {
+      const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
+      if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
+        resetReviewState();
+        return;
+      }
       await finishTask(currentTask.id);
       resetReviewState();
       notify.success(t('implement.taskFinished', 'Task finished'), {
@@ -1090,7 +1099,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2">
         {isLoading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
@@ -1172,7 +1181,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           return (
             <section
               key={repository.id}
-              className="mx-2 mb-1"
+              className={cn(
+                'mx-2 flex min-h-0 flex-col',
+                isExpanded ? 'min-h-[7rem] flex-1 basis-0' : 'shrink-0'
+              )}
             >
               <div
                 className={cn(
@@ -1268,8 +1280,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
               </div>
 
               {isExpanded && (
-                <div className="ml-3 mr-3 mb-3">
-                  <div className="max-h-[320px] overflow-y-auto py-1">
+                <div className="ml-4 mr-3 mb-3 flex min-h-0 flex-1 flex-col pl-2">
+                  <div className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
                     {repositoryError && (
                       <div className="px-2 py-3">
                         {repositoryErrorPresentation ? (

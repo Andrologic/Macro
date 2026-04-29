@@ -664,6 +664,7 @@ export interface ProviderConfig {
 export interface ProviderSettings {
   providerId: string;
   filterFreeModels: boolean;
+  copilotSendTimeoutMs?: number | null;
 }
 
 export interface GitCommit {

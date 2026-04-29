@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use git2::{
@@ -25,6 +26,7 @@ const DEFAULT_LOG_LIMIT: usize = 50;
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
     "Commit message must follow Conventional Commits: type: subject";
+static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 pub struct GitStatusDto {
@@ -141,6 +143,14 @@ pub struct GitMergeCheckDto {
     pub behind: u32,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRebaseCheckDto {
+    pub rebaseable: bool,
+    pub conflict_files: Vec<String>,
+    pub output: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFilePairDto {
@@ -237,6 +247,27 @@ fn command_output_text(output: &GitCommandOutput) -> String {
         return stdout.to_string();
     }
     format!("{}\n{}", stdout, stderr)
+}
+
+fn sanitize_temp_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "branch".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn validate_remote_name(remote: &str) -> Result<()> {
@@ -962,7 +993,11 @@ pub(crate) fn restore_paths(
     }
 
     if !restore_from_index_paths.is_empty() {
-        let mut args = vec!["restore".to_string(), "--worktree".to_string(), "--".to_string()];
+        let mut args = vec![
+            "restore".to_string(),
+            "--worktree".to_string(),
+            "--".to_string(),
+        ];
         args.extend(
             restore_from_index_paths
                 .iter()
@@ -1090,9 +1125,11 @@ pub(crate) fn abort_merge(repo: &Repository) -> Result<()> {
         });
     }
 
-    let original_head = repo.revparse_single("ORIG_HEAD").map_err(|_| BackendError::Git {
-        message: "Cannot abort merge because ORIG_HEAD is missing".to_string(),
-    })?;
+    let original_head = repo
+        .revparse_single("ORIG_HEAD")
+        .map_err(|_| BackendError::Git {
+            message: "Cannot abort merge because ORIG_HEAD is missing".to_string(),
+        })?;
     repo.reset(&original_head, ResetType::Hard, None)?;
     repo.cleanup_state()?;
     Ok(())
@@ -1678,11 +1715,9 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
 
 pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
     ensure_clean(repo)?;
-    let current_tree_id = repo
-        .head()
-        .ok()
-        .and_then(|head| head.peel_to_commit().ok())
-        .map(|commit| commit.tree_id());
+
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.safe();
 
     if create {
         validate_branch_name(branch_or_commit)?;
@@ -1693,12 +1728,19 @@ pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: b
                 message: "Cannot create branch without an initial commit".to_string(),
             })?;
         repo.branch(branch_or_commit, &head_commit, false)?;
-        repo.set_head(&format!("refs/heads/{}", branch_or_commit))?;
+        let ref_name = format!("refs/heads/{}", branch_or_commit);
+        repo.set_head(&ref_name)?;
     } else if repo
         .find_reference(&format!("refs/heads/{}", branch_or_commit))
         .is_ok()
     {
-        repo.set_head(&format!("refs/heads/{}", branch_or_commit))?;
+        let ref_name = format!("refs/heads/{}", branch_or_commit);
+        let object = repo.revparse_single(&ref_name)?;
+        repo.checkout_tree(&object, Some(&mut checkout))
+            .map_err(|e| BackendError::GitConflict {
+                message: e.to_string(),
+            })?;
+        repo.set_head(&ref_name)?;
     } else {
         validate_refspec(branch_or_commit)?;
         let ref_name = format!("refs/heads/{}", branch_or_commit);
@@ -1712,25 +1754,12 @@ pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: b
             resolve_commit(repo, branch_or_commit).map_err(|_| BackendError::GitInvalidCommit {
                 message: format!("Commit not found: {}", branch_or_commit),
             })?;
+        repo.checkout_tree(commit.as_object(), Some(&mut checkout))
+            .map_err(|e| BackendError::GitConflict {
+                message: e.to_string(),
+            })?;
         repo.set_head_detached(commit.id())?;
     }
-
-    let new_tree_id = repo
-        .head()
-        .ok()
-        .and_then(|head| head.peel_to_commit().ok())
-        .map(|commit| commit.tree_id());
-
-    if current_tree_id == new_tree_id {
-        return Ok(());
-    }
-
-    let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
-    repo.checkout_head(Some(&mut checkout))
-        .map_err(|e| BackendError::GitConflict {
-            message: e.to_string(),
-        })?;
 
     if repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
         return Err(BackendError::GitMergeConflict {
@@ -1890,6 +1919,306 @@ pub(crate) fn build_git_merge_check(
         ahead,
         behind,
     })
+}
+
+fn collect_command_conflict_files(cwd: &Path) -> Vec<String> {
+    let output = run_git_command(
+        cwd,
+        &[
+            "diff".to_string(),
+            "--name-only".to_string(),
+            "--diff-filter=U".to_string(),
+        ],
+    );
+
+    match output {
+        Ok(output) if output.success => output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn cleanup_temp_worktree(root: &Path, worktree_path: &Path) {
+    let remove_output = run_git_command(
+        root,
+        &[
+            "worktree".to_string(),
+            "remove".to_string(),
+            "--force".to_string(),
+            worktree_path.to_string_lossy().to_string(),
+        ],
+    );
+
+    if remove_output.map(|output| output.success).unwrap_or(false) {
+        return;
+    }
+
+    let _ = fs::remove_dir_all(worktree_path);
+    let _ = run_git_command(root, &["worktree".to_string(), "prune".to_string()]);
+}
+
+pub(crate) fn build_git_rebase_check(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+) -> Result<GitRebaseCheckDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(onto_branch)?;
+    resolve_commit(repo, branch_name)?;
+    resolve_commit(repo, onto_branch)?;
+
+    let root = repo_root(repo)?;
+    let temp_root = std::env::temp_dir().join("macro-rebase-checks");
+    fs::create_dir_all(&temp_root)?;
+    let unique_id = REBASE_CHECK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = temp_root.join(format!(
+        "rebase-check-{}-{}-{}-{}",
+        sanitize_temp_segment(branch_name),
+        std::process::id(),
+        Utc::now().timestamp_micros(),
+        unique_id
+    ));
+
+    let add_output = run_git_command(
+        &root,
+        &[
+            "worktree".to_string(),
+            "add".to_string(),
+            "--detach".to_string(),
+            temp_path.to_string_lossy().to_string(),
+            branch_name.to_string(),
+        ],
+    )?;
+    if !add_output.success {
+        let details = command_output_text(&add_output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git worktree add failed (exit code: {:?})", add_output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    let rebase_output = match run_git_command(
+        &temp_path,
+        &["rebase".to_string(), onto_branch.to_string()],
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            cleanup_temp_worktree(&root, &temp_path);
+            return Err(error);
+        }
+    };
+    let conflict_files = if rebase_output.success {
+        Vec::new()
+    } else {
+        collect_command_conflict_files(&temp_path)
+    };
+    let output = command_output_text(&rebase_output);
+    cleanup_temp_worktree(&root, &temp_path);
+
+    let mut conflict_files = conflict_files
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    conflict_files.sort();
+
+    Ok(GitRebaseCheckDto {
+        rebaseable: rebase_output.success,
+        conflict_files,
+        output,
+    })
+}
+
+fn find_worktree_path_for_branch(root: &Path, branch_name: &str) -> Result<Option<PathBuf>> {
+    let output = run_git_command(
+        root,
+        &[
+            "worktree".to_string(),
+            "list".to_string(),
+            "--porcelain".to_string(),
+        ],
+    )?;
+    if !output.success {
+        let details = command_output_text(&output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git worktree list failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    let wanted = format!("refs/heads/{}", branch_name);
+    let mut current_path: Option<PathBuf> = None;
+    for line in output.stdout.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current_path = Some(PathBuf::from(path.trim()));
+            continue;
+        }
+
+        if line.trim() == format!("branch {}", wanted) {
+            return Ok(current_path);
+        }
+
+        if line.trim().is_empty() {
+            current_path = None;
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn fast_forward_repo(
+    repo: &Repository,
+    source_branch: &str,
+    target_branch: &str,
+) -> Result<String> {
+    ensure_clean(repo)?;
+    validate_branch_name(source_branch)?;
+    validate_branch_name(target_branch)?;
+    resolve_commit(repo, source_branch)?;
+    resolve_commit(repo, target_branch)?;
+
+    let original_branch = get_branch_name(repo)?;
+    if original_branch.as_deref() != Some(target_branch) {
+        checkout_repo(repo, target_branch, false)?;
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "merge".to_string(),
+            "--ff-only".to_string(),
+            source_branch.to_string(),
+        ],
+    )?;
+
+    if let Some(original_branch) = original_branch.as_deref() {
+        if original_branch != target_branch {
+            let _ = checkout_repo(repo, original_branch, false);
+        }
+    }
+
+    if !output.success {
+        let details = command_output_text(&output);
+        return Err(BackendError::GitConflict {
+            message: if details.is_empty() {
+                format!("git merge --ff-only failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    let details = command_output_text(&output);
+    if details.is_empty() {
+        Ok(format!(
+            "Fast-forwarded {} to {}",
+            target_branch, source_branch
+        ))
+    } else {
+        Ok(details)
+    }
+}
+
+pub(crate) fn rebase_branch_repo(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+    confirm: Option<bool>,
+) -> Result<String> {
+    if !confirm.unwrap_or(false) {
+        return Err(BackendError::Git {
+            message: "Rebase requires confirm=true".to_string(),
+        });
+    }
+
+    ensure_clean(repo)?;
+    validate_branch_name(branch_name)?;
+    validate_branch_name(onto_branch)?;
+    resolve_commit(repo, branch_name)?;
+    resolve_commit(repo, onto_branch)?;
+
+    let root = repo_root(repo)?;
+    let branch_worktree = find_worktree_path_for_branch(&root, branch_name)?;
+    let original_branch = get_branch_name(repo)?;
+    let command_root = if let Some(path) = branch_worktree {
+        let worktree_repo = Repository::open(&path).map_err(|e| BackendError::Git {
+            message: format!(
+                "Failed to open branch worktree at {}: {}",
+                path.display(),
+                e
+            ),
+        })?;
+        ensure_clean(&worktree_repo)?;
+        path
+    } else {
+        if original_branch.as_deref() != Some(branch_name) {
+            checkout_repo(repo, branch_name, false)?;
+        }
+        root.clone()
+    };
+
+    let output = run_git_command(
+        &command_root,
+        &["rebase".to_string(), onto_branch.to_string()],
+    )?;
+
+    if !output.success {
+        let conflict_files = collect_command_conflict_files(&command_root);
+        let _ = run_git_command(
+            &command_root,
+            &["rebase".to_string(), "--abort".to_string()],
+        );
+        if command_root == root {
+            if let Some(original_branch) = original_branch.as_deref() {
+                if original_branch != branch_name {
+                    let _ = checkout_repo(repo, original_branch, false);
+                }
+            }
+        }
+        let details = command_output_text(&output);
+        let conflict_suffix = if conflict_files.is_empty() {
+            String::new()
+        } else {
+            format!(" Conflicts: {}", conflict_files.join(", "))
+        };
+        return Err(BackendError::GitMergeConflict {
+            message: if details.is_empty() {
+                format!(
+                    "git rebase failed (exit code: {:?}).{}",
+                    output.code, conflict_suffix
+                )
+            } else {
+                format!("{}{}", details, conflict_suffix)
+            },
+        });
+    }
+
+    if command_root == root {
+        if let Some(original_branch) = original_branch.as_deref() {
+            if original_branch != branch_name {
+                checkout_repo(repo, original_branch, false)?;
+            }
+        }
+    }
+
+    let details = command_output_text(&output);
+    if details.is_empty() {
+        Ok(format!("Rebased {} onto {}", branch_name, onto_branch))
+    } else {
+        Ok(details)
+    }
 }
 
 pub(crate) fn merge_repo(
@@ -2087,7 +2416,9 @@ pub(crate) fn diff_repo(
     }
 
     let mut output = String::new();
-    let mut print_cb = |_delta: git2::DiffDelta<'_>, _hunk: Option<git2::DiffHunk<'_>>, line: git2::DiffLine<'_>| {
+    let mut print_cb = |_delta: git2::DiffDelta<'_>,
+                        _hunk: Option<git2::DiffHunk<'_>>,
+                        line: git2::DiffLine<'_>| {
         let origin = line.origin();
         // Only prepend origin for content lines, not file/hunk headers
         if matches!(origin, '+' | '-' | ' ') {
@@ -2170,7 +2501,10 @@ fn read_worktree_file_content(repo_root: &Path, relative_path: &Path) -> Result<
         Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(BackendError::Io {
-            message: format!("Failed to read worktree file {:?}: {}", absolute_path, error),
+            message: format!(
+                "Failed to read worktree file {:?}: {}",
+                absolute_path, error
+            ),
             source: error,
         }),
     }
@@ -2487,6 +2821,82 @@ pub async fn git_merge(
 }
 
 #[tauri::command]
+/// Fast-forward one local branch to another branch after a clean preflight.
+pub async fn git_fast_forward(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    source_branch: String,
+    target_branch: String,
+) -> Result<String> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        fast_forward_repo(&repo, &source_branch, &target_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Check whether a branch can be rebased onto another branch in a disposable worktree.
+pub async fn git_rebase_check(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    onto_branch: String,
+) -> Result<GitRebaseCheckDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        build_git_rebase_check(&repo, &branch_name, &onto_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Rebase a local branch onto another branch after explicit confirmation.
+pub async fn git_rebase_branch(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    onto_branch: String,
+    confirm: Option<bool>,
+) -> Result<String> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        rebase_branch_repo(&repo, &branch_name, &onto_branch, confirm)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Create a commit in a Git repository.
 pub async fn git_commit(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -2554,7 +2964,11 @@ pub async fn git_restore_paths(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        restore_paths(&repo, &paths, RestoreTarget::from_option(target.as_deref())?)
+        restore_paths(
+            &repo,
+            &paths,
+            RestoreTarget::from_option(target.as_deref())?,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -3450,7 +3864,10 @@ mod tests {
         assert!(validate_commit_message("feat: add feature").is_ok());
         assert!(validate_commit_message("fix(scope): correct bug").is_ok());
         assert!(validate_commit_message("chore!: breaking change").is_ok());
-        assert!(validate_commit_message("build(deps): update tauri\n\nUpgrade runtime dependencies.").is_ok());
+        assert!(validate_commit_message(
+            "build(deps): update tauri\n\nUpgrade runtime dependencies."
+        )
+        .is_ok());
         assert!(validate_commit_message("ci: update release workflow").is_ok());
         assert!(validate_commit_message("revert: restore previous behavior").is_ok());
     }
@@ -3586,6 +4003,80 @@ mod tests {
         assert!(check.conflict_files.iter().any(|path| path == "README.md"));
         assert_eq!(check.ahead, 1);
         assert_eq!(check.behind, 1);
+    }
+
+    #[test]
+    fn test_git_fast_forward_advances_target_branch() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "hello\nfeature change").unwrap();
+        let feature_commit = commit_repo(&repo, "feat: update readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        let output = fast_forward_repo(&repo, "feature", &base_branch).unwrap();
+
+        assert!(!output.is_empty());
+        let base_commit = resolve_commit(&repo, &base_branch).unwrap();
+        assert_eq!(short_hash(base_commit.id()), feature_commit);
+    }
+
+    #[test]
+    fn test_git_rebase_check_detects_clean_rebase() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature\n").unwrap();
+        commit_repo(&repo, "feat: add feature file", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base\n").unwrap();
+        commit_repo(&repo, "feat: add base file", true).unwrap();
+
+        let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
+        assert!(check.rebaseable);
+        assert!(check.conflict_files.is_empty());
+    }
+
+    #[test]
+    fn test_git_rebase_check_detects_conflicting_rebase() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature branch change").unwrap();
+        commit_repo(&repo, "feat: feature readme change", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base branch change").unwrap();
+        commit_repo(&repo, "feat: base readme change", true).unwrap();
+
+        let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
+        assert!(!check.rebaseable);
+        assert!(check.conflict_files.iter().any(|path| path == "README.md"));
+    }
+
+    #[test]
+    fn test_git_rebase_branch_rewrites_local_branch() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature\n").unwrap();
+        commit_repo(&repo, "feat: add feature file", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base\n").unwrap();
+        commit_repo(&repo, "feat: add base file", true).unwrap();
+
+        let output = rebase_branch_repo(&repo, "feature", &base_branch, Some(true)).unwrap();
+        assert!(!output.is_empty());
+        let check = build_git_merge_check(&repo, "feature", &base_branch).unwrap();
+        assert!(check.mergeable);
+        assert_eq!(check.ahead, 1);
+        assert_eq!(check.behind, 0);
     }
 
     #[test]
@@ -3771,7 +4262,9 @@ mod tests {
         let (_temp, repo) = init_repo();
         let error =
             abort_merge_with_confirmation(&repo, Some(false)).expect_err("expected confirm error");
-        assert!(error.to_string().contains("Abort merge requires confirm=true"));
+        assert!(error
+            .to_string()
+            .contains("Abort merge requires confirm=true"));
     }
 
     #[test]

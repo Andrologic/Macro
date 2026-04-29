@@ -38,6 +38,8 @@ const COPILOT_RUNTIME_LICENSE_RESOURCE: &str = "licenses/github-copilot-cli-LICE
 const COPILOT_RUNTIME_DIR_SEGMENT: &str = "copilot/runtimes";
 const COPILOT_TEMP_DIR_SEGMENT: &str = "copilot/tmp";
 const COPILOT_DEFAULT_DEVICE_URL: &str = "https://github.com/login/device";
+const DEFAULT_COPILOT_SEND_TIMEOUT_MS: i64 = 30 * 60 * 1000;
+const MIN_COPILOT_SEND_TIMEOUT_MS: i64 = 60 * 1000;
 const DOWNLOAD_PROGRESS_GRANULARITY_BYTES: u64 = 1_048_576;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -501,6 +503,12 @@ fn bridge_envs(app_handle: &AppHandle, runtime: &ResolvedRuntime) -> Vec<(String
             COPILOT_AUTO_UPDATE_ENV.1.to_string(),
         ),
     ]
+}
+
+fn normalize_copilot_send_timeout_ms(value: Option<i64>) -> i64 {
+    value
+        .filter(|timeout| *timeout >= MIN_COPILOT_SEND_TIMEOUT_MS)
+        .unwrap_or(DEFAULT_COPILOT_SEND_TIMEOUT_MS)
 }
 
 fn spawn_bridge(
@@ -1915,6 +1923,14 @@ async fn stream_chat_inner(
             .unwrap_or_else(|| "GitHub Copilot is not connected.".to_string()));
     }
 
+    let provider_settings = repository::get_provider_settings(&pool, &provider.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut request = request;
+    request.copilot_send_timeout_ms = Some(normalize_copilot_send_timeout_ms(
+        provider_settings.copilot_send_timeout_ms,
+    ));
+
     let (runtime, _asset) = resolve_runtime(&app_handle)
         .await
         .map_err(|issue| issue.error_message)?;
@@ -2106,6 +2122,17 @@ async fn stream_chat_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_copilot_send_timeout_to_thirty_minute_default() {
+        assert_eq!(normalize_copilot_send_timeout_ms(None), 1_800_000);
+        assert_eq!(normalize_copilot_send_timeout_ms(Some(30_000)), 1_800_000);
+        assert_eq!(normalize_copilot_send_timeout_ms(Some(60_000)), 60_000);
+        assert_eq!(
+            normalize_copilot_send_timeout_ms(Some(2_400_000)),
+            2_400_000
+        );
+    }
 
     #[test]
     fn bridge_done_event_deserializes_reasoning_summary() {
