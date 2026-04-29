@@ -81,7 +81,11 @@ const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/worktrees/task-1',
 }));
-const gitBranchListMock = mock(async () => ({
+const gitBranchListMock = mock(async (): Promise<{
+  local: Array<{ name: string; is_head: boolean; commit: string }>;
+  remote: Array<{ name: string; is_head: boolean; commit: string }>;
+  current: string;
+}> => ({
   local: [{ name: 'feature/task-1', is_head: false, commit: 'abc123' }],
   remote: [],
   current: 'develop',
@@ -350,9 +354,20 @@ describe('useTaskStore.finishTask', () => {
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
+    gitWorktreeRemoveMock.mockImplementation(async () => ({
+      removed: true,
+      removedPath: '/worktrees/task-1',
+    }));
     gitBranchListMock.mockClear();
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/task-1', is_head: false, commit: 'abc123' }],
+      remote: [],
+      current: 'develop',
+    }));
     gitBranchDeleteMock.mockClear();
+    gitBranchDeleteMock.mockImplementation(async () => undefined);
     gitBranchDeleteRemoteMock.mockClear();
+    gitBranchDeleteRemoteMock.mockImplementation(async () => undefined);
     gitCheckoutMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitMergeCheckMock.mockImplementation(async () => ({
@@ -463,6 +478,40 @@ describe('useTaskStore.finishTask', () => {
       targetBranch: 'plan/checkout',
     });
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      force: true,
+    });
+  });
+
+  it('completes an in-progress task after a successful merge workflow', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({ status: 'InProgress' })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
   });
 
   it('rebases a local branch then fast-forwards when requested', async () => {
@@ -500,6 +549,95 @@ describe('useTaskStore.finishTask', () => {
       targetBranch: 'plan/checkout',
     });
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      force: true,
+    });
+  });
+
+  it('does not fail a completed merge when branch cleanup fails after integration', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/task-1', is_head: false, commit: 'abc123' }],
+      remote: [{ name: 'origin/feature/task-1', is_head: false, commit: 'abc123' }],
+      current: 'develop',
+    }));
+    gitBranchDeleteMock.mockImplementationOnce(async () => {
+      throw new Error('not merged into current HEAD');
+    });
+    gitBranchDeleteRemoteMock.mockImplementationOnce(async () => {
+      throw new Error('remote delete failed');
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(gitFastForwardMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      sourceBranch: 'feature/task-1',
+      targetBranch: 'plan/checkout',
+    });
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      force: true,
+    });
+    expect(gitBranchDeleteRemoteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+    });
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
+  });
+
+  it('keeps worktree removal failures blocking during post-merge cleanup', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    gitWorktreeRemoveMock.mockImplementationOnce(async () => {
+      throw new Error('worktree still locked');
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    })).rejects.toThrow('worktree still locked');
+
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
   it('keeps architect tasks open when the merge workflow is blocked', async () => {

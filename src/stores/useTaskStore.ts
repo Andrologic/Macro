@@ -69,6 +69,7 @@ import {
   resolveMergeWorkflowPhaseFromRepositories,
   resolveMergeWorkflowTaskStatus,
   resolveMergeWorkflowStrategy,
+  isMergeWorkflowFileConflictRepository,
   isMergeWorkflowSourcePublished,
   shouldCheckMergeWorkflowRebase,
   type MergeWorkflowKind,
@@ -112,6 +113,12 @@ export interface MergeWorkflowAutomaticResolutionResult {
   conversationId: string | null;
   autoResolvedRepositoryCount: number;
   remainingBlockedRepositoryCount: number;
+}
+
+export interface MergeWorkflowManualResolutionStartResult {
+  status: 'merged' | 'conflicted' | string;
+  conflictFiles: string[];
+  output: string;
 }
 
 export type MergeWorkflowBlockerResolutionAction = MergeWorkflowResolutionAction;
@@ -906,17 +913,26 @@ export const getTaskLifecycleCapabilities = (
 
 const ALLOWED_STATUS_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   Pending: ['InProgress', 'Failed'],
-  InProgress: ['AwaitingResponse', 'InReview', 'Failed'],
-  AwaitingResponse: ['InProgress', 'InReview', 'Failed'],
-  InReview: ['InProgress', 'Completed', 'Failed'],
+  InProgress: ['AwaitingResponse', 'InReview', 'Completed', 'Failed'],
+  AwaitingResponse: ['InProgress', 'InReview', 'Completed', 'Failed'],
+  InReview: ['InProgress', 'AwaitingResponse', 'Completed', 'Failed'],
   Completed: ['Pending'],
   Failed: ['Pending', 'InProgress'],
-  Blocked: ['Pending'],
+  // `Blocked` is also used by the merge workflow for local Git blockers.
+  // Dependency blockers are protected separately with `task.is_blocked`.
+  Blocked: ['Pending', 'InProgress', 'AwaitingResponse', 'Completed', 'Failed'],
 };
 
 const canTransitionTaskStatus = (from: TaskStatus, to: TaskStatus): boolean => {
   return ALLOWED_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
 };
+
+const DEPENDENCY_BLOCKED_TARGET_STATUSES = new Set<TaskStatus>([
+  'InProgress',
+  'AwaitingResponse',
+  'InReview',
+  'Completed',
+]);
 
 const taskMatchesAnyProjectId = (
   task: CatalogedImplementTask,
@@ -1297,8 +1313,21 @@ interface TaskStore {
     options?: {
       internalAgentProfile?: InternalAgentProfile | null;
       blockerResolutionAction?: MergeWorkflowBlockerResolutionAction;
+      repositoryId?: string | null;
     }
   ) => Promise<MergeWorkflowAutomaticResolutionResult>;
+  startMergeWorkflowManualResolution: (
+    taskId: string,
+    repositoryId: string
+  ) => Promise<MergeWorkflowManualResolutionStartResult | null>;
+  completeMergeWorkflowManualResolution: (
+    taskId: string,
+    repositoryId: string
+  ) => Promise<string | null>;
+  abortMergeWorkflowManualResolution: (
+    taskId: string,
+    repositoryId: string
+  ) => Promise<void>;
   finishTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   completeTask: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   loadPlanFinalizationReview: (planId: string, options?: { force?: boolean }) => Promise<PlanFinalizationRuntimeState | null>;
@@ -1309,6 +1338,7 @@ interface TaskStore {
     options?: {
       internalAgentProfile?: InternalAgentProfile | null;
       blockerResolutionAction?: MergeWorkflowBlockerResolutionAction;
+      repositoryId?: string | null;
     }
   ) => Promise<MergeWorkflowAutomaticResolutionResult>;
   markTaskAwaitingResponse: (taskId: string) => Promise<void>;
@@ -1698,6 +1728,24 @@ const evolveMergeWorkflowRuntimeRepository = (params: {
   };
 };
 
+const markMergeWorkflowRepositoryMerged = (
+  repository: MergeWorkflowRepositoryResult
+): MergeWorkflowRepositoryResult => ({
+  ...repository,
+  progressState: 'merged',
+  mergeAppliedAt: new Date().toISOString(),
+  hasChanges: false,
+  isClean: true,
+  mergeable: true,
+  conflictFiles: [],
+  mergeInProgress: false,
+  blockingKind: null,
+  nextAction: null,
+  blockingReason: null,
+  checkStatus: 'passed',
+  diff: '',
+});
+
 const resolveMissingBaseBranchSourceRef = async (
   repoPath: string,
   missingRef: string
@@ -1730,18 +1778,34 @@ const cleanupTaskExecutionTargets = async (
     removedWorktreeKeys.push(target.worktreeKey);
 
     if (localBranchNames.has(target.branchName)) {
-      await tauriIpc.gitBranchDelete({
-        repoPath: target.repoPath,
-        branchName: target.branchName,
-        force: false,
-      });
+      try {
+        await tauriIpc.gitBranchDelete({
+          repoPath: target.repoPath,
+          branchName: target.branchName,
+          force: true,
+        });
+      } catch (error) {
+        devLogger.warn('[taskCleanup] Could not delete local task branch after merge.', {
+          repoPath: target.repoPath,
+          branchName: target.branchName,
+          error: toServiceError(error).message,
+        });
+      }
     }
 
     if (remoteBranchNames.has(`origin/${target.branchName}`)) {
-      await tauriIpc.gitBranchDeleteRemote({
-        repoPath: target.repoPath,
-        branchName: target.branchName,
-      });
+      try {
+        await tauriIpc.gitBranchDeleteRemote({
+          repoPath: target.repoPath,
+          branchName: target.branchName,
+        });
+      } catch (error) {
+        devLogger.warn('[taskCleanup] Could not delete remote task branch after merge.', {
+          repoPath: target.repoPath,
+          branchName: target.branchName,
+          error: toServiceError(error).message,
+        });
+      }
     }
   }
 
@@ -3595,23 +3659,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           currentRuntime = evolveMergeWorkflowRuntimeRepository({
             runtime: currentRuntime || reviewRuntime,
             repositoryId: repository.id,
-            update: (currentRepository) => ({
-              ...currentRepository,
-              progressState: allowWithoutCodeChanges ? 'no_changes' : 'merged',
-              mergeAppliedAt: allowWithoutCodeChanges
-                ? currentRepository.mergeAppliedAt
-                : new Date().toISOString(),
-              hasChanges: false,
-              isClean: true,
-              mergeable: true,
-              conflictFiles: [],
-              mergeInProgress: false,
-              blockingKind: null,
-              nextAction: null,
-              blockingReason: null,
-              checkStatus: 'passed',
-              diff: '',
-            }),
+            update: (currentRepository) => {
+              const mergedRepository = markMergeWorkflowRepositoryMerged(currentRepository);
+              return allowWithoutCodeChanges
+                ? {
+                    ...mergedRepository,
+                    progressState: 'no_changes',
+                    mergeAppliedAt: currentRepository.mergeAppliedAt,
+                  }
+                : mergedRepository;
+            },
           });
           await persistRuntime(currentRuntime);
 
@@ -3906,11 +3963,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
     }
 
+    const promptRepositories = options?.repositoryId
+      ? runtime.blockedRepositories.filter((repository) => repository.id === options.repositoryId)
+      : options?.blockerResolutionAction === 'assistant'
+        ? runtime.blockedRepositories.filter(isMergeWorkflowFileConflictRepository)
+        : runtime.blockedRepositories;
+    const scopedRuntime = {
+      ...runtime,
+      blockedRepositories: promptRepositories.length > 0
+        ? promptRepositories
+        : runtime.blockedRepositories,
+    };
+
     const appState = useAppStore.getState();
     const chatStore = useChatStore.getState();
     const conversationId = await sendMergeWorkflowConflictPrompt({
       task,
-      runtime,
+      runtime: scopedRuntime,
       selectedGroupId: appState.selectedGroupId,
       selectedTaskId: appState.selectedTaskId,
       ensureConversationForCurrentMode: chatStore.ensureConversationForCurrentMode,
@@ -3925,8 +3994,76 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     return {
       conversationId,
       autoResolvedRepositoryCount,
-      remainingBlockedRepositoryCount: runtime.blockedRepositories.length,
+      remainingBlockedRepositoryCount: scopedRuntime.blockedRepositories.length,
     };
+  },
+
+  startMergeWorkflowManualResolution: async (taskId, repositoryId) => {
+    const task = get().getTaskById(taskId);
+    const currentRuntime = get().mergeWorkflowRuntimeByTaskId[taskId] ?? null;
+    const runtime =
+      currentRuntime?.repositories.some((candidate) => candidate.id === repositoryId)
+        ? currentRuntime
+        : await get().loadMergeWorkflowReview(taskId, { force: true });
+    const repository = runtime?.repositories.find((candidate) => candidate.id === repositoryId);
+    if (!runtime || !repository || !isMergeWorkflowFileConflictRepository(repository)) {
+      return null;
+    }
+
+    const result = await tauriIpc.gitStartMergeResolution({
+      repoPath: repository.repoPath,
+      branchName: repository.sourceBranchName,
+      intoBranch: repository.targetBranchName,
+    });
+    const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
+    if (task && refreshedRuntime && result.status === 'merged') {
+      const completedRuntime = evolveMergeWorkflowRuntimeRepository({
+        runtime: refreshedRuntime,
+        repositoryId,
+        update: markMergeWorkflowRepositoryMerged,
+      });
+      await syncRuntimePersistence(task, completedRuntime);
+    }
+    return result;
+  },
+
+  completeMergeWorkflowManualResolution: async (taskId, repositoryId) => {
+    const task = get().getTaskById(taskId);
+    const runtime = get().mergeWorkflowRuntimeByTaskId[taskId] ??
+      await get().loadMergeWorkflowReview(taskId, { force: true });
+    const repository = runtime?.repositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return null;
+    }
+
+    const output = await tauriIpc.gitCompleteMerge({
+      repoPath: repository.repoPath,
+    });
+    const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
+    if (task && refreshedRuntime) {
+      const completedRuntime = evolveMergeWorkflowRuntimeRepository({
+        runtime: refreshedRuntime,
+        repositoryId,
+        update: markMergeWorkflowRepositoryMerged,
+      });
+      await syncRuntimePersistence(task, completedRuntime);
+    }
+    return output;
+  },
+
+  abortMergeWorkflowManualResolution: async (taskId, repositoryId) => {
+    const runtime = get().mergeWorkflowRuntimeByTaskId[taskId] ??
+      await get().loadMergeWorkflowReview(taskId, { force: true });
+    const repository = runtime?.repositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) {
+      return;
+    }
+
+    await tauriIpc.gitAbortMerge({
+      repoPath: repository.repoPath,
+      confirm: true,
+    });
+    await get().loadMergeWorkflowReview(taskId, { force: true });
   },
 
   resolvePlanFinalizationAutomatically: async (planId, options) => {
@@ -3994,7 +4131,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    if ((status === 'InProgress' || status === 'AwaitingResponse' || status === 'InReview' || status === 'Completed') && currentTask.is_blocked) {
+    if (DEPENDENCY_BLOCKED_TARGET_STATUSES.has(status) && currentTask.is_blocked) {
       const reason = currentTask.blocked_by.join(', ');
       set({
         lastError: tTask(

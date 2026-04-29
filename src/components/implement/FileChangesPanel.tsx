@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { providerHasCredentials, useProviderStore } from '../../stores/useProviderStore';
 import type { ReasoningEffort } from '../../types';
 import {
@@ -90,6 +91,7 @@ const interpolateFallbackPlaceholders = (
 
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
+const POST_ASSISTANT_REFRESH_DELAY_MS = 400;
 
 const STATUS_COLORS = {
   added: 'text-primary',
@@ -465,6 +467,24 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const currentMergeWorkflowRuntime = useTaskStore((state) =>
     selectedTaskId ? state.getMergeWorkflowRuntime(selectedTaskId) : null
   );
+  const selectedTaskAssistantRuntimeSignature = useChatStore((state) => {
+    if (!selectedTaskId) return '';
+    return state.conversations
+      .filter((conversation) =>
+        conversation.scope_mode === 'Implement' &&
+        conversation.task_id === selectedTaskId
+      )
+      .map((conversation) => {
+        const runtime = state.conversationRuntimeById[conversation.id];
+        return [
+          conversation.id,
+          runtime?.phase ?? 'idle',
+          runtime?.sessionId ?? '',
+        ].join(':');
+      })
+      .sort()
+      .join('|');
+  });
   const selectedTaskWorktreeKey = useTaskStore((state) => {
     if (!selectedTaskId) return '';
     const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
@@ -494,6 +514,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const [dedicatedCommitProviderId, setDedicatedCommitProviderId] = useState('');
   const [dedicatedCommitModelId, setDedicatedCommitModelId] = useState('');
   const [dedicatedCommitReasoningEffort, setDedicatedCommitReasoningEffort] = useState<ReasoningEffort | null>(null);
+  const [postAssistantRefreshToken, setPostAssistantRefreshToken] = useState(0);
+  const assistantRefreshTaskIdRef = useRef<string | null>(null);
+  const assistantWasActiveForTaskRef = useRef(false);
+  const postAssistantRefreshPendingRef = useRef(false);
+  const postAssistantRefreshInFlightRef = useRef(false);
+  const postAssistantRefreshTimeoutRef = useRef<number | null>(null);
   const [commitMessageEditState, setCommitMessageEditState] = useState<CommitMessageEditState | null>(null);
   const {
     repositories,
@@ -548,6 +574,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
+  const isSelectedTaskAssistantActive =
+    selectedTaskAssistantRuntimeSignature.includes(':preparing:') ||
+    selectedTaskAssistantRuntimeSignature.includes(':streaming:');
 
   useEffect(() => {
     let disposed = false;
@@ -698,6 +727,113 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedProjectId,
     selectedTaskId,
     isReadOnlyRemoteMode,
+  ]);
+
+  useEffect(() => {
+    if (assistantRefreshTaskIdRef.current === selectedTaskId) {
+      return;
+    }
+    assistantRefreshTaskIdRef.current = selectedTaskId;
+    assistantWasActiveForTaskRef.current = isSelectedTaskAssistantActive;
+    postAssistantRefreshPendingRef.current = false;
+    if (postAssistantRefreshTimeoutRef.current) {
+      window.clearTimeout(postAssistantRefreshTimeoutRef.current);
+      postAssistantRefreshTimeoutRef.current = null;
+    }
+  }, [isSelectedTaskAssistantActive, selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+
+    if (isSelectedTaskAssistantActive) {
+      assistantWasActiveForTaskRef.current = true;
+      return;
+    }
+
+    if (!assistantWasActiveForTaskRef.current) {
+      return;
+    }
+
+    assistantWasActiveForTaskRef.current = false;
+    postAssistantRefreshPendingRef.current = true;
+    if (postAssistantRefreshTimeoutRef.current) {
+      window.clearTimeout(postAssistantRefreshTimeoutRef.current);
+    }
+    postAssistantRefreshTimeoutRef.current = window.setTimeout(() => {
+      postAssistantRefreshTimeoutRef.current = null;
+      setPostAssistantRefreshToken((token) => token + 1);
+    }, POST_ASSISTANT_REFRESH_DELAY_MS);
+  }, [
+    isSelectedTaskAssistantActive,
+    selectedTaskAssistantRuntimeSignature,
+    selectedTaskId,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (postAssistantRefreshTimeoutRef.current) {
+        window.clearTimeout(postAssistantRefreshTimeoutRef.current);
+        postAssistantRefreshTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!postAssistantRefreshToken || !postAssistantRefreshPendingRef.current) {
+      return;
+    }
+    if (isDiffModalOpen || isCommitting || isGeneratingCommitMessages) {
+      return;
+    }
+    if (
+      postAssistantRefreshInFlightRef.current ||
+      isReadOnlyRemoteMode ||
+      !hasRepositoryScope ||
+      !currentTask ||
+      !selectedTaskId
+    ) {
+      return;
+    }
+
+    postAssistantRefreshInFlightRef.current = true;
+
+    const refreshAfterAssistant = async () => {
+      try {
+        const hasMergeWorkflowContext = Boolean(
+          currentMergeWorkflowRuntime ||
+          currentTask.merge_workflow
+        );
+
+        if (hasMergeWorkflowContext) {
+          await loadMergeWorkflowReview(currentTask.id, { force: true });
+          return;
+        }
+
+        if (!isPlanFinalizationTask) {
+          await loadCurrentChanges({ silent: true });
+        }
+      } catch {
+        // Silent refresh: the panel will surface explicit errors on the next user action.
+      } finally {
+        postAssistantRefreshPendingRef.current = false;
+        postAssistantRefreshInFlightRef.current = false;
+      }
+    };
+
+    void refreshAfterAssistant();
+  }, [
+    currentMergeWorkflowRuntime,
+    currentTask,
+    hasRepositoryScope,
+    isCommitting,
+    isDiffModalOpen,
+    isGeneratingCommitMessages,
+    isPlanFinalizationTask,
+    isReadOnlyRemoteMode,
+    loadCurrentChanges,
+    loadMergeWorkflowReview,
+    postAssistantRefreshToken,
+    selectedTaskId,
   ]);
 
   useEffect(() => {

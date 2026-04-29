@@ -4,6 +4,10 @@ import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../services/serviceRuntime';
 import type { GitMergeCheckDto } from '../services/tauriIpc';
+import type {
+  MergeWorkflowRepositoryResult,
+  MergeWorkflowRuntimeState,
+} from '../services/mergeWorkflow';
 import {
   buildPlanFinalizationFailureState,
   toBlockedPlanFinalizationState,
@@ -45,6 +49,12 @@ const gitRebaseCheckMock = mock(async () => ({
   output: 'Successfully rebased',
 }));
 const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
+const gitStartMergeResolutionMock = mock(async () => ({
+  status: 'conflicted',
+  conflictFiles: ['src/conflict.ts'],
+  output: 'Automatic merge failed',
+}));
+const gitCompleteMergeMock = mock(async () => 'Merge completed');
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
   remote: [],
@@ -112,6 +122,8 @@ mock.module('../services/tauriIpc', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitStartMergeResolution: gitStartMergeResolutionMock,
+  gitCompleteMerge: gitCompleteMergeMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -131,6 +143,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitStartMergeResolution: gitStartMergeResolutionMock,
+  gitCompleteMerge: gitCompleteMergeMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -380,6 +394,8 @@ describe('useTaskStore merge workflow review loading', () => {
     gitFastForwardMock.mockClear();
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
+    gitStartMergeResolutionMock.mockClear();
+    gitCompleteMergeMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
     createConversationMock.mockClear();
@@ -430,14 +446,14 @@ describe('useTaskStore merge workflow review loading', () => {
       ],
     });
 
-  const buildBlockedMergeRuntime = () => {
-    const repository = {
+  const buildBlockedMergeRuntime = (): MergeWorkflowRuntimeState => {
+    const repository: MergeWorkflowRepositoryResult = {
       id: 'project-1::/repos/web',
       projectId: 'project-1',
       repoPath: '/repos/web',
       sourceBranchName: 'feature/review-actions',
       targetBranchName: 'plan/review-actions',
-      progressState: 'pending' as const,
+      progressState: 'pending',
       hadChangesAtStart: true,
       mergeAppliedAt: null,
       isClean: true,
@@ -449,21 +465,21 @@ describe('useTaskStore merge workflow review loading', () => {
       dirtyFiles: [],
       mergeInProgress: false,
       diff: 'diff --git a/src/main.ts b/src/main.ts',
-      checkStatus: 'failed' as const,
-      blockingKind: 'merge_conflict' as const,
-      nextAction: 'resolve_conflicts' as const,
+      checkStatus: 'failed',
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
       blockingReason: 'Cannot continue merge because /repos/web would conflict in: src/main.ts.',
       isSourcePublished: false,
-      mergeStrategy: 'file_conflict' as const,
-      recommendedAction: 'assistant' as const,
-      availableActions: ['assistant', 'retry_check'] as const,
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
     };
 
     return {
       taskId: 'task-1',
-      kind: 'task_completion' as const,
-      phase: 'blocked' as const,
-      taskStatus: 'Blocked' as const,
+      kind: 'task_completion',
+      phase: 'blocked',
+      taskStatus: 'Blocked',
       review: {
         taskId: 'task-1',
         title: 'Task 1',
@@ -648,6 +664,139 @@ describe('useTaskStore merge workflow review loading', () => {
         content: expect.stringContaining('Blocked repositories:'),
       })
     );
+  });
+
+  it('scopes assistant conflict prompts to the selected repository', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    const secondRepository = {
+      ...runtime.repositories[0],
+      id: 'project-2::/repos/api',
+      projectId: 'project-2',
+      repoPath: '/repos/api',
+      conflictFiles: ['src/api.ts'],
+      blockingReason: 'Cannot continue merge because /repos/api would conflict in: src/api.ts.',
+    };
+    runtime.repositories = [runtime.repositories[0], secondRepository];
+    runtime.blockedRepositories = runtime.repositories;
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': runtime,
+      },
+      loadMergeWorkflowReview: mock(async () => runtime),
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'assistant',
+        repositoryId: 'project-2::/repos/api',
+      });
+
+    expect(resolution.remainingBlockedRepositoryCount).toBe(1);
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('/repos/api'),
+      })
+    );
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.not.stringContaining('/repos/web'),
+      })
+    );
+  });
+
+  it('does not include dirty repositories in unscoped assistant conflict prompts', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    const dirtyRepository: MergeWorkflowRepositoryResult = {
+      ...runtime.repositories[0],
+      id: 'project-2::/repos/api',
+      projectId: 'project-2',
+      repoPath: '/repos/api',
+      isClean: false,
+      conflictFiles: ['src/local-conflict.ts'],
+      dirtyFiles: [{ path: 'src/local.ts', status: 'modified', area: 'unstaged' }],
+      blockingKind: 'repository_dirty',
+      nextAction: 'clean_repository',
+      blockingReason: 'Cannot continue merge because /repos/api has uncommitted changes.',
+      mergeStrategy: 'dirty',
+      recommendedAction: 'stash_dirty',
+      availableActions: ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'],
+    };
+    runtime.repositories = [runtime.repositories[0], dirtyRepository];
+    runtime.blockedRepositories = runtime.repositories;
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': runtime,
+      },
+      loadMergeWorkflowReview: mock(async () => runtime),
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'assistant',
+      });
+
+    expect(resolution.remainingBlockedRepositoryCount).toBe(1);
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('/repos/web'),
+      })
+    );
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.not.stringContaining('/repos/api'),
+      })
+    );
+  });
+
+  it('starts and completes manual merge conflict resolution for a repository', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': runtime,
+      },
+      loadMergeWorkflowReview: mock(async () => runtime),
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const startResult = await useTaskStore
+      .getState()
+      .startMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
+    const completeResult = await useTaskStore
+      .getState()
+      .completeMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
+
+    expect(startResult?.status).toBe('conflicted');
+    expect(gitStartMergeResolutionMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/review-actions',
+      intoBranch: 'plan/review-actions',
+    });
+    expect(completeResult).toBe('Merge completed');
+    expect(gitCompleteMergeMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+    });
+    expect(
+      useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.repositories[0]?.progressState
+    ).toBe('merged');
   });
 
   it('automatically stashes dirty merge blockers before opening the assistant', async () => {
@@ -889,6 +1038,129 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
       'InProgress',
     );
     expect(useTaskStore.getState().lastError).toBe('Persistence failed');
+  });
+
+  it('allows an assistant follow-up while a task is in review', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InReview' })],
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().markTaskAwaitingResponse('task-1');
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      status: 'AwaitingResponse',
+    });
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'AwaitingResponse',
+    );
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+});
+
+describe('useTaskStore task status transition guards', () => {
+  beforeEach(() => {
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    updateStandaloneTaskStatusImpl = null;
+  });
+
+  const buildBlockedTaskCompletionRuntime = (
+    taskStatus: 'Blocked' | 'Failed' | 'Completed' = 'Blocked',
+  ): MergeWorkflowRuntimeState => ({
+    taskId: 'task-1',
+    kind: 'task_completion',
+    phase: taskStatus === 'Failed' ? 'failed' : 'blocked',
+    taskStatus,
+    review: {
+      taskId: 'task-1',
+      title: 'Task 1',
+      taskSource: 'standalone',
+      planId: null,
+      planTitle: null,
+      targetBranch: 'develop',
+    },
+    repositories: [],
+    blockedRepositories: [],
+    message: 'Resolve the repository blockers before retrying the merge.',
+    lastLoadedAt: '2026-04-22T10:00:00.000Z',
+  });
+
+  it('allows merge-workflow blocked tasks to complete after blockers are resolved', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const mergeRuntime = buildBlockedTaskCompletionRuntime();
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'Blocked', is_blocked: false })],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': mergeRuntime,
+      },
+      lastError: null,
+    });
+
+    await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'Completed',
+    );
+    expect(
+      useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.taskStatus,
+    ).toBe('Completed');
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('allows merge-workflow blocked tasks to fail when assistant resolution errors', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const mergeRuntime = buildBlockedTaskCompletionRuntime();
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'Blocked', is_blocked: false })],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': mergeRuntime,
+      },
+      lastError: null,
+    });
+
+    await useTaskStore.getState().markTaskFailed('task-1');
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'Failed',
+    );
+    expect(
+      useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase,
+    ).toBe('failed');
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('still blocks dependency-blocked tasks from completing', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          status: 'Blocked',
+          is_blocked: true,
+          blocked_by: ['task-0'],
+          blocked_by_task_ids: ['task-0'],
+        }),
+      ],
+      lastError: null,
+    });
+
+    await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe(
+      'Blocked',
+    );
+    expect(useTaskStore.getState().lastError).toContain(
+      'Task is blocked by unresolved dependencies',
+    );
   });
 });
 
