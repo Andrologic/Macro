@@ -1147,6 +1147,22 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/webSearchSettings', () => ({
+    WEB_SEARCH_SETTINGS_KEY: 'macro_web_search_settings',
+    DEFAULT_WEB_SEARCH_SETTINGS: {
+      tavilyApiKey: '',
+      braveApiKey: '',
+      provider: 'tavily',
+      enabled: true,
+      fetchEnabled: true,
+    },
+    getWebSearchSettings: () => ({
+      tavilyApiKey: '',
+      braveApiKey: '',
+      provider: 'tavily',
+      enabled: true,
+      fetchEnabled: true,
+    }),
+    saveWebSearchSettings: mock(() => undefined),
     getStreamingWebSearchConfig: () => ({
       enableWebSearch: false,
       enableWebFetch: false,
@@ -5652,6 +5668,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('passes Architect mode and the post-tool recap instruction into streaming requests', async () => {
     appState.mode = 'Architect';
     appState.selectedTaskId = null;
+    localStorage.setItem('macro_chatMaxTurns', JSON.stringify(7));
 
     const { streamChat } = await import('../services/streamingChat');
     (
@@ -5663,6 +5680,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
             visibleContent: string;
             toolTraces: unknown[];
             hiddenContext?: unknown;
+            completionReason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
           }) => void;
         }) => Promise<void>) => void;
       }
@@ -5671,6 +5689,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         visibleContent: 'Plan prêt.',
         toolTraces: [],
         hiddenContext: undefined,
+        completionReason: 'tool_turn_limit',
       });
     });
 
@@ -5696,16 +5715,30 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const firstCall = (
       streamChat as unknown as {
         mock: {
-          calls: Array<Array<{ mode?: AppMode; messages: Array<{ role: string; content: string }> }>>;
+          calls: Array<Array<{
+            maxTurns?: number | null;
+            mode?: AppMode;
+            messages: Array<{ role: string; content: string }>;
+          }>>;
         };
       }
     ).mock.calls[0]?.[0];
 
     expect(firstCall?.mode).toBe('Architect');
+    expect(firstCall?.maxTurns).toBe(7);
     expect(firstCall?.messages[0]?.role).toBe('system');
     expect(firstCall?.messages[0]?.content).toContain(
       'always answer in natural language with a concise recap'
     );
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('conv-1')
+        .find((message: { role: string }) => message.role === 'assistant')
+    ).toMatchObject({
+      content: 'Plan prêt.',
+      completion_reason: 'tool_turn_limit',
+    });
   });
 
   it('moves an implement task to awaiting response when the assistant reply contains valid quick replies', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 let importCounter = 0;
@@ -17,20 +17,25 @@ const loadUseVirtualListModule = async () => {
 
   mock.module('@tanstack/react-virtual', () => ({
     useVirtualizer: (options: {
+      count?: number;
       getItemKey?: (index: number) => string | number;
       estimateSize: (index: number) => number;
     }) => {
       capturedVirtualizerOptions.push(options);
+      const itemCount = options.count ?? 0;
       return {
-        getVirtualItems: () => [
-          {
-            index: 0,
-            key: options.getItemKey ? options.getItemKey(0) : 0,
-            size: options.estimateSize(0),
-            start: 0,
-          },
-        ],
-        getTotalSize: () => options.estimateSize(0),
+        getVirtualItems: () =>
+          Array.from({ length: itemCount }, (_, index) => ({
+            index,
+            key: options.getItemKey ? options.getItemKey(index) : index,
+            size: options.estimateSize(index),
+            start: index * options.estimateSize(index),
+          })),
+        getTotalSize: () =>
+          Array.from({ length: itemCount }, (_, index) => options.estimateSize(index)).reduce(
+            (total, size) => total + size,
+            0
+          ),
         scrollToIndex: () => undefined,
         measureElement: () => undefined,
       };
@@ -56,11 +61,14 @@ describe('useVirtualList', () => {
     let hookResult: unknown = null;
 
     const TestComponent = () => {
-      hookResult = useVirtualList({
+      const result = useVirtualList({
         items: [{ id: 'section:drafts' }, { id: 'task:ready-1' }],
         getItemKey: (item: { id: string }) => item.id,
         estimateSize: 112,
       });
+      useEffect(() => {
+        hookResult = result;
+      }, [result]);
       return null;
     };
 
@@ -90,10 +98,13 @@ describe('useVirtualList', () => {
     let hookResult: unknown = null;
 
     const TestComponent = () => {
-      hookResult = useVirtualList({
+      const result = useVirtualList({
         items: [{ id: 'row-a' }, { id: 'row-b' }],
         estimateSize: 96,
       });
+      useEffect(() => {
+        hookResult = result;
+      }, [result]);
       return null;
     };
 

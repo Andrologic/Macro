@@ -13,8 +13,18 @@ import {
     type ProjectOpenAppSelection,
 } from '../../../services/projectOpeners';
 import { useAppStore } from '../../../stores/useAppStore';
+import {
+    CHAT_MAX_TURNS_DEFAULT,
+    CHAT_MAX_TURNS_DISABLED,
+    CHAT_MAX_TURNS_MAX,
+    CHAT_MAX_TURNS_MIN,
+    type ChatMaxTurnsPreference,
+    normalizeChatMaxTurns,
+} from '../../../services/chatTurnLimits';
+import { loadPreference, PREF_KEYS, savePreference } from '../../../services/preferences';
 // @ts-ignore
 import { Select } from '../../ui/Select';
+import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
 
@@ -34,6 +44,11 @@ export const GeneralView: React.FC = () => {
         ...getEmptyProjectOpenSelection(),
     });
     const [isLoadingProjectOpenApps, setIsLoadingProjectOpenApps] = useState(true);
+    const [chatMaxTurns, setChatMaxTurns] = useState(CHAT_MAX_TURNS_DEFAULT);
+    const [chatMaxTurnsDraft, setChatMaxTurnsDraft] = useState(
+        String(CHAT_MAX_TURNS_DEFAULT)
+    );
+    const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
 
     useEffect(() => {
         let cancelled = false;
@@ -60,6 +75,87 @@ export const GeneralView: React.FC = () => {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        void loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS).then((maxTurns) => {
+            if (cancelled) {
+                return;
+            }
+
+            const normalizedMaxTurns = normalizeChatMaxTurns(maxTurns);
+            if (normalizedMaxTurns === CHAT_MAX_TURNS_DISABLED) {
+                setIsChatMaxTurnsEnabled(false);
+                setChatMaxTurnsDraft(String(chatMaxTurns));
+                return;
+            }
+
+            const committedMaxTurns = normalizedMaxTurns ?? CHAT_MAX_TURNS_DEFAULT;
+            setIsChatMaxTurnsEnabled(true);
+            setChatMaxTurns(committedMaxTurns);
+            setChatMaxTurnsDraft(String(committedMaxTurns));
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const commitChatMaxTurnsDraft = () => {
+        if (!isChatMaxTurnsEnabled) {
+            setChatMaxTurnsDraft(String(chatMaxTurns));
+            return;
+        }
+
+        const trimmedValue = chatMaxTurnsDraft.trim();
+        if (!trimmedValue) {
+            setChatMaxTurnsDraft(String(chatMaxTurns));
+            return;
+        }
+
+        const numericValue = Number(trimmedValue);
+        if (!Number.isFinite(numericValue)) {
+            setChatMaxTurnsDraft(String(chatMaxTurns));
+            return;
+        }
+
+        const nextValue = normalizeChatMaxTurns(numericValue) ?? CHAT_MAX_TURNS_DEFAULT;
+        setChatMaxTurns(nextValue);
+        setChatMaxTurnsDraft(String(nextValue));
+        if (nextValue !== chatMaxTurns) {
+            void savePreference(PREF_KEYS.CHAT_MAX_TURNS, nextValue);
+        }
+    };
+
+    const updateChatMaxTurnsEnabled = (enabled: boolean) => {
+        setIsChatMaxTurnsEnabled(enabled);
+        if (enabled) {
+            const nextValue = normalizeChatMaxTurns(chatMaxTurns);
+            if (nextValue === CHAT_MAX_TURNS_DISABLED) {
+                setChatMaxTurns(CHAT_MAX_TURNS_DEFAULT);
+                setChatMaxTurnsDraft(String(CHAT_MAX_TURNS_DEFAULT));
+                void savePreference(PREF_KEYS.CHAT_MAX_TURNS, CHAT_MAX_TURNS_DEFAULT);
+                return;
+            }
+
+            setChatMaxTurns(nextValue);
+            setChatMaxTurnsDraft(String(nextValue));
+            void savePreference(PREF_KEYS.CHAT_MAX_TURNS, nextValue);
+            return;
+        }
+
+        setChatMaxTurnsDraft(String(chatMaxTurns));
+        void savePreference(PREF_KEYS.CHAT_MAX_TURNS, CHAT_MAX_TURNS_DISABLED);
+    };
+
+    const handleChatMaxTurnsKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key !== 'Enter') {
+            return;
+        }
+        event.preventDefault();
+        commitChatMaxTurnsDraft();
+    };
 
     const renderProjectOpenOptions = (apps: ProjectOpenAppOption[]) => {
         const noneOption = apps.find((app) => app.kind === 'none');
@@ -187,6 +283,53 @@ export const GeneralView: React.FC = () => {
                                     {t('settings.projectContextPolicyReset', 'Reset on project switch')}
                                 </option>
                             </Select>
+                        </div>
+                    </div>
+                    <div className="h-px bg-border/50" />
+                    <div className="flex flex-col gap-3">
+                        <div className="space-y-1">
+                            <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">
+                                {t('settings.agentLoop.limitEnabledLabel', 'Limit agent turns')}
+                            </label>
+                            <p className="text-xs text-muted-foreground">
+                                {t(
+                                    'settings.agentLoop.limitEnabledDescription',
+                                    'Stop long tool loops by forcing a final answer after a configured number of cycles.'
+                                )}
+                            </p>
+                        </div>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-center gap-3">
+                                <Switch
+                                    id="chat-max-turns-enabled"
+                                    checked={isChatMaxTurnsEnabled}
+                                    onCheckedChange={updateChatMaxTurnsEnabled}
+                                />
+                                <span className="text-sm text-muted-foreground">
+                                    {isChatMaxTurnsEnabled
+                                        ? t('settings.agentLoop.limitEnabledOn', 'Enabled')
+                                        : t('settings.agentLoop.limitEnabledOff', 'Disabled')}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <label htmlFor="chat-max-turns" className="text-sm font-medium text-foreground">
+                                    {t('settings.agentLoop.maxTurnsLabel', 'Max agent turns')}
+                                </label>
+                                <Input
+                                    id="chat-max-turns"
+                                    type="number"
+                                    min={CHAT_MAX_TURNS_MIN}
+                                    max={CHAT_MAX_TURNS_MAX}
+                                    step={1}
+                                    value={chatMaxTurnsDraft}
+                                    disabled={!isChatMaxTurnsEnabled}
+                                    onChange={(event) => setChatMaxTurnsDraft(event.target.value)}
+                                    onBlur={commitChatMaxTurnsDraft}
+                                    onKeyDown={handleChatMaxTurnsKeyDown}
+                                    className="w-28"
+                                    aria-label={t('settings.agentLoop.maxTurnsLabel', 'Max agent turns')}
+                                />
+                            </div>
                         </div>
                     </div>
                     <div className="h-px bg-border/50" />

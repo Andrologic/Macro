@@ -400,7 +400,9 @@ const loadChatZoneModule = async () => {
       clear: () => void;
       setText: (_value: string) => void;
     }>) => {
-      latestComposerProps = props;
+      React.useEffect(() => {
+        latestComposerProps = props;
+      }, [props]);
       React.useImperativeHandle(ref, () => ({
         getTextContent: () => composerEditorValue,
         clear: () => {
