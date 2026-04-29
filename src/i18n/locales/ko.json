@@ -349,6 +349,10 @@
     "toolbox": "도구 상자",
     "enterUrl": "URL을 입력하세요.",
     "invalidUrl": "잘못된 URL",
+    "toolTurnLimitNoticeTitle": "도구 턴 한도에 도달했습니다",
+    "toolTurnLimitNoticeDescription": "Macro가 설정된 턴 한도에 도달해 에이전트 루프를 중지했습니다. 설정 > 일반 > 최대 에이전트 턴에서 변경하거나 비활성화한 뒤 새 메시지를 보내 계속하세요.",
+    "toolTurnLimitFallbackTitle": "도구 턴 한도에 도달했습니다",
+    "toolTurnLimitFallbackDescription": "마지막 도구 없는 처리에서 사용할 수 있는 답변이 나오지 않아 Macro가 대체 요약을 표시했습니다.",
     "thinking": "생각...",
     "tool": "도구",
     "runningTools": "실행 중인 도구",
@@ -492,11 +496,11 @@
     "metadataAutoPushDesc": "스트림 완료 시 생성된 메타데이터 커밋 후 @macro 분기를 자동으로 푸시합니다.",
     "agentLoop": {
       "limitEnabledLabel": "에이전트 턴 제한",
-      "limitEnabledDescription": "설정한 사이클 수 이후 최종 답변을 강제하여 긴 도구 루프를 중단합니다.",
+      "limitEnabledDescription": "설정한 AI/도구 사이클 수에 도달하면 긴 도구 루프를 중단합니다.",
       "limitEnabledOn": "활성화",
       "limitEnabledOff": "비활성화",
       "maxTurnsLabel": "최대 에이전트 턴",
-      "maxTurnsDescription": "Macro가 도구 없이 최종 답변을 강제하기 전까지의 최대 AI/도구 사이클 수입니다."
+      "maxTurnsDescription": "Macro가 에이전트 루프를 중지하고 채팅에 안내를 표시하기 전까지의 최대 AI/도구 사이클 수입니다."
     },
     "theme": "주제",
     "zoom": "줌",
@@ -1525,7 +1529,7 @@
     "nativeToolSupportWarning": "현재 선택된 프로바이더 또는 모델은 네이티브 도구 호출을 지원하지 않습니다. 여기서 tools 를 설정할 수는 있지만, 호환되는 모델을 선택하기 전까지는 inject 되지 않습니다.",
     "agentLoop": {
       "maxTurnsLabel": "최대 에이전트 턴",
-      "maxTurnsDescription": "Macro가 도구 없이 최종 답변을 강제하기 전까지 허용할 최대 AI/도구 사이클 수."
+      "maxTurnsDescription": "Macro가 에이전트 루프를 중지하고 채팅에 안내를 표시하기 전까지 허용할 최대 AI/도구 사이클 수."
     },
     "architectMacroOnly": "Architect: @macro 전용",
     "architectFullOnly": "Architect Full",
