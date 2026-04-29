@@ -377,7 +377,7 @@ describe('GeneralView', () => {
     const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
     expect(toggle?.checked).toBe(false);
     expect(input?.disabled).toBe(true);
-    expect(input?.value).toBe('20');
+    expect(input?.value).toBe('50');
   });
 
   it('commits max agent turns with Enter', async () => {

@@ -1,4 +1,4 @@
-export const CHAT_MAX_TURNS_DEFAULT = 20;
+export const CHAT_MAX_TURNS_DEFAULT = 50;
 export const CHAT_MAX_TURNS_MIN = 3;
 export const CHAT_MAX_TURNS_MAX = 50;
 export const CHAT_MAX_TURNS_DISABLED = null;
