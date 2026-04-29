@@ -1444,6 +1444,16 @@ const buildChatGptVisibleTurnContent = (
     : `<think>${trimmedSummary}</think>`;
 };
 
+const buildNativeReasoningVisibleTurnContent = (
+  content: string,
+  reasoningSummary?: string | null
+): string => {
+  if (content.trim().startsWith('<think>')) {
+    return content;
+  }
+  return buildChatGptVisibleTurnContent(content, reasoningSummary);
+};
+
 const getMissingChatGptVisibleTurnSuffix = (
   streamedTurnContent: string,
   turnContent: string
@@ -2055,8 +2065,8 @@ const buildNativeProviderTurnContent = (
   turnResult: StreamingTurnResult,
   streamedTurnContent: string
 ): string =>
-  providerType === 'chatgpt'
-    ? buildChatGptVisibleTurnContent(
+  providerType === 'chatgpt' || providerType === 'copilot'
+    ? buildNativeReasoningVisibleTurnContent(
       turnResult.content || streamedTurnContent,
       turnResult.reasoningSummary
     )
@@ -3526,8 +3536,8 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       });
       onComplete({
         visibleContent:
-          providerType === 'chatgpt'
-            ? buildChatGptVisibleTurnContent(turn.content, turn.reasoningSummary)
+          providerType === 'chatgpt' || providerType === 'copilot'
+            ? buildNativeReasoningVisibleTurnContent(turn.content, turn.reasoningSummary)
             : turn.content,
         toolTraces: turn.toolTraces ?? [],
         hiddenContext: turn.hiddenContext,

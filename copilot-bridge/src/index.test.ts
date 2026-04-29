@@ -101,3 +101,83 @@ describe('copilot bridge tool registration', () => {
     }
   });
 });
+
+describe('copilot bridge reasoning events', () => {
+  it('streams Copilot reasoning deltas inside a think block before response text', async () => {
+    const { __testables } = await loadBridge();
+    const state = __testables.createCopilotSessionEventState();
+    const emitted: Array<Record<string, unknown>> = [];
+    const emit = (payload: Record<string, unknown>) => {
+      emitted.push(payload);
+    };
+
+    const common = {
+      state,
+      toolTraces: new Map(),
+      hiddenContextBlocks: [],
+      emit,
+    };
+
+    __testables.handleCopilotSessionEvent({
+      ...common,
+      event: {
+        type: 'assistant.reasoning_delta',
+        data: { reasoningId: 'reasoning-1', deltaContent: 'Inspecting files.' },
+      },
+    });
+    __testables.handleCopilotSessionEvent({
+      ...common,
+      event: {
+        type: 'assistant.reasoning_delta',
+        data: { reasoningId: 'reasoning-1', deltaContent: ' Choosing fix.' },
+      },
+    });
+    __testables.handleCopilotSessionEvent({
+      ...common,
+      event: {
+        type: 'assistant.message_delta',
+        data: { messageId: 'message-1', deltaContent: 'Done.' },
+      },
+    });
+
+    expect(emitted.map((payload) => payload.delta)).toEqual([
+      '<think>',
+      'Inspecting files.',
+      ' Choosing fix.',
+      '</think>\n',
+      'Done.',
+    ]);
+    expect(__testables.getCopilotReasoningSummary(state)).toBe(
+      'Inspecting files. Choosing fix.'
+    );
+  });
+
+  it('uses assistant message reasoningText as the readable reasoning fallback', async () => {
+    const { __testables } = await loadBridge();
+    const state = __testables.createCopilotSessionEventState();
+    const emitted: Array<Record<string, unknown>> = [];
+
+    __testables.handleCopilotSessionEvent({
+      event: {
+        type: 'assistant.message',
+        data: {
+          messageId: 'message-1',
+          content: 'Final answer.',
+          reasoningText: 'Readable Copilot thinking.',
+        },
+      },
+      state,
+      toolTraces: new Map(),
+      hiddenContextBlocks: [],
+      emit: (payload: Record<string, unknown>) => {
+        emitted.push(payload);
+      },
+    });
+
+    expect(emitted).toEqual([]);
+    expect(state.finalContent).toBe('Final answer.');
+    expect(__testables.getCopilotReasoningSummary(state)).toBe(
+      'Readable Copilot thinking.'
+    );
+  });
+});

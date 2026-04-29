@@ -90,6 +90,7 @@ enum BridgeSendEvent {
     },
     Done {
         content: String,
+        reasoning_summary: Option<String>,
         hidden_context: Option<String>,
         tool_traces: Option<Vec<AiToolTrace>>,
     },
@@ -1998,6 +1999,7 @@ async fn stream_chat_inner(
             }
             BridgeSendEvent::Done {
                 content,
+                reasoning_summary,
                 hidden_context,
                 tool_traces,
             } => {
@@ -2013,7 +2015,7 @@ async fn stream_chat_inner(
                             output_items: None,
                             provider_input_items: None,
                             provider_turn_state: None,
-                            reasoning_summary: None,
+                            reasoning_summary,
                             tool_traces,
                             hidden_context,
                         },
@@ -2099,4 +2101,36 @@ async fn stream_chat_inner(
         .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_done_event_deserializes_reasoning_summary() {
+        let event = serde_json::from_str::<BridgeSendEvent>(
+            r#"{
+                "type": "done",
+                "content": "Final answer.",
+                "reasoning_summary": "Reasoning shown to the user."
+            }"#,
+        )
+        .expect("done event should deserialize");
+
+        match event {
+            BridgeSendEvent::Done {
+                content,
+                reasoning_summary,
+                ..
+            } => {
+                assert_eq!(content, "Final answer.");
+                assert_eq!(
+                    reasoning_summary.as_deref(),
+                    Some("Reasoning shown to the user.")
+                );
+            }
+            _ => panic!("expected done event"),
+        }
+    }
 }
