@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { FileChangesPanel as FileChangesPanelComponent } from './FileChangesPanel';
 import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
+import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
 import {
   type ReviewRepositoryState,
 } from '../../stores/useFileChangesStore';
@@ -13,9 +14,11 @@ import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary
 let FileChangesPanel!: typeof FileChangesPanelComponent;
 let useAppStore!: typeof UseAppStoreHook;
 let useTaskStore!: typeof UseTaskStoreHook;
+let useChatStore!: typeof UseChatStoreHook;
 let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
 let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
+let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
 let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
 let notifySuccessMock: ReturnType<typeof mock>;
 let notifyErrorMock: ReturnType<typeof mock>;
@@ -89,6 +92,13 @@ const loadFileChangesPanelModules = async () => {
     ...taskStoreModule,
   }));
 
+  const chatStoreModule = await import(
+    `../../stores/useChatStore.ts?file-changes-panel-chat-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useChatStore', () => ({
+    ...chatStoreModule,
+  }));
+
   const fileChangesStoreModule = await import(
     `../../stores/useFileChangesStore.ts?file-changes-panel-store-test=${importCounter}`
   );
@@ -101,6 +111,19 @@ const loadFileChangesPanelModules = async () => {
   );
   mock.module('../modals/FileChangesDiffModal', () => ({
     ...fileChangesDiffModalModule,
+  }));
+
+  const reactModule = await import('react');
+  mock.module('../modals/MergeWorkflowConflictResolverModal', () => ({
+    MergeWorkflowConflictResolverModal: ({ repository }: { repository: { id: string; conflictFiles: string[] } }) =>
+      reactModule.createElement(
+        'div',
+        {
+          'data-merge-conflict-resolver-modal': 'true',
+          'data-repository-id': repository.id,
+        },
+        repository.conflictFiles.join('\n')
+      ),
   }));
 
   mock.module('../ui/toastService', () => ({
@@ -116,9 +139,11 @@ const loadFileChangesPanelModules = async () => {
   ({ FileChangesPanel } = await import(`./FileChangesPanel.tsx?file-changes-panel-test=${importCounter}`));
   ({ useAppStore } = appStoreModule);
   ({ useTaskStore } = taskStoreModule);
+  ({ useChatStore } = chatStoreModule);
   ({ useFileChangesStore } = fileChangesStoreModule);
   initialAppState = useAppStore.getState();
   initialTaskState = useTaskStore.getState();
+  initialChatState = useChatStore.getState();
   initialFileChangesState = useFileChangesStore.getState();
 };
 
@@ -191,6 +216,11 @@ const flushRender = async () => {
     });
   });
   await Promise.resolve();
+};
+
+const waitForPostAssistantRefresh = async () => {
+  await new Promise((resolve) => window.setTimeout(resolve, 450));
+  await flushRender();
 };
 
 describe('FileChangesPanel', () => {
@@ -314,6 +344,42 @@ describe('FileChangesPanel', () => {
     });
   };
 
+  const seedActiveAssistantRuntime = () => {
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      conversations: [
+        {
+          id: 'conversation-1',
+          title: 'Task conversation',
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          group_id: 'group-1',
+          project_id: 'project-1',
+          last_message: '',
+          message_count: 1,
+          updated_at: '2026-04-22T10:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      conversationRuntimeById: {
+        'conversation-1': {
+          phase: 'streaming',
+          sessionId: 'session-1',
+          assistantMessageId: 'message-1',
+          abortController: null,
+          lastError: null,
+        },
+      },
+    });
+  };
+
+  const finishAssistantRuntime = () => {
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      conversationRuntimeById: {},
+    });
+  };
+
   const buildBlockedMergeWorkflowRuntime = (
     overrides: Partial<{
       blockingKind: 'repository_dirty' | 'merge_conflict' | 'merge_in_progress' | null;
@@ -429,6 +495,9 @@ describe('FileChangesPanel', () => {
     }
     if (initialTaskState) {
       useTaskStore.setState(initialTaskState, true);
+    }
+    if (initialChatState) {
+      useChatStore.setState(initialChatState, true);
     }
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
@@ -937,8 +1006,11 @@ describe('FileChangesPanel', () => {
     expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
     expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
     expect(document.body.textContent).toContain('File conflicts');
+    expect(document.body.textContent).toContain('Conflicting files');
+    expect(document.body.textContent).toContain('Resolve manually');
     expect(document.body.textContent).toContain('Resolve with AI');
-    expect(document.body.textContent).toContain('View diff');
+    expect(document.body.textContent).not.toContain('View diff');
+    expect(document.body.querySelector('[data-merge-incident-kind="file_conflict"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
     expect(notifyActionRequiredMock).toHaveBeenCalledWith(
       'Resolve these conflicts before finishing',
@@ -1006,7 +1078,9 @@ describe('FileChangesPanel', () => {
       autoResolvedRepositoryCount: 1,
       remainingBlockedRepositoryCount: 0,
     }));
-    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime();
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      conflictFiles: ['src/local-conflict.ts'],
+    });
 
     seedStores(buildRepository(false), {
       taskOverrides: {
@@ -1031,7 +1105,16 @@ describe('FileChangesPanel', () => {
     });
 
     expect(document.body.textContent).toContain('Local changes');
+    expect(document.body.textContent).toContain('Target branch has local changes');
+    expect(document.body.textContent).toContain('1 local change(s) detected in the target checkout.');
     expect(document.body.textContent).not.toContain('Has conflicts');
+    expect(document.body.textContent).not.toContain('View diff');
+    expect(document.body.textContent).not.toContain('Resolve manually');
+    expect(document.body.textContent).not.toContain('src/local.ts');
+    expect(document.body.textContent).not.toContain('src/local-conflict.ts');
+    expect(document.body.querySelector('[data-merge-incident-kind="dirty"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-dirty-state-summary="true"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-affected-files="true"]')).toBeNull();
 
     const resolveButton = Array.from(document.body.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('Resolve'));
@@ -1058,7 +1141,10 @@ describe('FileChangesPanel', () => {
   });
 
   it('asks before fast-forwarding ready merge repositories', async () => {
-    const runMergeWorkflowMock = mock(async () => undefined);
+    let resolveRunMergeWorkflow: (() => void) | null = null;
+    const runMergeWorkflowMock = mock(() => new Promise<void>((resolve) => {
+      resolveRunMergeWorkflow = resolve;
+    }));
     const mergeWorkflowRuntime = {
       ...buildBlockedMergeWorkflowRuntime(),
       phase: 'ready',
@@ -1126,9 +1212,20 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
+    expect(fastForwardButton?.disabled).toBe(true);
     expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
       mergeStrategyAction: 'fast_forward',
     });
+    expect(runMergeWorkflowMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveRunMergeWorkflow?.();
+      await flushRender();
+    });
+
+    const remainingFastForwardButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Fast-forward and continue'));
+    expect(remainingFastForwardButton).toBeUndefined();
   });
 
   it('opens the assistant when a rebase strategy fails', async () => {
@@ -1210,6 +1307,9 @@ describe('FileChangesPanel', () => {
     expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
       blockerResolutionAction: 'assistant',
     });
+    const remainingRebaseButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Rebase then continue'));
+    expect(remainingRebaseButton).toBeUndefined();
   });
 
   it('offers revert for dirty merge blockers', async () => {
@@ -1306,15 +1406,17 @@ describe('FileChangesPanel', () => {
     });
 
     const text = document.body.textContent || '';
-    expect(text.match(/Local changes blocking merge/g)?.length).toBe(2);
+    expect(text.match(/Target branch has local changes/g)?.length).toBe(2);
     expect(text).toContain('project');
     expect(text).toContain('project-two');
+    expect(text).not.toContain('src/local.ts');
+    expect(text).not.toContain('src/other.ts');
     expect(text).toContain('2 repositories need attention.');
     expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
     expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
   });
 
-  it('opens a repository-scoped merge diff modal with file navigation', async () => {
+  it('opens a repository-scoped manual conflict resolver', async () => {
     const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
       blockingKind: 'merge_conflict',
       nextAction: 'resolve_conflicts',
@@ -1370,36 +1472,21 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const viewDiffButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('View diff'));
+    const resolveManuallyButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Resolve manually'));
 
     await act(async () => {
-      viewDiffButton?.click();
+      resolveManuallyButton?.click();
       await flushRender();
     });
 
-    const modal = document.body.querySelector('[data-merge-workflow-diff-modal="true"]');
-    const fileList = document.body.querySelector('[data-merge-diff-file-list="true"]');
-    const viewer = document.body.querySelector('[data-merge-diff-viewer="true"]');
+    const modal = document.body.querySelector('[data-merge-conflict-resolver-modal="true"]');
 
     expect(modal?.getAttribute('data-repository-id')).toBe('repo-1');
-    expect(fileList?.textContent).toContain('first.ts');
-    expect(fileList?.textContent).toContain('second.ts');
-    expect(viewer?.getAttribute('data-selected-file-path')).toBe('src/first.ts');
-
-    const secondFileButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.getAttribute('title') === 'src/second.ts');
-
-    await act(async () => {
-      secondFileButton?.click();
-      await flushRender();
-    });
-
-    expect(document.body.querySelector('[data-merge-diff-viewer="true"]')?.getAttribute('data-selected-file-path'))
-      .toBe('src/second.ts');
+    expect(modal?.textContent).toContain('src/first.ts');
   });
 
-  it('keeps merge diff modal files scoped to the clicked repository', async () => {
+  it('keeps manual conflict resolver files scoped to the clicked repository', async () => {
     const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
       blockingKind: 'merge_conflict',
       nextAction: 'resolve_conflicts',
@@ -1463,20 +1550,19 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const viewDiffButtons = Array.from(document.body.querySelectorAll('button'))
-      .filter((button) => button.textContent?.includes('View diff'));
+    const resolveManuallyButtons = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent?.includes('Resolve manually'));
 
     await act(async () => {
-      viewDiffButtons[1]?.click();
+      resolveManuallyButtons[1]?.click();
       await flushRender();
     });
 
-    const modal = document.body.querySelector('[data-merge-workflow-diff-modal="true"]');
-    const fileList = document.body.querySelector('[data-merge-diff-file-list="true"]');
+    const modal = document.body.querySelector('[data-merge-conflict-resolver-modal="true"]');
 
     expect(modal?.getAttribute('data-repository-id')).toBe('repo-2');
-    expect(fileList?.textContent).toContain('second-only.ts');
-    expect(fileList?.textContent).not.toContain('first-only.ts');
+    expect(modal?.textContent).toContain('second-only.ts');
+    expect(modal?.textContent).not.toContain('first-only.ts');
   });
 
   it('asks before stashing dirty merge blockers from retry merge and then retries', async () => {
@@ -1740,8 +1826,9 @@ describe('FileChangesPanel', () => {
     expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
     expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
     expect(document.body.textContent).toContain('File conflicts');
+    expect(document.body.textContent).toContain('Resolve manually');
     expect(document.body.textContent).toContain('Resolve with AI');
-    expect(document.body.textContent).toContain('View diff');
+    expect(document.body.textContent).not.toContain('View diff');
     expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
     expect(notifyActionRequiredMock).toHaveBeenCalledWith(
       'Resolve these conflicts before finishing',
@@ -1752,7 +1839,7 @@ describe('FileChangesPanel', () => {
     );
   });
 
-  it('shows a lightweight preview instead of rendering very large merge diffs', async () => {
+  it('keeps large merge diffs out of the main incident list', async () => {
     const largeDiff = `${'diff --git a/src/main.ts b/src/main.ts\n'.repeat(4000)}END-OF-LARGE-DIFF`;
     const mergeWorkflowRuntime = {
       taskId: 'task-1',
@@ -1842,17 +1929,110 @@ describe('FileChangesPanel', () => {
 
     expect(document.body.textContent).not.toContain('Diff too large to render fully. Showing a preview.');
     expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
-    const viewDiffButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('View diff'));
+    expect(document.body.textContent).toContain('Resolve manually');
+    expect(document.body.textContent).toContain('Resolve with AI');
+    expect(document.body.textContent).not.toContain('View diff');
+    expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
+  });
+
+  it('refreshes the merge workflow review when the assistant finishes for the selected task', async () => {
+    seedActiveAssistantRuntime();
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/main.ts'],
+      blockingReason: 'Cannot continue merge because /repos/project would conflict in: src/main.ts.',
+    });
+    const loadMergeWorkflowReviewMock = mock(async () => mergeWorkflowRuntime);
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+        merge_workflow: { taskId: 'task-1' },
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => ({
+          conversationId: null,
+          autoResolvedRepositoryCount: 0,
+          remainingBlockedRepositoryCount: 1,
+        })),
+      },
+    });
 
     await act(async () => {
-      viewDiffButton?.click();
+      root?.render(<FileChangesPanel />);
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Diff too large to render fully. Showing a preview.');
-    expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
-    expect(document.body.textContent).toContain('Resolve with AI');
+    loadMergeWorkflowReviewMock.mockClear();
+
+    await act(async () => {
+      finishAssistantRuntime();
+      await waitForPostAssistantRefresh();
+    });
+
+    expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith('task-1', { force: true });
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes normal file changes silently when the assistant finishes for the selected task', async () => {
+    seedActiveAssistantRuntime();
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      finishAssistantRuntime();
+      await waitForPostAssistantRefresh();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
+  });
+
+  it('defers the post-assistant refresh while the diff modal is open', async () => {
+    seedActiveAssistantRuntime();
+    seedStores(buildRepository(false));
+    useFileChangesStore.setState({
+      ...useFileChangesStore.getState(),
+      isDiffModalOpen: true,
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      finishAssistantRuntime();
+      await waitForPostAssistantRefresh();
+    });
+
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      useFileChangesStore.setState({
+        ...useFileChangesStore.getState(),
+        isDiffModalOpen: false,
+      });
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {
