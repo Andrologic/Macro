@@ -76,4 +76,24 @@ describe('preferences legacy cleanup', () => {
     expect(localStorage.getItem('macro_toolRiskLevel')).toBe(JSON.stringify('balanced'));
     expect(localStorage.getItem('macro_architectToolAutonomyProfile')).toBeNull();
   });
+
+  it('falls back to the default chat max turns when the stored value is invalid', async () => {
+    localStorage.setItem('macro_chatMaxTurns', JSON.stringify(99));
+
+    const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
+
+    const value = await loadPreference(PREF_KEYS.CHAT_MAX_TURNS);
+
+    expect(value).toBe(20);
+  });
+
+  it('preserves null chat max turns as the disabled limit preference', async () => {
+    localStorage.setItem('macro_chatMaxTurns', JSON.stringify(null));
+
+    const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
+
+    const value = await loadPreference(PREF_KEYS.CHAT_MAX_TURNS);
+
+    expect(value).toBeNull();
+  });
 });

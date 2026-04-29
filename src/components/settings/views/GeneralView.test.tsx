@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-const loadPreferenceMock = mock(async (_key?: string) => 'balanced');
+const loadPreferenceMock = mock(async (_key?: string): Promise<unknown> => 'balanced');
 const savePreferenceMock = mock(async (_key?: string, _value?: unknown) => undefined);
 const loadProjectOpenSettingsMock = mock(async () => ({
   appsByAction: {
@@ -30,6 +30,25 @@ let appState = {
   setProjectSwitchPolicy: setProjectSwitchPolicyMock,
   metadataAutoPush: true,
   setMetadataAutoPush: setMetadataAutoPushMock,
+};
+
+const setInputValue = (input: HTMLInputElement, value: string) => {
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  valueSetter?.call(input, value);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+};
+
+const blurInput = (input: HTMLInputElement) => {
+  input.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }));
+};
+
+const pressEnter = (input: HTMLInputElement) => {
+  input.dispatchEvent(
+    new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+  );
 };
 
 const loadGeneralView = async () => {
@@ -100,6 +119,19 @@ const loadGeneralView = async () => {
       <select value={value} onChange={onChange} disabled={disabled}>
         {children}
       </select>
+    ),
+  }));
+
+  mock.module('../../ui/Input', () => ({
+    Input: ({
+      onChange,
+      ...props
+    }: React.InputHTMLAttributes<HTMLInputElement>) => (
+      <input
+        {...props}
+        onChange={onChange}
+        onInput={(event) => onChange?.(event as unknown as React.ChangeEvent<HTMLInputElement>)}
+      />
     ),
   }));
 
@@ -217,6 +249,8 @@ describe('GeneralView', () => {
     expect(container?.textContent).toContain('Security & approvals');
     expect(container?.textContent).toContain('Strict');
     expect(container?.textContent).toContain('Project context memory');
+    expect(container?.textContent).toContain('Limit agent turns');
+    expect(container?.textContent).toContain('Max agent turns');
     expect(container?.textContent).not.toContain('Architect Tool Autonomy');
     expect(container?.querySelector('[data-icon="lock"]')).not.toBeNull();
     expect(container?.querySelector('[data-icon="shield"]')).not.toBeNull();
@@ -254,5 +288,158 @@ describe('GeneralView', () => {
     });
 
     expect(savePreferenceMock).toHaveBeenCalledWith('toolRiskLevel', 'yolo');
+  });
+
+  it('keeps max agent turns editable and saves the committed value on blur', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? 11 : 'balanced'
+    );
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    expect(input?.value).toBe('11');
+
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '1');
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('1');
+    expect(savePreferenceMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '12');
+      blurInput(input);
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('12');
+    expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', 12);
+  });
+
+  it('can disable and re-enable max agent turns', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? 11 : 'balanced'
+    );
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const toggle = container?.querySelector<HTMLInputElement>('#chat-max-turns-enabled');
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    expect(toggle?.checked).toBe(true);
+    expect(input?.disabled).toBe(false);
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+
+    expect(toggle?.checked).toBe(false);
+    expect(input?.disabled).toBe(true);
+    expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', null);
+
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+
+    expect(toggle?.checked).toBe(true);
+    expect(input?.disabled).toBe(false);
+    expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', 11);
+  });
+
+  it('loads disabled max agent turns from preferences', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? null : 'balanced'
+    );
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const toggle = container?.querySelector<HTMLInputElement>('#chat-max-turns-enabled');
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    expect(toggle?.checked).toBe(false);
+    expect(input?.disabled).toBe(true);
+    expect(input?.value).toBe('20');
+  });
+
+  it('commits max agent turns with Enter', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? 11 : 'balanced'
+    );
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    expect(input?.value).toBe('11');
+
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '12');
+      pressEnter(input);
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('12');
+    expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', 12);
+  });
+
+  it('clamps max agent turns on blur and restores empty drafts without saving', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? 11 : 'balanced'
+    );
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    expect(input?.value).toBe('11');
+
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '99');
+      blurInput(input);
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('50');
+    expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', 50);
+    expect(savePreferenceMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '');
+      blurInput(input);
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('50');
+    expect(savePreferenceMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -11,6 +11,10 @@ export type TaskStatus =
   | 'Failed'
   | 'Blocked';
 export type MessageRole = 'user' | 'assistant';
+export type ChatCompletionReason =
+  | 'completed'
+  | 'tool_turn_limit'
+  | 'post_tool_empty_fallback';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -556,6 +560,7 @@ export interface ChatMessage {
   hidden_context?: string;
   provider_input_items?: unknown[];
   provider_turn_state?: ProviderTurnState;
+  completion_reason?: ChatCompletionReason;
 }
 
 export interface Conversation {
