@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildSplitDiffRows, parseUnifiedDiff } from './gitDiffParser';
+import { buildSplitDiffRows, parseUnifiedDiff, parseUnifiedDiffFiles } from './gitDiffParser';
 
 describe('gitDiffParser', () => {
   it('parses additions/deletions, hunks, and reconstructs versions', () => {
@@ -155,5 +155,123 @@ describe('gitDiffParser', () => {
         rightContent: 'line three',
       },
     ]);
+  });
+
+  it('splits an aggregated git diff into modified files', () => {
+    const files = parseUnifiedDiffFiles([
+      'diff --git a/src/one.ts b/src/one.ts',
+      'index 111..222 100644',
+      '--- a/src/one.ts',
+      '+++ b/src/one.ts',
+      '@@ -1 +1 @@',
+      '-one',
+      '+ONE',
+      'diff --git a/src/two.ts b/src/two.ts',
+      'index 333..444 100644',
+      '--- a/src/two.ts',
+      '+++ b/src/two.ts',
+      '@@ -1 +1,2 @@',
+      ' two',
+      '+extra',
+    ].join('\n'));
+
+    expect(files).toHaveLength(2);
+    expect(files[0]).toMatchObject({
+      oldPath: 'src/one.ts',
+      path: 'src/one.ts',
+      status: 'modified',
+      additions: 1,
+      deletions: 1,
+    });
+    expect(files[1]).toMatchObject({
+      oldPath: 'src/two.ts',
+      path: 'src/two.ts',
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+    });
+  });
+
+  it('detects added files in aggregated git diffs', () => {
+    const files = parseUnifiedDiffFiles([
+      'diff --git a/src/new.ts b/src/new.ts',
+      'new file mode 100644',
+      'index 0000000..1111111',
+      '--- /dev/null',
+      '+++ b/src/new.ts',
+      '@@ -0,0 +1 @@',
+      '+new file',
+    ].join('\n'));
+
+    expect(files[0]).toMatchObject({
+      oldPath: null,
+      path: 'src/new.ts',
+      status: 'added',
+      additions: 1,
+      deletions: 0,
+    });
+  });
+
+  it('detects deleted files in aggregated git diffs', () => {
+    const files = parseUnifiedDiffFiles([
+      'diff --git a/src/old.ts b/src/old.ts',
+      'deleted file mode 100644',
+      'index 1111111..0000000',
+      '--- a/src/old.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-old file',
+    ].join('\n'));
+
+    expect(files[0]).toMatchObject({
+      oldPath: 'src/old.ts',
+      path: 'src/old.ts',
+      status: 'deleted',
+      additions: 0,
+      deletions: 1,
+    });
+  });
+
+  it('detects renamed files in aggregated git diffs', () => {
+    const files = parseUnifiedDiffFiles([
+      'diff --git a/src/old-name.ts b/src/new-name.ts',
+      'similarity index 87%',
+      'rename from src/old-name.ts',
+      'rename to src/new-name.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/old-name.ts',
+      '+++ b/src/new-name.ts',
+      '@@ -1 +1 @@',
+      '-old name',
+      '+new name',
+    ].join('\n'));
+
+    expect(files[0]).toMatchObject({
+      oldPath: 'src/old-name.ts',
+      path: 'src/new-name.ts',
+      status: 'renamed',
+      additions: 1,
+      deletions: 1,
+    });
+  });
+
+  it('handles quoted paths with spaces in aggregated git diffs', () => {
+    const files = parseUnifiedDiffFiles([
+      'diff --git "a/src/old file.ts" "b/src/new file.ts"',
+      'similarity index 91%',
+      'rename from src/old file.ts',
+      'rename to src/new file.ts',
+      '--- "a/src/old file.ts"',
+      '+++ "b/src/new file.ts"',
+      '@@ -1 +1 @@',
+      '-old file',
+      '+new file',
+    ].join('\n'));
+
+    expect(files[0]).toMatchObject({
+      oldPath: 'src/old file.ts',
+      path: 'src/new file.ts',
+      status: 'renamed',
+    });
   });
 });
