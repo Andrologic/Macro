@@ -24,6 +24,17 @@ export interface ParsedDiffContent {
   hunks: ParsedDiffHunk[];
 }
 
+export type ParsedUnifiedDiffFileStatus = 'added' | 'deleted' | 'modified' | 'renamed';
+
+export interface ParsedUnifiedDiffFile {
+  oldPath: string | null;
+  path: string;
+  status: ParsedUnifiedDiffFileStatus;
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
 export type SplitDiffRowKind =
   | 'context'
   | 'added'
@@ -358,4 +369,181 @@ export const parseUnifiedDiff = (patch: string): ParsedDiffContent => {
     deletions,
     hunks,
   };
+};
+
+const trimGitPathPrefix = (path: string): string => {
+  const normalized = path.trim().replace(/^"|"$/g, '').replace(/\\"/g, '"');
+  if (normalized === '/dev/null') {
+    return normalized;
+  }
+  return normalized.replace(/^[ab]\//, '');
+};
+
+const splitDiffGitPathArgs = (value: string): string[] => {
+  const args: string[] = [];
+  let current = '';
+  let isQuoted = false;
+  let isEscaped = false;
+
+  for (const character of value.trim()) {
+    if (isEscaped) {
+      current += character;
+      isEscaped = false;
+      continue;
+    }
+
+    if (character === '\\' && isQuoted) {
+      isEscaped = true;
+      current += character;
+      continue;
+    }
+
+    if (character === '"') {
+      isQuoted = !isQuoted;
+      current += character;
+      continue;
+    }
+
+    if (character === ' ' && !isQuoted) {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (current) {
+    args.push(current);
+  }
+
+  return args;
+};
+
+const parseDiffGitPaths = (line: string): { oldPath: string | null; path: string } | null => {
+  if (!line.startsWith('diff --git ')) {
+    return null;
+  }
+
+  const args = splitDiffGitPathArgs(line.slice('diff --git '.length));
+  if (args.length < 2) {
+    return null;
+  }
+
+  return {
+    oldPath: trimGitPathPrefix(args[0] ?? ''),
+    path: trimGitPathPrefix(args[1] ?? ''),
+  };
+};
+
+const resolveUnifiedDiffFile = (lines: string[]): ParsedUnifiedDiffFile | null => {
+  if (lines.length === 0) {
+    return null;
+  }
+
+  let oldPath: string | null = null;
+  let path = 'Repository diff';
+  let status: ParsedUnifiedDiffFileStatus = 'modified';
+  let renameFrom: string | null = null;
+  let renameTo: string | null = null;
+
+  for (const line of lines) {
+    const diffPaths = parseDiffGitPaths(line);
+    if (diffPaths) {
+      oldPath = diffPaths.oldPath;
+      path = diffPaths.path;
+      continue;
+    }
+
+    if (line.startsWith('new file mode')) {
+      status = 'added';
+      continue;
+    }
+
+    if (line.startsWith('deleted file mode')) {
+      status = 'deleted';
+      continue;
+    }
+
+    if (line.startsWith('rename from ')) {
+      renameFrom = trimGitPathPrefix(line.slice('rename from '.length));
+      status = 'renamed';
+      continue;
+    }
+
+    if (line.startsWith('rename to ')) {
+      renameTo = trimGitPathPrefix(line.slice('rename to '.length));
+      status = 'renamed';
+      continue;
+    }
+
+    if (line.startsWith('--- ')) {
+      const candidate = trimGitPathPrefix(line.slice(4));
+      if (candidate === '/dev/null') {
+        oldPath = null;
+        status = 'added';
+      } else {
+        oldPath = candidate;
+      }
+      continue;
+    }
+
+    if (line.startsWith('+++ ')) {
+      const candidate = trimGitPathPrefix(line.slice(4));
+      if (candidate === '/dev/null') {
+        status = 'deleted';
+      } else {
+        path = candidate;
+      }
+    }
+  }
+
+  if (renameFrom) {
+    oldPath = renameFrom;
+  }
+  if (renameTo) {
+    path = renameTo;
+  }
+
+  const patch = lines.join('\n');
+  const parsed = parseUnifiedDiff(patch);
+
+  return {
+    oldPath,
+    path,
+    status,
+    additions: parsed.additions,
+    deletions: parsed.deletions,
+    patch,
+  };
+};
+
+export const parseUnifiedDiffFiles = (patch: string): ParsedUnifiedDiffFile[] => {
+  const lines = patch.split('\n');
+  const files: ParsedUnifiedDiffFile[] = [];
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      const currentFile = resolveUnifiedDiffFile(currentLines);
+      if (currentFile) {
+        files.push(currentFile);
+      }
+      currentLines = [line];
+      continue;
+    }
+
+    if (currentLines.length > 0) {
+      currentLines.push(line);
+    }
+  }
+
+  const currentFile = resolveUnifiedDiffFile(currentLines);
+  if (currentFile) {
+    files.push(currentFile);
+  }
+
+  return files;
 };

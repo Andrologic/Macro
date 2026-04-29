@@ -934,11 +934,11 @@ describe('FileChangesPanel', () => {
 
     expect(document.body.textContent).toContain('Merge workflow');
     expect(document.body.querySelector('[data-merge-workflow-layout="wide"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
     expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
-    expect(document.body.textContent).toContain('Retry merge');
-    expect(document.body.textContent).toContain('Resolve automatically');
-    expect(document.body.textContent).toContain('Conflict files');
+    expect(document.body.textContent).toContain('File conflicts');
+    expect(document.body.textContent).toContain('Resolve with AI');
+    expect(document.body.textContent).toContain('View diff');
     expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
     expect(notifyActionRequiredMock).toHaveBeenCalledWith(
       'Resolve these conflicts before finishing',
@@ -1029,6 +1029,9 @@ describe('FileChangesPanel', () => {
       root?.render(<FileChangesPanel />);
       await flushRender();
     });
+
+    expect(document.body.textContent).toContain('Local changes');
+    expect(document.body.textContent).not.toContain('Has conflicts');
 
     const resolveButton = Array.from(document.body.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('Resolve'));
@@ -1260,6 +1263,222 @@ describe('FileChangesPanel', () => {
     });
   });
 
+  it('renders multiple merge blockers as separate incident cards', async () => {
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime();
+    const secondRepository = {
+      ...mergeWorkflowRuntime.repositories[0],
+      id: 'repo-2',
+      projectId: 'project-2',
+      repoPath: '/repos/project-two',
+      dirtyFiles: [{ path: 'src/other.ts', status: 'modified', area: 'unstaged' }],
+      blockingReason: 'Cannot continue merge because /repos/project-two has uncommitted changes.',
+    };
+    mergeWorkflowRuntime.repositories = [
+      mergeWorkflowRuntime.repositories[0],
+      secondRepository,
+    ];
+    mergeWorkflowRuntime.blockedRepositories = mergeWorkflowRuntime.repositories;
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => ({
+          conversationId: null,
+          autoResolvedRepositoryCount: 0,
+          remainingBlockedRepositoryCount: 2,
+        })),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const text = document.body.textContent || '';
+    expect(text.match(/Local changes blocking merge/g)?.length).toBe(2);
+    expect(text).toContain('project');
+    expect(text).toContain('project-two');
+    expect(text).toContain('2 repositories need attention.');
+    expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
+  });
+
+  it('opens a repository-scoped merge diff modal with file navigation', async () => {
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/first.ts'],
+      blockingReason: 'Cannot continue merge because /repos/project would conflict in: src/first.ts.',
+    });
+    const repository = {
+      ...mergeWorkflowRuntime.repositories[0],
+      isClean: true,
+      dirtyFiles: [],
+      diff: [
+        'diff --git a/src/first.ts b/src/first.ts',
+        'index 111..222 100644',
+        '--- a/src/first.ts',
+        '+++ b/src/first.ts',
+        '@@ -1 +1 @@',
+        '-first old',
+        '+first new',
+        'diff --git a/src/second.ts b/src/second.ts',
+        'index 333..444 100644',
+        '--- a/src/second.ts',
+        '+++ b/src/second.ts',
+        '@@ -1 +1 @@',
+        '-second old',
+        '+second new',
+      ].join('\n'),
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+    };
+    mergeWorkflowRuntime.repositories = [repository];
+    mergeWorkflowRuntime.blockedRepositories = [repository];
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const viewDiffButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('View diff'));
+
+    await act(async () => {
+      viewDiffButton?.click();
+      await flushRender();
+    });
+
+    const modal = document.body.querySelector('[data-merge-workflow-diff-modal="true"]');
+    const fileList = document.body.querySelector('[data-merge-diff-file-list="true"]');
+    const viewer = document.body.querySelector('[data-merge-diff-viewer="true"]');
+
+    expect(modal?.getAttribute('data-repository-id')).toBe('repo-1');
+    expect(fileList?.textContent).toContain('first.ts');
+    expect(fileList?.textContent).toContain('second.ts');
+    expect(viewer?.getAttribute('data-selected-file-path')).toBe('src/first.ts');
+
+    const secondFileButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.getAttribute('title') === 'src/second.ts');
+
+    await act(async () => {
+      secondFileButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-merge-diff-viewer="true"]')?.getAttribute('data-selected-file-path'))
+      .toBe('src/second.ts');
+  });
+
+  it('keeps merge diff modal files scoped to the clicked repository', async () => {
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/first-only.ts'],
+      blockingReason: 'Cannot continue merge because /repos/project would conflict in: src/first-only.ts.',
+    });
+    const firstRepository = {
+      ...mergeWorkflowRuntime.repositories[0],
+      isClean: true,
+      dirtyFiles: [],
+      diff: [
+        'diff --git a/src/first-only.ts b/src/first-only.ts',
+        '--- a/src/first-only.ts',
+        '+++ b/src/first-only.ts',
+        '@@ -1 +1 @@',
+        '-first',
+        '+FIRST',
+      ].join('\n'),
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+    };
+    const secondRepository = {
+      ...firstRepository,
+      id: 'repo-2',
+      projectId: 'project-2',
+      repoPath: '/repos/project-two',
+      conflictFiles: ['src/second-only.ts'],
+      diff: [
+        'diff --git a/src/second-only.ts b/src/second-only.ts',
+        '--- a/src/second-only.ts',
+        '+++ b/src/second-only.ts',
+        '@@ -1 +1 @@',
+        '-second',
+        '+SECOND',
+      ].join('\n'),
+      blockingReason: 'Cannot continue merge because /repos/project-two would conflict in: src/second-only.ts.',
+    };
+    mergeWorkflowRuntime.repositories = [firstRepository, secondRepository];
+    mergeWorkflowRuntime.blockedRepositories = mergeWorkflowRuntime.repositories;
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: mock(async () => undefined),
+        resolveMergeWorkflowAutomatically: mock(async () => 'conversation-task-1'),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const viewDiffButtons = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent?.includes('View diff'));
+
+    await act(async () => {
+      viewDiffButtons[1]?.click();
+      await flushRender();
+    });
+
+    const modal = document.body.querySelector('[data-merge-workflow-diff-modal="true"]');
+    const fileList = document.body.querySelector('[data-merge-diff-file-list="true"]');
+
+    expect(modal?.getAttribute('data-repository-id')).toBe('repo-2');
+    expect(fileList?.textContent).toContain('second-only.ts');
+    expect(fileList?.textContent).not.toContain('first-only.ts');
+  });
+
   it('asks before stashing dirty merge blockers from retry merge and then retries', async () => {
     const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
       conversationId: null,
@@ -1429,7 +1648,7 @@ describe('FileChangesPanel', () => {
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
-  it('stacks the merge workflow repository selector above the diff in compact width', async () => {
+  it('renders the merge workflow incident list in compact width', async () => {
     resizeObserverWidth = 360;
     const mergeWorkflowRuntime = {
       taskId: 'task-1',
@@ -1518,11 +1737,11 @@ describe('FileChangesPanel', () => {
     });
 
     expect(document.body.querySelector('[data-merge-workflow-layout="compact"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-merge-repository-rail="true"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-merge-repository-rail="true"]')).toBeNull();
     expect(document.body.querySelector('[data-merge-repository-sidebar="true"]')).toBeNull();
-    expect(document.body.textContent).toContain('Retry merge');
-    expect(document.body.textContent).toContain('Resolve automatically');
-    expect(document.body.textContent).toContain('Conflict files');
+    expect(document.body.textContent).toContain('File conflicts');
+    expect(document.body.textContent).toContain('Resolve with AI');
+    expect(document.body.textContent).toContain('View diff');
     expect(document.body.textContent).not.toContain('Resolve the repository blockers before retrying the merge.');
     expect(notifyActionRequiredMock).toHaveBeenCalledWith(
       'Resolve these conflicts before finishing',
@@ -1621,10 +1840,19 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
+    expect(document.body.textContent).not.toContain('Diff too large to render fully. Showing a preview.');
+    expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
+    const viewDiffButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('View diff'));
+
+    await act(async () => {
+      viewDiffButton?.click();
+      await flushRender();
+    });
+
     expect(document.body.textContent).toContain('Diff too large to render fully. Showing a preview.');
     expect(document.body.textContent).not.toContain('END-OF-LARGE-DIFF');
-    expect(document.body.textContent).toContain('Retry merge');
-    expect(document.body.textContent).toContain('Resolve automatically');
+    expect(document.body.textContent).toContain('Resolve with AI');
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {
