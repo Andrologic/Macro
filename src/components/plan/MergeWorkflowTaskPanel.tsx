@@ -75,6 +75,8 @@ const isAbortableMergeInProgressRepository = (
 ): boolean =>
   repository.mergeInProgress &&
   repository.conflictFiles.length === 0 &&
+  repository.recommendedAction !== 'complete_merge' &&
+  repository.mergeStrategy !== 'merge_ready_to_complete' &&
   (
     repository.blockingKind === 'merge_in_progress' ||
     repository.availableActions.includes('abort_merge')
@@ -107,8 +109,8 @@ const resolveRepositoryAction = (
 ): MergeWorkflowBlockerResolutionAction | null => {
   if (isMergeWorkflowStagedResolutionRepository(repository)) return 'commit_staged_resolution';
   if (isAutoStashableDirtyMergeRepository(repository)) return 'stash_dirty';
-  if (isAbortableMergeInProgressRepository(repository)) return 'abort_merge';
   if (isCompletableMergeRepository(repository)) return 'complete_merge';
+  if (isAbortableMergeInProgressRepository(repository)) return 'abort_merge';
   if (isFastForwardMergeRepository(repository)) return 'fast_forward';
   if (isRebaseMergeRepository(repository)) return 'rebase_then_continue';
   return null;
@@ -893,18 +895,40 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       ? t('implement.chooseMergeStrategy', 'Choose merge strategy')
       : mergeButtonLabel;
   const attentionCount = runtime?.blockedRepositories.length ?? 0;
-  const footerMessage = isLoading
-    ? t('implement.loadingMergeReview', 'Loading merge review...')
-    : isBlocked || isFailed
-      ? t(
-          'implement.mergeWorkflowAttentionSummary',
-          '{{count}} repositories need attention.',
-          { count: attentionCount || repositories.length }
-        )
-      : t(
-          'implement.mergeWorkflowReadyFooter',
-          'This task is now resolving its merge into the integration branch.'
-        );
+  const resolutionReadyCount = repositories.filter(isCompletableMergeRepository).length;
+  const strategyReadyCount = repositories.filter(
+    (repository) =>
+      isFastForwardMergeRepository(repository) || isRebaseMergeRepository(repository)
+  ).length;
+  const footerMessage = (() => {
+    if (isLoading) {
+      return t('implement.loadingMergeReview', 'Loading merge review...');
+    }
+    if (isBlocked || isFailed) {
+      return t(
+        'implement.mergeWorkflowAttentionSummary',
+        '{{count}} repositories need attention.',
+        { count: attentionCount || repositories.length }
+      );
+    }
+    if (resolutionReadyCount > 0) {
+      return t(
+        'implement.mergeWorkflowResolutionReadyFooter',
+        '{{count}} resolved merge(s) ready to complete.',
+        { count: resolutionReadyCount }
+      );
+    }
+    if (strategyReadyCount > 0) {
+      return t(
+        'implement.mergeWorkflowStrategyReadyFooter',
+        'Choose a merge strategy to continue.'
+      );
+    }
+    return t(
+      'implement.mergeWorkflowReadyFooter',
+      'This task is ready to merge into the integration branch.'
+    );
+  })();
   const blockerResolutionRepositories = (runtime?.blockedRepositories ?? []).filter(
     (repository) =>
       blockerResolutionAction === 'stash_dirty'

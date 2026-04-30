@@ -1909,6 +1909,7 @@ describe('FileChangesPanel', () => {
 
     expect(document.body.textContent).toContain('Resolution ready');
     expect(document.body.textContent).toContain('Merge resolution is ready');
+    expect(document.body.textContent).toContain('1 resolved merge(s) ready to complete.');
     expect(document.body.textContent).not.toContain('A merge is already in progress');
     expect(document.body.textContent).not.toContain('Resolve manually');
 
@@ -1923,6 +1924,67 @@ describe('FileChangesPanel', () => {
     expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
       mergeStrategyAction: 'complete_merge',
     });
+  });
+
+  it('lets the global merge action complete a resolved in-progress merge', async () => {
+    const runMergeWorkflowMock = mock(async () => undefined);
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      blockingKind: null,
+      nextAction: 'complete_merge',
+      mergeInProgress: true,
+      blockingReason: null,
+    });
+    mergeWorkflowRuntime.repositories = mergeWorkflowRuntime.repositories.map((repository) => ({
+      ...repository,
+      progressState: 'pending',
+      isClean: true,
+      dirtyFiles: [],
+      conflictFiles: [],
+      mergeable: true,
+      mergeStrategy: 'merge_ready_to_complete',
+      recommendedAction: 'complete_merge',
+      availableActions: ['complete_merge', 'abort_merge', 'retry_check'],
+    }));
+    mergeWorkflowRuntime.blockedRepositories = [];
+    mergeWorkflowRuntime.phase = 'ready';
+    mergeWorkflowRuntime.taskStatus = 'InProgress';
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'InProgress',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: runMergeWorkflowMock,
+        resolveMergeWorkflowAutomatically: mock(async () => ({
+          conversationId: null,
+          autoResolvedRepositoryCount: 0,
+          remainingBlockedRepositoryCount: 0,
+        })),
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const mergeTaskButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Merge task');
+
+    await act(async () => {
+      mergeTaskButton?.click();
+      await flushRender();
+    });
+
+    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1');
+    expect(document.body.textContent).not.toContain('Abort resolved merge?');
   });
 
   it('confirms aborting a resolved merge before discarding the merge state', async () => {
