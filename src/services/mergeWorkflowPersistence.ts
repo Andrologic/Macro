@@ -25,6 +25,7 @@ export interface PersistedMergeWorkflowRepositoryState {
   blockingReason: string | null;
   conflictFiles: string[];
   dirtyFiles?: MergeWorkflowDirtyFile[];
+  mergeInProgress?: boolean;
   ahead?: number;
   behind?: number;
   isSourcePublished?: boolean;
@@ -71,6 +72,7 @@ const toPersistedRepositoryState = (
   blockingReason: repository.blockingReason,
   conflictFiles: [...repository.conflictFiles],
   dirtyFiles: [...repository.dirtyFiles],
+  mergeInProgress: repository.mergeInProgress,
   ahead: repository.ahead,
   behind: repository.behind,
   isSourcePublished: repository.isSourcePublished,
@@ -107,63 +109,94 @@ export const toPersistedMergeWorkflowSession = (params: {
 
 const toRuntimeRepository = (
   repository: PersistedMergeWorkflowRepositoryState,
-): MergeWorkflowRepositoryResult => ({
-  id: repository.id,
-  projectId: repository.projectId,
-  repoPath: repository.repoPath,
-  sourceBranchName: repository.sourceBranchName,
-  targetBranchName: repository.targetBranchName,
-  progressState: repository.state,
-  hadChangesAtStart: repository.hadChangesAtStart,
-  mergeAppliedAt: repository.mergeAppliedAt,
-  isClean: repository.state !== 'blocked',
-  hasChanges: repository.hadChangesAtStart,
-  ahead: repository.ahead ?? (repository.hadChangesAtStart ? 1 : 0),
-  behind: repository.behind ?? 0,
-  mergeable: repository.state !== 'blocked',
-  conflictFiles: [...repository.conflictFiles],
-  dirtyFiles: [...(repository.dirtyFiles || [])],
-  mergeInProgress: repository.blockingKind === 'merge_in_progress',
-  diff: '',
-  checkStatus:
-    repository.state === 'merged'
-      ? 'passed'
-      : repository.state === 'blocked'
-        ? 'failed'
-        : 'not_run',
-  blockingKind: repository.blockingKind,
-  nextAction:
-    repository.blockingKind === 'repository_dirty'
-      ? 'clean_repository'
-      : repository.blockingKind === 'merge_conflict'
-        ? 'resolve_conflicts'
-        : repository.blockingKind === 'merge_in_progress'
-          ? 'finish_or_abort_merge'
-          : null,
-  blockingReason: repository.blockingReason,
-  isSourcePublished: repository.isSourcePublished ?? false,
-  mergeStrategy:
-    repository.mergeStrategy ??
-    (repository.state === 'blocked'
-      ? 'dirty'
-      : repository.hadChangesAtStart
-        ? 'merge_commit_available'
-        : 'no_source_changes'),
-  recommendedAction:
-    repository.recommendedAction ??
-    (repository.state === 'blocked'
-      ? 'assistant'
-      : repository.hadChangesAtStart
-        ? 'merge_commit'
-        : null),
-  availableActions:
-    repository.availableActions ??
-    (repository.state === 'blocked'
-      ? ['assistant', 'retry_check']
-      : repository.hadChangesAtStart
-        ? ['merge_commit']
-        : ['retry_check']),
-});
+): MergeWorkflowRepositoryResult => {
+  const conflictFiles = [...repository.conflictFiles];
+  const dirtyFiles = [...(repository.dirtyFiles || [])];
+  const isDirty = repository.blockingKind === 'repository_dirty';
+  const hasFileConflicts =
+    conflictFiles.length > 0 || repository.blockingKind === 'merge_conflict';
+  const mergeInProgress = Boolean(
+    repository.mergeInProgress ||
+    repository.mergeStrategy === 'merge_ready_to_complete' ||
+    repository.recommendedAction === 'complete_merge' ||
+    (
+      repository.blockingKind === 'merge_in_progress' &&
+      !isDirty &&
+      !hasFileConflicts
+    )
+  );
+  const isReadyToComplete =
+    mergeInProgress &&
+    !isDirty &&
+    !hasFileConflicts;
+  const progressState = isReadyToComplete && repository.state === 'blocked'
+    ? 'pending'
+    : repository.state;
+  const blockingKind = isReadyToComplete ? null : repository.blockingKind;
+  const blockingReason = isReadyToComplete ? null : repository.blockingReason;
+
+  return {
+    id: repository.id,
+    projectId: repository.projectId,
+    repoPath: repository.repoPath,
+    sourceBranchName: repository.sourceBranchName,
+    targetBranchName: repository.targetBranchName,
+    progressState,
+    hadChangesAtStart: repository.hadChangesAtStart,
+    mergeAppliedAt: repository.mergeAppliedAt,
+    isClean: progressState !== 'blocked' || isReadyToComplete,
+    hasChanges: repository.hadChangesAtStart,
+    ahead: repository.ahead ?? (repository.hadChangesAtStart ? 1 : 0),
+    behind: repository.behind ?? 0,
+    mergeable: progressState !== 'blocked' || isReadyToComplete,
+    conflictFiles,
+    dirtyFiles,
+    mergeInProgress,
+    diff: '',
+    checkStatus:
+      repository.state === 'merged'
+        ? 'passed'
+        : progressState === 'blocked'
+          ? 'failed'
+          : 'not_run',
+    blockingKind,
+    nextAction: isReadyToComplete
+      ? 'complete_merge'
+      : blockingKind === 'repository_dirty'
+        ? 'clean_repository'
+        : blockingKind === 'merge_conflict'
+          ? 'resolve_conflicts'
+          : blockingKind === 'merge_in_progress'
+            ? 'finish_or_abort_merge'
+            : null,
+    blockingReason,
+    isSourcePublished: repository.isSourcePublished ?? false,
+    mergeStrategy: isReadyToComplete
+      ? 'merge_ready_to_complete'
+      : repository.mergeStrategy ??
+        (progressState === 'blocked'
+          ? 'dirty'
+          : repository.hadChangesAtStart
+            ? 'merge_commit_available'
+            : 'no_source_changes'),
+    recommendedAction: isReadyToComplete
+      ? 'complete_merge'
+      : repository.recommendedAction ??
+        (progressState === 'blocked'
+          ? 'assistant'
+          : repository.hadChangesAtStart
+            ? 'merge_commit'
+            : null),
+    availableActions: isReadyToComplete
+      ? ['complete_merge', 'abort_merge', 'retry_check']
+      : repository.availableActions ??
+        (progressState === 'blocked'
+          ? ['assistant', 'retry_check']
+          : repository.hadChangesAtStart
+            ? ['merge_commit']
+            : ['retry_check']),
+  };
+};
 
 export const buildMergeWorkflowRuntimeFromPersistedSession = (params: {
   taskId: string;
@@ -174,12 +207,13 @@ export const buildMergeWorkflowRuntimeFromPersistedSession = (params: {
     (repository) =>
       repository.progressState === 'blocked' || Boolean(repository.blockingReason),
   );
+  const phase = resolveMergeWorkflowPhaseFromRepositories(repositories);
 
   return {
     taskId: params.taskId,
     kind: params.session.kind,
-    phase: params.session.phase,
-    taskStatus: params.session.taskStatus,
+    phase,
+    taskStatus: resolveMergeWorkflowTaskStatus(phase, { kind: params.session.kind }),
     review: null,
     repositories,
     blockedRepositories,
@@ -306,6 +340,7 @@ export const overlayPersistedMergeWorkflowSession = (params: {
       mergeStrategy: repository.mergeStrategy,
       recommendedAction: repository.recommendedAction,
       availableActions: repository.availableActions,
+      mergeInProgress: repository.mergeInProgress,
     })),
   );
 

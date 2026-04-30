@@ -390,6 +390,8 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     useState<MergeWorkflowBlockerResolutionAction | null>(null);
   const [blockerResolutionIntent, setBlockerResolutionIntent] =
     useState<MergeBlockerResolutionIntent>('retry_merge');
+  const [blockerResolutionRepositoryId, setBlockerResolutionRepositoryId] =
+    useState<string | null>(null);
   const [manualResolutionRepositoryId, setManualResolutionRepositoryId] = useState<string | null>(null);
   const lastBlockingNotificationKeyRef = useRef<string | null>(null);
 
@@ -517,10 +519,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
   const openBlockerResolutionModal = useCallback((
     intent: MergeBlockerResolutionIntent,
-    action: MergeWorkflowBlockerResolutionAction
+    action: MergeWorkflowBlockerResolutionAction,
+    repositoryId?: string | null
   ) => {
     setBlockerResolutionIntent(intent);
     setBlockerResolutionAction(action);
+    setBlockerResolutionRepositoryId(repositoryId ?? null);
   }, []);
 
   const notifyAutomaticResolutionResult = useCallback((
@@ -788,19 +792,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     }
     if (action === 'abort_merge' && isCompletableMergeRepository(repository)) {
       if (pendingBlockerResolutionAction) return;
-      setPendingBlockerResolutionAction('abort_merge');
-      void abortMergeWorkflowManualResolution(task.id, repository.id)
-        .catch((error) => {
-          notify.error(toServiceError(error).message);
-        })
-        .finally(() => {
-          setPendingBlockerResolutionAction(null);
-        });
+      openBlockerResolutionModal('retry_merge', 'abort_merge', repository.id);
       return;
     }
     openBlockerResolutionModal('retry_merge', action);
   }, [
-    abortMergeWorkflowManualResolution,
     handleMerge,
     notifyAutomaticResolutionResult,
     openBlockerResolutionModal,
@@ -919,6 +915,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
           ? isAbortableMergeInProgressRepository(repository)
           : false
   );
+  const scopedBlockerResolutionRepository = blockerResolutionRepositoryId
+    ? repositories.find((repository) => repository.id === blockerResolutionRepositoryId) ?? null
+    : null;
   const strategyResolutionRepositories = repositories.filter(
     (repository) =>
       blockerResolutionAction === 'fast_forward'
@@ -930,16 +929,21 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
             : false
   );
   const modalRepositories =
-    strategyResolutionRepositories.length > 0
-      ? strategyResolutionRepositories
-      : blockerResolutionRepositories;
+    scopedBlockerResolutionRepository
+      ? [scopedBlockerResolutionRepository]
+      : strategyResolutionRepositories.length > 0
+        ? strategyResolutionRepositories
+        : blockerResolutionRepositories;
   const blockerResolutionTitle =
     blockerResolutionAction === 'fast_forward'
       ? t('implement.fastForwardResolutionTitle', 'Fast-forward available')
       : blockerResolutionAction === 'rebase_then_continue'
         ? t('implement.rebaseResolutionTitle', 'Rebase available')
         : blockerResolutionAction === 'abort_merge'
-          ? t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress')
+          ? scopedBlockerResolutionRepository &&
+            isCompletableMergeRepository(scopedBlockerResolutionRepository)
+            ? t('implement.abortResolvedMergeTitle', 'Abort resolved merge?')
+            : t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress')
           : blockerResolutionAction === 'commit_staged_resolution'
             ? t('implement.stagedResolutionModalTitle', 'Staged changes ready')
           : t('implement.dirtyMergeResolutionTitle', 'Local changes need attention');
@@ -955,10 +959,16 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
             'Macro can rebase this local source branch onto the target branch, then continue with a fast-forward. This rewrites the local branch history.'
           )
         : blockerResolutionAction === 'abort_merge'
-          ? t(
-              'implement.mergeInProgressResolutionDescription',
-              'Macro found an unfinished merge blocking this retry. Aborting it can discard partial conflict resolutions that were not committed.'
-            )
+          ? scopedBlockerResolutionRepository &&
+            isCompletableMergeRepository(scopedBlockerResolutionRepository)
+            ? t(
+                'implement.abortResolvedMergeDescription',
+                'This repository has a resolved merge waiting to be completed. Aborting it will discard that merge state and any unresolved merge result.'
+              )
+            : t(
+                'implement.mergeInProgressResolutionDescription',
+                'Macro found an unfinished merge blocking this retry. Aborting it can discard partial conflict resolutions that were not committed.'
+              )
           : blockerResolutionAction === 'commit_staged_resolution'
             ? t(
                 'implement.stagedResolutionModalDescription',
@@ -974,7 +984,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       : blockerResolutionAction === 'rebase_then_continue'
         ? t('implement.rebaseThenContinue', 'Rebase then continue')
         : blockerResolutionAction === 'abort_merge'
-          ? t('implement.abortMergeAndRetry', 'Abort merge and retry')
+          ? scopedBlockerResolutionRepository &&
+            isCompletableMergeRepository(scopedBlockerResolutionRepository)
+            ? t('implement.abortMerge', 'Abort merge')
+            : t('implement.abortMergeAndRetry', 'Abort merge and retry')
           : blockerResolutionAction === 'commit_staged_resolution'
             ? t('implement.commitStagedAndContinue', 'Commit staged and continue')
           : t('implement.stashAndRetryMerge', 'Stash and retry');
@@ -998,6 +1011,14 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     if (pendingBlockerResolutionAction) return;
     setPendingBlockerResolutionAction(action);
     try {
+      if (
+        action === 'abort_merge' &&
+        blockerResolutionRepositoryId &&
+        blockerResolutionIntent === 'retry_merge'
+      ) {
+        await abortMergeWorkflowManualResolution(task.id, blockerResolutionRepositoryId);
+        return;
+      }
       if (action === 'merge_commit' && blockerResolutionIntent !== 'retry_merge') {
         await handleMerge('merge_commit');
         return;
@@ -1010,13 +1031,17 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     } finally {
       setPendingBlockerResolutionAction(null);
       setBlockerResolutionAction(null);
+      setBlockerResolutionRepositoryId(null);
     }
   }, [
+    abortMergeWorkflowManualResolution,
+    blockerResolutionRepositoryId,
     blockerResolutionIntent,
     handleMerge,
     handleResolveAutomatically,
     handleRetryMerge,
     pendingBlockerResolutionAction,
+    task.id,
   ]);
 
   return (
@@ -1281,6 +1306,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         onCancel={() => {
           if (!isBlockerResolutionSubmitting) {
             setBlockerResolutionAction(null);
+            setBlockerResolutionRepositoryId(null);
           }
         }}
         onConfirm={() => {

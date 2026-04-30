@@ -70,13 +70,15 @@ export const toPlanConflictResolutionEntries = (
   repoPath: repository.repoPath,
   subtitle: `${repository.planBranchName} -> ${repository.baseBranchName}`,
   worktreePath: null,
-  statusLabel: repository.blockingKind === 'repository_dirty'
-    ? 'Dirty'
-    : repository.blockingKind === 'merge_in_progress'
-      ? 'Merge in progress'
-      : repository.blockingKind === 'merge_conflict'
-        ? 'Conflict'
-        : 'Ready',
+  statusLabel: repository.nextAction === 'complete_merge'
+    ? 'Resolution ready'
+    : repository.blockingKind === 'repository_dirty'
+      ? 'Dirty'
+      : repository.blockingKind === 'merge_in_progress'
+        ? 'Merge in progress'
+        : repository.blockingKind === 'merge_conflict'
+          ? 'Conflict'
+          : 'Ready',
   statusTone: repository.blockingReason ? 'danger' : 'success',
   reason: repository.blockingReason,
   nextStep: describePlanFinalizationNextStep(repository.nextAction),
@@ -90,13 +92,15 @@ export const toMergeWorkflowConflictResolutionEntries = (
   repoPath: repository.repoPath,
   subtitle: `${repository.sourceBranchName} -> ${repository.targetBranchName}`,
   worktreePath: null,
-  statusLabel: repository.blockingKind === 'repository_dirty'
-    ? 'Dirty'
-    : repository.blockingKind === 'merge_in_progress'
-      ? 'Merge in progress'
-      : repository.blockingKind === 'merge_conflict'
-        ? 'Conflict'
-        : 'Ready',
+  statusLabel: repository.nextAction === 'complete_merge'
+    ? 'Resolution ready'
+    : repository.blockingKind === 'repository_dirty'
+      ? 'Dirty'
+      : repository.blockingKind === 'merge_in_progress'
+        ? 'Merge in progress'
+        : repository.blockingKind === 'merge_conflict'
+          ? 'Conflict'
+          : 'Ready',
   statusTone: repository.blockingReason ? 'danger' : 'success',
   reason: repository.blockingReason,
   nextStep: describePlanFinalizationNextStep(repository.nextAction),
