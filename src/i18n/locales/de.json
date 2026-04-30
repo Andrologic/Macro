@@ -415,6 +415,7 @@
       "mcpServers": "MCP-Server",
       "noMcpServers": "Keine MCP-Server verbunden",
       "webSearchKeyTooltip": "Fügen Sie unter Einstellungen > Extras > Websuche einen API-Schlüssel hinzu",
+      "webFetchDisabledTooltip": "Aktivieren Sie Web Fetch unter Einstellungen > Extras > Websuche",
       "nativeToolTooltip": "Das ausgewählte Modell unterstützt keine nativen Toolaufrufe.",
       "sourceSummary": "{{interesting}} gefunden • {{used}} gebraucht • {{total}} Quellen",
       "collectionDisabledTitle": "Sammlung deaktiviert",
