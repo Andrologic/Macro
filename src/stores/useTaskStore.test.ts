@@ -40,6 +40,7 @@ const gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
   behind: 0,
 }));
 const gitStashMock = mock(async () => 'stash@{0}');
+const gitCommitMock = mock(async () => 'commit-hash');
 const gitAbortMergeMock = mock(async () => undefined);
 const gitRestorePathsMock = mock(async () => undefined);
 const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/review-actions');
@@ -117,6 +118,7 @@ mock.module('../services/tauriIpc', () => ({
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
   gitStash: gitStashMock,
+  gitCommit: gitCommitMock,
   gitAbortMerge: gitAbortMergeMock,
   gitRestorePaths: gitRestorePathsMock,
   gitFastForward: gitFastForwardMock,
@@ -138,6 +140,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitDiff: gitDiffMock,
   gitMergeCheck: gitMergeCheckMock,
   gitStash: gitStashMock,
+  gitCommit: gitCommitMock,
   gitAbortMerge: gitAbortMergeMock,
   gitRestorePaths: gitRestorePathsMock,
   gitFastForward: gitFastForwardMock,
@@ -389,6 +392,7 @@ describe('useTaskStore merge workflow review loading', () => {
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitStashMock.mockClear();
+    gitCommitMock.mockClear();
     gitAbortMergeMock.mockClear();
     gitRestorePathsMock.mockClear();
     gitFastForwardMock.mockClear();
@@ -879,6 +883,80 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
+  });
+
+  it('commits staged merge resolutions before continuing the workflow', async () => {
+    const stagedRuntime = buildBlockedMergeRuntime();
+    stagedRuntime.repositories = stagedRuntime.repositories.map((repository) => ({
+      ...repository,
+      isClean: false,
+      mergeable: true,
+      conflictFiles: [],
+      dirtyFiles: [
+        { path: 'lib/l10n/app_localizations.dart', status: 'modified', area: 'staged' },
+        { path: 'lib/l10n/app_ar.arb', status: 'added', area: 'staged' },
+      ],
+      blockingKind: 'repository_dirty',
+      nextAction: 'clean_repository',
+      blockingReason: 'Cannot continue merge because /repos/web has uncommitted changes.',
+      mergeStrategy: 'dirty',
+      recommendedAction: 'commit_staged_resolution',
+      availableActions: [
+        'commit_staged_resolution',
+        'revert_dirty',
+        'assistant',
+        'retry_check',
+      ],
+    }));
+    stagedRuntime.blockedRepositories = stagedRuntime.repositories;
+    const readyRuntime: MergeWorkflowRuntimeState = {
+      ...stagedRuntime,
+      phase: 'ready',
+      taskStatus: 'InProgress',
+      blockedRepositories: [],
+      message: null,
+      repositories: stagedRuntime.repositories.map((repository) => ({
+        ...repository,
+        isClean: true,
+        dirtyFiles: [],
+        blockingKind: null,
+        nextAction: null,
+        blockingReason: null,
+      })),
+    };
+    const loadMergeWorkflowReviewMock = mock()
+      .mockResolvedValueOnce(stagedRuntime)
+      .mockResolvedValueOnce(readyRuntime);
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': stagedRuntime,
+      },
+      loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    const resolution = await useTaskStore
+      .getState()
+      .resolveMergeWorkflowAutomatically('task-1', {
+        blockerResolutionAction: 'commit_staged_resolution',
+      });
+
+    expect(resolution).toEqual({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    });
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      message: 'chore: apply staged merge resolution',
+      stageAll: false,
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('automatically reverts dirty merge blockers before opening the assistant', async () => {

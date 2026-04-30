@@ -9,6 +9,7 @@ import {
 import { toServiceError } from '../../services/contracts/errors';
 import {
   isMergeWorkflowFileConflictRepository,
+  isMergeWorkflowStagedResolutionRepository,
   resolveMergeWorkflowViewState,
   type MergeWorkflowRepositoryResult,
 } from '../../services/mergeWorkflow';
@@ -61,7 +62,8 @@ const isAutoStashableDirtyMergeRepository = (
   repository.blockingKind === 'repository_dirty' &&
   repository.nextAction === 'clean_repository' &&
   !repository.mergeInProgress &&
-  repository.conflictFiles.length === 0;
+  repository.conflictFiles.length === 0 &&
+  !isMergeWorkflowStagedResolutionRepository(repository);
 
 const isAbortableMergeInProgressRepository = (
   repository: MergeWorkflowRepositoryResult
@@ -87,6 +89,7 @@ const isRebaseMergeRepository = (
 const resolveRepositoryAction = (
   repository: MergeWorkflowRepositoryResult
 ): MergeWorkflowBlockerResolutionAction | null => {
+  if (isMergeWorkflowStagedResolutionRepository(repository)) return 'commit_staged_resolution';
   if (isAutoStashableDirtyMergeRepository(repository)) return 'stash_dirty';
   if (isAbortableMergeInProgressRepository(repository)) return 'abort_merge';
   if (isFastForwardMergeRepository(repository)) return 'fast_forward';
@@ -97,6 +100,7 @@ const resolveRepositoryAction = (
 const resolveSimpleBlockerAction = (
   repositories: MergeWorkflowRepositoryResult[]
 ): MergeWorkflowBlockerResolutionAction | null => {
+  if (repositories.some(isMergeWorkflowStagedResolutionRepository)) return 'commit_staged_resolution';
   if (repositories.some(isAutoStashableDirtyMergeRepository)) return 'stash_dirty';
   if (repositories.some(isAbortableMergeInProgressRepository)) return 'abort_merge';
   if (repositories.some(isFastForwardMergeRepository)) return 'fast_forward';
@@ -156,6 +160,25 @@ const getRepositoryIncident = (
   const conflictFiles = repository.conflictFiles ?? [];
 
   if (repository.mergeStrategy === 'dirty' || repository.blockingKind === 'repository_dirty') {
+    if (isMergeWorkflowStagedResolutionRepository(repository)) {
+      return {
+        kind: 'dirty',
+        statusLabel: t('implement.stagedResolutionStatus', 'Staged changes'),
+        title: t('implement.stagedResolutionTitle', 'Staged resolution is waiting'),
+        description: t(
+          'implement.stagedResolutionDescription',
+          "Macro found staged changes on {{branchName}}. If these are the assistant's resolution, commit them and continue.",
+          { branchName: repository.targetBranchName }
+        ),
+        tone: 'info',
+        affectedFiles: [],
+        localChangeCount: dirtyFiles.length,
+        primaryLabel: t('implement.continueWithStagedResolution', 'Continue'),
+        primaryAction: 'commit_staged_resolution',
+        primaryVariant: 'primary',
+      };
+    }
+
     return {
       kind: 'dirty',
       statusLabel: t('implement.localChangesStatus', 'Local changes'),
@@ -453,7 +476,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
   const handleMerge = useCallback(async (
     action?: MergeWorkflowBlockerResolutionAction,
-    options: { skipStrategyPrompt?: boolean } = {}
+    options: { skipStrategyPrompt?: boolean; allowWithoutCodeChanges?: boolean } = {}
   ): Promise<MergeWorkflowActionOutcome> => {
     if (!options.skipStrategyPrompt && !action && simpleBlockerResolutionAction) {
       openBlockerResolutionModal('retry_merge', simpleBlockerResolutionAction);
@@ -462,7 +485,14 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
     try {
       if (action) {
-        await runMergeWorkflow(task.id, { mergeStrategyAction: action });
+        await runMergeWorkflow(task.id, {
+          mergeStrategyAction: action,
+          ...(options.allowWithoutCodeChanges
+            ? { allowWithoutCodeChanges: true }
+            : {}),
+        });
+      } else if (options.allowWithoutCodeChanges) {
+        await runMergeWorkflow(task.id, { allowWithoutCodeChanges: true });
       } else {
         await runMergeWorkflow(task.id);
       }
@@ -557,7 +587,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         return 'blocked';
       }
 
-      if (action === 'stash_dirty' || action === 'revert_dirty' || action === 'abort_merge') {
+      if (
+        action === 'stash_dirty' ||
+        action === 'commit_staged_resolution' ||
+        action === 'revert_dirty' ||
+        action === 'abort_merge'
+      ) {
         const resolution = await runAutomaticResolution(action);
         if (
           !resolution ||
@@ -566,7 +601,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         ) {
           return resolution?.conversationId ? 'assistant_started' : 'blocked';
         }
-        return handleMerge(undefined, { skipStrategyPrompt: true });
+        return handleMerge(undefined, {
+          skipStrategyPrompt: true,
+          allowWithoutCodeChanges: action === 'commit_staged_resolution',
+        });
       }
 
       if (
@@ -765,6 +803,8 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     (repository) =>
       blockerResolutionAction === 'stash_dirty'
         ? isAutoStashableDirtyMergeRepository(repository)
+        : blockerResolutionAction === 'commit_staged_resolution'
+          ? isMergeWorkflowStagedResolutionRepository(repository)
         : blockerResolutionAction === 'abort_merge'
           ? isAbortableMergeInProgressRepository(repository)
           : false
@@ -790,6 +830,8 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         ? t('implement.rebaseResolutionTitle', 'Rebase available')
         : blockerResolutionAction === 'abort_merge'
           ? t('implement.mergeInProgressResolutionTitle', 'A merge is already in progress')
+          : blockerResolutionAction === 'commit_staged_resolution'
+            ? t('implement.stagedResolutionModalTitle', 'Staged changes ready')
           : t('implement.dirtyMergeResolutionTitle', 'Local changes need attention');
   const blockerResolutionDescription =
     blockerResolutionAction === 'fast_forward'
@@ -807,6 +849,11 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               'implement.mergeInProgressResolutionDescription',
               'Macro found an unfinished merge blocking this retry. Aborting it can discard partial conflict resolutions that were not committed.'
             )
+          : blockerResolutionAction === 'commit_staged_resolution'
+            ? t(
+                'implement.stagedResolutionModalDescription',
+                "Macro found staged changes in the target checkout. If these are the assistant's merge resolution, Macro can commit them, refresh the review, and continue."
+              )
           : t(
               'implement.dirtyMergeResolutionDescription',
               'Macro found local repository changes blocking the merge. Choose how to handle them before retrying.'
@@ -818,8 +865,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         ? t('implement.rebaseThenContinue', 'Rebase then continue')
         : blockerResolutionAction === 'abort_merge'
           ? t('implement.abortMergeAndRetry', 'Abort merge and retry')
+          : blockerResolutionAction === 'commit_staged_resolution'
+            ? t('implement.commitStagedAndContinue', 'Commit staged and continue')
           : t('implement.stashAndRetryMerge', 'Stash and retry');
-  const canRevertDirtyResolution = blockerResolutionAction === 'stash_dirty';
+  const canRevertDirtyResolution =
+    blockerResolutionAction === 'stash_dirty' ||
+    blockerResolutionAction === 'commit_staged_resolution';
   const canUseMergeCommitResolution =
     blockerResolutionAction === 'fast_forward' ||
     blockerResolutionAction === 'rebase_then_continue';
@@ -1162,7 +1213,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
               isLoading={pendingBlockerResolutionAction === 'revert_dirty'}
               onClick={() => void runBlockerResolutionChoice('revert_dirty')}
             >
-              {t('implement.revertAndRetryMerge', 'Revert and retry')}
+              {blockerResolutionAction === 'commit_staged_resolution'
+                ? t('implement.revertStagedChanges', 'Revert staged changes')
+                : t('implement.revertAndRetryMerge', 'Revert and retry')}
             </Button>
           )}
           {canUseMergeCommitResolution && (

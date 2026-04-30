@@ -71,6 +71,7 @@ import {
   resolveMergeWorkflowStrategy,
   isMergeWorkflowFileConflictRepository,
   isMergeWorkflowSourcePublished,
+  isMergeWorkflowStagedResolutionRepository,
   shouldCheckMergeWorkflowRebase,
   type MergeWorkflowKind,
   type MergeWorkflowMergeExecutionAction,
@@ -383,12 +384,28 @@ const resolveMergeWorkflowBlockers = async (
 ): Promise<number> => {
   if (action === 'stash_dirty') {
     const repositories = runtime.blockedRepositories.filter(
-      isAutoStashableMergeWorkflowRepository
+      (repository) =>
+        isAutoStashableMergeWorkflowRepository(repository) &&
+        !isMergeWorkflowStagedResolutionRepository(repository)
     );
     for (const repository of repositories) {
       await tauriIpc.gitStash({
         repoPath: repository.repoPath,
         message: `Macro merge blocker: ${task.title || task.id}`,
+      });
+    }
+    return repositories.length;
+  }
+
+  if (action === 'commit_staged_resolution') {
+    const repositories = runtime.blockedRepositories.filter(
+      isMergeWorkflowStagedResolutionRepository
+    );
+    for (const repository of repositories) {
+      await tauriIpc.gitCommit({
+        repoPath: repository.repoPath,
+        message: 'chore: apply staged merge resolution',
+        stageAll: false,
       });
     }
     return repositories.length;

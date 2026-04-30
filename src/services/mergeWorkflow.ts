@@ -32,6 +32,7 @@ export type MergeWorkflowStrategy =
 
 export type MergeWorkflowResolutionAction =
   | 'stash_dirty'
+  | 'commit_staged_resolution'
   | 'revert_dirty'
   | 'abort_merge'
   | 'assistant'
@@ -250,6 +251,25 @@ export const collectMergeWorkflowDirtyFiles = (
   ...mapDirtyStatusFiles(status.untrackedFiles || status.untracked_files, 'untracked'),
 ];
 
+export const isMergeWorkflowStagedResolutionRepository = (
+  repository: Pick<
+    MergeWorkflowRepositoryResult,
+    'blockingKind' | 'nextAction' | 'mergeInProgress' | 'conflictFiles'
+  > & {
+    dirtyFiles?: MergeWorkflowDirtyFile[];
+  }
+): boolean => {
+  const dirtyFiles = repository.dirtyFiles ?? [];
+  return (
+    repository.blockingKind === 'repository_dirty' &&
+    repository.nextAction === 'clean_repository' &&
+    !repository.mergeInProgress &&
+    repository.conflictFiles.length === 0 &&
+    dirtyFiles.length > 0 &&
+    dirtyFiles.every((file) => file.area === 'staged')
+  );
+};
+
 export const isMergeWorkflowSourcePublished = (
   branches: MergeWorkflowBranchListLike | null | undefined,
   sourceBranchName: string
@@ -315,6 +335,25 @@ export const resolveMergeWorkflowStrategy = (params: {
   }
 
   if (!params.status.is_clean) {
+    if (
+      dirtyFiles.length > 0 &&
+      dirtyFiles.every((file) => file.area === 'staged')
+    ) {
+      return {
+        mergeStrategy: 'dirty',
+        recommendedAction: 'commit_staged_resolution',
+        availableActions: [
+          'commit_staged_resolution',
+          'revert_dirty',
+          'assistant',
+          'retry_check',
+        ],
+        dirtyFiles,
+        ahead,
+        behind,
+      };
+    }
+
     return {
       mergeStrategy: 'dirty',
       recommendedAction: 'stash_dirty',
@@ -418,7 +457,9 @@ export const toMergeWorkflowRepositoryResult = (
   recommendedAction:
     repository.recommendedAction ??
     (repository.blockingKind === 'repository_dirty'
-      ? 'stash_dirty'
+      ? (isMergeWorkflowStagedResolutionRepository(repository)
+          ? 'commit_staged_resolution'
+          : 'stash_dirty')
       : repository.blockingKind === 'merge_in_progress'
         ? 'abort_merge'
         : repository.blockingKind === 'merge_conflict'
@@ -429,7 +470,9 @@ export const toMergeWorkflowRepositoryResult = (
   availableActions:
     repository.availableActions ??
     (repository.blockingKind === 'repository_dirty'
-      ? ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check']
+      ? (isMergeWorkflowStagedResolutionRepository(repository)
+          ? ['commit_staged_resolution', 'revert_dirty', 'assistant', 'retry_check']
+          : ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'])
       : repository.blockingKind === 'merge_in_progress'
         ? ['abort_merge', 'assistant', 'retry_check']
         : repository.blockingKind === 'merge_conflict'

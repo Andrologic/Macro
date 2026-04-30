@@ -30,6 +30,29 @@ describe('mergeWorkflow strategy resolution', () => {
     ]);
   });
 
+  it('classifies staged-only dirty repositories as staged resolutions', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: {
+        is_clean: false,
+        staged_files: [
+          { path: 'lib/l10n/app_localizations.dart', status: 'modified' },
+          { path: 'lib/l10n/app_ar.arb', status: 'added' },
+        ],
+        unstaged_files: [],
+        untracked_files: [],
+      },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('dirty');
+    expect(strategy.recommendedAction).toBe('commit_staged_resolution');
+    expect(strategy.availableActions).toContain('commit_staged_resolution');
+  });
+
   it('classifies fast-forwardable branches', () => {
     const strategy = resolveMergeWorkflowStrategy({
       status: { is_clean: true },
