@@ -1839,6 +1839,18 @@ const normalizeNativeProviderTools = (
     ? withCopilotBuiltInToolOverrides(tools)
     : tools;
 
+const NATIVE_STREAMING_PROVIDER_TYPES = new Set([
+  'chatgpt',
+  'copilot',
+  'openai',
+  'openrouter',
+  'ollama',
+  'lmstudio',
+]);
+
+const shouldUseNativeStreamingProvider = (providerType: string): boolean =>
+  NATIVE_STREAMING_PROVIDER_TYPES.has(providerType.trim().toLowerCase());
+
 const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
   providerId: string;
@@ -2065,7 +2077,7 @@ const streamNativeTurnViaTauri = async (params: {
 };
 
 const buildNativeProviderTurnContent = (
-  providerType: 'chatgpt' | 'copilot',
+  providerType: string,
   turnResult: StreamingTurnResult,
   streamedTurnContent: string
 ): string =>
@@ -2077,7 +2089,7 @@ const buildNativeProviderTurnContent = (
     : turnResult.content || streamedTurnContent;
 
 const streamChatViaNativeToolCallingProvider = async (
-  options: StreamingChatOptions & { providerType: 'chatgpt' | 'copilot' }
+  options: StreamingChatOptions
 ): Promise<void> => {
   const {
     providerId,
@@ -2644,6 +2656,24 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
   if (options.providerType === 'copilot') {
     return streamChatViaCopilotProvider(options);
+  }
+
+  if (
+    shouldUseNativeStreamingProvider(options.providerType) &&
+    tauriIpc.isTauriAvailable() &&
+    (!options.apiKey?.trim() ||
+      options.providerType === 'ollama' ||
+      options.providerType === 'lmstudio')
+  ) {
+    try {
+      return await streamChatViaNativeToolCallingProvider(options);
+    } catch (error) {
+      if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
+        throw error;
+      }
+      // Generic native streaming reads keys from the desktop keyring. If the
+      // current provider relies on an in-memory key, keep the legacy TS path.
+    }
   }
 
   const {

@@ -8,6 +8,10 @@ pub mod git;
 pub mod terminal;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
+#[path = "commands/workspace_tools.rs"]
+pub mod workspace_tools;
+
+pub use workspace_tools::WorkspaceProjectMount;
 
 use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
@@ -33,6 +37,10 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
+use workspace_tools::{
+    mount_workspace_path, normalize_tool_path, resolve_virtual_mount_target,
+    virtual_path_for_mount, VirtualWorkspaceContext,
+};
 
 pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
 const DB_INIT_WAIT_RETRIES: usize = 300;
@@ -522,6 +530,136 @@ fn resolve_validated_tool_path(
     } else {
         validate_fs_path(&path_buf, workspace).map_err(|error| command_error(error.to_string()))
     }
+}
+
+async fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> CommandResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| command_error(format!("Invalid file path: {}", path.display())))?;
+    tokio::fs::create_dir_all(parent).await.map_err(|error| {
+        command_error(format!(
+            "Failed to create parent directory for {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let temp_path = parent.join(format!(
+        ".{}.macro-tmp-{}",
+        file_name,
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    if let Err(error) = tokio::fs::write(&temp_path, bytes).await {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(command_error(format!(
+            "Failed to write temporary file for {}: {}",
+            path.display(),
+            error
+        )));
+    }
+    if let Err(error) = tokio::fs::rename(&temp_path, path).await {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(command_error(format!(
+            "Failed to replace {} atomically: {}",
+            path.display(),
+            error
+        )));
+    }
+
+    Ok(())
+}
+
+async fn write_file_atomically(path: &Path, content: &str) -> CommandResult<()> {
+    write_bytes_atomically(path, content.as_bytes()).await
+}
+
+async fn rollback_pending_file_changes(backups: &[(PathBuf, Option<Vec<u8>>)]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (path, backup) in backups.iter().rev() {
+        match backup {
+            Some(bytes) => {
+                if let Err(error) = write_bytes_atomically(path, bytes).await {
+                    errors.push(format!(
+                        "Failed to restore {} during rollback: {}",
+                        path.display(),
+                        error.message
+                    ));
+                }
+            }
+            None => match tokio::fs::try_exists(path).await {
+                Ok(true) => {
+                    if let Err(error) = tokio::fs::remove_file(path).await {
+                        errors.push(format!(
+                            "Failed to remove created file {} during rollback: {}",
+                            path.display(),
+                            error
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => errors.push(format!(
+                    "Failed to inspect {} during rollback: {}",
+                    path.display(),
+                    error
+                )),
+            },
+        }
+    }
+    errors
+}
+
+async fn commit_pending_file_changes_atomically(
+    changes: &[PendingFileChange],
+) -> CommandResult<()> {
+    let mut backups = Vec::with_capacity(changes.len());
+    for change in changes {
+        let backup = match tokio::fs::read(&change.absolute_path).await {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(command_error(format!(
+                    "Failed to prepare backup for {}: {}",
+                    change.display_path, error
+                )))
+            }
+        };
+        backups.push((change.absolute_path.clone(), backup));
+    }
+
+    for (applied_count, change) in changes.iter().enumerate() {
+        let result = if let Some(new_content) = change.new_content.as_ref() {
+            write_file_atomically(&change.absolute_path, new_content).await
+        } else {
+            tokio::fs::remove_file(&change.absolute_path)
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to delete {}: {}",
+                        change.display_path, error
+                    ))
+                })
+        };
+
+        if let Err(error) = result {
+            let rollback_errors = rollback_pending_file_changes(&backups[..applied_count]).await;
+            let rollback_suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!(" Rollback errors: {}", rollback_errors.join("; "))
+            };
+            return Err(command_error(format!(
+                "{}{}",
+                error.message, rollback_suffix
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 async fn build_post_write_response(
@@ -1587,9 +1725,7 @@ fn mac_binary_or_app_command(
     target_path: &Path,
 ) -> CommandResult<ExternalLaunchCommand> {
     let program = mac_binary_or_app_executable(binary_names, bundle_names, executable_names)
-        .ok_or_else(|| {
-            command_error(format!("App is installed but no launch binary was found."))
-        })?;
+        .ok_or_else(|| command_error("App is installed but no launch binary was found."))?;
 
     Ok(ExternalLaunchCommand {
         program,
@@ -2100,6 +2236,678 @@ pub async fn open_external_target(
     .map_err(|error| command_error(format!("External launch task failed: {}", error)))?
 }
 
+async fn execute_virtual_workspace_search_tool(
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+) -> CommandResult<String> {
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut all_files = Vec::new();
+    for mount in mounts {
+        let Ok(workspace) = mount_workspace_path(mount) else {
+            continue;
+        };
+        let entries = fs::list_dir_internal(
+            &workspace,
+            ".".to_string(),
+            Some(true),
+            Some(include_hidden),
+            None,
+            Some(true),
+        )
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+        for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+            all_files.push((
+                mount.clone(),
+                workspace.clone(),
+                entry.relative_path.replace('\\', "/"),
+            ));
+        }
+    }
+
+    if tool_id == "glob" {
+        let pattern = json_arg_string(args, "pattern").unwrap_or_else(|| "**/*".to_string());
+        let compiled = Pattern::new(&pattern)
+            .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
+        let paths = all_files
+            .into_iter()
+            .filter_map(|(mount, _, relative)| {
+                let virtual_path = virtual_path_for_mount(&mount, &relative);
+                (compiled.matches(&relative) || compiled.matches(&virtual_path))
+                    .then_some(virtual_path)
+            })
+            .collect::<Vec<_>>();
+        return serde_json::to_string_pretty(&serde_json::json!({
+            "pattern": pattern,
+            "virtual_root": true,
+            "count": paths.len(),
+            "paths": paths
+        }))
+        .map_err(|error| command_error(error.to_string()));
+    }
+
+    let query = json_arg_string(args, "query")
+        .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
+    let is_regexp = json_arg_bool(args, "is_regexp").unwrap_or(false);
+    let include_pattern = json_arg_string(args, "include_pattern");
+    let max_results = json_arg_u32(args, "max_results").unwrap_or(50).max(1) as usize;
+    let include_glob = include_pattern
+        .as_ref()
+        .map(|glob| Pattern::new(glob))
+        .transpose()
+        .map_err(|error| command_error(format!("Invalid include_pattern glob: {}", error)))?;
+    let regex = if is_regexp {
+        Some(
+            RegexBuilder::new(&query)
+                .case_insensitive(true)
+                .build()
+                .map_err(|error| {
+                    command_error(format!("Invalid regex pattern for grep: {}", error))
+                })?,
+        )
+    } else {
+        None
+    };
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+    for (mount, workspace, relative) in all_files {
+        let virtual_path = virtual_path_for_mount(&mount, &relative);
+        if let Some(pattern) = include_glob.as_ref() {
+            if !pattern.matches(&relative) && !pattern.matches(&virtual_path) {
+                continue;
+            }
+        }
+        let content = fs::read_file_internal(&workspace, relative, Some(true))
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+        if content.is_binary {
+            continue;
+        }
+        for (index, line) in content.content.lines().enumerate() {
+            let is_match = if let Some(compiled) = regex.as_ref() {
+                compiled.is_match(line)
+            } else {
+                line.to_lowercase().contains(&query_lower)
+            };
+            if is_match {
+                results.push(serde_json::json!({
+                    "path": virtual_path,
+                    "line": index + 1,
+                    "text": line.trim(),
+                    "project_id": mount.project_id,
+                    "mount_name": mount.mount_name,
+                }));
+                if results.len() >= max_results {
+                    break;
+                }
+            }
+        }
+        if results.len() >= max_results {
+            break;
+        }
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "query": query,
+        "total": results.len(),
+        "results": results
+    }))
+    .map_err(|error| command_error(error.to_string()))
+}
+
+async fn execute_virtual_workspace_tool(
+    mode: &str,
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+    focused_project_id: Option<&str>,
+) -> CommandResult<Option<String>> {
+    if mounts.is_empty() {
+        return Ok(None);
+    }
+    let virtual_context = VirtualWorkspaceContext {
+        mounts,
+        focused_project_id,
+    };
+
+    match tool_id {
+        "list" => {
+            let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let normalized_path = normalize_tool_path(&raw_path);
+            if explicit_project_id.is_none()
+                && (normalized_path.is_empty() || normalized_path == ".")
+            {
+                let entries = mounts
+                    .iter()
+                    .map(|mount| {
+                        serde_json::json!({
+                            "path": mount.mount_name,
+                            "relative_path": mount.mount_name,
+                            "name": mount.mount_name,
+                            "kind": "directory",
+                            "is_hidden": false,
+                            "is_readonly": mount.is_read_only,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "path": ".",
+                    "virtual_root": true,
+                    "count": entries.len(),
+                    "entries": entries
+                }))
+                .map(Some)
+                .map_err(|error| command_error(error.to_string()));
+            }
+
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            let workspace = mount_workspace_path(mount)?;
+            let entries = fs::list_dir_internal(
+                &workspace,
+                relative_path.clone(),
+                json_arg_bool(args, "recursive"),
+                json_arg_bool(args, "include_hidden"),
+                json_arg_u32(args, "max_depth"),
+                Some(true),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+            .into_iter()
+            .map(|mut entry| {
+                entry.path = virtual_path_for_mount(mount, &entry.relative_path);
+                entry.relative_path = entry.path.clone();
+                entry
+            })
+            .collect::<Vec<_>>();
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": virtual_path_for_mount(mount, &relative_path),
+                "project_id": mount.project_id,
+                "mount_name": mount.mount_name,
+                "count": entries.len(),
+                "entries": entries
+            }))
+            .map(Some)
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "read" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for read tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            let workspace = mount_workspace_path(mount)?;
+            let result = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let virtual_path = virtual_path_for_mount(mount, &relative_path);
+            if result.is_binary {
+                return Ok(Some(format!(
+                    "File {} is binary ({} bytes, encoding={}).",
+                    virtual_path, result.size, result.encoding
+                )));
+            }
+
+            let start_line = json_arg_u32(args, "start_line").unwrap_or(1).max(1) as usize;
+            let end_line = json_arg_u32(args, "end_line").map(|value| value as usize);
+            let lines = result.content.lines().collect::<Vec<_>>();
+            let effective_start = start_line.min(lines.len().max(1));
+            let effective_end = end_line
+                .map(|value| value.max(effective_start))
+                .unwrap_or(lines.len().max(effective_start));
+            let selected = if lines.is_empty() {
+                vec![""]
+            } else {
+                lines
+                    .iter()
+                    .skip(effective_start.saturating_sub(1))
+                    .take(effective_end.saturating_sub(effective_start) + 1)
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+            let numbered = format_with_line_numbers(&selected, effective_start);
+            Ok(Some(format!(
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                virtual_path,
+                mount.project_id,
+                mount.mount_name,
+                result.language,
+                result.size,
+                effective_start,
+                effective_start + selected.len().saturating_sub(1),
+                numbered
+            )))
+        }
+        "glob" | "grep" => execute_virtual_workspace_search_tool(tool_id, args, mounts)
+            .await
+            .map(Some),
+        "write" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for write tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot write to read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let content = json_arg_string(args, "content")
+                .ok_or_else(|| command_error("Missing content argument for write tool."))?;
+            let create_dirs = json_arg_bool(args, "create_dirs");
+            let workspace = mount_workspace_path(mount)?;
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+            let write_result = fs::write_file_internal(
+                &workspace,
+                relative_path.clone(),
+                content.clone(),
+                create_dirs,
+                Some(true),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            let change = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: if write_result.created {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                new_content: Some(content.clone()),
+                created: write_result.created,
+                bytes_written: write_result.bytes_written,
+                additions: content.lines().count(),
+                deletions: 0,
+            };
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([
+                    ("path".to_string(), Value::String(display_path)),
+                    (
+                        "bytes_written".to_string(),
+                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                    ),
+                    ("created".to_string(), Value::Bool(write_result.created)),
+                    (
+                        "project_id".to_string(),
+                        Value::String(mount.project_id.clone()),
+                    ),
+                ]),
+            )
+            .await
+            .map(Some)
+        }
+        "edit" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot edit read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let old_text = json_arg_string(args, "old_text")
+                .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
+            let new_text = json_arg_string(args, "new_text")
+                .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
+            let replace_all = json_arg_bool(args, "replace_all").unwrap_or(false);
+            let workspace = mount_workspace_path(mount)?;
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            if current.is_binary {
+                return Ok(Some(format!("Cannot edit binary file: {}", display_path)));
+            }
+            let occurrences = current.content.matches(&old_text).count();
+            if occurrences == 0 {
+                return Ok(Some(format!(
+                    "No match found for old_text in {}.",
+                    display_path
+                )));
+            }
+            let updated = if replace_all {
+                current.content.replace(&old_text, &new_text)
+            } else {
+                current.content.replacen(&old_text, &new_text, 1)
+            };
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+            let write_result = fs::write_file_internal(
+                &workspace,
+                relative_path.clone(),
+                updated.clone(),
+                Some(true),
+                Some(true),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+            let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
+            let change = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: if write_result.created {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                new_content: Some(updated),
+                created: write_result.created,
+                bytes_written: write_result.bytes_written,
+                additions,
+                deletions,
+            };
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([
+                    (
+                        "replacements".to_string(),
+                        Value::Number(serde_json::Number::from(if replace_all {
+                            occurrences as u64
+                        } else {
+                            1
+                        })),
+                    ),
+                    ("path".to_string(), Value::String(display_path)),
+                    (
+                        "bytes_written".to_string(),
+                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                    ),
+                    ("created".to_string(), Value::Bool(write_result.created)),
+                    (
+                        "project_id".to_string(),
+                        Value::String(mount.project_id.clone()),
+                    ),
+                ]),
+            )
+            .await
+            .map(Some)
+        }
+        "delete" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for delete tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot delete from read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let workspace = mount_workspace_path(mount)?;
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            let metadata = tokio::fs::metadata(&absolute_path).await.map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect {} before delete: {}",
+                    display_path, error
+                ))
+            })?;
+            if metadata.is_dir() {
+                return Ok(Some(format!(
+                    "Cannot delete directory with delete tool: {}. Only files are supported.",
+                    display_path
+                )));
+            }
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let deletions = if current.is_binary {
+                0
+            } else {
+                current.content.lines().count()
+            };
+            tokio::fs::remove_file(&absolute_path)
+                .await
+                .map_err(|error| {
+                    command_error(format!("Failed to delete {}: {}", display_path, error))
+                })?;
+            let change = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: "deleted".to_string(),
+                new_content: None,
+                created: false,
+                bytes_written: 0,
+                additions: 0,
+                deletions,
+            };
+            build_post_write_response(
+                &[change],
+                serde_json::Map::from_iter([
+                    ("path".to_string(), Value::String(display_path)),
+                    (
+                        "project_id".to_string(),
+                        Value::String(mount.project_id.clone()),
+                    ),
+                ]),
+            )
+            .await
+            .map(Some)
+        }
+        "apply_patch" => {
+            let patch_text = json_arg_string(args, "patch_text").ok_or_else(|| {
+                command_error("Missing patch_text argument for apply_patch tool.")
+            })?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let operations = parse_apply_patch(&patch_text)?;
+            let mut pending_changes = Vec::new();
+
+            for operation in operations.iter() {
+                let operation_path = match operation {
+                    ParsedPatchOperation::Add { path, .. }
+                    | ParsedPatchOperation::Update { path, .. }
+                    | ParsedPatchOperation::Delete { path } => path,
+                };
+                let validation =
+                    validate_tool_execution(mode, tool_id, Some(operation_path.as_str()));
+                if !validation.allowed {
+                    return Ok(Some(validation.reason.unwrap_or_else(|| {
+                        format!(
+                            "Tool {} is not allowed for path {}",
+                            tool_id, operation_path
+                        )
+                    })));
+                }
+            }
+
+            for operation in operations {
+                match operation {
+                    ParsedPatchOperation::Add { path, lines } => {
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        if tokio::fs::try_exists(&absolute_path)
+                            .await
+                            .map_err(|error| {
+                                command_error(format!(
+                                    "Failed to inspect {} before apply_patch: {}",
+                                    display_path, error
+                                ))
+                            })?
+                        {
+                            return Ok(Some(format!(
+                                "Cannot add file {} because it already exists.",
+                                display_path
+                            )));
+                        }
+                        let new_content = join_text_lines(&lines, true);
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "created".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: true,
+                            bytes_written: new_content.len() as u64,
+                            additions: new_content.lines().count(),
+                            deletions: 0,
+                        });
+                    }
+                    ParsedPatchOperation::Update { path, hunks } => {
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        let current =
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                                .await
+                                .map_err(|error| command_error(error.to_string()))?;
+                        if current.is_binary {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to binary file: {}",
+                                display_path
+                            )));
+                        }
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+                        let new_content = apply_patch_hunks_to_content(
+                            display_path.as_str(),
+                            &current.content,
+                            &hunks,
+                        )?;
+                        let (additions, deletions) =
+                            compute_line_change_stats(&current.content, &new_content);
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "updated".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: false,
+                            bytes_written: new_content.len() as u64,
+                            additions,
+                            deletions,
+                        });
+                    }
+                    ParsedPatchOperation::Delete { path } => {
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        let current =
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                                .await
+                                .map_err(|error| command_error(error.to_string()))?;
+                        let deletion_count = if current.is_binary {
+                            0
+                        } else {
+                            current.content.lines().count()
+                        };
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "deleted".to_string(),
+                            new_content: None,
+                            created: false,
+                            bytes_written: 0,
+                            additions: 0,
+                            deletions: deletion_count,
+                        });
+                    }
+                }
+            }
+
+            commit_pending_file_changes_atomically(&pending_changes).await?;
+
+            build_post_write_response(
+                &pending_changes,
+                serde_json::Map::from_iter([(
+                    "applied_operations".to_string(),
+                    Value::Number(serde_json::Number::from(pending_changes.len() as u64)),
+                )]),
+            )
+            .await
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_workspace_tool(
     default_workspace: PathBuf,
@@ -2110,6 +2918,9 @@ pub async fn execute_workspace_tool(
     args: Value,
     workspace_path: Option<String>,
     workspace_scope: Option<String>,
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    virtual_root_enabled: Option<bool>,
+    focused_project_id: Option<String>,
 ) -> CommandResult<String> {
     let workspace = resolve_requested_workspace(
         &default_workspace,
@@ -2129,6 +2940,20 @@ pub async fn execute_workspace_tool(
         return Ok(validation
             .reason
             .unwrap_or_else(|| format!("Tool {} is not allowed", tool_trimmed)));
+    }
+
+    if virtual_root_enabled.unwrap_or(false) {
+        if let Some(result) = execute_virtual_workspace_tool(
+            &mode_trimmed,
+            &tool_trimmed,
+            &args,
+            project_mounts.as_deref().unwrap_or(&[]),
+            focused_project_id.as_deref(),
+        )
+        .await?
+        {
+            return Ok(result);
+        }
     }
 
     match tool_trimmed.as_str() {
@@ -2587,28 +3412,7 @@ pub async fn execute_workspace_tool(
                 }
             }
 
-            for change in pending_changes.iter() {
-                if let Some(new_content) = change.new_content.as_ref() {
-                    fs::write_file_internal(
-                        &change.effective_workspace,
-                        change.effective_path.clone(),
-                        new_content.clone(),
-                        Some(true),
-                        Some(false),
-                    )
-                    .await
-                    .map_err(|error| command_error(error.to_string()))?;
-                } else {
-                    tokio::fs::remove_file(&change.absolute_path)
-                        .await
-                        .map_err(|error| {
-                            command_error(format!(
-                                "Failed to delete {}: {}",
-                                change.display_path, error
-                            ))
-                        })?;
-                }
-            }
+            commit_pending_file_changes_atomically(&pending_changes).await?;
 
             build_post_write_response(
                 &pending_changes,
@@ -3220,6 +4024,9 @@ pub async fn tool_execute_workspace(
     args: Value,
     workspace_path: Option<String>,
     workspace_scope: Option<String>,
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    virtual_root_enabled: Option<bool>,
+    focused_project_id: Option<String>,
 ) -> CommandResult<String> {
     let workspace = workspace_root.inner().read().await.clone();
     let metadata_workspace = workspace_metadata_root.inner().0.read().await.clone();
@@ -3233,6 +4040,9 @@ pub async fn tool_execute_workspace(
         args,
         workspace_path,
         workspace_scope,
+        project_mounts,
+        virtual_root_enabled,
+        focused_project_id,
     )
     .await
 }
@@ -4059,6 +4869,9 @@ mod tests {
             "Implement".to_string(),
             "delete".to_string(),
             json!({ "path": "delete-me.txt" }),
+            None,
+            None,
+            None,
             None,
             None,
         )

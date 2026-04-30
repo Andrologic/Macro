@@ -555,6 +555,66 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
   });
 
+  it('falls back to legacy Git review loading only when the Rust command is unsupported', async () => {
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('unknown command git_review_snapshot');
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(gitReviewSnapshotMock).toHaveBeenCalled();
+    expect(gitStatusMock).toHaveBeenCalled();
+  });
+
+  it('propagates real Rust Git review errors instead of masking them', async () => {
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('git_review_snapshot failed: repository is locked');
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().lastError).toContain('repository is locked');
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
   it('uses the execution target branch as the standalone integration branch', async () => {
     appStoreState.selectedTaskId = 'task-5';
 

@@ -1,5 +1,8 @@
 // Git Commands
 
+#[path = "git/review.rs"]
+mod review;
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -163,6 +166,90 @@ pub struct GitFilePairDto {
     pub worktree_content: String,
     pub original_content: String,
     pub modified_content: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewDiffLineDto {
+    #[serde(rename = "type")]
+    pub line_type: String,
+    pub content: String,
+    pub old_line_number: Option<u32>,
+    pub new_line_number: Option<u32>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewDiffHunkDto {
+    pub header: String,
+    pub old_start: u32,
+    pub old_count: u32,
+    pub new_start: u32,
+    pub new_count: u32,
+    pub lines: Vec<GitReviewDiffLineDto>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewParsedDiffDto {
+    pub original_content: String,
+    pub modified_content: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub hunks: Vec<GitReviewDiffHunkDto>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewChangeDto {
+    pub path: String,
+    pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub has_pending_visible_change: bool,
+    pub has_validated_stage: bool,
+    pub validated_removed_line_numbers: Vec<u32>,
+    pub validated_added_line_numbers: Vec<u32>,
+    pub is_binary: bool,
+    pub too_large: bool,
+    pub requires_hydration: bool,
+    pub original_content: String,
+    pub index_content: String,
+    pub modified_content: String,
+    pub language: String,
+    pub hunks: Vec<GitReviewDiffHunkDto>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewSnapshotDto {
+    pub branch: String,
+    pub staged_paths: Vec<String>,
+    pub changes: Vec<GitReviewChangeDto>,
+    pub conflicted_files: Vec<String>,
+    pub merge_in_progress: bool,
+    pub is_clean: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitReviewFileDto {
+    pub path: String,
+    pub status: String,
+    pub head_exists: bool,
+    pub index_exists: bool,
+    pub worktree_exists: bool,
+    pub head_content: String,
+    pub index_content: String,
+    pub worktree_content: String,
+    pub pending_diff: GitReviewParsedDiffDto,
+    pub full_diff: GitReviewParsedDiffDto,
+    pub has_validated_stage: bool,
+    pub validated_removed_line_numbers: Vec<u32>,
+    pub validated_added_line_numbers: Vec<u32>,
+    pub is_binary: bool,
+    pub too_large: bool,
+    pub language: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -1972,7 +2059,7 @@ fn collect_command_conflict_files(cwd: &Path) -> Vec<String> {
 }
 
 fn has_binary_marker(bytes: &[u8]) -> bool {
-    bytes.iter().any(|byte| *byte == 0)
+    bytes.contains(&0)
 }
 
 fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
@@ -2027,7 +2114,11 @@ fn read_conflict_entry_side(
     let too_large = content.len() > MAX_CONFLICT_FILE_BYTES;
     let is_binary = has_binary_marker(content);
 
-    Ok((conflict_side_from_bytes(Some(content)), is_binary, too_large))
+    Ok((
+        conflict_side_from_bytes(Some(content)),
+        is_binary,
+        too_large,
+    ))
 }
 
 fn read_worktree_conflict_side(
@@ -2250,16 +2341,14 @@ pub(crate) fn build_git_rebase_check(
         });
     }
 
-    let rebase_output = match run_git_command(
-        &temp_path,
-        &["rebase".to_string(), onto_branch.to_string()],
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            cleanup_temp_worktree(&root, &temp_path);
-            return Err(error);
-        }
-    };
+    let rebase_output =
+        match run_git_command(&temp_path, &["rebase".to_string(), onto_branch.to_string()]) {
+            Ok(output) => output,
+            Err(error) => {
+                cleanup_temp_worktree(&root, &temp_path);
+                return Err(error);
+            }
+        };
     let conflict_files = if rebase_output.success {
         Vec::new()
     } else {
@@ -2841,7 +2930,10 @@ pub(crate) fn write_git_conflict_resolution(
     }
 
     fs::write(&absolute_path, content).map_err(|error| BackendError::Io {
-        message: format!("Failed to write conflict resolution {:?}: {}", absolute_path, error),
+        message: format!(
+            "Failed to write conflict resolution {:?}: {}",
+            absolute_path, error
+        ),
         source: error,
     })?;
 
@@ -2879,7 +2971,10 @@ pub(crate) fn accept_git_conflict_side(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(BackendError::Io {
-                    message: format!("Failed to remove conflict file {:?}: {}", absolute_path, error),
+                    message: format!(
+                        "Failed to remove conflict file {:?}: {}",
+                        absolute_path, error
+                    ),
                     source: error,
                 })
             }
@@ -3553,6 +3648,63 @@ pub async fn git_read_file_pair(
         })?;
 
         read_git_file_pair(&repo, &validated, &relative_path)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Build a lightweight review snapshot for the current repository state.
+pub async fn git_review_snapshot(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+) -> Result<GitReviewSnapshotDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        review::build_git_review_snapshot(&repo, &validated)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Hydrate a single review file with full HEAD/index/worktree content and diffs.
+pub async fn git_review_file(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    path: String,
+) -> Result<GitReviewFileDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        let status = build_git_status(&repo)?;
+        let status_label = status
+            .staged_files
+            .iter()
+            .chain(status.unstaged_files.iter())
+            .chain(status.untracked_files.iter())
+            .find(|file| file.path == path)
+            .map(|file| file.status.as_str())
+            .unwrap_or("modified");
+
+        review::build_git_review_file(&repo, &validated, &relative_path, status_label)
     })
     .await
     .map_err(to_join_error)?
@@ -4563,10 +4715,7 @@ mod tests {
         let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
 
         assert_eq!(result.status, "conflicted");
-        assert!(result
-            .conflict_files
-            .iter()
-            .any(|path| path == "README.md"));
+        assert!(result.conflict_files.iter().any(|path| path == "README.md"));
 
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert_eq!(file.base.content, "hello");

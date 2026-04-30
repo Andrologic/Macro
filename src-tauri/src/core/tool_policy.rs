@@ -289,7 +289,9 @@ mod tests {
         assert!(policy
             .allowed_tool_ids
             .contains(&"mark_source_passage".to_string()));
-        assert!(policy.allowed_tool_ids.contains(&"read_sources".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"read_sources".to_string()));
         assert!(policy
             .allowed_tool_ids
             .contains(&"edit_source_passage".to_string()));
@@ -299,9 +301,7 @@ mod tests {
             .allowed_tool_ids
             .contains(&"terminal_run".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"need_add".to_string()));
-        assert!(!policy
-            .allowed_tool_ids
-            .contains(&"plan_create".to_string()));
+        assert!(!policy.allowed_tool_ids.contains(&"plan_create".to_string()));
         assert!(!policy
             .allowed_tool_ids
             .contains(&"strategy_generate".to_string()));
