@@ -85,6 +85,25 @@ const createInitialDraft = (file: GitConflictFileDto | null): string => {
 const shouldPrepareManualMerge = (repository: MergeWorkflowRepositoryResult): boolean =>
   !(repository.mergeInProgress && repository.conflictFiles.length > 0);
 
+const getNonRenderableFileMessage = (
+  file: GitConflictFileDto | null,
+  translate: ReturnType<typeof useTranslation>['t']
+): string => {
+  if (file?.isBinary) {
+    return translate(
+      'implement.binaryConflictFile',
+      'This is a binary conflict. Choose the full Current or Incoming version to resolve it.'
+    );
+  }
+  if (file?.tooLarge) {
+    return translate(
+      'implement.largeConflictFile',
+      'This file is too large to edit here. Choose the full Current or Incoming version to resolve it.'
+    );
+  }
+  return translate('implement.noTextualDiff', 'No textual diff is available for this file.');
+};
+
 const withTimeout = async <T,>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -156,6 +175,12 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const chunkActionLabel = referenceSide === 'ours'
     ? t('implement.useCurrentBlock', 'Use current block')
     : t('implement.useIncomingBlock', 'Use incoming block');
+  const conflictFileSummary = allFilesResolved
+    ? t('implement.allConflictFilesResolvedShort', 'All files staged')
+    : t('implement.remainingConflictFileCount', '{{remaining}} of {{total}} file(s) left', {
+      remaining: files.length || listedFiles.length,
+      total: listedFiles.length,
+    });
 
   useEffect(() => {
     knownFilesRef.current = Array.from(new Set([...knownFilesRef.current, ...repository.conflictFiles, ...files]));
@@ -369,6 +394,12 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     setFileLoadRetryToken((current) => current + 1);
   }, []);
 
+  const handleResetDraft = useCallback(() => {
+    if (isBusy || !canRenderFile) return;
+    setDraft(savedDraft);
+    setError(null);
+  }, [canRenderFile, isBusy, savedDraft]);
+
   const handleRefreshConflicts = useCallback(async () => {
     if (isBusy) return;
     setIsLoadingFile(true);
@@ -492,10 +523,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
             <p className="mt-1 truncate text-xs text-muted-foreground" title={getRepositoryBranchLabel(repository)}>
               {getRepositoryBranchLabel(repository)}
             </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              {t('implement.conflictFileCount', '{{count}} conflicted file(s)', {
-                count: files.length || repository.conflictFiles.length,
-              })}
+            <p className={cn(
+              'mt-3 text-xs',
+              allFilesResolved ? 'text-emerald-500' : 'text-muted-foreground'
+            )}>
+              {conflictFileSummary}
             </p>
           </div>
 
@@ -517,13 +549,21 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                   )}
                   title={path}
                 >
-                  <span className={cn(
-                    'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[10px] font-bold',
-                    isResolved
-                      ? 'bg-emerald-500/10 text-emerald-500'
-                      : 'bg-red-500/10 text-red-400'
-                  )}>
-                    {isResolved ? 'R' : '!'}
+                  <span
+                    className={cn(
+                      'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm',
+                      isResolved
+                        ? 'bg-emerald-500/10 text-emerald-500'
+                        : 'bg-red-500/10 text-red-400'
+                    )}
+                    title={isResolved
+                      ? t('implement.resolvedConflictFile', 'Resolved')
+                      : t('implement.unresolvedConflictFile', 'Unresolved')}
+                  >
+                    <Icon
+                      name={isResolved ? 'check' : 'alert-circle'}
+                      size={11}
+                    />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-medium">{getFileLabel(path)}</span>
@@ -548,6 +588,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                   <h2 className="text-sm font-medium text-foreground">
                     {t('implement.manualConflictResolution', 'Manual conflict resolution')}
                   </h2>
+                )}
+                {isDraftDirty && (
+                  <span className="mt-1 inline-flex rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-300">
+                    {t('implement.unsavedDraftBadge', 'Unsaved draft')}
+                  </span>
                 )}
               </div>
             </div>
@@ -633,13 +678,19 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                 {t('implement.conflictFileResolved', 'This file is resolved and staged.')}
               </div>
             ) : !canRenderFile ? (
-              <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
-                {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
+                <div className="max-w-lg rounded-xl border border-border bg-card px-4 py-4 text-center shadow-sm">
+                  <Icon name="file-text" size={24} className="mx-auto mb-3 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">
+                    {getNonRenderableFileMessage(currentFile, t)}
+                  </p>
+                </div>
               </div>
             ) : resultContainsConflictMarkers ? (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
                 <div className="max-w-lg rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-4 text-center">
-                  <p className="text-sm font-medium text-amber-200">
+                  <Icon name="triangle-alert" size={24} className="mx-auto mb-3 text-amber-600 dark:text-amber-300" />
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-200">
                     {t('implement.conflictMarkersStillPresent', 'The result still contains Git conflict markers. Choose Current or Incoming blocks before saving.')}
                   </p>
                   <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -702,7 +753,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                 </span>
               ) : isDraftDirty ? (
                 <span className="font-medium text-amber-500">
-                  {t('implement.unsavedDraft', 'Unsaved draft. Save to validate or reset.')}
+                  {t('implement.unsavedDraft', 'Unsaved draft. Save to validate it.')}
+                </span>
+              ) : resultContainsConflictMarkers ? (
+                <span className="font-medium text-amber-500">
+                  {t('implement.conflictMarkersFooter', 'Choose a clean Current or Incoming result before saving.')}
                 </span>
               ) : (
                 t('implement.resolveConflictFileHint', 'Choose blocks, use a full side, or edit the resolved result, then save the resolution.')
@@ -721,6 +776,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                   <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
                     {t('implement.useAllIncoming', 'Use all incoming')}
                   </Button>
+                  {isDraftDirty && (
+                    <Button variant="ghost" size="sm" onClick={handleResetDraft} disabled={isBusy || !canRenderFile}>
+                      {t('implement.resetDraft', 'Reset draft')}
+                    </Button>
+                  )}
                   <Button variant="primary" size="sm" onClick={() => void handleSave()} disabled={isBusy || !canRenderFile || resultContainsConflictMarkers}>
                     {t('implement.saveResolution', 'Save resolution')}
                   </Button>
