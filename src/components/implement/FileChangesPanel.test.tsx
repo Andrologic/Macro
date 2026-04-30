@@ -393,7 +393,17 @@ describe('FileChangesPanel', () => {
       nextAction: 'clean_repository' | 'resolve_conflicts' | 'finish_or_abort_merge' | null;
       mergeInProgress: boolean;
       conflictFiles: string[];
+      dirtyFiles: Array<{ path: string; status: string; area: 'staged' | 'unstaged' | 'untracked' }>;
       blockingReason: string | null;
+      recommendedAction: 'stash_dirty' | 'commit_staged_resolution' | 'assistant' | 'abort_merge';
+      availableActions: Array<
+        'stash_dirty' |
+        'commit_staged_resolution' |
+        'revert_dirty' |
+        'assistant' |
+        'retry_check' |
+        'abort_merge'
+      >;
     }> = {}
   ) => {
     const dirtyRepository = {
@@ -1144,6 +1154,81 @@ describe('FileChangesPanel', () => {
 
     expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
       blockerResolutionAction: 'stash_dirty',
+    });
+  });
+
+  it('offers a staged-resolution continuation for assistant-staged dirty blockers', async () => {
+    const resolveMergeWorkflowAutomaticallyMock = mock(async () => ({
+      conversationId: null,
+      autoResolvedRepositoryCount: 1,
+      remainingBlockedRepositoryCount: 0,
+    }));
+    const runMergeWorkflowMock = mock(async () => undefined);
+    const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
+      dirtyFiles: [
+        { path: 'lib/l10n/app_localizations.dart', status: 'modified', area: 'staged' },
+        { path: 'lib/l10n/app_ar.arb', status: 'added', area: 'staged' },
+        { path: 'lib/l10n/app_localizations_ar.dart', status: 'added', area: 'staged' },
+      ],
+      blockingReason: 'Cannot continue merge because /repos/project has staged changes.',
+      recommendedAction: 'commit_staged_resolution',
+      availableActions: [
+        'commit_staged_resolution',
+        'revert_dirty',
+        'assistant',
+        'retry_check',
+      ],
+    });
+
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        status: 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan 1',
+        plan_target_branch: 'develop',
+      },
+      taskStoreOverrides: {
+        getMergeWorkflowRuntime: (taskId: string) =>
+          taskId === 'task-1' ? mergeWorkflowRuntime : null,
+        loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
+        runMergeWorkflow: runMergeWorkflowMock,
+        resolveMergeWorkflowAutomatically: resolveMergeWorkflowAutomaticallyMock,
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Staged changes');
+    expect(document.body.textContent).toContain('Staged resolution is waiting');
+    expect(document.body.textContent).not.toContain('Target branch has local changes');
+
+    const continueButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Continue'));
+
+    await act(async () => {
+      continueButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Staged changes ready');
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Commit staged and continue'));
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    expect(resolveMergeWorkflowAutomaticallyMock).toHaveBeenCalledWith('task-1', {
+      blockerResolutionAction: 'commit_staged_resolution',
+    });
+    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
+      allowWithoutCodeChanges: true,
     });
   });
 
