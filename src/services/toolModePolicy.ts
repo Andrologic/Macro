@@ -19,7 +19,9 @@ const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep"] as const;
 const WORKSPACE_WRITE_TOOLS = ["write", "edit", "delete", "apply_patch"] as const;
 const CHAT_SAFE_TOOLS = [
   "question",
+  "mark_source_passage",
   "read_sources",
+  "edit_source_passage",
   "read_file",
   "web_search",
   "web_fetch",
