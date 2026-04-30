@@ -12,6 +12,7 @@ import { cn } from '../../utils/cn';
 import { Icon, type IconName } from '../ui/Icon';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
+import { notify } from '../ui/toastService';
 
 interface ContextToolboxProps {
   className?: string;
@@ -20,6 +21,87 @@ interface ContextToolboxProps {
 type ToolboxTab = 'context' | 'tools' | 'sources';
 type SourceFilter = 'all' | 'interesting' | 'used';
 type SourceSort = 'recent' | 'title' | 'source';
+
+const ACCEPTED_TEXT_EXTENSIONS = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'csv',
+  'tsv',
+  'json',
+  'jsonl',
+  'yaml',
+  'yml',
+  'xml',
+  'html',
+  'htm',
+  'css',
+  'scss',
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'mjs',
+  'cjs',
+  'py',
+  'rb',
+  'go',
+  'rs',
+  'java',
+  'kt',
+  'c',
+  'cc',
+  'cpp',
+  'h',
+  'hpp',
+  'cs',
+  'php',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'sql',
+  'log',
+  'env',
+  'toml',
+  'ini',
+  'conf',
+]);
+const ACCEPTED_FILE_TYPES = [
+  '.txt',
+  '.md',
+  '.csv',
+  '.json',
+  '.yaml',
+  '.xml',
+  '.html',
+  '.css',
+  '.js',
+  '.ts',
+  '.py',
+  '.sql',
+  '.log',
+];
+const ACCEPTED_FILE_TYPES_LABEL = ACCEPTED_FILE_TYPES.join(', ');
+
+const isSupportedTextFile = (file: File): boolean => {
+  const mimeType = file.type.toLowerCase();
+  if (mimeType.startsWith('text/')) return true;
+  if (
+    [
+      'application/json',
+      'application/xml',
+      'application/x-ndjson',
+      'application/javascript',
+      'application/x-javascript',
+      'application/yaml',
+      'application/x-yaml',
+    ].includes(mimeType)
+  ) return true;
+
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  return Boolean(extension && ACCEPTED_TEXT_EXTENSIONS.has(extension));
+};
 
 const readFile = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -176,9 +258,30 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
   const handleFileSelect = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const conversationId = await ensureConversation();
     setActiveTab('context');
-    for (const file of Array.from(files)) {
+    const supportedFiles = Array.from(files).filter((file) => {
+      if (!isSupportedTextFile(file)) {
+        notify.error(
+          t('chat.contextToolbox.unsupportedFileType', 'Unsupported file type'),
+          {
+            description: t(
+              'chat.contextToolbox.supportedTextFileTypes',
+              'Only text-based files are supported: {{formats}}.',
+              { formats: ACCEPTED_FILE_TYPES_LABEL }
+            ),
+          }
+        );
+        return false;
+      }
+      return true;
+    });
+    if (supportedFiles.length === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const conversationId = await ensureConversation();
+    for (const file of supportedFiles) {
       try {
         const content = await readFile(file);
         await addContextCitationAndReveal({
@@ -192,10 +295,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         }, conversationId);
       } catch (error) {
         console.error('Failed to read file:', error);
+        notify.error(
+          t('chat.contextToolbox.fileReadFailedTitle', 'Could not read file'),
+          {
+            description: file.name,
+          }
+        );
       }
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [addContextCitationAndReveal, ensureConversation]);
+  }, [addContextCitationAndReveal, ensureConversation, t]);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (activeTab !== 'context') return;
@@ -250,6 +359,12 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       window.setTimeout(() => urlInputRef.current?.focus(), 0);
     } catch (error) {
       console.error('Failed to fetch URL preview:', error);
+      notify.error(
+        t('chat.contextToolbox.urlPreviewFailedTitle', 'Could not fetch URL preview'),
+        {
+          description: normalizedUrl,
+        }
+      );
       await addContextCitationAndReveal({
         type: 'web',
         source: normalizedUrl,
@@ -269,6 +384,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     try {
       const text = await navigator.clipboard.readText();
       if (!text) {
+        notify.error(t('chat.contextToolbox.clipboardEmptyTitle', 'Clipboard is empty'));
         return;
       }
       const conversationId = await ensureConversation();
@@ -281,6 +397,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       }, conversationId);
     } catch (error) {
       console.error('Failed to read clipboard:', error);
+      notify.error(t('chat.contextToolbox.clipboardReadFailedTitle', 'Could not read clipboard'));
     }
   }, [addContextCitationAndReveal, ensureConversation, t]);
 
