@@ -415,6 +415,7 @@
       "mcpServers": "MCPサーバー",
       "noMcpServers": "MCP サーバーが接続されていません",
       "webSearchKeyTooltip": "[設定] > [ツール] > [ウェブ検索] で API キーを追加します。",
+      "webFetchDisabledTooltip": "[設定] > [ツール] > [ウェブ検索] で Web Fetch を有効にします。",
       "nativeToolTooltip": "選択したモデルはネイティブ ツール呼び出しをサポートしていません。",
       "sourceSummary": "{{interesting}}見つかった •{{used}}使用済み •{{total}}ソース",
       "collectionDisabledTitle": "収集が無効になっています",

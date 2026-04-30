@@ -415,6 +415,7 @@
       "mcpServers": "Servidores MCP",
       "noMcpServers": "No hay servidores MCP conectados",
       "webSearchKeyTooltip": "Agregue una clave API en Configuración > Herramientas > Búsqueda web",
+      "webFetchDisabledTooltip": "Active Web Fetch en Configuración > Herramientas > Búsqueda web",
       "nativeToolTooltip": "El modelo seleccionado no admite llamadas a herramientas nativas.",
       "sourceSummary": "{{interesting}} encontrado • {{used}} usado • {{total}} fuentes",
       "collectionDisabledTitle": "Colección deshabilitada",

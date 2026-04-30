@@ -191,6 +191,7 @@ const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
 const clipboardWriteTextMock = mock(async (_text: string) => undefined);
 let clipboardReadTextMock = mock(async () => 'clipboard text');
 let fetchWebPageShouldFail = false;
+let webFetchEnabledMock = true;
 const fetchWebPageMock = mock(async (url: string) => {
   if (fetchWebPageShouldFail) {
     throw new Error('preview failed');
@@ -294,6 +295,22 @@ const clickActionForText = async (
   });
 };
 
+const findCardForText = (container: HTMLElement, text: string): HTMLElement => {
+  const match = Array.from(container.querySelectorAll('p, h3, span')).find(
+    (node) => node.textContent?.trim() === text,
+  );
+  expect(match).toBeTruthy();
+  let node: Element | null | undefined = match;
+  while (node && node !== container) {
+    const className = typeof node.className === 'string' ? node.className : '';
+    if (className.includes('rounded') && className.includes('hover:bg-accent')) {
+      return node as HTMLElement;
+    }
+    node = node.parentElement;
+  }
+  throw new Error(`Card not found for ${text}`);
+};
+
 const loadContextToolbox = async () => {
   mock.restore();
 
@@ -362,7 +379,7 @@ const loadContextToolbox = async () => {
       tavilyApiKey: 'tvly-test',
       braveApiKey: '',
       enabled: true,
-      fetchEnabled: true,
+      fetchEnabled: webFetchEnabledMock,
     }),
   }));
 
@@ -439,6 +456,7 @@ describe('ContextToolbox', () => {
     citationVersion = 0;
     citationSubscribers.clear();
     fetchWebPageShouldFail = false;
+    webFetchEnabledMock = true;
     focusEvents.length = 0;
     inputChangeHandlers.clear();
     clipboardReadTextMock = mock(async () => 'clipboard text');
@@ -563,6 +581,26 @@ describe('ContextToolbox', () => {
     });
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
+  });
+
+  it('disables Web Fetch in the Chat tools list when URL fetching is disabled globally', async () => {
+    webFetchEnabledMock = false;
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButtonByText(container!, 'Tools').click();
+      await Promise.resolve();
+    });
+
+    const webFetchRow = findCardForText(container!, 'Web Fetch');
+    expect(webFetchRow.textContent).toContain('Fetch a URL');
+    expect(webFetchRow.querySelector('[role="switch"]')?.hasAttribute('disabled')).toBe(true);
+    expect(toggleChatToolMock).not.toHaveBeenCalled();
   });
 
   it('keeps uploaded files visible when the toolbox creates the chat conversation', async () => {
