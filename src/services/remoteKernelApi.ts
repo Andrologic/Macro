@@ -1,4 +1,4 @@
-import type { AppMode } from '../types';
+import type { AppMode, ProjectMount } from '../types';
 import { isRemoteServiceRuntime } from './serviceRuntime';
 import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
 
@@ -47,6 +47,9 @@ export const executeRemoteWorkspaceTool = async (params: {
   args: Record<string, unknown>;
   workspacePath?: string | null;
   workspaceScope?: 'default' | 'metadata';
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
 }): Promise<string> => {
   const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
     method: 'POST',
@@ -56,6 +59,15 @@ export const executeRemoteWorkspaceTool = async (params: {
       args: params.args,
       workspace_path: params.workspacePath ?? null,
       workspace_scope: params.workspaceScope ?? null,
+      project_mounts: (params.projectMounts ?? []).map((mount) => ({
+        project_id: mount.projectId,
+        mount_name: mount.mountName,
+        workspace_path: mount.workspacePath ?? null,
+        display_name: mount.displayName,
+        is_read_only: Boolean(mount.isReadOnly),
+      })),
+      virtual_root_enabled: params.virtualRootEnabled ?? null,
+      focused_project_id: params.focusedProjectId ?? null,
     }),
   });
 

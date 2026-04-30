@@ -512,6 +512,8 @@ pub fn run() {
             commands::git::git_stash,
             commands::git::git_diff,
             commands::git::git_read_file_pair,
+            commands::git::git_review_snapshot,
+            commands::git::git_review_file,
             commands::git::git_read_conflict_file,
             commands::git::git_write_conflict_resolution,
             commands::git::git_accept_conflict_side,

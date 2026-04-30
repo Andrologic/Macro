@@ -7,7 +7,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use macro_lib::commands::{execute_workspace_tool, git};
+use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
 use macro_lib::core::error::BackendError;
 use macro_lib::core::load_config;
 use macro_lib::core::tool_policy::{
@@ -53,6 +53,12 @@ struct ToolExecuteRequest {
     workspace_path: Option<String>,
     #[serde(default)]
     workspace_scope: Option<String>,
+    #[serde(default)]
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    #[serde(default)]
+    virtual_root_enabled: Option<bool>,
+    #[serde(default)]
+    focused_project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +204,9 @@ async fn tool_execute(
         payload.args,
         payload.workspace_path,
         payload.workspace_scope,
+        payload.project_mounts,
+        payload.virtual_root_enabled,
+        payload.focused_project_id,
     )
     .await
     {

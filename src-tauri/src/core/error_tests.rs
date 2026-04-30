@@ -180,8 +180,14 @@ mod tests {
 
         for error in variants {
             let serialized = serde_json::to_value(error).expect("serialize backend error");
-            assert!(serialized.get("code").and_then(|value| value.as_str()).is_some());
-            assert!(serialized.get("message").and_then(|value| value.as_str()).is_some());
+            assert!(serialized
+                .get("code")
+                .and_then(|value| value.as_str())
+                .is_some());
+            assert!(serialized
+                .get("message")
+                .and_then(|value| value.as_str())
+                .is_some());
         }
     }
 }
