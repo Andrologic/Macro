@@ -1343,6 +1343,8 @@ const registerUseChatStoreMocks = async () => {
   mock.module('../services/webSearch', () => ({
     webSearch: webSearchMock,
     fetchWebPage: fetchWebPageMock,
+    extractDomain: (url: string) => new URL(url).hostname,
+    getFaviconUrl: (url: string) => `${url}/favicon.ico`,
     formatSearchResultsAsContext: (results: Array<{ url: string; title: string; snippet: string }>) =>
       results
         .map((result, index) => `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.snippet}`)

@@ -16,6 +16,7 @@ type MockCitation = {
   timestamp: string;
   url?: string;
   path?: string;
+  sizeBytes?: number;
   kind?: 'interesting' | 'used';
   reason?: string;
 };
@@ -63,7 +64,7 @@ const chatTools = [
   },
 ];
 
-const contextCitations: MockCitation[] = [
+const createInitialContextCitations = (): MockCitation[] => [
   {
     id: 'file-1',
     type: 'file',
@@ -73,13 +74,14 @@ const contextCitations: MockCitation[] = [
     snippet: 'Attached notes',
     content: 'Attached notes with full body',
     path: 'notes.md',
+    sizeBytes: 24,
     messageId: 'manual-file',
     conversationId: 'chat-conv',
     timestamp: '2026-03-19T00:00:00.000Z',
   },
 ];
 
-const sourceCitations: MockCitation[] = [
+const createInitialSourceCitations = (): MockCitation[] => [
   {
     id: 'source-interesting',
     type: 'source_passage',
@@ -111,11 +113,96 @@ const sourceCitations: MockCitation[] = [
 ];
 
 const enabledToolIds = new Set(chatTools.map((tool) => tool.id));
-const addCitationMock = mock(() => 'citation-new');
-const removeCitationMock = mock((_id: string) => undefined);
+let contextCitations: MockCitation[] = createInitialContextCitations();
+let sourceCitations: MockCitation[] = createInitialSourceCitations();
+let selectedConversationIdMock: string | null = 'chat-conv';
+let citationCounter = 0;
+let citationVersion = 0;
+const citationSubscribers = new Set<() => void>();
+
+const emitCitationChange = () => {
+  citationVersion += 1;
+  citationSubscribers.forEach((listener) => listener());
+};
+
+const addCitationMock = mock((citation: Omit<MockCitation, 'id' | 'timestamp'>) => {
+  const existing = contextCitations.find((candidate) => {
+    if (candidate.conversationId !== citation.conversationId) return false;
+    if (candidate.scope !== citation.scope || candidate.type !== citation.type) return false;
+    if (citation.type === 'web') return (candidate.url || candidate.source) === (citation.url || citation.source);
+    if (citation.type === 'file') return (candidate.path || candidate.source) === (citation.path || citation.source);
+    return false;
+  });
+  if (existing) {
+    contextCitations = contextCitations.map((candidate) =>
+      candidate.id === existing.id
+        ? {
+            ...candidate,
+            ...citation,
+            id: candidate.id,
+            timestamp: new Date().toISOString(),
+          }
+        : candidate,
+    );
+    emitCitationChange();
+    return existing.id;
+  }
+  const id = `citation-new-${++citationCounter}`;
+  contextCitations = [
+    ...contextCitations,
+    {
+      ...citation,
+      id,
+      timestamp: new Date().toISOString(),
+    },
+  ];
+  emitCitationChange();
+  return id;
+});
+const removeCitationMock = mock((id: string) => {
+  contextCitations = contextCitations.filter((citation) => citation.id !== id);
+  sourceCitations = sourceCitations.filter((citation) => citation.id !== id);
+  emitCitationChange();
+});
+const getConversationContextCitationsMock = (conversationId: string) =>
+  contextCitations.filter((citation) => citation.conversationId === conversationId);
+const getConversationInterestingSourceCitationsMock = (conversationId: string) =>
+  sourceCitations.filter(
+    (citation) =>
+      citation.conversationId === conversationId &&
+      citation.kind === 'interesting',
+  );
+const getConversationUsedSourceCitationsMock = (conversationId: string) =>
+  sourceCitations.filter(
+    (citation) =>
+      citation.conversationId === conversationId &&
+      citation.kind !== 'interesting',
+  );
+const getMockCitationState = () => ({
+  citations: [...contextCitations, ...sourceCitations],
+  getConversationContextCitations: getConversationContextCitationsMock,
+  getConversationInterestingSourceCitations: getConversationInterestingSourceCitationsMock,
+  getConversationUsedSourceCitations: getConversationUsedSourceCitationsMock,
+  addCitation: addCitationMock,
+  removeCitation: removeCitationMock,
+});
 const toggleChatToolMock = mock((_toolId: string) => undefined);
 const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
 const clipboardWriteTextMock = mock(async (_text: string) => undefined);
+let clipboardReadTextMock = mock(async () => 'clipboard text');
+let fetchWebPageShouldFail = false;
+const fetchWebPageMock = mock(async (url: string) => {
+  if (fetchWebPageShouldFail) {
+    throw new Error('preview failed');
+  }
+  const isSecond = url.includes('second');
+  return {
+    url,
+    title: isSecond ? 'Second fetched page' : 'Fetched page',
+    snippet: isSecond ? 'Second fetched snippet' : 'Fetched snippet',
+    content: isSecond ? 'Second fetched full content' : 'Fetched full content',
+  };
+});
 const focusEvents: unknown[] = [];
 const inputChangeHandlers = new Map<string, (event: React.ChangeEvent<HTMLInputElement>) => void>();
 
@@ -142,6 +229,71 @@ const clickIconButton = async (container: HTMLElement, iconName: string) => {
   });
 };
 
+const findButtonByExactText = (container: HTMLElement, text: string): HTMLButtonElement => {
+  const button = Array.from(container.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === text,
+  );
+  expect(button).toBeTruthy();
+  return button as HTMLButtonElement;
+};
+
+const changeInputByPlaceholder = async (placeholder: string, value: string) => {
+  const handler = inputChangeHandlers.get(placeholder);
+  expect(handler).toBeTruthy();
+  await act(async () => {
+    handler?.({
+      target: { value },
+    } as React.ChangeEvent<HTMLInputElement>);
+    await Promise.resolve();
+  });
+};
+
+const uploadFile = async (container: HTMLElement, fileOrFiles: File | File[]) => {
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+  expect(input).toBeTruthy();
+  const reactPropsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+  expect(reactPropsKey).toBeTruthy();
+  const onChange = (input as unknown as Record<string, { onChange?: (event: unknown) => void }>)[
+    reactPropsKey!
+  ]?.onChange;
+  expect(onChange).toBeTruthy();
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  await act(async () => {
+    onChange?.({ target: { files } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+};
+
+const clickActionForText = async (
+  container: HTMLElement,
+  text: string,
+  iconName: string,
+) => {
+  const button = Array.from(container.querySelectorAll(`[data-icon="${iconName}"]`))
+    .map((icon) => icon.closest('button'))
+    .find((candidate) => {
+      let node: Element | null | undefined = candidate?.parentElement;
+      while (node && node !== container) {
+        const className = typeof node.className === 'string' ? node.className : '';
+        if (
+          className.includes('rounded') &&
+          className.includes('border') &&
+          node.textContent?.includes(text)
+        ) return true;
+        node = node?.parentElement;
+      }
+      return false;
+    });
+  expect(button).toBeTruthy();
+  await act(async () => {
+    (button as HTMLButtonElement | null)?.click();
+    await Promise.resolve();
+  });
+};
+
 const loadContextToolbox = async () => {
   mock.restore();
 
@@ -161,21 +313,26 @@ const loadContextToolbox = async () => {
 
   mock.module('../../stores/useChatStore', () => ({
     useChatStore: () => ({
-      selectedConversationId: 'chat-conv',
+      selectedConversationId: selectedConversationIdMock,
       createConversation: createConversationMock,
     }),
   }));
 
   mock.module('../../stores/useCitationsStore', () => ({
-    useCitationsStore: () => ({
-      getConversationContextCitations: () => contextCitations,
-      getConversationInterestingSourceCitations: () =>
-        sourceCitations.filter((citation) => citation.kind === 'interesting'),
-      getConversationUsedSourceCitations: () =>
-        sourceCitations.filter((citation) => citation.kind !== 'interesting'),
-      addCitation: addCitationMock,
-      removeCitation: removeCitationMock,
-    }),
+    useCitationsStore: (selector?: (state: ReturnType<typeof getMockCitationState>) => unknown) => {
+      React.useSyncExternalStore(
+        (listener) => {
+          citationSubscribers.add(listener);
+          return () => {
+            citationSubscribers.delete(listener);
+          };
+        },
+        () => citationVersion,
+        () => citationVersion,
+      );
+      const state = getMockCitationState();
+      return selector ? selector(state) : state;
+    },
   }));
 
   mock.module('../../stores/useProviderStore', () => ({
@@ -195,12 +352,7 @@ const loadContextToolbox = async () => {
 
   mock.module('../../services/webSearch', () => ({
     extractDomain: (url: string) => new URL(url).hostname,
-    fetchWebPage: mock(async (url: string) => ({
-      url,
-      title: 'Fetched page',
-      snippet: 'Fetched snippet',
-      content: 'Fetched full content',
-    })),
+    fetchWebPage: fetchWebPageMock,
     getFaviconUrl: (url: string) => `${url}/favicon.ico`,
   }));
 
@@ -280,14 +432,44 @@ describe('ContextToolbox', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    contextCitations = createInitialContextCitations();
+    sourceCitations = createInitialSourceCitations();
+    selectedConversationIdMock = 'chat-conv';
+    citationCounter = 0;
+    citationVersion = 0;
+    citationSubscribers.clear();
+    fetchWebPageShouldFail = false;
     focusEvents.length = 0;
     inputChangeHandlers.clear();
+    clipboardReadTextMock = mock(async () => 'clipboard text');
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
-        readText: mock(async () => 'clipboard text'),
+        readText: clipboardReadTextMock,
         writeText: clipboardWriteTextMock,
       },
+    });
+    class TestFileReader {
+      result: string | null = null;
+      error: Error | null = null;
+      onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
+
+      readAsText(file: File) {
+        file.text()
+          .then((text) => {
+            this.result = text;
+            this.onload?.({ target: this } as unknown as ProgressEvent<FileReader>);
+          })
+          .catch((error: Error) => {
+            this.error = error;
+            this.onerror?.({ target: this } as unknown as ProgressEvent<FileReader>);
+          });
+      }
+    }
+    Object.defineProperty(globalThis, 'FileReader', {
+      configurable: true,
+      value: TestFileReader,
     });
     window.addEventListener('macro:focus-message', (event) => {
       focusEvents.push((event as CustomEvent).detail);
@@ -303,6 +485,8 @@ describe('ContextToolbox', () => {
     container = null;
     root = null;
     clipboardWriteTextMock.mockClear();
+    clipboardReadTextMock.mockClear();
+    fetchWebPageMock.mockClear();
     addCitationMock.mockClear();
     removeCitationMock.mockClear();
     toggleChatToolMock.mockClear();
@@ -321,8 +505,10 @@ describe('ContextToolbox', () => {
     expect(container?.textContent).toContain('Tools');
     expect(container?.textContent).toContain('Sources');
     expect(container?.textContent).toContain('Upload');
-    expect(container?.textContent).toContain('Add URL');
     expect(container?.textContent).toContain('Paste');
+    expect(container?.textContent).toContain('Added links');
+    expect(container?.textContent).not.toContain('Add URL');
+    expect(container?.querySelector('input[placeholder="https://example.com/article"]')).toBeTruthy();
     expect(container?.textContent).not.toContain('Screenshot');
     expect(container?.textContent).not.toContain('MCP Servers');
     expect(container?.textContent).not.toContain('No MCP servers connected');
@@ -377,5 +563,162 @@ describe('ContextToolbox', () => {
     });
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
+  });
+
+  it('keeps uploaded files visible when the toolbox creates the chat conversation', async () => {
+    selectedConversationIdMock = null;
+    contextCitations = [];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).toContain('Attached files');
+    expect(container?.textContent).not.toContain('upload-from-empty.md');
+
+    await uploadFile(
+      container!,
+      new File(['Visible after conversation creation.'], 'upload-from-empty.md', {
+        type: 'text/markdown',
+      }),
+    );
+
+    expect(createConversationMock).toHaveBeenCalled();
+    expect(container?.textContent).toContain('upload-from-empty.md');
+    expect(container?.textContent).not.toContain('Visible after conversation creation.');
+    expect(container?.textContent).not.toContain('Delete');
+  });
+
+  it('shows multiple uploaded files as separate attached-file rows and removes only the selected one', async () => {
+    contextCitations = [];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await uploadFile(container!, [
+      new File(['First body'], 'first.md', { type: 'text/markdown' }),
+      new File(['Second body'], 'second.md', { type: 'text/markdown' }),
+    ]);
+
+    expect(container?.textContent).toContain('first.md');
+    expect(container?.textContent).not.toContain('First body');
+    expect(container?.textContent).toContain('second.md');
+    expect(container?.textContent).not.toContain('Second body');
+
+    await clickActionForText(container!, 'first.md', 'x');
+
+    expect(removeCitationMock).toHaveBeenCalledWith('citation-new-1');
+    expect(container?.textContent).not.toContain('first.md');
+    expect(container?.textContent).toContain('second.md');
+  });
+
+  it('shows uploaded files, URL additions, paste content, and delete actions immediately', async () => {
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await uploadFile(
+      container!,
+      new File(['Uploaded file full body for context visibility.'], 'upload.md', {
+        type: 'text/markdown',
+      }),
+    );
+    expect(addCitationMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'file',
+        title: 'upload.md',
+        content: 'Uploaded file full body for context visibility.',
+        sizeBytes: 47,
+      }),
+    );
+    expect(container?.textContent).not.toContain('File added to context.');
+    expect(container?.textContent).toContain('upload.md');
+    expect(container?.textContent).toContain('47 B');
+    expect(container?.textContent).not.toContain('Uploaded file full body');
+
+    await changeInputByPlaceholder('https://example.com/article', 'example.com/article');
+    await act(async () => {
+      findButtonByExactText(container!, 'Add').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/article');
+    expect(container?.textContent).not.toContain('URL added to context.');
+    expect(container?.textContent).toContain('Fetched page');
+    expect(container?.textContent).toContain('example.com');
+    expect(container?.textContent).not.toContain('Fetched snippet');
+
+    await changeInputByPlaceholder('https://example.com/article', 'example.com/second');
+    await act(async () => {
+      findButtonByExactText(container!, 'Add').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/second');
+    expect(container?.textContent).toContain('Fetched page');
+    expect(container?.textContent).toContain('Second fetched page');
+
+    await act(async () => {
+      findButtonByText(container!, 'Paste').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(clipboardReadTextMock).toHaveBeenCalled();
+    expect(container?.textContent).not.toContain('Clipboard text added to context.');
+    expect(container?.textContent).toContain('Clipboard text');
+    expect(container?.textContent).not.toContain('clipboard text');
+
+    await clickActionForText(container!, 'upload.md', 'x');
+    expect(removeCitationMock).toHaveBeenCalledWith('citation-new-1');
+    expect(container?.textContent).not.toContain('upload.md');
+
+    await clickActionForText(container!, 'Fetched page', 'x');
+    expect(removeCitationMock).toHaveBeenCalledWith('citation-new-2');
+    expect(container?.textContent).not.toContain('Fetched page');
+    expect(container?.textContent).toContain('Second fetched page');
+
+    await clickActionForText(container!, 'Second fetched page', 'x');
+    expect(removeCitationMock).toHaveBeenCalledWith('citation-new-3');
+    expect(container?.textContent).not.toContain('Second fetched page');
+
+    await clickActionForText(container!, 'Clipboard text', 'x');
+    expect(removeCitationMock).toHaveBeenCalledWith('citation-new-4');
+    expect(container?.textContent).toContain('No pasted text added');
+  });
+
+  it('shows a visible URL fallback when preview fetching fails', async () => {
+    fetchWebPageShouldFail = true;
+    const originalConsoleError = console.error;
+    console.error = mock(() => undefined) as never;
+    const { ContextToolbox } = await loadContextToolbox();
+
+    try {
+      await act(async () => {
+        root?.render(<ContextToolbox />);
+        await Promise.resolve();
+      });
+
+      await changeInputByPlaceholder('https://example.com/article', 'example.net/story');
+      await act(async () => {
+        findButtonByExactText(container!, 'Add').click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.net/story');
+      expect(container?.textContent).not.toContain('URL added without preview.');
+      expect(container?.textContent).toContain('example.net');
+      expect(container?.textContent).not.toContain('Preview unavailable');
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 });
