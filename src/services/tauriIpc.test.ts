@@ -86,13 +86,67 @@ describe("tauriIpc executeWorkspaceTool", () => {
       {
         command: "db_update_provider_config",
         payload: {
-          id: "provider-1",
-          name: "MiniMax",
-          providerType: "openai",
-          baseUrl: "https://api.minimax.io/v1",
-          apiKey: "test-api-key",
-          isLocal: false,
-          isEnabled: true,
+          params: {
+            id: "provider-1",
+            name: "MiniMax",
+            providerType: "openai",
+            baseUrl: "https://api.minimax.io/v1",
+            apiKey: "test-api-key",
+            isLocal: false,
+            isEnabled: true,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("wraps message creation in params for db_create_message", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.createMessage("conv-1", "user", "hello", {
+      tokenCount: 3,
+      hiddenContext: "hidden",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_create_message",
+        payload: {
+          params: {
+            conversationId: "conv-1",
+            role: "user",
+            content: "hello",
+            tokenCount: 3,
+            toolTracesJson: null,
+            hiddenContext: "hidden",
+            providerInputItemsJson: null,
+            providerTurnStateJson: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("wraps message updates in params for db_update_message", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.updateMessage("msg-1", "updated", {
+      providerInputItems: [{ type: "message" }],
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_update_message",
+        payload: {
+          params: {
+            id: "msg-1",
+            content: "updated",
+            tokenCount: null,
+            toolTracesJson: null,
+            hiddenContext: null,
+            providerInputItemsJson: JSON.stringify([{ type: "message" }]),
+            providerTurnStateJson: null,
+          },
         },
       },
     ]);
@@ -425,21 +479,23 @@ describe("tauriIpc executeWorkspaceTool", () => {
       {
         command: "workspace_update_project_git_flow_with_setup",
         payload: {
-          projectId: "project-1",
-          gitFlowSettings: {
-            mainBranch: "main",
-            baseBranch: "develop",
-            planBranchTemplate: "plan/{planSlug}",
-            featureBranchTemplate: "feature/{planSlug}/{featureSlug}",
-            standaloneFeatureBranchTemplate: "feature/{featureSlug}",
-            releaseBranchTemplate: "release/{releaseSlug}",
-            hotfixBranchTemplate: "hotfix/{hotfixSlug}",
-            bugfixBranchTemplate: "bugfix/{bugfixSlug}",
+          params: {
+            projectId: "project-1",
+            gitFlowSettings: {
+              mainBranch: "main",
+              baseBranch: "develop",
+              planBranchTemplate: "plan/{planSlug}",
+              featureBranchTemplate: "feature/{planSlug}/{featureSlug}",
+              standaloneFeatureBranchTemplate: "feature/{featureSlug}",
+              releaseBranchTemplate: "release/{releaseSlug}",
+              hotfixBranchTemplate: "hotfix/{hotfixSlug}",
+              bugfixBranchTemplate: "bugfix/{bugfixSlug}",
+            },
+            gitSetupActions: ["create_develop"],
+            expectedRepoRootPath: "C:/dev/web",
+            expectedSetupState: "single_main_only",
+            expectedRecommendedActionSequence: ["create_develop"],
           },
-          gitSetupActions: ["create_develop"],
-          expectedRepoRootPath: "C:/dev/web",
-          expectedSetupState: "single_main_only",
-          expectedRecommendedActionSequence: ["create_develop"],
         },
       },
       {

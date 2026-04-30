@@ -7,9 +7,7 @@ use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 
 fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
-    let Some(raw) = raw else {
-        return None;
-    };
+    let raw = raw?;
 
     serde_json::from_str::<Vec<Value>>(&raw)
         .ok()
@@ -28,9 +26,7 @@ fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
 }
 
 fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> {
-    let Some(efforts) = efforts.filter(|items| !items.is_empty()) else {
-        return None;
-    };
+    let efforts = efforts.filter(|items| !items.is_empty())?;
 
     serde_json::to_string(efforts).ok()
 }
@@ -813,16 +809,30 @@ pub async fn import_messages(
     Ok(inserted)
 }
 
+pub struct UpdateMessageContentInput<'a> {
+    pub id: &'a str,
+    pub content: &'a str,
+    pub token_count: Option<i32>,
+    pub tool_traces_json: Option<String>,
+    pub hidden_context: Option<String>,
+    pub provider_input_items_json: Option<String>,
+    pub provider_turn_state_json: Option<String>,
+}
+
 pub async fn update_message_content(
     pool: &SqlitePool,
-    id: &str,
-    content: &str,
-    token_count: Option<i32>,
-    tool_traces_json: Option<String>,
-    hidden_context: Option<String>,
-    provider_input_items_json: Option<String>,
-    provider_turn_state_json: Option<String>,
+    input: UpdateMessageContentInput<'_>,
 ) -> DbResult<()> {
+    let UpdateMessageContentInput {
+        id,
+        content,
+        token_count,
+        tool_traces_json,
+        hidden_context,
+        provider_input_items_json,
+        provider_turn_state_json,
+    } = input;
+
     sqlx::query(
         r#"
         UPDATE messages
@@ -2389,7 +2399,7 @@ mod tests {
         .await
         .expect("import second messages");
 
-        let snapshot = get_chat_bootstrap_snapshot(&pool, &[first.id.clone()])
+        let snapshot = get_chat_bootstrap_snapshot(&pool, std::slice::from_ref(&first.id))
             .await
             .expect("bootstrap snapshot");
 
