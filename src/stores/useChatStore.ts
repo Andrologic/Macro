@@ -19,7 +19,7 @@ import {
 import { toServiceError } from "../services/contracts/errors";
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
 import { useCitationsStore } from "./useCitationsStore";
-import type { Citation } from "./useCitationsStore";
+import type { Citation, SourcePassageKind } from "./useCitationsStore";
 import {
   streamChat,
   cancelStream,
@@ -29,6 +29,11 @@ import {
   type ToolCallResolution,
 } from "../services/streamingChat";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
+import {
+  fetchWebPage,
+  formatSearchResultsAsContext,
+  webSearch,
+} from "../services/webSearch";
 import { useToolsStore } from "./useToolsStore";
 import { useAppStore } from "./useAppStore";
 import { useTaskStore, type ImplementTask } from "./useTaskStore";
@@ -3241,6 +3246,175 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return toolsState.isToolEnabled(toolId);
   };
 
+  const normalizeContextLookup = (value?: string): string =>
+    (value || "")
+      .trim()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+  const getCitationBody = (citation: Citation): string =>
+    (citation.content || citation.snippet || "").trim();
+
+  const readConversationFileContext = (
+    conversationId: string,
+    args: Record<string, unknown>,
+  ): string => {
+    const requestedRaw = typeof args.file === "string" ? args.file.trim() : "";
+    const requested = normalizeContextLookup(requestedRaw);
+    const extractText = args.extract_text === true;
+    const fileCitations = useCitationsStore
+      .getState()
+      .getConversationContextCitations(conversationId)
+      .filter((citation) => citation.type === "file" || citation.type === "document");
+    const available = fileCitations
+      .map((citation) => citation.path || citation.title || citation.source)
+      .filter(Boolean);
+
+    if (!requested) {
+      return `No file provided. Available files: ${available.join(", ") || "none"}`;
+    }
+
+    const match = fileCitations.find((citation) => {
+      const title = normalizeContextLookup(citation.title);
+      const source = normalizeContextLookup(citation.source);
+      const path = normalizeContextLookup(citation.path);
+      return (
+        requested === title ||
+        requested === source ||
+        requested === path ||
+        title.includes(requested) ||
+        source.includes(requested) ||
+        path.includes(requested)
+      );
+    });
+
+    if (!match) {
+      return `File not found in context: "${requestedRaw}". Available files: ${
+        available.join(", ") || "none"
+      }`;
+    }
+
+    const label = match.path || match.title || match.source;
+    const content = getCitationBody(match);
+    const base = content
+      ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
+      : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
+    const extractNotice =
+      extractText && /\.docx$/i.test(label || "")
+        ? "\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text."
+        : "";
+
+    return `${base}${extractNotice}`;
+  };
+
+  const normalizeSourcePassageKind = (value: unknown): SourcePassageKind | undefined =>
+    value === "interesting" || value === "used" ? value : undefined;
+
+  const readConversationSources = (
+    conversationId: string,
+    args: Record<string, unknown>,
+  ): string => {
+    const rawKind = typeof args.kind === "string" ? args.kind : "all";
+    const kind = rawKind === "interesting" || rawKind === "used" ? rawKind : "all";
+    const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
+    const limit =
+      typeof args.limit === "number" && Number.isFinite(args.limit)
+        ? Math.min(50, Math.max(1, Math.floor(args.limit)))
+        : 50;
+    const includeSnippet = args.include_snippet !== false;
+    const citations = useCitationsStore
+      .getState()
+      .getConversationSourceCitations(conversationId)
+      .filter((citation) => {
+        const citationKind = citation.kind || "used";
+        if (kind !== "all" && citationKind !== kind) return false;
+        if (!query) return true;
+        return [
+          citation.id,
+          citation.title,
+          citation.source,
+          citation.url,
+          citation.reason,
+          citation.snippet,
+          citation.content,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(query));
+      })
+      .slice(0, limit);
+
+    if (citations.length === 0) {
+      return "No source passages available.";
+    }
+
+    return [
+      "Saved source passages:",
+      ...citations.map((citation, index) => {
+        const lines = [
+          `[${index + 1}] citation_id=${citation.id}`,
+          `Title: ${citation.title}`,
+          `Kind: ${citation.kind || "used"}`,
+          `Source: ${citation.source}`,
+        ];
+        if (citation.url) lines.push(`URL: ${citation.url}`);
+        if (citation.reason) lines.push(`Reason: ${citation.reason}`);
+        if (includeSnippet) lines.push(`Passage: ${getCitationBody(citation)}`);
+        return lines.join("\n");
+      }),
+    ].join("\n\n");
+  };
+
+  const editConversationSource = (
+    conversationId: string,
+    args: Record<string, unknown>,
+  ): string => {
+    const citationId = typeof args.citation_id === "string" ? args.citation_id.trim() : "";
+    const action = typeof args.action === "string" ? args.action.trim() : "";
+    if (!citationId) return "Missing citation_id for edit_source_passage.";
+    if (!["update", "reclassify", "delete"].includes(action)) {
+      return 'Missing or invalid action for edit_source_passage. Use "update", "reclassify", or "delete".';
+    }
+
+    const citationsState = useCitationsStore.getState();
+    const existing = citationsState
+      .getConversationSourceCitations(conversationId)
+      .find((citation) => citation.id === citationId);
+    if (!existing) {
+      return `Source passage not found: ${citationId}`;
+    }
+
+    if (action === "delete") {
+      citationsState.removeCitation(citationId);
+      return `Source passage deleted (citation_id=${citationId}).`;
+    }
+
+    const kind = normalizeSourcePassageKind(args.kind);
+    if (action === "reclassify" && !kind) {
+      return 'Missing kind for action="reclassify". Use "interesting" or "used".';
+    }
+
+    const updated = citationsState.updateSourcePassage({
+      conversationId,
+      citationId,
+      title: typeof args.title === "string" ? args.title : undefined,
+      passage: typeof args.passage === "string" ? args.passage : undefined,
+      source: typeof args.source === "string" ? args.source : undefined,
+      url: typeof args.url === "string" ? args.url : undefined,
+      kind,
+      reason:
+        "reason" in args
+          ? typeof args.reason === "string"
+            ? args.reason
+            : null
+          : undefined,
+    });
+
+    return updated
+      ? `Source passage updated (citation_id=${citationId}).`
+      : `Source passage update failed (citation_id=${citationId}).`;
+  };
+
   const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
@@ -3393,6 +3567,79 @@ export const useChatStore = create<ChatStore>((set, get) => {
         visibleContent: questionnaire.intro || DEFAULT_QUESTIONNAIRE_INTRO,
         hiddenContext: buildQuestionnaireHiddenContextBlock(questionnaire),
       };
+    }
+
+    if (normalizedToolName === "web_search") {
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      if (!query) return "Missing query for web_search.";
+      const { enableWebSearch, webSearchOptions } = getStreamingWebSearchConfig();
+      if (
+        !enableWebSearch ||
+        (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)
+      ) {
+        return "Web search is not configured for this provider.";
+      }
+      const results = await webSearch(query, webSearchOptions);
+      if (results.length > 0) {
+        useCitationsStore
+          .getState()
+          .addWebCitations(results, assistantMessageId, conversationId);
+      }
+      return formatSearchResultsAsContext(results);
+    }
+
+    if (normalizedToolName === "web_fetch") {
+      const url = typeof args.url === "string" ? args.url.trim() : "";
+      if (!url) return "Missing URL for web_fetch.";
+      const { enableWebFetch } = getStreamingWebSearchConfig();
+      if (!enableWebFetch) {
+        return "Web fetch is disabled for this provider.";
+      }
+      const fetched = await fetchWebPage(url);
+      useCitationsStore.getState().addCitation({
+        type: "web",
+        scope: "context",
+        source: fetched.url,
+        title: fetched.title,
+        snippet: fetched.snippet,
+        content: fetched.content,
+        url: fetched.url,
+        messageId: assistantMessageId,
+        conversationId,
+      });
+      return `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
+    }
+
+    if (normalizedToolName === "read_file") {
+      return readConversationFileContext(conversationId, args);
+    }
+
+    if (normalizedToolName === "mark_source_passage") {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const passage = typeof args.passage === "string" ? args.passage.trim() : "";
+      if (!title || !passage) {
+        return "Missing title or passage for mark_source_passage.";
+      }
+      const kind = normalizeSourcePassageKind(args.kind) || "used";
+      const citationId = useCitationsStore.getState().addSourcePassage({
+        conversationId,
+        messageId: assistantMessageId,
+        title,
+        passage,
+        source: typeof args.source === "string" ? args.source : undefined,
+        url: typeof args.url === "string" ? args.url : undefined,
+        kind,
+        reason: typeof args.reason === "string" ? args.reason : undefined,
+      });
+      return `Source passage marked successfully (citation_id=${citationId}, kind=${kind}).`;
+    }
+
+    if (normalizedToolName === "read_sources") {
+      return readConversationSources(conversationId, args);
+    }
+
+    if (normalizedToolName === "edit_source_passage") {
+      return editConversationSource(conversationId, args);
     }
 
     const architectToolResult = await handleArchitectToolCall({
@@ -4326,6 +4573,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       source: string;
       path?: string;
       snippet?: string;
+      content?: string;
     }>;
   }) => {
     if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
@@ -5256,6 +5504,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         source: c.source,
         path: c.path,
         snippet: c.snippet,
+        content: c.content,
       }));
     const { enableWebSearch, enableWebFetch, webSearchOptions } =
       getStreamingWebSearchConfig();
@@ -5727,6 +5976,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       source: string;
       path?: string;
       snippet?: string;
+      content?: string;
     }>;
     allowedToolIds: string[];
     guidedToolRetry?: {
