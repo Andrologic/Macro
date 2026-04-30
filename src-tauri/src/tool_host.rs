@@ -2,7 +2,7 @@ use crate::commands::terminal::{
     create_legacy_session_internal, kill_legacy_session_internal, read_legacy_session_internal,
     run_legacy_session_internal, TerminalSessionStore,
 };
-use crate::commands::{execute_workspace_tool, CommandError};
+use crate::commands::{execute_workspace_tool, CommandError, WorkspaceProjectMount};
 use crate::core::tool_policy::{get_mode_policy, validate_tool_execution};
 use crate::git::GitState;
 use crate::WorkspaceMetadataRoot;
@@ -63,6 +63,12 @@ struct ToolExecuteRequest {
     workspace_path: Option<String>,
     #[serde(default)]
     workspace_scope: Option<String>,
+    #[serde(default)]
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    #[serde(default)]
+    virtual_root_enabled: Option<bool>,
+    #[serde(default)]
+    focused_project_id: Option<String>,
 }
 
 fn authorized(headers: &HeaderMap, state: &ToolHostState) -> bool {
@@ -277,6 +283,9 @@ async fn tool_execute(
                 payload.args,
                 payload.workspace_path,
                 payload.workspace_scope,
+                payload.project_mounts,
+                payload.virtual_root_enabled,
+                payload.focused_project_id,
             )
             .await
         }

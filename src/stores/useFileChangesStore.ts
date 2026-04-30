@@ -67,6 +67,9 @@ export interface FileChangeEntry {
   hasValidatedStage: boolean;
   validatedRemovedLineNumbers: number[];
   validatedAddedLineNumbers: number[];
+  isBinary?: boolean;
+  tooLarge?: boolean;
+  requiresHydration?: boolean;
 }
 
 export interface ReviewRepositoryStats {
@@ -189,6 +192,8 @@ type FileChangesTauriDeps = Pick<
   | 'gitRestorePaths'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
+  gitReviewSnapshot?: typeof tauriIpc.gitReviewSnapshot;
+  gitReviewFile?: typeof tauriIpc.gitReviewFile;
 };
 
 interface FileChangesAppState {
@@ -364,6 +369,38 @@ export const resolveChangeFilePath = (repoPath: string, relativePath: string): s
 
 const tChanges = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const isUnsupportedGitReviewCommandError = (error: unknown): boolean => {
+  const message = toServiceError(error).message.toLowerCase();
+  if (!message) return false;
+  const mentionsReviewCommand =
+    message.includes('git_review_snapshot') ||
+    message.includes('git_review_file') ||
+    message.includes('gitreviewsnapshot') ||
+    message.includes('gitreviewfile');
+  const isUnsupported =
+    message.includes('unknown command') ||
+    message.includes('command not found') ||
+    message.includes('unsupported') ||
+    message.includes('not implemented');
+  return mentionsReviewCommand && isUnsupported;
+};
+
+const mergeFileChangesTauriDeps = (
+  defaults: FileChangesTauriDeps,
+  overrides?: Partial<FileChangesTauriDeps>
+): FileChangesTauriDeps => {
+  if (!overrides) {
+    return defaults;
+  }
+
+  return {
+    ...defaults,
+    ...overrides,
+    ...(!('gitReviewSnapshot' in overrides) ? { gitReviewSnapshot: undefined } : {}),
+    ...(!('gitReviewFile' in overrides) ? { gitReviewFile: undefined } : {}),
+  };
+};
 
 const normalizeBranchName = (value?: string | null): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -560,6 +597,59 @@ const buildValidatedStageDecorations = (params: {
     validatedAddedLineNumbers,
   };
 };
+
+const mapReviewChangeToEntry = (
+  repositoryId: string,
+  change: tauriIpc.GitReviewChangeDto,
+  previousChange?: FileChangeEntry
+): FileChangeEntry => ({
+  id: `${repositoryId}::${change.path}`,
+  path: change.path,
+  status: normalizeStatus(change.status),
+  additions: change.additions,
+  deletions: change.deletions,
+  originalContent: change.originalContent,
+  indexContent: change.indexContent,
+  modifiedContent: change.modifiedContent,
+  language: change.language || deriveLanguage(change.path),
+  hunks: change.hunks,
+  contextMode: previousChange?.contextMode ?? 'focused',
+  canEdit: normalizeStatus(change.status) !== 'deleted' && !change.isBinary && !change.tooLarge,
+  hasPendingVisibleChange: change.hasPendingVisibleChange,
+  hasValidatedStage: change.hasValidatedStage,
+  validatedRemovedLineNumbers: change.validatedRemovedLineNumbers,
+  validatedAddedLineNumbers: change.validatedAddedLineNumbers,
+  isBinary: change.isBinary,
+  tooLarge: change.tooLarge,
+  requiresHydration: change.requiresHydration,
+});
+
+const mapReviewFileToEntry = (
+  repositoryId: string,
+  file: tauriIpc.GitReviewFileDto,
+  hasPendingVisibleChange: boolean,
+  previousChange?: FileChangeEntry
+): FileChangeEntry => ({
+  id: `${repositoryId}::${file.path}`,
+  path: file.path,
+  status: normalizeStatus(file.status),
+  additions: file.pendingDiff.additions,
+  deletions: file.pendingDiff.deletions,
+  originalContent: file.fullDiff.originalContent,
+  indexContent: file.indexContent,
+  modifiedContent: file.fullDiff.modifiedContent,
+  language: file.language || deriveLanguage(file.path),
+  hunks: file.fullDiff.hunks,
+  contextMode: previousChange?.contextMode ?? 'focused',
+  canEdit: normalizeStatus(file.status) !== 'deleted' && !file.isBinary && !file.tooLarge,
+  hasPendingVisibleChange,
+  hasValidatedStage: file.hasValidatedStage,
+  validatedRemovedLineNumbers: file.validatedRemovedLineNumbers,
+  validatedAddedLineNumbers: file.validatedAddedLineNumbers,
+  isBinary: file.isBinary,
+  tooLarge: file.tooLarge,
+  requiresHydration: false,
+});
 
 const syncActiveReviewRepository = (
   deps: FileChangesStoreDependencies,
@@ -765,6 +855,9 @@ const loadFileChangeEntry = async (
     hasValidatedStage: validatedStageDecorations.hasValidatedStage,
     validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
     validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
+    isBinary: false,
+    tooLarge: false,
+    requiresHydration: false,
   };
 };
 
@@ -790,6 +883,79 @@ const loadRepositoryState = async (params: {
   }
 
   const repositoryId = buildFileChangesRepositoryId(target);
+  const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
+  if (deps.tauri.gitReviewSnapshot) {
+    try {
+      const snapshot = await deps.tauri.gitReviewSnapshot(worktreePath);
+      const changes = snapshot.changes.map((change) =>
+        mapReviewChangeToEntry(
+          repositoryId,
+          change,
+          previousById.get(`${repositoryId}::${change.path}`)
+        )
+      );
+      const stagedPaths = [...snapshot.stagedPaths].sort((left, right) => left.localeCompare(right));
+      const selectedChangeId = previousRepository?.selectedChangeId &&
+        changes.some((change) => change.id === previousRepository.selectedChangeId)
+        ? previousRepository.selectedChangeId
+        : changes[0]?.id ?? null;
+      const normalizedBranchName = normalizeBranchName(target.branchName);
+      const planBranchName =
+        target.planBranchName ||
+        resolveReviewRepositoryIntegrationBranch(deps, task, { target });
+      let hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
+      if (
+        !hasCommittedSnapshot &&
+        changes.length === 0 &&
+        stagedPaths.length === 0 &&
+        snapshot.isClean &&
+        planBranchName &&
+        normalizedBranchName &&
+        normalizedBranchName !== planBranchName
+      ) {
+        try {
+          const mergeCheck = await deps.tauri.gitMergeCheck({
+            repoPath: worktreePath,
+            branchName: normalizedBranchName,
+            intoBranch: planBranchName,
+          });
+          hasCommittedSnapshot =
+            typeof mergeCheck.ahead === 'number'
+              ? mergeCheck.ahead > 0
+              : mergeCheck.hasChanges;
+        } catch {
+          hasCommittedSnapshot = false;
+        }
+      }
+      const commitState: ReviewRepositoryCommitState = changes.length === 0 && stagedPaths.length === 0
+        ? (hasCommittedSnapshot ? 'committed' : 'no_changes')
+        : 'idle';
+      return {
+        id: repositoryId,
+        projectId: target.projectId,
+        repoPath,
+        worktreePath,
+        branchName: normalizeBranchName(target.branchName),
+        planBranchName,
+        changes,
+        stagedPaths,
+        selectedChangeId,
+        stats: computeStats(changes, stagedPaths.length),
+        commitMessageDraft: previousRepository?.commitMessageDraft || toDefaultCommitMessage(task.title),
+        commitState,
+        loadingChangeId: null,
+        savingChangeId: null,
+        lastError: previousRepository?.lastError ?? null,
+        lastCommitHash: previousRepository?.lastCommitHash ?? null,
+      };
+    } catch (error) {
+      if (!isUnsupportedGitReviewCommandError(error)) {
+        throw error;
+      }
+      // Fall back to the legacy per-file IPC path when running against an older backend.
+    }
+  }
+
   const status = await deps.tauri.gitStatus(worktreePath);
   const stagedFiles = status.staged_files
     .filter((file) => typeof file.path === 'string' && file.path.trim().length > 0)
@@ -815,7 +981,6 @@ const loadRepositoryState = async (params: {
   [...status.unstaged_files, ...status.untracked_files].forEach((file) => addVisibleFile(file, true));
   stagedFiles.forEach((file) => addVisibleFile(file, false));
 
-  const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
   const changes: FileChangeEntry[] = [];
   const visibleFiles = Array.from(visibleByPath.values()).sort((left, right) => left.path.localeCompare(right.path));
   for (const file of visibleFiles) {
@@ -1001,10 +1166,7 @@ export const createFileChangesStore = (
   const deps: FileChangesStoreDependencies = {
     ...defaultFileChangesStoreDependencies,
     ...overrides,
-    tauri: {
-      ...defaultFileChangesStoreDependencies.tauri,
-      ...(overrides.tauri || {}),
-    },
+    tauri: mergeFileChangesTauriDeps(defaultFileChangesStoreDependencies.tauri, overrides.tauri),
   };
 
   return create<FileChangesState>((set, get) => {
@@ -1034,18 +1196,59 @@ export const createFileChangesStore = (
       }));
 
       try {
-        const pair = await deps.tauri.gitReadFilePair({
-          repoPath: repository.worktreePath,
-          path: change.path,
-        });
-        const headContent = pair.headExists ? pair.headContent : '';
-        const indexContent = pair.indexExists ? pair.indexContent : '';
-        const worktreeContent = pair.worktreeExists ? pair.worktreeContent : '';
-        const validatedStageDecorations = buildValidatedStageDecorations({
-          headContent,
-          indexContent,
-          worktreeContent,
-        });
+        let hydratedChange: FileChangeEntry;
+        if (deps.tauri.gitReviewFile) {
+          try {
+            const reviewFile = await deps.tauri.gitReviewFile({
+              repoPath: repository.worktreePath,
+              path: change.path,
+            });
+            hydratedChange = mapReviewFileToEntry(
+              repositoryId,
+              reviewFile,
+              change.hasPendingVisibleChange,
+              change
+            );
+          } catch (error) {
+            if (!isUnsupportedGitReviewCommandError(error)) {
+              throw error;
+            }
+            hydratedChange = await loadFileChangeEntry(
+              deps,
+              repository.id,
+              repository.worktreePath,
+              {
+                path: change.path,
+                status: change.status,
+                hasPendingVisibleChange: change.hasPendingVisibleChange,
+              },
+              change
+            );
+          }
+        } else {
+          const pair = await deps.tauri.gitReadFilePair({
+            repoPath: repository.worktreePath,
+            path: change.path,
+          });
+          const headContent = pair.headExists ? pair.headContent : '';
+          const indexContent = pair.indexExists ? pair.indexContent : '';
+          const worktreeContent = pair.worktreeExists ? pair.worktreeContent : '';
+          const validatedStageDecorations = buildValidatedStageDecorations({
+            headContent,
+            indexContent,
+            worktreeContent,
+          });
+          hydratedChange = {
+            ...change,
+            originalContent: headContent,
+            indexContent,
+            modifiedContent: worktreeContent,
+            hasValidatedStage: validatedStageDecorations.hasValidatedStage,
+            validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
+            validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
+            requiresHydration: false,
+          };
+        }
 
         set((state) => {
           const isCurrentSession =
@@ -1056,26 +1259,18 @@ export const createFileChangesStore = (
           return {
             repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
               ...currentRepository,
-              changes: updateChangeEntry(currentRepository.changes, changeId, (entry) => ({
-                ...entry,
-                originalContent: headContent,
-                indexContent,
-                modifiedContent: worktreeContent,
-                hasValidatedStage: validatedStageDecorations.hasValidatedStage,
-                validatedRemovedLineNumbers: validatedStageDecorations.validatedRemovedLineNumbers,
-                validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
-              })),
+              changes: updateChangeEntry(currentRepository.changes, changeId, () => hydratedChange),
               loadingChangeId: null,
               lastError: null,
             })),
             diffModalSession: isCurrentSession && state.diffModalSession
               ? {
                 ...state.diffModalSession,
-                originalContent: headContent,
+                originalContent: hydratedChange.originalContent,
                 rightDraftContent: state.diffModalSession.isDirty
                   ? state.diffModalSession.rightDraftContent
-                  : worktreeContent,
-                lastLoadedModifiedContent: worktreeContent,
+                  : hydratedChange.modifiedContent,
+                lastLoadedModifiedContent: hydratedChange.modifiedContent,
                 isHydratingFullContext: false,
               }
               : state.diffModalSession,

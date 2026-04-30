@@ -112,9 +112,7 @@ impl BackendError {
             BackendError::GitMergeConflict { .. } => "GitMergeConflict",
             BackendError::GitInvalidCommit { .. } => "GitInvalidCommit",
             BackendError::Filesystem { .. } => "Filesystem",
-            BackendError::FilesystemPathOutsideWorkspace { .. } => {
-                "FilesystemPathOutsideWorkspace"
-            }
+            BackendError::FilesystemPathOutsideWorkspace { .. } => "FilesystemPathOutsideWorkspace",
             BackendError::FilesystemNotFound { .. } => "FilesystemNotFound",
             BackendError::FilesystemPermissionDenied { .. } => "FilesystemPermissionDenied",
             BackendError::FilesystemDirectoryNotFound { .. } => "FilesystemDirectoryNotFound",
