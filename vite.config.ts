@@ -231,6 +231,7 @@ export default defineConfig(({ command }) => {
         "react-dom",
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
+        "sonner",
         "zustand",
         "i18next",
         "react-i18next",
@@ -281,6 +282,7 @@ export default defineConfig(({ command }) => {
 
     // Resolve aliases for cleaner imports
     resolve: {
+      dedupe: ["react", "react-dom"],
       alias: {
         "@": "/src",
         "@components": "/src/components",
