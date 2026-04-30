@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  buildMergeWorkflowRuntimeFromPersistedSession,
   overlayPersistedMergeWorkflowSession,
   type PersistedMergeWorkflowSession,
 } from './mergeWorkflowPersistence';
@@ -102,5 +103,69 @@ describe('overlayPersistedMergeWorkflowSession', () => {
     expect(runtime.repositories[0]?.progressState).toBe('merged');
     expect(runtime.repositories[0]?.mergeAppliedAt).toBe('2026-04-27T00:01:00.000Z');
     expect(runtime.repositories[0]?.blockingReason).toBeNull();
+  });
+});
+
+describe('buildMergeWorkflowRuntimeFromPersistedSession', () => {
+  it('restores a resolved in-progress merge as ready to complete', () => {
+    const session = buildSession('blocked');
+    session.repositories[0] = {
+      ...session.repositories[0]!,
+      blockingKind: 'merge_in_progress',
+      blockingReason: 'Old unfinished merge',
+      conflictFiles: [],
+      mergeInProgress: true,
+      mergeStrategy: 'merge_ready_to_complete',
+      recommendedAction: 'complete_merge',
+      availableActions: ['complete_merge', 'abort_merge', 'retry_check'],
+    };
+
+    const runtime = buildMergeWorkflowRuntimeFromPersistedSession({
+      taskId: 'task-1',
+      session,
+    });
+
+    expect(runtime.phase).toBe('ready');
+    expect(runtime.blockedRepositories).toEqual([]);
+    expect(runtime.repositories[0]).toMatchObject({
+      progressState: 'pending',
+      mergeInProgress: true,
+      blockingKind: null,
+      blockingReason: null,
+      nextAction: 'complete_merge',
+      mergeStrategy: 'merge_ready_to_complete',
+      recommendedAction: 'complete_merge',
+      availableActions: ['complete_merge', 'abort_merge', 'retry_check'],
+    });
+  });
+
+  it('keeps conflicted persisted merges blocked', () => {
+    const session = buildSession('blocked');
+    session.repositories[0] = {
+      ...session.repositories[0]!,
+      blockingKind: 'merge_conflict',
+      blockingReason: 'Conflict in src/main.ts',
+      conflictFiles: ['src/main.ts'],
+      mergeInProgress: true,
+      mergeStrategy: 'file_conflict',
+      recommendedAction: 'assistant',
+      availableActions: ['assistant', 'retry_check'],
+    };
+
+    const runtime = buildMergeWorkflowRuntimeFromPersistedSession({
+      taskId: 'task-1',
+      session,
+    });
+
+    expect(runtime.phase).toBe('blocked');
+    expect(runtime.blockedRepositories).toHaveLength(1);
+    expect(runtime.repositories[0]).toMatchObject({
+      progressState: 'blocked',
+      mergeInProgress: true,
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/main.ts'],
+      mergeStrategy: 'file_conflict',
+    });
   });
 });
