@@ -221,6 +221,77 @@ export interface GitFilePairDto {
   modifiedContent: string;
 }
 
+export interface GitReviewDiffLineDto {
+  type: "context" | "added" | "removed";
+  content: string;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+}
+
+export interface GitReviewDiffHunkDto {
+  header: string;
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: GitReviewDiffLineDto[];
+}
+
+export interface GitReviewParsedDiffDto {
+  originalContent: string;
+  modifiedContent: string;
+  additions: number;
+  deletions: number;
+  hunks: GitReviewDiffHunkDto[];
+}
+
+export interface GitReviewChangeDto {
+  path: string;
+  status: "added" | "modified" | "deleted" | string;
+  additions: number;
+  deletions: number;
+  hasPendingVisibleChange: boolean;
+  hasValidatedStage: boolean;
+  validatedRemovedLineNumbers: number[];
+  validatedAddedLineNumbers: number[];
+  isBinary: boolean;
+  tooLarge: boolean;
+  requiresHydration: boolean;
+  originalContent: string;
+  indexContent: string;
+  modifiedContent: string;
+  language: string;
+  hunks: GitReviewDiffHunkDto[];
+}
+
+export interface GitReviewSnapshotDto {
+  branch: string;
+  stagedPaths: string[];
+  changes: GitReviewChangeDto[];
+  conflictedFiles: string[];
+  mergeInProgress: boolean;
+  isClean: boolean;
+}
+
+export interface GitReviewFileDto {
+  path: string;
+  status: "added" | "modified" | "deleted" | string;
+  headExists: boolean;
+  indexExists: boolean;
+  worktreeExists: boolean;
+  headContent: string;
+  indexContent: string;
+  worktreeContent: string;
+  pendingDiff: GitReviewParsedDiffDto;
+  fullDiff: GitReviewParsedDiffDto;
+  hasValidatedStage: boolean;
+  validatedRemovedLineNumbers: number[];
+  validatedAddedLineNumbers: number[];
+  isBinary: boolean;
+  tooLarge: boolean;
+  language: string;
+}
+
 export interface GitStartMergeResolutionDto {
   status: "merged" | "conflicted" | string;
   conflictFiles: string[];
@@ -1736,6 +1807,20 @@ export async function gitReadFilePair(params: {
   });
 }
 
+export async function gitReviewSnapshot(repoPath: string): Promise<GitReviewSnapshotDto> {
+  return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath });
+}
+
+export async function gitReviewFile(params: {
+  repoPath: string;
+  path: string;
+}): Promise<GitReviewFileDto> {
+  return invoke<GitReviewFileDto>("git_review_file", {
+    repoPath: params.repoPath,
+    path: params.path,
+  });
+}
+
 export async function gitReadConflictFile(params: {
   repoPath: string;
   path: string;
@@ -2600,6 +2685,9 @@ export async function executeWorkspaceTool(params: {
   args: Record<string, unknown>;
   workspacePath?: string | null;
   workspaceScope?: WorkspaceScope;
+  projectMounts?: ProjectMount[];
+  virtualRootEnabled?: boolean;
+  focusedProjectId?: string | null;
 }): Promise<string> {
   return invoke<string>("tool_execute_workspace", {
     mode: params.mode,
@@ -2607,6 +2695,15 @@ export async function executeWorkspaceTool(params: {
     args: params.args,
     workspacePath: params.workspacePath ?? null,
     workspaceScope: params.workspaceScope ?? null,
+    projectMounts: (params.projectMounts ?? []).map((mount) => ({
+      project_id: mount.projectId,
+      mount_name: mount.mountName,
+      workspace_path: mount.workspacePath ?? null,
+      display_name: mount.displayName,
+      is_read_only: Boolean(mount.isReadOnly),
+    })),
+    virtualRootEnabled: params.virtualRootEnabled ?? null,
+    focusedProjectId: params.focusedProjectId ?? null,
   });
 }
 

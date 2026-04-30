@@ -2,7 +2,7 @@ use super::{get_pool, CommandError, CommandResult, DbPool};
 use crate::ai::AiState;
 use crate::ai::{
     chatgpt::{self, AiChatRequest},
-    copilot,
+    copilot, openai_compatible,
 };
 use crate::db::repository;
 use tauri::{AppHandle, State};
@@ -221,6 +221,11 @@ pub async fn ai_stream_chat(
         "copilot" => copilot::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
             .await
             .map_err(|message| CommandError { message }),
+        "openai" | "openrouter" | "ollama" | "lmstudio" => {
+            openai_compatible::stream_chat(app_handle, pool, ai_state.inner().clone(), request)
+                .await
+                .map_err(|message| CommandError { message })
+        }
         provider_type => Err(CommandError {
             message: format!("Native streaming is not supported for {}.", provider_type),
         }),

@@ -1435,7 +1435,9 @@ mod tests {
         assert!(task_worktree.exists());
         assert!(metadata_worktree.exists());
         assert!(repo.find_worktree("taskdebug-reset").is_ok());
-        assert!(repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local).is_ok());
+        assert!(repo
+            .find_branch(MACRO_BRANCH_NAME, BranchType::Local)
+            .is_ok());
 
         let report = state
             .debug_reset_macro_project_artifacts(temp.path())
@@ -1448,7 +1450,9 @@ mod tests {
         assert!(metadata_worktree.exists());
         assert!(repo.find_worktree("taskdebug-reset").is_err());
         assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_ok());
-        assert!(repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local).is_ok());
+        assert!(repo
+            .find_branch(MACRO_BRANCH_NAME, BranchType::Local)
+            .is_ok());
     }
 
     #[test]

@@ -1340,6 +1340,9 @@ export const executeWorkspaceTool = async (
         args: backendArgs,
         workspacePath: effectiveWorkspacePath,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        projectMounts: options.projectMounts,
+        virtualRootEnabled,
+        focusedProjectId,
       });
     }
 
@@ -1349,6 +1352,9 @@ export const executeWorkspaceTool = async (
       args: backendArgs,
       workspacePath: effectiveWorkspacePath,
       workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+      projectMounts: options.projectMounts,
+      virtualRootEnabled,
+      focusedProjectId,
     });
   };
 
@@ -1382,7 +1388,7 @@ export const executeWorkspaceTool = async (
       "glob",
       "grep",
     ]);
-    if (workspaceToolIds.has(toolName) && !virtualRootEnabled) {
+    if (workspaceToolIds.has(toolName)) {
       try {
         const backendResult = await executeBackendTool(toolName, args);
 
