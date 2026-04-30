@@ -16,6 +16,7 @@ export interface Citation {
   source: string; // URL for web, filename for files
   title: string;
   snippet?: string;
+  content?: string;
   messageId: string;
   conversationId: string;
   timestamp: string;
@@ -129,6 +130,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       source: source || url || title,
       title: normalizedTitle,
       snippet: normalizedPassage,
+      content: normalizedPassage,
       url,
       messageId,
       conversationId,
@@ -189,6 +191,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
               ...c,
               title: nextTitle,
               snippet: nextPassage,
+              content: nextPassage,
               source: nextSource || nextUrl || nextTitle,
               url: nextUrl || undefined,
               kind: nextKind,

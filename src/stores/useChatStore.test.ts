@@ -285,6 +285,34 @@ const toolsStoreState = {
   loadSettings: mock(async () => undefined),
 };
 
+type TestCitation = {
+  id: string;
+  type: 'web' | 'file' | 'document' | 'source_passage';
+  scope: 'context' | 'source';
+  source: string;
+  title: string;
+  snippet?: string;
+  content?: string;
+  messageId: string;
+  conversationId: string;
+  timestamp: string;
+  url?: string;
+  path?: string;
+  kind?: 'interesting' | 'used';
+  reason?: string;
+};
+
+let citationCounter = 0;
+let citationRecords: TestCitation[] = [];
+
+const createCitationId = () => `cite-test-${++citationCounter}`;
+
+const sortSourceCitations = (citations: TestCitation[]) =>
+  [...citations].sort(
+    (left, right) =>
+      new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+  );
+
 const providerStoreSubscribers = new Set<
   (
     nextState: typeof providerState,
@@ -721,10 +749,43 @@ const sendChatNonStreamingMock = mock(
     })
 );
 const streamChatMock = mock(async () => ({ usage: null }));
+const webSearchMock = mock(async (_query: string) => [
+  {
+    url: 'https://example.com/search-result',
+    title: 'Search Result',
+    snippet: 'Relevant search context.',
+  },
+]);
+const fetchWebPageMock = mock(async (_url: string) => ({
+  url: 'https://example.com/page',
+  title: 'Fetched Page',
+  snippet: 'Fetched snippet.',
+  content: 'Fetched full page content.',
+}));
+let streamingWebSearchConfig = {
+  enableWebSearch: false,
+  enableWebFetch: false,
+  webSearchOptions: undefined as
+    | {
+        provider: 'tavily' | 'brave';
+        tavilyApiKey?: string;
+        braveApiKey?: string;
+        maxResults?: number;
+      }
+    | undefined,
+};
 const getToolModePolicyMock = mock(async (mode: AppMode) => {
   if (mode === 'Chat') {
     return {
-      allowed_tool_ids: ['question', 'read_sources', 'read_file', 'web_search', 'web_fetch'],
+      allowed_tool_ids: [
+        'question',
+        'mark_source_passage',
+        'read_sources',
+        'edit_source_passage',
+        'read_file',
+        'web_search',
+        'web_fetch',
+      ],
       enforce_macro_only_writes: false,
     };
   }
@@ -1085,11 +1146,124 @@ const registerUseChatStoreMocks = async () => {
   mock.module('./useCitationsStore', () => ({
     useCitationsStore: {
       getState: () => ({
-        clearCitations: () => undefined,
-        citations: [],
-        getConversationContextCitations: () => [],
-        getConversationSourceCitations: () => [],
-        pruneConversationSourceCitations: () => undefined,
+        clearCitations: () => {
+          citationRecords = [];
+        },
+        citations: citationRecords,
+        addCitation: (citation: Omit<TestCitation, 'id' | 'timestamp'>) => {
+          const id = createCitationId();
+          citationRecords.push({
+            ...citation,
+            id,
+            timestamp: new Date().toISOString(),
+          });
+          return id;
+        },
+        addSourcePassage: (payload: {
+          conversationId: string;
+          messageId: string;
+          title: string;
+          passage: string;
+          source?: string;
+          url?: string;
+          kind?: 'interesting' | 'used';
+          reason?: string;
+        }) => {
+          const id = createCitationId();
+          citationRecords.push({
+            id,
+            type: 'source_passage',
+            scope: 'source',
+            source: payload.source || payload.url || payload.title,
+            title: payload.title.trim(),
+            snippet: payload.passage.trim(),
+            content: payload.passage.trim(),
+            messageId: payload.messageId,
+            conversationId: payload.conversationId,
+            timestamp: new Date().toISOString(),
+            url: payload.url,
+            kind: payload.kind || 'used',
+            reason: payload.reason,
+          });
+          return id;
+        },
+        addWebCitations: (
+          results: Array<{ url: string; title: string; snippet: string }>,
+          messageId: string,
+          conversationId: string,
+        ) => {
+          results.forEach((result) => {
+            citationRecords.push({
+              id: createCitationId(),
+              type: 'web',
+              scope: 'context',
+              source: result.url,
+              title: result.title,
+              snippet: result.snippet,
+              messageId,
+              conversationId,
+              timestamp: new Date().toISOString(),
+              url: result.url,
+            });
+          });
+        },
+        updateSourcePassage: (payload: {
+          conversationId: string;
+          citationId: string;
+          title?: string;
+          passage?: string;
+          source?: string;
+          url?: string;
+          kind?: 'interesting' | 'used';
+          reason?: string | null;
+        }) => {
+          const citation = citationRecords.find(
+            (candidate) =>
+              candidate.id === payload.citationId &&
+              candidate.conversationId === payload.conversationId &&
+              candidate.scope === 'source',
+          );
+          if (!citation) return false;
+          if (payload.title !== undefined) citation.title = payload.title.trim();
+          if (payload.passage !== undefined) {
+            citation.snippet = payload.passage.trim();
+            citation.content = payload.passage.trim();
+          }
+          if (payload.source !== undefined) citation.source = payload.source.trim();
+          if (payload.url !== undefined) citation.url = payload.url.trim();
+          if (payload.kind) citation.kind = payload.kind;
+          if (payload.reason !== undefined) {
+            citation.reason = payload.reason === null ? undefined : payload.reason.trim();
+          }
+          citation.timestamp = new Date().toISOString();
+          return true;
+        },
+        removeCitation: (id: string) => {
+          citationRecords = citationRecords.filter((citation) => citation.id !== id);
+        },
+        getConversationContextCitations: (conversationId: string) =>
+          citationRecords.filter(
+            (citation) =>
+              citation.conversationId === conversationId &&
+              citation.scope === 'context',
+          ),
+        getConversationSourceCitations: (conversationId: string) =>
+          sortSourceCitations(
+            citationRecords.filter(
+              (citation) =>
+                citation.conversationId === conversationId &&
+                citation.scope === 'source',
+            ),
+          ),
+        pruneConversationSourceCitations: (conversationId: string, keepMessageIds: string[]) => {
+          const keepSet = new Set(keepMessageIds);
+          citationRecords = citationRecords.filter(
+            (citation) =>
+              citation.conversationId !== conversationId ||
+              citation.scope !== 'source' ||
+              keepSet.has(citation.messageId),
+          );
+        },
       }),
     },
   }));
@@ -1163,11 +1337,16 @@ const registerUseChatStoreMocks = async () => {
       fetchEnabled: true,
     }),
     saveWebSearchSettings: mock(() => undefined),
-    getStreamingWebSearchConfig: () => ({
-      enableWebSearch: false,
-      enableWebFetch: false,
-      webSearchOptions: undefined,
-    }),
+    getStreamingWebSearchConfig: () => streamingWebSearchConfig,
+  }));
+
+  mock.module('../services/webSearch', () => ({
+    webSearch: webSearchMock,
+    fetchWebPage: fetchWebPageMock,
+    formatSearchResultsAsContext: (results: Array<{ url: string; title: string; snippet: string }>) =>
+      results
+        .map((result, index) => `[${index + 1}] ${result.title}\nURL: ${result.url}\n${result.snippet}`)
+        .join('\n\n'),
   }));
 
   mock.module('../services/workspaceToolExecutor', () => ({
@@ -1720,6 +1899,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.retryTask.mockClear();
     taskStoreState.promoteTaskContextProjects.mockClear();
     taskStoreState.deleteManualFeatureDraft.mockClear();
+    citationCounter = 0;
+    citationRecords = [];
     tauriAvailable = false;
     dbConversationCounter = 0;
     dbMessageCounter = 0;
@@ -1734,6 +1915,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     updateArchitectPlanMock.mockClear();
     streamChatMock.mockClear();
     sendChatNonStreamingMock.mockClear();
+    webSearchMock.mockClear();
+    fetchWebPageMock.mockClear();
+    streamingWebSearchConfig = {
+      enableWebSearch: false,
+      enableWebFetch: false,
+      webSearchOptions: undefined,
+    };
     getToolModePolicyMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
@@ -1762,7 +1950,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
     toolsStoreState.loadSettings.mockClear();
-    toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch', 'question'];
+    toolsStoreState.getEnabledChatToolIds = () => [
+      'read_file',
+      'web_search',
+      'web_fetch',
+      'question',
+      'mark_source_passage',
+      'read_sources',
+      'edit_source_passage',
+    ];
     appState.activateArchitectPlan.mockClear();
     appState.switchProjectContext.mockClear();
   });
@@ -5073,6 +5269,245 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     expect(streamOptions.allowedToolIds).not.toContain('question');
     expect(streamOptions.guidedToolRetry).toBeUndefined();
+  });
+
+  it('reads the full attached file content through the chat read_file tool', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    citationRecords.push({
+      id: 'context-file',
+      type: 'file',
+      scope: 'context',
+      source: 'notes.md',
+      title: 'notes.md',
+      snippet: 'Short preview',
+      content: 'Short preview plus the full attached file body.',
+      path: 'notes.md',
+      messageId: 'manual-file',
+      conversationId: 'chat-conv',
+      timestamp: '2026-03-19T00:00:00.000Z',
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Lis le fichier attache.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+    const result = await streamOptions.onToolCall?.('read_file', { file: 'notes.md' }, 'call-read');
+
+    expect(String(result)).toContain('FILE: notes.md');
+    expect(String(result)).toContain('full attached file body');
+  });
+
+  it('persists, reads, updates, reclassifies, and deletes chat source passages', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Garde les sources importantes.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    const markResult = await streamOptions.onToolCall?.(
+      'mark_source_passage',
+      {
+        title: 'Important fact',
+        passage: 'Macro keeps source passages in the chat conversation.',
+        kind: 'used',
+        source: 'notes.md',
+      },
+      'call-source',
+    );
+    const citationId = citationRecords.find((citation) => citation.scope === 'source')?.id;
+    expect(String(markResult)).toContain('Source passage marked successfully');
+    expect(citationId).toBeTruthy();
+
+    const readResult = await streamOptions.onToolCall?.('read_sources', {}, 'call-read-sources');
+    expect(String(readResult)).toContain(String(citationId));
+    expect(String(readResult)).toContain('Macro keeps source passages');
+
+    await streamOptions.onToolCall?.(
+      'edit_source_passage',
+      {
+        citation_id: citationId,
+        action: 'update',
+        title: 'Updated fact',
+        passage: 'Updated source passage.',
+      },
+      'call-update-source',
+    );
+    expect(citationRecords.find((citation) => citation.id === citationId)?.title).toBe('Updated fact');
+
+    await streamOptions.onToolCall?.(
+      'edit_source_passage',
+      {
+        citation_id: citationId,
+        action: 'reclassify',
+        kind: 'interesting',
+      },
+      'call-reclassify-source',
+    );
+    expect(citationRecords.find((citation) => citation.id === citationId)?.kind).toBe('interesting');
+
+    await streamOptions.onToolCall?.(
+      'edit_source_passage',
+      {
+        citation_id: citationId,
+        action: 'delete',
+      },
+      'call-delete-source',
+    );
+    expect(citationRecords.some((citation) => citation.id === citationId)).toBe(false);
+  });
+
+  it('executes chat web search and fetch tools through the app handler', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    streamingWebSearchConfig = {
+      enableWebSearch: true,
+      enableWebFetch: true,
+      webSearchOptions: {
+        provider: 'tavily',
+        tavilyApiKey: 'tvly-test',
+        braveApiKey: '',
+        maxResults: 5,
+      },
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Cherche puis ouvre une page.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    const searchResult = await streamOptions.onToolCall?.(
+      'web_search',
+      { query: 'Macro chat sources' },
+      'call-web-search',
+    );
+    expect(webSearchMock).toHaveBeenCalledWith(
+      'Macro chat sources',
+      streamingWebSearchConfig.webSearchOptions,
+    );
+    expect(String(searchResult)).toContain('Search Result');
+    expect(citationRecords.some((citation) => citation.url === 'https://example.com/search-result')).toBe(true);
+
+    const fetchResult = await streamOptions.onToolCall?.(
+      'web_fetch',
+      { url: 'https://example.com/page' },
+      'call-web-fetch',
+    );
+    expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page');
+    expect(String(fetchResult)).toContain('Fetched full page content');
+    expect(citationRecords.some((citation) => citation.content === 'Fetched full page content.')).toBe(true);
   });
 
   it('reuses the same implement conversation for the selected task', async () => {

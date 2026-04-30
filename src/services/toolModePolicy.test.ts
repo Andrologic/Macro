@@ -5,9 +5,20 @@ import {
   isMetadataRelativePath,
 } from "./toolModePolicy";
 
+const CHAT_ALLOWED_TOOL_IDS = [
+  "question",
+  "mark_source_passage",
+  "read_sources",
+  "edit_source_passage",
+  "read_file",
+  "web_search",
+  "web_fetch",
+];
+
 describe("toolModePolicy", () => {
   it("disallows mutating and workspace tools in chat mode", () => {
     const policy = getToolModePolicy("Chat");
+    expect(policy.allowedToolIds).toEqual(CHAT_ALLOWED_TOOL_IDS);
     expect(policy.allowedToolIds.includes("write")).toBe(false);
     expect(policy.allowedToolIds.includes("edit")).toBe(false);
     expect(policy.allowedToolIds.includes("delete")).toBe(false);
@@ -18,9 +29,13 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("grep")).toBe(false);
     expect(policy.allowedToolIds.includes("git_status")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
-    expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(false);
+    expect(policy.allowedToolIds.includes("terminal_run")).toBe(false);
+    expect(policy.allowedToolIds.includes("need_add")).toBe(false);
+    expect(policy.allowedToolIds.includes("plan_create")).toBe(false);
+    expect(policy.allowedToolIds.includes("strategy_generate")).toBe(false);
+    expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(true);
     expect(policy.allowedToolIds.includes("read_sources")).toBe(true);
-    expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(false);
+    expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(true);
     expect(policy.allowedToolIds.includes("read_file")).toBe(true);
     expect(policy.allowedToolIds.includes("web_search")).toBe(true);
     expect(policy.allowedToolIds.includes("web_fetch")).toBe(true);

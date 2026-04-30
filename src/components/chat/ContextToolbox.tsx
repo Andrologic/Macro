@@ -31,7 +31,7 @@ const readFile = (file: File): Promise<string> =>
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
   const { selectedConversationId, createConversation } = useChatStore();
-  const { getChatModeTools, isChatToolEnabled, toggleChatTool, mcpServers } = useToolsStore();
+  const { getChatModeTools, isChatToolEnabled, toggleChatTool } = useToolsStore();
   const {
     getConversationContextCitations,
     getConversationInterestingSourceCitations,
@@ -97,7 +97,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     [sourceCitations]
   );
   const chatTools = getChatModeTools();
-  const onlineMcpServers = mcpServers.filter((server) => server.status === 'online');
 
   const tabs: Array<{ id: ToolboxTab; label: string; icon: IconName }> = [
     { id: 'context', label: t('chat.contextToolbox.tabs.context', 'Context'), icon: 'paperclip' },
@@ -127,6 +126,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           source: file.name,
           title: file.name,
           snippet: content.slice(0, 1000) + (content.length > 1000 ? '...' : ''),
+          content,
           path: file.name,
           messageId: `manual-${Date.now()}`,
           conversationId,
@@ -175,6 +175,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           source: fetched.url,
           title: fetched.title,
           snippet: fetched.snippet,
+          content: fetched.content,
           url: fetched.url,
           messageId: `manual-${Date.now()}`,
           conversationId,
@@ -223,6 +224,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         source: t('chat.contextToolbox.clipboard', 'Clipboard'),
         title: t('chat.contextToolbox.clipboardText', 'Clipboard text'),
         snippet: text.slice(0, 1000) + (text.length > 1000 ? '...' : ''),
+        content: text,
         messageId: `manual-${Date.now()}`,
         conversationId,
       });
@@ -376,7 +378,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
             <section>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.quickActions', 'Quick actions')}</h3>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   onClick={handleUploadClick}
                   data-tour-id="chat-context-upload"
@@ -400,10 +402,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 >
                   <Icon name="clipboard" size={14} className="text-muted-foreground" />
                   <span className="truncate">{t('chat.contextToolbox.paste', 'Paste')}</span>
-                </button>
-                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground opacity-50 cursor-not-allowed min-w-0">
-                  <Icon name="camera" size={14} className="text-muted-foreground" />
-                  <span className="truncate">{t('chat.contextToolbox.screenshot', 'Screenshot')}</span>
                 </button>
               </div>
               {isAddingUrl && (
@@ -457,21 +455,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                     </div>
                   );
                 }) : <p className="text-sm text-muted-foreground text-center py-4">{t('chat.contextToolbox.noToolsEnabled', 'No tools enabled')}</p>}
-              </div>
-            </section>
-            <section>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.mcpServers', 'MCP Servers')}</h3>
-              <div className="space-y-1">
-                {onlineMcpServers.length > 0 ? onlineMcpServers.map((server) => (
-                  <div key={server.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-accent transition-colors">
-                    <div className="w-7 h-7 rounded-lg bg-muted flex items-center justify-center shrink-0"><Icon name={server.icon as any} size={12} className="text-muted-foreground" /></div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-foreground">{server.name}</p>
-                      <p className="text-xs text-muted-foreground">{server.category}</p>
-                    </div>
-                    <span className={cn('w-2 h-2 rounded-full shrink-0', server.status === 'online' ? 'bg-emerald-500' : server.status === 'degraded' ? 'bg-amber-500' : 'bg-muted')} />
-                  </div>
-                )) : <p className="text-sm text-muted-foreground text-center py-4">{t('chat.contextToolbox.noMcpServers', 'No MCP servers connected')}</p>}
               </div>
             </section>
           </div>
