@@ -224,6 +224,47 @@ describe('DiffMergeView', () => {
     expect(getComputedStyle(revertRail as HTMLElement).display).toBe('none');
   });
 
+  it('uses a custom revert control label when provided', async () => {
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\ncurrent\nline 3'}
+            modified={'line 1\nincoming\nline 3'}
+            revertControls="a-to-b"
+            revertControlLabel="Use current block"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(revertButton?.getAttribute('aria-label')).toBe('Use current block');
+    expect(revertButton?.getAttribute('title')).toBe('Use current block');
+  });
+
+  it('keeps the default revert control label when no custom label is provided', async () => {
+    await act(async () => {
+      root?.render(
+        renderWithTheme(
+          <DiffMergeView
+            original={'line 1\nbefore\nline 3'}
+            modified={'line 1\nafter\nline 3'}
+            revertControls="a-to-b"
+          />
+        )
+      );
+      await flushRender();
+    });
+
+    const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
+    expect(revertButton).not.toBeNull();
+    expect(revertButton?.getAttribute('aria-label')).toBe('Revert this chunk');
+    expect(revertButton?.getAttribute('title')).toBe('Revert this chunk');
+  });
+
   it('supports a left-only layout for deleted files', async () => {
     await act(async () => {
       root?.render(
