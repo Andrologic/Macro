@@ -314,6 +314,9 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     if (toolId === 'web_search' && !hasSelectedWebSearchKey) {
       return t('chat.contextToolbox.webSearchKeyTooltip', 'Add an API key in Settings > Tools > Web Search');
     }
+    if (toolId === 'web_fetch' && !webSearchSettings.fetchEnabled) {
+      return t('chat.contextToolbox.webFetchDisabledTooltip', 'Enable Web Fetch in Settings > Tools > Web Search');
+    }
     if (!nativeToolsSupported) {
       return t('chat.contextToolbox.nativeToolTooltip', 'The selected model does not support native tool calls.');
     }

@@ -415,6 +415,7 @@
       "mcpServers": "MCP 서버",
       "noMcpServers": "연결된 MCP 서버가 없습니다.",
       "webSearchKeyTooltip": "설정 > 도구 > 웹 검색에서 API 키를 추가하세요.",
+      "webFetchDisabledTooltip": "설정 > 도구 > 웹 검색에서 Web Fetch를 활성화하세요.",
       "nativeToolTooltip": "선택한 모델은 기본 도구 호출을 지원하지 않습니다.",
       "sourceSummary": "{{interesting}}설립하다 •{{used}}사용된 •{{total}}출처",
       "collectionDisabledTitle": "컬렉션이 비활성화되었습니다.",
