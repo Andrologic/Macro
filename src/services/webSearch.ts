@@ -28,8 +28,8 @@ export interface TavilySearchResult {
   url: string;
   title: string;
   content: string;
-  score: number;
-  raw_content?: string;
+  score?: number;
+  raw_content?: string | null;
 }
 
 export interface TavilyResponse {
@@ -42,6 +42,7 @@ export interface BraveSearchResult {
   title: string;
   url: string;
   description: string;
+  extra_snippets?: string[];
 }
 
 export interface BraveResponse {
@@ -49,6 +50,11 @@ export interface BraveResponse {
     results: BraveSearchResult[];
   };
 }
+
+const clampSearchResultCount = (value: number): number => {
+  if (!Number.isFinite(value)) return 5;
+  return Math.min(20, Math.max(1, Math.round(value)));
+};
 
 /**
  * Perform a web search using the configured provider
@@ -64,28 +70,29 @@ export async function webSearch(
     maxResults = 5,
     includeRawContent = false,
   } = options;
+  const resultCount = clampSearchResultCount(maxResults);
 
   if (provider === 'tavily' && tavilyApiKey) {
-    return searchWithTavily(query, tavilyApiKey, maxResults, includeRawContent);
+    return searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent);
   } else if (provider === 'brave' && braveApiKey) {
-    return searchWithBrave(query, braveApiKey, maxResults);
+    return searchWithBrave(query, braveApiKey, resultCount);
   }
 
   // Try Tavily first, then fall back to Brave
   if (tavilyApiKey) {
     try {
-      return await searchWithTavily(query, tavilyApiKey, maxResults, includeRawContent);
+      return await searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent);
     } catch (error) {
       console.warn('Tavily search failed, trying Brave:', error);
       if (braveApiKey) {
-        return searchWithBrave(query, braveApiKey, maxResults);
+        return searchWithBrave(query, braveApiKey, resultCount);
       }
       throw error;
     }
   }
 
   if (braveApiKey) {
-    return searchWithBrave(query, braveApiKey, maxResults);
+    return searchWithBrave(query, braveApiKey, resultCount);
   }
 
   throw new Error('No search API key configured. Please add a Tavily or Brave Search API key in settings.');
@@ -110,9 +117,10 @@ async function searchWithTavily(
     body: JSON.stringify({
       query,
       max_results: maxResults,
-      include_raw_content: includeRawContent,
-      include_answer: true,
-      search_depth: 'advanced',
+      include_raw_content: includeRawContent ? 'markdown' : false,
+      include_answer: 'basic',
+      include_favicon: false,
+      search_depth: 'basic',
     }),
   });
 
@@ -126,8 +134,8 @@ async function searchWithTavily(
   return data.results.map((result) => ({
     url: result.url,
     title: result.title,
-    snippet: result.content,
-    score: result.score,
+    snippet: (includeRawContent && result.raw_content ? result.raw_content : result.content) || '',
+    score: result.score ?? 1,
   }));
 }
 
@@ -141,7 +149,7 @@ async function searchWithBrave(
   maxResults: number
 ): Promise<WebSearchResult[]> {
   const response = await tauriFetch(
-    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}`,
+    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}&extra_snippets=true`,
     {
       method: 'GET',
       headers: {
@@ -165,7 +173,9 @@ async function searchWithBrave(
   return data.web.results.map((result) => ({
     url: result.url,
     title: result.title,
-    snippet: result.description,
+    snippet: [result.description, ...(result.extra_snippets ?? [])]
+      .filter((snippet) => typeof snippet === 'string' && snippet.trim().length > 0)
+      .join('\n'),
     score: 1, // Brave doesn't provide scores
   }));
 }

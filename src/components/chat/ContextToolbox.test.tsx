@@ -189,6 +189,7 @@ const getMockCitationState = () => ({
 const toggleChatToolMock = mock((_toolId: string) => undefined);
 const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
 const clipboardWriteTextMock = mock(async (_text: string) => undefined);
+const notifyErrorMock = mock((_title: string, _options?: unknown) => undefined);
 let clipboardReadTextMock = mock(async () => 'clipboard text');
 let fetchWebPageShouldFail = false;
 let webFetchEnabledMock = true;
@@ -437,6 +438,12 @@ const loadContextToolbox = async () => {
     ),
   }));
 
+  mock.module('../ui/toastService', () => ({
+    notify: {
+      error: notifyErrorMock,
+    },
+  }));
+
   importCounter += 1;
   return import(`./ContextToolbox.tsx?context-toolbox-test=${importCounter}`);
 };
@@ -505,6 +512,7 @@ describe('ContextToolbox', () => {
     clipboardWriteTextMock.mockClear();
     clipboardReadTextMock.mockClear();
     fetchWebPageMock.mockClear();
+    notifyErrorMock.mockClear();
     addCitationMock.mockClear();
     removeCitationMock.mockClear();
     toggleChatToolMock.mockClear();
@@ -655,6 +663,30 @@ describe('ContextToolbox', () => {
     expect(container?.textContent).toContain('second.md');
   });
 
+  it('rejects non-text uploads with an error toast', async () => {
+    contextCitations = [];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await uploadFile(
+      container!,
+      new File(['%PDF-1.7'], 'contract.pdf', { type: 'application/pdf' }),
+    );
+
+    expect(addCitationMock).not.toHaveBeenCalled();
+    expect(container?.textContent).not.toContain('contract.pdf');
+    expect(notifyErrorMock).toHaveBeenCalledWith(
+      'Unsupported file type',
+      expect.objectContaining({
+        description: expect.stringContaining('Only text-based files are supported'),
+      }),
+    );
+  });
+
   it('shows uploaded files, URL additions, paste content, and delete actions immediately', async () => {
     const { ContextToolbox } = await loadContextToolbox();
 
@@ -755,8 +787,38 @@ describe('ContextToolbox', () => {
       expect(container?.textContent).not.toContain('URL added without preview.');
       expect(container?.textContent).toContain('example.net');
       expect(container?.textContent).not.toContain('Preview unavailable');
+      expect(notifyErrorMock).toHaveBeenCalledWith(
+        'Could not fetch URL preview',
+        expect.objectContaining({ description: 'https://example.net/story' }),
+      );
     } finally {
       console.error = originalConsoleError;
     }
+  });
+
+  it('shows an error toast when clipboard paste has no text', async () => {
+    clipboardReadTextMock = mock(async () => '');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: clipboardReadTextMock,
+        writeText: clipboardWriteTextMock,
+      },
+    });
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButtonByText(container!, 'Paste').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(addCitationMock).not.toHaveBeenCalled();
+    expect(notifyErrorMock).toHaveBeenCalledWith('Clipboard is empty');
   });
 });
