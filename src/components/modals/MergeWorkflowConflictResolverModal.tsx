@@ -26,6 +26,7 @@ interface MergeWorkflowConflictResolverModalProps {
 
 type ConflictReferenceSide = 'ours' | 'theirs';
 type ConflictPresentationMode = 'focused' | 'full';
+type ConflictDraftOrigin = 'ours' | 'theirs' | 'worktree' | 'edited' | 'empty';
 type PendingDiscardAction =
   | { type: 'close' }
   | { type: 'select_file'; path: string };
@@ -72,14 +73,54 @@ const sideContent = (file: GitConflictFileDto | null, side: ConflictReferenceSid
 const hasGitConflictMarkers = (content: string): boolean =>
   GIT_CONFLICT_MARKER_PATTERN.test(content);
 
-const createInitialDraft = (file: GitConflictFileDto | null): string => {
-  if (!file) return '';
+const sideExists = (file: GitConflictFileDto | null, side: ConflictReferenceSide): boolean => {
+  if (!file) return false;
+  return side === 'ours' ? file.ours.exists : file.theirs.exists;
+};
+
+const oppositeSide = (side: ConflictReferenceSide): ConflictReferenceSide =>
+  side === 'ours' ? 'theirs' : 'ours';
+
+const createInitialDraft = (
+  file: GitConflictFileDto | null
+): { content: string; origin: ConflictDraftOrigin } => {
+  if (!file) return { content: '', origin: 'empty' };
   if (file.worktree.exists && !hasGitConflictMarkers(file.worktree.content)) {
-    return file.worktree.content;
+    return { content: file.worktree.content, origin: 'worktree' };
   }
-  if (file.ours.exists) return file.ours.content;
-  if (file.theirs.exists) return file.theirs.content;
-  return '';
+  if (file.ours.exists) return { content: file.ours.content, origin: 'ours' };
+  if (file.theirs.exists) return { content: file.theirs.content, origin: 'theirs' };
+  return { content: '', origin: 'empty' };
+};
+
+const resolveReferenceSideForDraft = (
+  file: GitConflictFileDto | null,
+  draft: string,
+  preferredSide: ConflictReferenceSide
+): ConflictReferenceSide => {
+  if (!file) return preferredSide;
+
+  const preferredContent = sideContent(file, preferredSide);
+  if (sideExists(file, preferredSide) && preferredContent !== draft) {
+    return preferredSide;
+  }
+
+  const fallbackSide = oppositeSide(preferredSide);
+  if (sideExists(file, fallbackSide) && sideContent(file, fallbackSide) !== draft) {
+    return fallbackSide;
+  }
+
+  return sideExists(file, preferredSide) ? preferredSide : fallbackSide;
+};
+
+const getInitialReferenceSide = (
+  file: GitConflictFileDto | null,
+  draft: string,
+  origin: ConflictDraftOrigin
+): ConflictReferenceSide => {
+  if (origin === 'ours') return resolveReferenceSideForDraft(file, draft, 'theirs');
+  if (origin === 'theirs') return resolveReferenceSideForDraft(file, draft, 'ours');
+  return resolveReferenceSideForDraft(file, draft, 'theirs');
 };
 
 const shouldPrepareManualMerge = (repository: MergeWorkflowRepositoryResult): boolean =>
@@ -140,6 +181,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const [presentationMode, setPresentationMode] = useState<ConflictPresentationMode>('focused');
   const [draft, setDraft] = useState('');
   const [savedDraft, setSavedDraft] = useState('');
+  const [draftOrigin, setDraftOrigin] = useState<ConflictDraftOrigin>('empty');
+  const [savedDraftOrigin, setSavedDraftOrigin] = useState<ConflictDraftOrigin>('empty');
   const [resolvedPaths, setResolvedPaths] = useState<Set<string>>(() => new Set());
   const [isPreparing, setIsPreparing] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -165,8 +208,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const resultContainsConflictMarkers = canRenderFile && hasGitConflictMarkers(draft);
   const isDraftDirty = canRenderFile && !selectedResolved && draft !== savedDraft;
   const referenceOptions: Array<{ side: ConflictReferenceSide; label: string }> = [
-    { side: 'ours', label: t('implement.conflictCurrent', 'Current') },
-    { side: 'theirs', label: t('implement.conflictIncoming', 'Incoming') },
+    { side: 'theirs', label: t('implement.compareIncoming', 'Compare incoming') },
+    { side: 'ours', label: t('implement.compareCurrent', 'Compare current') },
   ];
   const contextOptions: Array<{ mode: ConflictPresentationMode; label: string }> = [
     { mode: 'focused', label: t('implement.context.default', 'Focused diff') },
@@ -181,10 +224,30 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
       remaining: files.length || listedFiles.length,
       total: listedFiles.length,
     });
+  const resultSourceLabel = draftOrigin === 'worktree'
+    ? t('implement.resultStartsFromSavedDraft', 'Result starts from saved draft')
+    : draftOrigin === 'ours'
+      ? t('implement.resultStartsFromCurrent', 'Result starts from Current')
+      : draftOrigin === 'theirs'
+        ? t('implement.resultStartsFromIncoming', 'Result starts from Incoming')
+        : draftOrigin === 'edited'
+          ? t('implement.resultEdited', 'Result edited')
+          : t('implement.resultReady', 'Result ready');
 
   useEffect(() => {
     knownFilesRef.current = Array.from(new Set([...knownFilesRef.current, ...repository.conflictFiles, ...files]));
   }, [files, repository.conflictFiles]);
+
+  useEffect(() => {
+    if (!canRenderFile || !currentFile || resultContainsConflictMarkers) {
+      return;
+    }
+
+    const nextReferenceSide = resolveReferenceSideForDraft(currentFile, draft, referenceSide);
+    if (nextReferenceSide !== referenceSide) {
+      setReferenceSide(nextReferenceSide);
+    }
+  }, [canRenderFile, currentFile, draft, referenceSide, resultContainsConflictMarkers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -287,6 +350,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
       setCurrentFile(null);
       setDraft('');
       setSavedDraft('');
+      setDraftOrigin('empty');
+      setSavedDraftOrigin('empty');
       return;
     }
 
@@ -309,14 +374,18 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         if (cancelled) return;
         const initialDraft = createInitialDraft(file);
         setCurrentFile(file);
-        setDraft(initialDraft);
-        setSavedDraft(initialDraft);
-        setReferenceSide(file.ours.exists ? 'ours' : 'theirs');
+        setDraft(initialDraft.content);
+        setSavedDraft(initialDraft.content);
+        setDraftOrigin(initialDraft.origin);
+        setSavedDraftOrigin(initialDraft.origin);
+        setReferenceSide(getInitialReferenceSide(file, initialDraft.content, initialDraft.origin));
       } catch (cause) {
         if (!cancelled) {
           setCurrentFile(null);
           setDraft('');
           setSavedDraft('');
+          setDraftOrigin('empty');
+          setSavedDraftOrigin('empty');
           setError(toServiceError(cause).message);
         }
       } finally {
@@ -365,6 +434,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     setIsConfirmingDiscard(false);
     setPendingDiscardAction(null);
     setDraft(savedDraft);
+    setDraftOrigin(savedDraftOrigin);
 
     if (action?.type === 'close') {
       onClose();
@@ -373,7 +443,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     if (action?.type === 'select_file') {
       setSelectedPath(action.path);
     }
-  }, [onClose, pendingDiscardAction, savedDraft]);
+  }, [onClose, pendingDiscardAction, savedDraft, savedDraftOrigin]);
 
   const handleCancelDiscard = useCallback(() => {
     setIsConfirmingDiscard(false);
@@ -381,13 +451,13 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   }, []);
 
   const handlePresentationModeChange = useCallback((nextMode: ConflictPresentationMode) => {
-    if (isBusy || isDraftDirty || presentationMode === nextMode) {
+    if (isBusy || presentationMode === nextMode) {
       return;
     }
 
     setPresentationMode(nextMode);
     void savePreference(PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE, nextMode);
-  }, [isBusy, isDraftDirty, presentationMode]);
+  }, [isBusy, presentationMode]);
 
   const handleRetryFile = useCallback(() => {
     setError(null);
@@ -397,8 +467,14 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const handleResetDraft = useCallback(() => {
     if (isBusy || !canRenderFile) return;
     setDraft(savedDraft);
+    setDraftOrigin(savedDraftOrigin);
     setError(null);
-  }, [canRenderFile, isBusy, savedDraft]);
+  }, [canRenderFile, isBusy, savedDraft, savedDraftOrigin]);
+
+  const handleDraftChange = useCallback((value: string) => {
+    setDraft(value);
+    setDraftOrigin('edited');
+  }, []);
 
   const handleRefreshConflicts = useCallback(async () => {
     if (isBusy) return;
@@ -432,6 +508,8 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         stage: true,
       });
       setSavedDraft(draft);
+      setDraftOrigin('worktree');
+      setSavedDraftOrigin('worktree');
       setResolvedPaths((previous) => new Set(previous).add(selectedPath));
       await refreshConflictStatus();
     } catch (cause) {
@@ -445,8 +523,10 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     if (!selectedPath || isBusy) return;
 
     if (canRenderFile && currentFile && !selectedResolved) {
-      setReferenceSide(side);
-      setDraft(sideContent(currentFile, side));
+      const nextDraft = sideContent(currentFile, side);
+      setReferenceSide(resolveReferenceSideForDraft(currentFile, nextDraft, oppositeSide(side)));
+      setDraft(nextDraft);
+      setDraftOrigin(side);
       setError(null);
       return;
     }
@@ -594,6 +674,11 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                     {t('implement.unsavedDraftBadge', 'Unsaved draft')}
                   </span>
                 )}
+                {canRenderFile && !selectedResolved && !isDraftDirty && (
+                  <span className="mt-1 block text-[11px] text-muted-foreground">
+                    {resultSourceLabel}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -621,7 +706,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                         variant={presentationMode === option.mode ? 'secondary' : 'ghost'}
                         size="sm"
                         onClick={() => handlePresentationModeChange(option.mode)}
-                        disabled={isBusy || isDraftDirty}
+                        disabled={isBusy}
                         className={cn('h-7 px-2.5 text-xs', presentationMode === option.mode ? 'shadow-sm' : '')}
                       >
                         {option.label}
@@ -737,7 +822,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                   className="min-h-0 flex-1 border-none md:border-none"
                   editable
                   autoFocus
-                  onChange={setDraft}
+                  onChange={handleDraftChange}
                   revertControls="a-to-b"
                   revertControlLabel={chunkActionLabel}
                 />
