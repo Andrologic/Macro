@@ -1022,16 +1022,29 @@ pub async fn create_project_with_git_setup(
     Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
 }
 
+pub struct UpdateProjectGitFlowWithSetupInput<'a> {
+    pub project_id: &'a str,
+    pub git_flow_settings: &'a ProjectGitFlowSettingsDto,
+    pub git_setup_actions: &'a [String],
+    pub expected_repo_root_path: Option<&'a str>,
+    pub expected_setup_state: &'a str,
+    pub expected_recommended_action_sequence: &'a [String],
+}
+
 pub async fn update_project_git_flow_with_setup(
     workspace_path: &Path,
     metadata_root: &Path,
-    project_id: &str,
-    git_flow_settings: &ProjectGitFlowSettingsDto,
-    git_setup_actions: &[String],
-    expected_repo_root_path: Option<&str>,
-    expected_setup_state: &str,
-    expected_recommended_action_sequence: &[String],
+    input: UpdateProjectGitFlowWithSetupInput<'_>,
 ) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let UpdateProjectGitFlowWithSetupInput {
+        project_id,
+        git_flow_settings,
+        git_setup_actions,
+        expected_repo_root_path,
+        expected_setup_state,
+        expected_recommended_action_sequence,
+    } = input;
+
     let state = load_or_create_state(workspace_path, metadata_root).await?;
     let project = find_project_by_id(&state.project_groups, project_id)
         .cloned()
@@ -3851,7 +3864,7 @@ fn sanitize_plan_tasks(
             continue;
         };
 
-        let mut next_task = serde_json::Map::from_iter(task_object.clone().into_iter());
+        let mut next_task = serde_json::Map::from_iter(task_object.clone());
         let original_project_ids = task_object
             .get("project_ids")
             .and_then(|value| value.as_array())
@@ -4222,7 +4235,7 @@ fn compile_branch_template_regex(
         };
         let token = token_match.as_str();
         pattern.push_str(&regex::escape(&template[last_index..full_match.start()]));
-        if allowed_tokens.iter().any(|allowed| *allowed == token) {
+        if allowed_tokens.contains(&token) {
             if !seen_tokens.insert(token.to_string()) {
                 duplicate_tokens.push(token.to_string());
             }
@@ -4863,9 +4876,10 @@ mod tests {
 
     #[test]
     fn strict_git_flow_validation_rejects_unparseable_feature_templates() {
-        let mut settings = ProjectGitFlowSettingsDto::default();
-        settings.feature_branch_template =
-            "feature/{planSlug}/{featureSlug}/{featureSlug}".to_string();
+        let settings = ProjectGitFlowSettingsDto {
+            feature_branch_template: "feature/{planSlug}/{featureSlug}/{featureSlug}".to_string(),
+            ..Default::default()
+        };
 
         let error = validate_project_git_flow_settings_strict(&settings)
             .expect_err("template should be rejected");
@@ -4884,9 +4898,10 @@ mod tests {
 
     #[test]
     fn strict_git_flow_validation_rejects_unknown_template_tokens() {
-        let mut settings = ProjectGitFlowSettingsDto::default();
-        settings.feature_branch_template =
-            "feature/{planSlug}/{featureSlug}/{branchType}".to_string();
+        let settings = ProjectGitFlowSettingsDto {
+            feature_branch_template: "feature/{planSlug}/{featureSlug}/{branchType}".to_string(),
+            ..Default::default()
+        };
 
         let error = validate_project_git_flow_settings_strict(&settings)
             .expect_err("template should be rejected");
@@ -4902,8 +4917,10 @@ mod tests {
 
     #[test]
     fn strict_git_flow_validation_rejects_invalid_rendered_branch_names() {
-        let mut settings = ProjectGitFlowSettingsDto::default();
-        settings.plan_branch_template = "plan/{planSlug}/.draft".to_string();
+        let settings = ProjectGitFlowSettingsDto {
+            plan_branch_template: "plan/{planSlug}/.draft".to_string(),
+            ..Default::default()
+        };
 
         let error = validate_project_git_flow_settings_strict(&settings)
             .expect_err("template should be rejected");
@@ -5485,7 +5502,7 @@ mod tests {
         let result = execute_project_git_setup_commit(
             temp.path(),
             project_path.to_string_lossy().as_ref(),
-            &vec![
+            &[
                 GIT_SETUP_ACTION_INITIALIZE_REPO.to_string(),
                 GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT.to_string(),
             ],
@@ -5518,7 +5535,7 @@ mod tests {
         let result = execute_project_git_setup_commit(
             temp.path(),
             project_path.to_string_lossy().as_ref(),
-            &vec![GIT_SETUP_ACTION_CREATE_DEVELOP.to_string()],
+            &[GIT_SETUP_ACTION_CREATE_DEVELOP.to_string()],
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
@@ -5596,8 +5613,8 @@ mod tests {
             &metadata_root,
             "manual-task-1",
             "manual-conv",
-            &vec!["project-web".to_string()],
-            &Vec::new(),
+            &["project-web".to_string()],
+            &[],
             Some("develop"),
             None,
             None,

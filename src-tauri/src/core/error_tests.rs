@@ -99,7 +99,7 @@ mod tests {
         let variants = vec![
             BackendError::Io {
                 message: "io".to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, "io"),
+                source: std::io::Error::other("io"),
             },
             BackendError::Database {
                 message: "database".to_string(),
