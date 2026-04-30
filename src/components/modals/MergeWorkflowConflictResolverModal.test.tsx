@@ -36,6 +36,7 @@ const gitAcceptConflictSideMock = mock(async () => undefined);
 const loadPreferenceMock = mock(async () => 'focused');
 const savePreferenceMock = mock(async () => undefined);
 let diffMergeViewProps: Array<{
+  original: string;
   modified: string;
   presentationMode?: string;
   revertControlLabel?: string;
@@ -71,6 +72,7 @@ mock.module('../../services/preferences', () => ({
 
 mock.module('../ui/DiffMergeView', () => ({
   DiffMergeView: (props: {
+    original: string;
     modified: string;
     presentationMode?: string;
     revertControlLabel?: string;
@@ -208,6 +210,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
       await flushRender();
     });
 
+    expect(diffMergeViewProps.at(-1)?.original).toBe('theirs');
     expect(diffMergeViewProps.at(-1)?.modified).toBe('ours');
     expect(diffMergeViewProps.at(-1)?.modified).not.toContain('<<<<<<<');
     expect(diffMergeViewProps.at(-1)?.modified).not.toContain('=======');
@@ -232,6 +235,24 @@ describe('MergeWorkflowConflictResolverModal', () => {
     });
 
     expect(diffMergeViewProps.at(-1)?.modified).toBe('manual clean resolution');
+  });
+
+  it('shows incoming against the clean current-based result on first render', async () => {
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(diffMergeViewProps.at(-1)?.original).toBe('theirs');
+    expect(diffMergeViewProps.at(-1)?.modified).toBe('ours');
+    expect(document.body.textContent).toContain('Compare incoming');
+    expect(document.body.textContent).toContain('Result starts from Current');
   });
 
   it('renders focused/full controls and passes the selected presentation mode to the diff view', async () => {
@@ -277,17 +298,24 @@ describe('MergeWorkflowConflictResolverModal', () => {
       await flushRender();
     });
 
-    expect(diffMergeViewProps.at(-1)?.revertControlLabel).toBe('Use current block');
+    expect(diffMergeViewProps.at(-1)?.revertControlLabel).toBe('Use incoming block');
 
-    const incomingButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Incoming'));
-
+    const editButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Edit draft'));
     await act(async () => {
-      incomingButton?.click();
+      editButton?.click();
       await flushRender();
     });
 
-    expect(diffMergeViewProps.at(-1)?.revertControlLabel).toBe('Use incoming block');
+    const currentButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Compare current'));
+
+    await act(async () => {
+      currentButton?.click();
+      await flushRender();
+    });
+
+    expect(diffMergeViewProps.at(-1)?.revertControlLabel).toBe('Use current block');
   });
 
   it('asks before switching files when the resolution draft has unsaved edits', async () => {
@@ -348,6 +376,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
     });
 
     expect(gitAcceptConflictSideMock).not.toHaveBeenCalled();
+    expect(diffMergeViewProps.at(-1)?.original).toBe('theirs');
     expect(diffMergeViewProps.at(-1)?.modified).toBe('ours');
   });
 
@@ -371,7 +400,41 @@ describe('MergeWorkflowConflictResolverModal', () => {
     });
 
     expect(gitAcceptConflictSideMock).not.toHaveBeenCalled();
+    expect(diffMergeViewProps.at(-1)?.original).toBe('ours');
     expect(diffMergeViewProps.at(-1)?.modified).toBe('theirs');
+  });
+
+  it('allows presentation mode changes while the resolution draft is dirty', async () => {
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    const editButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Edit draft'));
+    await act(async () => {
+      editButton?.click();
+      await flushRender();
+    });
+
+    const fullContextButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Full file context'));
+    await act(async () => {
+      fullContextButton?.click();
+      await flushRender();
+    });
+
+    expect(savePreferenceMock).toHaveBeenCalledWith(
+      'implement.diff.presentationMode',
+      'full'
+    );
+    expect(diffMergeViewProps.at(-1)?.presentationMode).toBe('full');
   });
 
   it('keeps direct side acceptance for non-renderable files', async () => {
