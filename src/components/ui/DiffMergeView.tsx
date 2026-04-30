@@ -35,6 +35,7 @@ export interface DiffMergeViewProps {
   onChange?: (value: string) => void;
   onEditorReady?: (editor: MergeViewEditorHandle | null) => void;
   revertControls?: 'a-to-b' | 'b-to-a';
+  revertControlLabel?: string;
   overflowMode?: CodeOverflowMode;
   validatedRemovedLineNumbers?: number[];
   validatedAddedLineNumbers?: number[];
@@ -108,9 +109,8 @@ const createRevertIcon = () => {
   return svg;
 };
 
-const createRevertControl = () => {
+const createRevertControl = (label: string) => {
   const button = document.createElement('button');
-  const label = 'Revert this chunk';
 
   button.type = 'button';
   button.className = 'macro-diff-revert-button';
@@ -158,6 +158,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   onChange,
   onEditorReady,
   revertControls,
+  revertControlLabel,
   overflowMode,
   validatedRemovedLineNumbers = EMPTY_VALIDATED_LINE_NUMBERS,
   validatedAddedLineNumbers = EMPTY_VALIDATED_LINE_NUMBERS,
@@ -172,6 +173,8 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const unchangedLinesPhrase = t('diffMergeView.codeMirrorPhrases.unchangedLines', {
     defaultValue: CODEMIRROR_UNCHANGED_LINES_PHRASE,
   });
+  const resolvedRevertControlLabel =
+    revertControlLabel ?? t('diffMergeView.revertChunk', 'Revert this chunk');
   const containerRef = useRef<HTMLDivElement>(null);
   const mergeViewRef = useRef<MergeView | null>(null);
   const originalRef = useRef(original);
@@ -180,6 +183,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const onEditorReadyRef = useRef(onEditorReady);
   const scheduleRevertAlignmentRef = useRef<(() => void) | null>(null);
   const revertControlsRef = useRef(revertControls);
+  const revertControlLabelRef = useRef(resolvedRevertControlLabel);
   const collapseUnchangedRef = useRef<{ margin: number; minSize: number } | undefined>(undefined);
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const lastScrollTopRef = useRef({ a: 0, b: 0 });
@@ -219,6 +223,19 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   useEffect(() => {
     revertControlsRef.current = revertControls;
   }, [revertControls]);
+
+  useEffect(() => {
+    revertControlLabelRef.current = resolvedRevertControlLabel;
+    const currentMergeView = mergeViewRef.current;
+    if (!currentMergeView) return;
+
+    currentMergeView.dom
+      .querySelectorAll<HTMLButtonElement>('.cm-merge-revert button')
+      .forEach((button) => {
+        button.setAttribute('aria-label', resolvedRevertControlLabel);
+        button.setAttribute('title', resolvedRevertControlLabel);
+      });
+  }, [resolvedRevertControlLabel]);
 
   useEffect(() => {
     collapseUnchangedRef.current = collapseUnchanged;
@@ -299,7 +316,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       },
       parent: containerRef.current,
       revertControls: revertControlsRef.current,
-      renderRevertControl: () => createRevertControl(),
+      renderRevertControl: () => createRevertControl(revertControlLabelRef.current),
       highlightChanges: true,
       gutter: true,
       collapseUnchanged: collapseUnchangedRef.current,

@@ -12,9 +12,11 @@ import { toServiceError } from '../../services/contracts/errors';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { DiffMergeView } from '../ui/DiffMergeView';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
+import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 
 interface MergeWorkflowConflictResolverModalProps {
   taskId: string;
@@ -22,8 +24,13 @@ interface MergeWorkflowConflictResolverModalProps {
   onClose: () => void;
 }
 
-type ConflictReferenceSide = 'ours' | 'theirs' | 'base';
+type ConflictReferenceSide = 'ours' | 'theirs';
+type ConflictPresentationMode = 'focused' | 'full';
+type PendingDiscardAction =
+  | { type: 'close' }
+  | { type: 'select_file'; path: string };
 const CONFLICT_OPERATION_TIMEOUT_MS = 15_000;
+const GIT_CONFLICT_MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)(?:\s|$)/m;
 
 const getRepositoryDisplayName = (repository: MergeWorkflowRepositoryResult): string => {
   const normalized = repository.repoPath.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -59,12 +66,21 @@ const inferLanguageFromPath = (path: string): string => {
 const sideContent = (file: GitConflictFileDto | null, side: ConflictReferenceSide): string => {
   if (!file) return '';
   if (side === 'ours') return file.ours.content;
-  if (side === 'theirs') return file.theirs.content;
-  return file.base.content;
+  return file.theirs.content;
 };
 
-const createInitialDraft = (file: GitConflictFileDto | null): string =>
-  file?.worktree.content || file?.theirs.content || file?.ours.content || '';
+const hasGitConflictMarkers = (content: string): boolean =>
+  GIT_CONFLICT_MARKER_PATTERN.test(content);
+
+const createInitialDraft = (file: GitConflictFileDto | null): string => {
+  if (!file) return '';
+  if (file.worktree.exists && !hasGitConflictMarkers(file.worktree.content)) {
+    return file.worktree.content;
+  }
+  if (file.ours.exists) return file.ours.content;
+  if (file.theirs.exists) return file.theirs.content;
+  return '';
+};
 
 const shouldPrepareManualMerge = (repository: MergeWorkflowRepositoryResult): boolean =>
   !(repository.mergeInProgress && repository.conflictFiles.length > 0);
@@ -102,12 +118,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
   const [selectedPath, setSelectedPath] = useState<string | null>(() => repository.conflictFiles[0] ?? null);
   const [currentFile, setCurrentFile] = useState<GitConflictFileDto | null>(null);
   const [referenceSide, setReferenceSide] = useState<ConflictReferenceSide>('ours');
+  const [presentationMode, setPresentationMode] = useState<ConflictPresentationMode>('focused');
   const [draft, setDraft] = useState('');
+  const [savedDraft, setSavedDraft] = useState('');
   const [resolvedPaths, setResolvedPaths] = useState<Set<string>>(() => new Set());
   const [isPreparing, setIsPreparing] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [isConfirmingDiscard, setIsConfirmingDiscard] = useState(false);
+  const [pendingDiscardAction, setPendingDiscardAction] = useState<PendingDiscardAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileLoadRetryToken, setFileLoadRetryToken] = useState(0);
   const knownFilesRef = useRef<string[]>(repository.conflictFiles);
@@ -123,15 +143,38 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     listedFiles.every((file) => resolvedPaths.has(file));
   const selectedResolved = selectedPath ? resolvedPaths.has(selectedPath) : false;
   const canRenderFile = Boolean(currentFile && !currentFile.isBinary && !currentFile.tooLarge);
+  const resultContainsConflictMarkers = canRenderFile && hasGitConflictMarkers(draft);
+  const isDraftDirty = canRenderFile && !selectedResolved && draft !== savedDraft;
   const referenceOptions: Array<{ side: ConflictReferenceSide; label: string }> = [
     { side: 'ours', label: t('implement.conflictCurrent', 'Current') },
     { side: 'theirs', label: t('implement.conflictIncoming', 'Incoming') },
-    { side: 'base', label: t('implement.conflictBase', 'Base') },
   ];
+  const contextOptions: Array<{ mode: ConflictPresentationMode; label: string }> = [
+    { mode: 'focused', label: t('implement.context.default', 'Focused diff') },
+    { mode: 'full', label: t('implement.context.full', 'Full file context') },
+  ];
+  const chunkActionLabel = referenceSide === 'ours'
+    ? t('implement.useCurrentBlock', 'Use current block')
+    : t('implement.useIncomingBlock', 'Use incoming block');
 
   useEffect(() => {
     knownFilesRef.current = Array.from(new Set([...knownFilesRef.current, ...repository.conflictFiles, ...files]));
   }, [files, repository.conflictFiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadPreference<ConflictPresentationMode>(PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE)
+      .then((value) => {
+        if (!cancelled && (value === 'focused' || value === 'full')) {
+          setPresentationMode(value);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshConflictStatus = useCallback(async () => {
     const status = await gitStatus(repository.repoPath);
@@ -157,17 +200,6 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
       document.body.style.overflow = previousOverflow;
     };
   }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      onClose();
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,6 +261,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     if (!selectedPath || resolvedPaths.has(selectedPath)) {
       setCurrentFile(null);
       setDraft('');
+      setSavedDraft('');
       return;
     }
 
@@ -249,13 +282,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
           )
         );
         if (cancelled) return;
+        const initialDraft = createInitialDraft(file);
         setCurrentFile(file);
-        setDraft(createInitialDraft(file));
-        setReferenceSide(file.ours.exists ? 'ours' : file.theirs.exists ? 'theirs' : 'base');
+        setDraft(initialDraft);
+        setSavedDraft(initialDraft);
+        setReferenceSide(file.ours.exists ? 'ours' : 'theirs');
       } catch (cause) {
         if (!cancelled) {
           setCurrentFile(null);
           setDraft('');
+          setSavedDraft('');
           setError(toServiceError(cause).message);
         }
       } finally {
@@ -268,6 +304,65 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
       cancelled = true;
     };
   }, [fileLoadRetryToken, repository.repoPath, resolvedPaths, selectedPath, t]);
+
+  const attemptClose = useCallback(() => {
+    if (isDraftDirty) {
+      setPendingDiscardAction({ type: 'close' });
+      setIsConfirmingDiscard(true);
+      return;
+    }
+    onClose();
+  }, [isDraftDirty, onClose]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      attemptClose();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [attemptClose]);
+
+  const handleSelectPath = useCallback((path: string) => {
+    if (path === selectedPath) return;
+    if (isDraftDirty) {
+      setPendingDiscardAction({ type: 'select_file', path });
+      setIsConfirmingDiscard(true);
+      return;
+    }
+    setSelectedPath(path);
+  }, [isDraftDirty, selectedPath]);
+
+  const handleConfirmDiscard = useCallback(() => {
+    const action = pendingDiscardAction;
+    setIsConfirmingDiscard(false);
+    setPendingDiscardAction(null);
+    setDraft(savedDraft);
+
+    if (action?.type === 'close') {
+      onClose();
+      return;
+    }
+    if (action?.type === 'select_file') {
+      setSelectedPath(action.path);
+    }
+  }, [onClose, pendingDiscardAction, savedDraft]);
+
+  const handleCancelDiscard = useCallback(() => {
+    setIsConfirmingDiscard(false);
+    setPendingDiscardAction(null);
+  }, []);
+
+  const handlePresentationModeChange = useCallback((nextMode: ConflictPresentationMode) => {
+    if (isBusy || isDraftDirty || presentationMode === nextMode) {
+      return;
+    }
+
+    setPresentationMode(nextMode);
+    void savePreference(PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE, nextMode);
+  }, [isBusy, isDraftDirty, presentationMode]);
 
   const handleRetryFile = useCallback(() => {
     setError(null);
@@ -289,6 +384,13 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
 
   const handleSave = useCallback(async () => {
     if (!selectedPath || !currentFile || isBusy) return;
+    if (hasGitConflictMarkers(draft)) {
+      setError(t(
+        'implement.conflictMarkersStillPresent',
+        'The result still contains Git conflict markers. Choose Current or Incoming blocks before saving.'
+      ));
+      return;
+    }
     setIsSaving(true);
     setError(null);
     try {
@@ -298,6 +400,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
         content: draft,
         stage: true,
       });
+      setSavedDraft(draft);
       setResolvedPaths((previous) => new Set(previous).add(selectedPath));
       await refreshConflictStatus();
     } catch (cause) {
@@ -305,10 +408,18 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     } finally {
       setIsSaving(false);
     }
-  }, [currentFile, draft, isBusy, refreshConflictStatus, repository.repoPath, selectedPath]);
+  }, [currentFile, draft, isBusy, refreshConflictStatus, repository.repoPath, selectedPath, t]);
 
-  const handleAcceptSide = useCallback(async (side: 'ours' | 'theirs') => {
+  const handleUseSide = useCallback(async (side: ConflictReferenceSide) => {
     if (!selectedPath || isBusy) return;
+
+    if (canRenderFile && currentFile && !selectedResolved) {
+      setReferenceSide(side);
+      setDraft(sideContent(currentFile, side));
+      setError(null);
+      return;
+    }
+
     setIsSaving(true);
     setError(null);
     try {
@@ -324,7 +435,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     } finally {
       setIsSaving(false);
     }
-  }, [isBusy, refreshConflictStatus, repository.repoPath, selectedPath]);
+  }, [canRenderFile, currentFile, isBusy, refreshConflictStatus, repository.repoPath, selectedPath, selectedResolved]);
 
   const handleComplete = useCallback(async () => {
     if (isBusy || !allFilesResolved) return;
@@ -364,7 +475,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
     <div
       className="fixed inset-0 z-[95] flex items-center justify-center bg-background/50 p-4 pt-12 backdrop-blur-sm sm:p-6 sm:pt-14"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) attemptClose();
       }}
       role="dialog"
       aria-modal="true"
@@ -396,7 +507,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                 <button
                   key={path}
                   type="button"
-                  onClick={() => setSelectedPath(path)}
+                  onClick={() => handleSelectPath(path)}
                   disabled={isBusy || isCurrent}
                   className={cn(
                     'group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
@@ -443,22 +554,38 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
 
             <div className="flex shrink-0 items-center gap-4">
               {canRenderFile && (
-                <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
-                  {referenceOptions.map((option) => (
-                    <Button
-                      key={option.side}
-                      variant={referenceSide === option.side ? 'secondary' : 'ghost'}
-                      size="sm"
-                      onClick={() => setReferenceSide(option.side)}
-                      disabled={isBusy}
-                      className={cn('h-7 px-2.5 text-xs', referenceSide === option.side ? 'shadow-sm' : '')}
-                    >
-                      {option.label}
-                    </Button>
-                  ))}
-                </div>
+                <>
+                  <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
+                    {referenceOptions.map((option) => (
+                      <Button
+                        key={option.side}
+                        variant={referenceSide === option.side ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => setReferenceSide(option.side)}
+                        disabled={isBusy}
+                        className={cn('h-7 px-2.5 text-xs', referenceSide === option.side ? 'shadow-sm' : '')}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="flex items-center rounded-lg border border-border bg-muted/20 p-1">
+                    {contextOptions.map((option) => (
+                      <Button
+                        key={option.mode}
+                        variant={presentationMode === option.mode ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => handlePresentationModeChange(option.mode)}
+                        disabled={isBusy || isDraftDirty}
+                        className={cn('h-7 px-2.5 text-xs', presentationMode === option.mode ? 'shadow-sm' : '')}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                </>
               )}
-              <Button type="button" variant="ghost" size="sm" onClick={onClose} aria-label={t('common.close', 'Close')}>
+              <Button type="button" variant="ghost" size="sm" onClick={attemptClose} aria-label={t('common.close', 'Close')}>
                 <Icon name="x" size={16} />
               </Button>
             </div>
@@ -509,19 +636,61 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
+            ) : resultContainsConflictMarkers ? (
+              <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
+                <div className="max-w-lg rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-4 text-center">
+                  <p className="text-sm font-medium text-amber-200">
+                    {t('implement.conflictMarkersStillPresent', 'The result still contains Git conflict markers. Choose Current or Incoming blocks before saving.')}
+                  </p>
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleUseSide('ours')}
+                      disabled={isBusy || !selectedPath}
+                    >
+                      {t('implement.useAllCurrent', 'Use all current')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleUseSide('theirs')}
+                      disabled={isBusy || !selectedPath}
+                    >
+                      {t('implement.useAllIncoming', 'Use all incoming')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
             ) : (
-              <DiffMergeView
-                key={`${selectedPath}:${referenceSide}`}
-                original={selectedReferenceContent}
-                modified={draft}
-                language={inferLanguageFromPath(selectedPath ?? '')}
-                layout="split"
-                presentationMode="full"
-                className="h-full w-full border-none md:border-none"
-                editable
-                autoFocus
-                onChange={setDraft}
-              />
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="grid shrink-0 grid-cols-2 border-b border-border/50 bg-card/50 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="border-r border-border/50 px-4 py-2">
+                    {t('implement.conflictSourceLabel', 'Source')}: {referenceSide === 'ours'
+                      ? t('implement.conflictCurrent', 'Current')
+                      : t('implement.conflictIncoming', 'Incoming')}
+                  </div>
+                  <div className="px-4 py-2">
+                    {t('implement.conflictResultLabel', 'Result')}
+                  </div>
+                </div>
+                <DiffMergeView
+                  key={`${selectedPath}:${referenceSide}`}
+                  original={selectedReferenceContent}
+                  modified={draft}
+                  language={inferLanguageFromPath(selectedPath ?? '')}
+                  layout="split"
+                  presentationMode={presentationMode}
+                  className="min-h-0 flex-1 border-none md:border-none"
+                  editable
+                  autoFocus
+                  onChange={setDraft}
+                  revertControls="a-to-b"
+                  revertControlLabel={chunkActionLabel}
+                />
+              </div>
             )}
           </div>
 
@@ -531,8 +700,12 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
                 <span className="font-medium text-emerald-500">
                   {t('implement.allConflictsResolved', 'All conflicts are staged. Complete the merge to continue.')}
                 </span>
+              ) : isDraftDirty ? (
+                <span className="font-medium text-amber-500">
+                  {t('implement.unsavedDraft', 'Unsaved draft. Save to validate or reset.')}
+                </span>
               ) : (
-                t('implement.resolveConflictFileHint', 'Choose a side or edit the resolved result, then stage the file.')
+                t('implement.resolveConflictFileHint', 'Choose blocks, use a full side, or edit the resolved result, then save the resolution.')
               )}
             </div>
 
@@ -542,14 +715,14 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               </Button>
               {!allFilesResolved && (
                 <>
-                  <Button variant="secondary" size="sm" onClick={() => void handleAcceptSide('ours')} disabled={isBusy || !selectedPath}>
-                    {t('implement.acceptCurrentChange', 'Accept current')}
+                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('ours')} disabled={isBusy || !selectedPath}>
+                    {t('implement.useAllCurrent', 'Use all current')}
                   </Button>
-                  <Button variant="secondary" size="sm" onClick={() => void handleAcceptSide('theirs')} disabled={isBusy || !selectedPath}>
-                    {t('implement.acceptIncomingChange', 'Accept incoming')}
+                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
+                    {t('implement.useAllIncoming', 'Use all incoming')}
                   </Button>
-                  <Button variant="primary" size="sm" onClick={() => void handleSave()} disabled={isBusy || !canRenderFile}>
-                    {t('implement.markResolved', 'Mark resolved')}
+                  <Button variant="primary" size="sm" onClick={() => void handleSave()} disabled={isBusy || !canRenderFile || resultContainsConflictMarkers}>
+                    {t('implement.saveResolution', 'Save resolution')}
                   </Button>
                 </>
               )}
@@ -562,6 +735,21 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
           </footer>
         </main>
       </div>
+      {isConfirmingDiscard && (
+        <ConfirmPromptModal
+          isOpen={isConfirmingDiscard}
+          title={t('implement.discardChangesTitle', 'Discard unsaved changes?')}
+          description={t(
+            'implement.discardChangesDesc',
+            'You have made edits to this file. Are you sure you want to discard them?'
+          )}
+          confirmLabel={t('implement.discardButton', 'Discard changes')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          onConfirm={handleConfirmDiscard}
+          onCancel={handleCancelDiscard}
+          confirmVariant="error"
+        />
+      )}
     </div>
   );
 };
