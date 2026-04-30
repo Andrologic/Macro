@@ -73,7 +73,9 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "mark_source_passage",
         "read_sources",
+        "edit_source_passage",
         "read_file",
         "web_search",
         "web_fetch",
@@ -271,7 +273,38 @@ mod tests {
     #[test]
     fn chat_policy_exposes_question_tool() {
         let policy = get_mode_policy("Chat");
+        assert_eq!(
+            policy.allowed_tool_ids,
+            vec![
+                "question".to_string(),
+                "mark_source_passage".to_string(),
+                "read_sources".to_string(),
+                "edit_source_passage".to_string(),
+                "read_file".to_string(),
+                "web_search".to_string(),
+                "web_fetch".to_string()
+            ]
+        );
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"mark_source_passage".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"read_sources".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"edit_source_passage".to_string()));
+        assert!(!policy.allowed_tool_ids.contains(&"write".to_string()));
+        assert!(!policy.allowed_tool_ids.contains(&"git_commit".to_string()));
+        assert!(!policy
+            .allowed_tool_ids
+            .contains(&"terminal_run".to_string()));
+        assert!(!policy.allowed_tool_ids.contains(&"need_add".to_string()));
+        assert!(!policy
+            .allowed_tool_ids
+            .contains(&"plan_create".to_string()));
+        assert!(!policy
+            .allowed_tool_ids
+            .contains(&"strategy_generate".to_string()));
     }
 
     #[test]

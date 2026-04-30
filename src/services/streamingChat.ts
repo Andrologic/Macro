@@ -302,6 +302,7 @@ export interface StreamingChatOptions {
     source: string;
     path?: string;
     snippet?: string;
+    content?: string;
   }>;
   allowedToolIds?: string[];
   copilotSendTimeoutMs?: number | null;
@@ -2359,12 +2360,15 @@ const streamChatViaNativeToolCallingProvider = async (
           } else if (customResult?.kind === 'result') {
             customToolResult = customResult.result;
           }
+          if (customToolResult && toolName === 'read_file') {
+            rememberReadEvidenceFromWorkspaceResult(customToolResult);
+          }
 
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
           }
 
-          if (toolName === 'web_search') {
+          if (!customToolResult && toolName === 'web_search') {
             if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
               toolResult = 'Web search is not configured for this provider.';
               onToolResult?.(toolName, toolResult);
@@ -2381,7 +2385,7 @@ const streamChatViaNativeToolCallingProvider = async (
             }
           }
 
-          if (toolName === 'web_fetch') {
+          if (!customToolResult && toolName === 'web_fetch') {
             if (!enableWebFetch) {
               toolResult = 'Web fetch is disabled for this provider.';
               onToolResult?.(toolName, toolResult);
@@ -2398,7 +2402,7 @@ const streamChatViaNativeToolCallingProvider = async (
             }
           }
 
-          if (toolName === 'read_file') {
+          if (!customToolResult && toolName === 'read_file') {
             const normalizeMatch = (value?: string) =>
               (value || '')
                 .trim()
@@ -2468,7 +2472,7 @@ const streamChatViaNativeToolCallingProvider = async (
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
                 } else {
                   const label = contextMatch.path || contextMatch.title || contextMatch.source;
-                  const content = (contextMatch.snippet || '').trim();
+                  const content = (contextMatch.content || contextMatch.snippet || '').trim();
                   const base = content
                     ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
                     : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
@@ -2488,7 +2492,9 @@ const streamChatViaNativeToolCallingProvider = async (
             }
           }
 
-          if (toolName === 'mark_source_passage') {
+          if (customToolResult && toolName === 'mark_source_passage') {
+            toolResult = customToolResult;
+          } else if (toolName === 'mark_source_passage') {
             const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
             const kind = rawKind === 'interesting' ? 'interesting' : 'used';
             const source = typeof args.source === 'string' ? args.source : '';
@@ -3180,12 +3186,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             } else if (customResult?.kind === 'result') {
               customToolResult = customResult.result;
             }
+            if (customToolResult && toolName === 'read_file') {
+              rememberReadEvidenceFromWorkspaceResult(customToolResult);
+            }
 
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
             }
 
-            if (toolName === 'web_search') {
+            if (!customToolResult && toolName === 'web_search') {
               if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
                 toolResult = 'Web search is not configured for this provider.';
                 onToolResult?.(toolName, toolResult);
@@ -3208,7 +3217,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               }
             }
 
-            if (toolName === 'web_fetch') {
+            if (!customToolResult && toolName === 'web_fetch') {
               if (!enableWebFetch) {
                 toolResult = 'Web fetch is disabled for this provider.';
                 onToolResult?.(toolName, toolResult);
@@ -3229,7 +3238,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               }
             }
 
-            if (toolName === 'read_file') {
+            if (!customToolResult && toolName === 'read_file') {
               const normalizeMatch = (value?: string) =>
                 (value || '')
                   .trim()
@@ -3300,7 +3309,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
                 } else {
                   const label = match.path || match.title || match.source;
-                  const content = (match.snippet || '').trim();
+                  const content = (match.content || match.snippet || '').trim();
                   const base = content
                     ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
                     : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
@@ -3319,7 +3328,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               }
             }
 
-            if (toolName === 'mark_source_passage') {
+            if (customToolResult && toolName === 'mark_source_passage') {
+              toolResult = customToolResult;
+            } else if (toolName === 'mark_source_passage') {
               const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
               const kind = rawKind === 'interesting' ? 'interesting' : 'used';
               const source = typeof args.source === 'string' ? args.source : '';
