@@ -415,6 +415,7 @@
       "mcpServers": "MCP Servers",
       "noMcpServers": "No MCP servers connected",
       "webSearchKeyTooltip": "Add an API key in Settings > Tools > Web Search",
+      "webFetchDisabledTooltip": "Enable Web Fetch in Settings > Tools > Web Search",
       "nativeToolTooltip": "The selected model does not support native tool calls.",
       "sourceSummary": "{{interesting}} found • {{used}} used • {{total}} sources",
       "collectionDisabledTitle": "Collection disabled",
