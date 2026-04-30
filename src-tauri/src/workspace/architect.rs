@@ -347,9 +347,9 @@ fn compare_scope_recency(
         )
 }
 
-fn pick_canonical_entry<'a>(
-    entries: &'a [ArchitectPlanScopeSummaryEntry],
-) -> Option<&'a ArchitectPlanScopeSummaryEntry> {
+fn pick_canonical_entry(
+    entries: &[ArchitectPlanScopeSummaryEntry],
+) -> Option<&ArchitectPlanScopeSummaryEntry> {
     entries.iter().max_by(|left, right| {
         compare_scope_recency(
             Some(&left.summary.updated_at),
@@ -1003,9 +1003,9 @@ async fn load_head_snapshots_for_locators(
     .collect())
 }
 
-fn pick_canonical_snapshot<'a>(
-    snapshots: &'a [ArchitectPlanHeadSnapshot],
-) -> Option<&'a ArchitectPlanHeadSnapshot> {
+fn pick_canonical_snapshot(
+    snapshots: &[ArchitectPlanHeadSnapshot],
+) -> Option<&ArchitectPlanHeadSnapshot> {
     snapshots.iter().max_by(|left, right| {
         compare_scope_recency(
             Some(&left.plan.updated_at),

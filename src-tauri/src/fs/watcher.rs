@@ -219,18 +219,21 @@ fn convert_event_to_dtos(event: &Event, workspace: &Path) -> Vec<FsEventDto> {
         }
         EventKind::Modify(ModifyKind::Name(RenameMode::Both))
         | EventKind::Modify(ModifyKind::Name(RenameMode::From))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::To))
+            if paths.len() >= 2 =>
+        {
+            result.push(FsEventDto::Renamed {
+                old_path: paths[0].to_string_lossy().to_string(),
+                new_path: paths[1].to_string_lossy().to_string(),
+            });
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+        | EventKind::Modify(ModifyKind::Name(RenameMode::From))
         | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-            if paths.len() >= 2 {
-                result.push(FsEventDto::Renamed {
-                    old_path: paths[0].to_string_lossy().to_string(),
-                    new_path: paths[1].to_string_lossy().to_string(),
+            for path in paths {
+                result.push(FsEventDto::Modified {
+                    path: path.to_string_lossy().to_string(),
                 });
-            } else {
-                for path in paths {
-                    result.push(FsEventDto::Modified {
-                        path: path.to_string_lossy().to_string(),
-                    });
-                }
             }
         }
         EventKind::Modify(_) => {
