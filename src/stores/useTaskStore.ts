@@ -372,10 +372,19 @@ const isAutoStashableMergeWorkflowRepository = (
 const isAbortableMergeWorkflowRepository = (
   repository: MergeWorkflowRepositoryResult
 ): boolean =>
-  repository.blockingKind === 'merge_in_progress' &&
-  repository.nextAction === 'finish_or_abort_merge' &&
+  (
+    repository.blockingKind === 'merge_in_progress' ||
+    repository.availableActions.includes('abort_merge')
+  ) &&
   repository.mergeInProgress &&
   repository.conflictFiles.length === 0;
+
+const isCompletableMergeWorkflowRepository = (
+  repository: MergeWorkflowRepositoryResult
+): boolean =>
+  repository.mergeInProgress &&
+  repository.conflictFiles.length === 0 &&
+  repository.blockingKind !== 'repository_dirty';
 
 const resolveMergeWorkflowBlockers = async (
   runtime: MergeWorkflowRuntimeState,
@@ -454,12 +463,17 @@ const isMergeExecutionAction = (
 ): action is MergeWorkflowMergeExecutionAction =>
   action === 'fast_forward' ||
   action === 'rebase_then_continue' ||
-  action === 'merge_commit';
+  action === 'merge_commit' ||
+  action === 'complete_merge';
 
 const resolveRepositoryMergeStrategyAction = (
   repository: MergeWorkflowRepositoryResult,
   preferredAction: MergeWorkflowBlockerResolutionAction | null | undefined
 ): MergeWorkflowMergeExecutionAction | null => {
+  if (isCompletableMergeWorkflowRepository(repository)) {
+    return 'complete_merge';
+  }
+
   if (!repository.hasChanges || repository.progressState === 'no_changes') {
     return null;
   }
@@ -490,6 +504,12 @@ const runRepositoryMergeStrategy = async (
       repoPath: repository.repoPath,
       sourceBranch: repository.sourceBranchName,
       targetBranch: repository.targetBranchName,
+    });
+  }
+
+  if (action === 'complete_merge') {
+    return tauriIpc.gitCompleteMerge({
+      repoPath: repository.repoPath,
     });
   }
 
@@ -3420,7 +3440,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             candidate.progressState === 'pending' ||
             candidate.progressState === 'blocked'
         )) {
-          if (!repository.hasChanges) {
+          if (!repository.hasChanges && !isCompletableMergeWorkflowRepository(repository)) {
             currentRuntime = evolveMergeWorkflowRuntimeRepository({
               runtime: currentRuntime || reviewRuntime,
               repositoryId: repository.id,
@@ -3626,7 +3646,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           );
         }
 
-        if (!allowWithoutCodeChanges && !repository.hasChanges) {
+        if (
+          !allowWithoutCodeChanges &&
+          !repository.hasChanges &&
+          !isCompletableMergeWorkflowRepository(repository)
+        ) {
           currentRuntime = evolveMergeWorkflowRuntimeRepository({
             runtime: currentRuntime || reviewRuntime,
             repositoryId: repository.id,
@@ -3658,10 +3682,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         try {
           const mergeOutput = allowWithoutCodeChanges
             ? undefined
-            : isMergeExecutionAction(options?.mergeStrategyAction)
+            : isMergeExecutionAction(options?.mergeStrategyAction) ||
+                isCompletableMergeWorkflowRepository(repository)
               ? await runRepositoryMergeStrategy(
                   repository,
-                  options.mergeStrategyAction
+                  options?.mergeStrategyAction
                 )
               : await mergeFeatureBranchIntoPlanBranch({
                   projectId: repository.projectId,

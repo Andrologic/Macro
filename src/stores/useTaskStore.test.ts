@@ -803,6 +803,50 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
+  it('completes a materialized merge when conflicts are already resolved', async () => {
+    let statusCallCount = 0;
+    gitStatusMock.mockImplementation(async () => {
+      statusCallCount += 1;
+      const isTaskWorktreePrecheck = statusCallCount === 1;
+      return {
+        branch: isTaskWorktreePrecheck
+          ? 'feature/review-actions'
+          : 'plan/review-actions',
+        is_clean: isTaskWorktreePrecheck,
+        staged_files: isTaskWorktreePrecheck
+          ? []
+          : [{ path: 'src/main.ts', status: 'modified' }],
+        unstaged_files: [],
+        untracked_files: [],
+        conflicted_files: [],
+        conflictedFiles: [],
+        merge_in_progress: !isTaskWorktreePrecheck,
+        mergeInProgress: !isTaskWorktreePrecheck,
+      };
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().runMergeWorkflow('task-1');
+
+    expect(gitCompleteMergeMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+    });
+    expect(gitFastForwardMock).not.toHaveBeenCalled();
+    expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeUndefined();
+  });
+
   it('does not start a second manual merge resolution when conflicts are already materialized', async () => {
     const runtime = buildBlockedMergeRuntime();
     runtime.repositories = runtime.repositories.map((repository) => ({
@@ -1018,7 +1062,7 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
   });
 
-  it('automatically aborts in-progress merges before opening the assistant', async () => {
+  it('does not auto-abort a resolved merge that is ready to complete', async () => {
     let hasAbortedMerge = false;
     gitAbortMergeMock.mockImplementation(async () => {
       hasAbortedMerge = true;
@@ -1054,14 +1098,11 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(resolution).toEqual({
       conversationId: null,
-      autoResolvedRepositoryCount: 1,
+      autoResolvedRepositoryCount: 0,
       remainingBlockedRepositoryCount: 0,
     });
-    expect(gitAbortMergeMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
-      confirm: true,
-    });
-    expect(gitStatusMock).toHaveBeenCalledTimes(2);
+    expect(gitAbortMergeMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.phase).toBe('ready');
   });

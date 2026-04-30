@@ -25,6 +25,7 @@ const PLAN_NEXT_STEP_LABELS: Record<PlanFinalizationNextAction, string> = {
   clean_repository: 'Clean or stash local changes, then retry finalization.',
   resolve_conflicts: 'Resolve the conflicting files, then retry finalization.',
   finish_or_abort_merge: 'Finish or abort the in-progress merge, then retry finalization.',
+  complete_merge: 'Complete the resolved merge, then continue finalization.',
 };
 
 const MACRO_NEXT_STEP_LABELS: Record<NonNullable<MacroSyncNextAction>, string> = {
