@@ -1925,7 +1925,8 @@ describe('FileChangesPanel', () => {
     });
   });
 
-  it('does not render the old abort modal for a merge that is ready to complete', async () => {
+  it('confirms aborting a resolved merge before discarding the merge state', async () => {
+    const abortMergeWorkflowManualResolutionMock = mock(async () => undefined);
     const mergeWorkflowRuntime = buildBlockedMergeWorkflowRuntime({
       blockingKind: null,
       nextAction: 'complete_merge',
@@ -1960,6 +1961,7 @@ describe('FileChangesPanel', () => {
           taskId === 'task-1' ? mergeWorkflowRuntime : null,
         loadMergeWorkflowReview: mock(async () => mergeWorkflowRuntime),
         runMergeWorkflow: mock(async () => undefined),
+        abortMergeWorkflowManualResolution: abortMergeWorkflowManualResolutionMock,
         resolveMergeWorkflowAutomatically: mock(async () => ({
           conversationId: null,
           autoResolvedRepositoryCount: 0,
@@ -1976,6 +1978,33 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Complete merge');
     expect(document.body.textContent).not.toContain('A merge is already in progress');
     expect(document.body.querySelector('[data-merge-resolution-repository-list="true"]')).toBeNull();
+
+    const abortButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Abort merge');
+
+    await act(async () => {
+      abortButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Abort resolved merge?');
+    expect(document.body.querySelector('[data-merge-resolution-repository-list="true"]')?.textContent)
+      .toContain('/repos/project');
+    expect(abortMergeWorkflowManualResolutionMock).not.toHaveBeenCalled();
+
+    const confirmAbortButton = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent?.trim() === 'Abort merge')
+      .at(-1);
+
+    await act(async () => {
+      confirmAbortButton?.click();
+      await flushRender();
+    });
+
+    expect(abortMergeWorkflowManualResolutionMock).toHaveBeenCalledWith(
+      'task-1',
+      'repo-1'
+    );
   });
 
   it('loads the merge review once when an existing runtime has no review yet', async () => {
