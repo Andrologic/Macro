@@ -26,6 +26,7 @@ export interface Citation {
   // File-specific
   path?: string;
   language?: string;
+  sizeBytes?: number;
   // Source passage-specific
   kind?: SourcePassageKind;
   reason?: string;
@@ -90,7 +91,28 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
         }
         return (c.path || c.source) === (citationData.path || citationData.source);
       });
-      if (existing) return existing.id;
+      if (existing) {
+        const timestamp = new Date().toISOString();
+        set((state) => ({
+          citations: state.citations.map((citation) =>
+            citation.id === existing.id
+              ? {
+                  ...citation,
+                  ...citationData,
+                  id: citation.id,
+                  timestamp,
+                  snippet: citationData.snippet ?? citation.snippet,
+                  content: citationData.content ?? citation.content,
+                  url: citationData.url ?? citation.url,
+                  path: citationData.path ?? citation.path,
+                  language: citationData.language ?? citation.language,
+                  sizeBytes: citationData.sizeBytes ?? citation.sizeBytes,
+                }
+              : citation
+          ),
+        }));
+        return existing.id;
+      }
     }
 
     const id = `cite-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

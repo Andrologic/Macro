@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
+import type { Citation } from '../../stores/useCitationsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
@@ -28,29 +29,43 @@ const readFile = (file: File): Promise<string> =>
     reader.readAsText(file);
   });
 
+const createManualMessageId = (): string =>
+  `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const formatByteSize = (value?: number): string | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let amount = value / 1024;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unitIndex]}`;
+};
+
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
   const { selectedConversationId, createConversation } = useChatStore();
   const { getChatModeTools, isChatToolEnabled, toggleChatTool } = useToolsStore();
-  const {
-    getConversationContextCitations,
-    getConversationInterestingSourceCitations,
-    getConversationUsedSourceCitations,
-    addCitation,
-    removeCitation,
-  } = useCitationsStore();
+  const citations = useCitationsStore((state) => state.citations);
+  const addCitation = useCitationsStore((state) => state.addCitation);
+  const removeCitation = useCitationsStore((state) => state.removeCitation);
   const nativeToolsSupported = useProviderStore((state) => state.selectedSupportsNativeToolCalling());
 
   const [activeTab, setActiveTab] = useState<ToolboxTab>('context');
   const [isDragging, setIsDragging] = useState(false);
-  const [isAddingUrl, setIsAddingUrl] = useState(false);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlError, setUrlError] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [sourceSearch, setSourceSearch] = useState('');
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
-
+  const [contextConversationId, setContextConversationId] = useState<string | null>(
+    selectedConversationId
+  );
+  const [lastAddedContextCitationId, setLastAddedContextCitationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const locale = i18n.resolvedLanguage || i18n.language;
@@ -59,34 +74,54 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     webSearchSettings.provider === 'tavily'
       ? webSearchSettings.tavilyApiKey.trim().length > 0
       : webSearchSettings.braveApiKey.trim().length > 0;
+  const effectiveConversationId = selectedConversationId ?? contextConversationId;
 
   const contextCitations = useMemo(
     () =>
-      selectedConversationId
-        ? getConversationContextCitations(selectedConversationId)
+      effectiveConversationId
+        ? citations.filter(
+            (citation) =>
+              citation.conversationId === effectiveConversationId &&
+              citation.scope === 'context'
+          )
         : [],
-    [getConversationContextCitations, selectedConversationId]
+    [citations, effectiveConversationId]
   );
-  const interestingSourceCitations = useMemo(
+  const sourceCitations = useMemo(
     () =>
-      selectedConversationId
-        ? getConversationInterestingSourceCitations(selectedConversationId)
+      effectiveConversationId
+        ? citations
+            .filter(
+              (citation) =>
+                citation.conversationId === effectiveConversationId &&
+                citation.scope === 'source'
+            )
+            .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
         : [],
-    [getConversationInterestingSourceCitations, selectedConversationId]
+    [citations, effectiveConversationId]
+  );
+  const fileCitations = useMemo(
+    () => contextCitations.filter((citation) => citation.type === 'file'),
+    [contextCitations]
+  );
+  const documentCitations = useMemo(
+    () => contextCitations.filter((citation) => citation.type === 'document'),
+    [contextCitations]
+  );
+  const webCitations = useMemo(
+    () => contextCitations.filter((citation) => citation.type === 'web'),
+    [contextCitations]
+  );
+  const contextCount = contextCitations.length;
+  const interestingSourceCitations = useMemo(
+    () => sourceCitations.filter((citation) => (citation.kind || 'used') === 'interesting'),
+    [sourceCitations]
   );
   const usedSourceCitations = useMemo(
-    () =>
-      selectedConversationId
-        ? getConversationUsedSourceCitations(selectedConversationId)
-        : [],
-    [getConversationUsedSourceCitations, selectedConversationId]
+    () => sourceCitations.filter((citation) => (citation.kind || 'used') === 'used'),
+    [sourceCitations]
   );
-  const fileCitations = contextCitations.filter((citation) => citation.type !== 'web');
-  const webCitations = contextCitations.filter((citation) => citation.type === 'web');
-  const sourceCitations = useMemo(
-    () => [...interestingSourceCitations, ...usedSourceCitations],
-    [interestingSourceCitations, usedSourceCitations]
-  );
+  const sourcePassageCount = sourceCitations.length;
   const sourceCount = useMemo(
     () =>
       new Set(
@@ -98,45 +133,69 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   );
   const chatTools = getChatModeTools();
 
-  const tabs: Array<{ id: ToolboxTab; label: string; icon: IconName }> = [
-    { id: 'context', label: t('chat.contextToolbox.tabs.context', 'Context'), icon: 'paperclip' },
-    { id: 'tools', label: t('chat.contextToolbox.tabs.tools', 'Tools'), icon: 'tool' },
-    { id: 'sources', label: t('chat.contextToolbox.tabs.sources', 'Sources'), icon: 'file-text' },
+  const tabs: Array<{ id: ToolboxTab; label: string; icon: IconName; count?: number }> = [
+    { id: 'context', label: t('chat.contextToolbox.tabs.context', 'Context'), icon: 'paperclip', count: contextCount },
+    { id: 'tools', label: t('chat.contextToolbox.tabs.tools', 'Tools'), icon: 'tool', count: chatTools.length },
+    { id: 'sources', label: t('chat.contextToolbox.tabs.sources', 'Sources'), icon: 'file-text', count: sourcePassageCount },
   ];
 
   useEffect(() => {
-    if (isAddingUrl) urlInputRef.current?.focus();
-  }, [isAddingUrl]);
+    if (selectedConversationId) {
+      setContextConversationId(selectedConversationId);
+    }
+  }, [selectedConversationId]);
 
   const ensureConversation = useCallback(async () => {
-    if (selectedConversationId) return selectedConversationId;
+    if (selectedConversationId) {
+      setContextConversationId(selectedConversationId);
+      return selectedConversationId;
+    }
     const conversation = await createConversation(t('chat.newChat', 'New Chat'), null, null);
+    setContextConversationId(conversation.id);
     return conversation.id;
   }, [createConversation, selectedConversationId, t]);
 
+  const addContextCitationAndReveal = useCallback(async (
+    citationData: Omit<Citation, 'id' | 'timestamp' | 'conversationId' | 'messageId' | 'scope'> & {
+      messageId?: string;
+    },
+    conversationIdOverride?: string,
+  ) => {
+    const conversationId = conversationIdOverride ?? await ensureConversation();
+    setContextConversationId(conversationId);
+    const citationId = addCitation({
+      ...citationData,
+      scope: 'context',
+      messageId: citationData.messageId ?? createManualMessageId(),
+      conversationId,
+    });
+    setActiveTab('context');
+    setLastAddedContextCitationId(citationId);
+    return { citationId, conversationId };
+  }, [addCitation, ensureConversation]);
+
   const handleFileSelect = useCallback(async (files: FileList | null) => {
-    if (!files) return;
+    if (!files || files.length === 0) return;
     const conversationId = await ensureConversation();
-    for (const file of files) {
+    setActiveTab('context');
+    for (const file of Array.from(files)) {
       try {
         const content = await readFile(file);
-        addCitation({
+        await addContextCitationAndReveal({
           type: 'file',
-          scope: 'context',
           source: file.name,
           title: file.name,
           snippet: content.slice(0, 1000) + (content.length > 1000 ? '...' : ''),
           content,
           path: file.name,
-          messageId: `manual-${Date.now()}`,
-          conversationId,
-        });
+          sizeBytes: file.size,
+        }, conversationId);
       } catch (error) {
         console.error('Failed to read file:', error);
       }
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [addCitation, ensureConversation]);
+  }, [addContextCitationAndReveal, ensureConversation]);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (activeTab !== 'context') return;
@@ -165,81 +224,68 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       return;
     }
     const conversationId = await ensureConversation();
+    setActiveTab('context');
     setIsFetchingUrl(true);
     try {
       if (getWebSearchSettings().fetchEnabled) {
         const fetched = await fetchWebPage(normalizedUrl);
-        addCitation({
+        await addContextCitationAndReveal({
           type: 'web',
-          scope: 'context',
           source: fetched.url,
           title: fetched.title,
           snippet: fetched.snippet,
           content: fetched.content,
           url: fetched.url,
-          messageId: `manual-${Date.now()}`,
-          conversationId,
-        });
+        }, conversationId);
       } else {
-        addCitation({
+        await addContextCitationAndReveal({
           type: 'web',
-          scope: 'context',
           source: normalizedUrl,
           title: extractDomain(normalizedUrl),
           url: normalizedUrl,
-          messageId: `manual-${Date.now()}`,
-          conversationId,
-        });
+        }, conversationId);
       }
-      setIsAddingUrl(false);
       setUrlInput('');
       setUrlError('');
+      window.setTimeout(() => urlInputRef.current?.focus(), 0);
     } catch (error) {
       console.error('Failed to fetch URL preview:', error);
-      addCitation({
+      await addContextCitationAndReveal({
         type: 'web',
-        scope: 'context',
         source: normalizedUrl,
         title: extractDomain(normalizedUrl),
         url: normalizedUrl,
-        messageId: `manual-${Date.now()}`,
-        conversationId,
-      });
-      setIsAddingUrl(false);
+      }, conversationId);
       setUrlInput('');
       setUrlError('');
+      window.setTimeout(() => urlInputRef.current?.focus(), 0);
     } finally {
       setIsFetchingUrl(false);
     }
   };
 
   const handlePaste = useCallback(async () => {
+    setActiveTab('context');
     try {
       const text = await navigator.clipboard.readText();
-      if (!text) return;
+      if (!text) {
+        return;
+      }
       const conversationId = await ensureConversation();
-      addCitation({
+      await addContextCitationAndReveal({
         type: 'document',
-        scope: 'context',
         source: t('chat.contextToolbox.clipboard', 'Clipboard'),
         title: t('chat.contextToolbox.clipboardText', 'Clipboard text'),
         snippet: text.slice(0, 1000) + (text.length > 1000 ? '...' : ''),
         content: text,
-        messageId: `manual-${Date.now()}`,
-        conversationId,
-      });
+      }, conversationId);
     } catch (error) {
       console.error('Failed to read clipboard:', error);
     }
-  }, [addCitation, ensureConversation, t]);
+  }, [addContextCitationAndReveal, ensureConversation, t]);
 
   const handleUploadClick = useCallback(() => {
     fileInputRef.current?.click();
-  }, []);
-
-  const handleStartAddingUrl = useCallback(() => {
-    setIsAddingUrl(true);
-    setUrlError('');
   }, []);
 
   const filteredSourceCitations = useMemo(() => {
@@ -301,6 +347,11 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           >
             <Icon name={tab.icon} size={12} />
             {tab.label}
+            {typeof tab.count === 'number' && tab.count > 0 && (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                {tab.count}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -316,118 +367,185 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
 
         {activeTab === 'context' && (
           <div className="space-y-4">
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('chat.contextToolbox.attachedFiles', 'Attached files')}</h3>
-                <button onClick={() => fileInputRef.current?.click()} className="p-1 hover:bg-accent rounded transition-colors" title={t('chat.contextToolbox.upload', 'Upload')}>
-                  <Icon name="plus" size={12} className="text-muted-foreground" />
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('chat.contextToolbox.attachedFiles', 'Attached files')}</h3>
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{fileCitations.length}</span>
+                </div>
+                <button
+                  onClick={handleUploadClick}
+                  data-tour-id="chat-context-upload"
+                  className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+                >
+                  <Icon name="upload" size={13} className="text-muted-foreground" />
+                  {t('chat.contextToolbox.upload', 'Upload')}
                 </button>
               </div>
               {fileCitations.length > 0 ? (
                 <div className="space-y-2">
-                  {fileCitations.map((citation) => (
-                    <div key={citation.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group">
-                      <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0"><Icon name="file" size={14} className="text-muted-foreground" /></div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-foreground truncate">{citation.title}</p>
-                        <p className="text-xs text-muted-foreground truncate">{citation.path || citation.source}</p>
+                  {fileCitations.map((citation) => {
+                    const sizeLabel = formatByteSize(citation.sizeBytes);
+                    const metadata = [
+                      sizeLabel,
+                      formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
+                    ].filter(Boolean);
+                    return (
+                      <div
+                        key={citation.id}
+                        className={cn(
+                          'flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50',
+                          citation.id === lastAddedContextCitationId && 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
+                        )}
+                      >
+                        <div className="w-8 h-8 rounded-md bg-muted flex items-center justify-center shrink-0">
+                          <Icon name="file" size={14} className="text-muted-foreground" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-foreground truncate">{citation.title}</p>
+                          <p className="text-xs text-muted-foreground truncate">{metadata.join(' • ')}</p>
+                        </div>
+                        <button
+                          onClick={() => removeCitation(citation.id)}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                          title={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                          aria-label={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                        >
+                          <Icon name="x" size={12} />
+                        </button>
                       </div>
-                      <button onClick={() => removeCitation(citation.id)} className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity" title={t('common.delete', 'Delete')}>
-                        <Icon name="x" size={12} className="text-muted-foreground" />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <button className="w-full text-center py-6 border border-dashed border-border rounded-lg hover:bg-accent/50 transition-colors" onClick={() => fileInputRef.current?.click()}>
-                  <Icon name="paperclip" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
-                  <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.dropFilesHere', 'Drop files here')}</p>
+                <button className="w-full rounded-lg border border-dashed border-border px-3 py-5 text-center hover:bg-accent/50 transition-colors" onClick={handleUploadClick}>
+                  <Icon name="paperclip" size={22} className="text-muted-foreground/50 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.dropFilesOrClick', 'Drop files here or click to add')}</p>
                 </button>
               )}
             </section>
 
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="link" size={12} />{t('chat.contextToolbox.addedLinks', 'Added links')}</h3>
-                {webCitations.length > 0 && <span className="text-xs text-muted-foreground">{webCitations.length}</span>}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="link" size={12} />{t('chat.contextToolbox.addedLinks', 'Added links')}</h3>
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{webCitations.length}</span>
+                </div>
+              </div>
+              <div data-tour-id="chat-context-add-url" className="rounded-lg border border-border bg-accent/20 p-2.5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Input
+                    ref={urlInputRef}
+                    value={urlInput}
+                    onChange={(event) => { setUrlInput(event.target.value); if (urlError) setUrlError(''); }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') { event.preventDefault(); void handleAddUrl(); }
+                      if (event.key === 'Escape') { event.preventDefault(); setUrlInput(''); setUrlError(''); }
+                    }}
+                    error={Boolean(urlError)}
+                    placeholder={t('chat.contextToolbox.urlPlaceholder', 'https://example.com/article')}
+                    className="h-9 min-w-0 flex-1"
+                  />
+                  <button onClick={() => void handleAddUrl()} disabled={isFetchingUrl} className="h-9 shrink-0 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60 transition-colors">
+                    {isFetchingUrl ? t('chat.contextToolbox.fetching', 'Fetching...') : t('common.add', 'Add')}
+                  </button>
+                </div>
+                {urlError && <p className="text-xs text-red-500">{urlError}</p>}
               </div>
               {webCitations.length > 0 ? (
                 <div className="space-y-2">
-                  {webCitations.map((citation) => (
-                    <div key={citation.id} className="flex items-start gap-3 px-3 py-2 rounded-lg border border-border hover:bg-accent/50 transition-colors group">
-                      <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0 overflow-hidden" title={t('chat.contextToolbox.openSource', 'Open source')}>
-                        {citation.url ? <img src={getFaviconUrl(citation.url)} alt="" className="w-4 h-4" onError={(event) => { (event.target as HTMLImageElement).style.display = 'none'; }} /> : <Icon name="globe" size={14} className="text-muted-foreground" />}
-                      </button>
-                      <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="flex-1 min-w-0 text-left" title={t('chat.contextToolbox.openSource', 'Open source')}>
-                        <p className="text-sm text-foreground truncate group-hover:text-primary transition-colors">{citation.title}</p>
-                        <p className="text-xs text-muted-foreground truncate">{citation.url || citation.source}</p>
-                      </button>
-                      <button onClick={() => removeCitation(citation.id)} className="p-1 rounded hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity" title={t('common.delete', 'Delete')}>
-                        <Icon name="x" size={12} className="text-muted-foreground" />
-                      </button>
-                    </div>
-                  ))}
+                  {webCitations.map((citation) => {
+                    const metadata = [
+                      citation.url ? extractDomain(citation.url) : citation.source,
+                      formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
+                    ].filter(Boolean);
+                    return (
+                      <div
+                        key={citation.id}
+                        className={cn(
+                          'flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50',
+                          citation.id === lastAddedContextCitationId && 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
+                        )}
+                      >
+                        <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="w-8 h-8 rounded-md bg-muted flex items-center justify-center shrink-0 overflow-hidden" title={t('chat.contextToolbox.openSource', 'Open source')}>
+                          {citation.url ? <img src={getFaviconUrl(citation.url)} alt="" className="w-4 h-4" onError={(event) => { (event.target as HTMLImageElement).style.display = 'none'; }} /> : <Icon name="globe" size={14} className="text-muted-foreground" />}
+                        </button>
+                        <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="flex-1 min-w-0 text-left" title={t('chat.contextToolbox.openSource', 'Open source')}>
+                          <p className="text-sm text-foreground truncate hover:text-primary transition-colors">{citation.title}</p>
+                          <p className="text-xs text-muted-foreground truncate">{metadata.join(' • ')}</p>
+                        </button>
+                        <button
+                          onClick={() => removeCitation(citation.id)}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                          title={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                          aria-label={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                        >
+                          <Icon name="x" size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="text-center py-6 border border-dashed border-border rounded-lg">
-                  <Icon name="link" size={24} className="text-muted-foreground/50 mx-auto mb-2" />
+                <div className="text-center py-5 border border-dashed border-border rounded-lg">
+                  <Icon name="link" size={22} className="text-muted-foreground/50 mx-auto mb-2" />
                   <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.noLinksAdded', 'No links added')}</p>
                 </div>
               )}
             </section>
 
-            <section>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.quickActions', 'Quick actions')}</h3>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={handleUploadClick}
-                  data-tour-id="chat-context-upload"
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
-                >
-                  <Icon name="upload" size={14} className="text-muted-foreground" />
-                  <span className="truncate">{t('chat.contextToolbox.upload', 'Upload')}</span>
-                </button>
-                <button
-                  onClick={handleStartAddingUrl}
-                  data-tour-id="chat-context-add-url"
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
-                >
-                  <Icon name="link" size={14} className="text-muted-foreground" />
-                  <span className="truncate">{t('chat.contextToolbox.addUrl', 'Add URL')}</span>
-                </button>
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('chat.contextToolbox.pastedText', 'Pasted text')}</h3>
+                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{documentCitations.length}</span>
+                </div>
                 <button
                   onClick={() => void handlePaste()}
                   data-tour-id="chat-context-paste"
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-foreground hover:bg-accent transition-colors min-w-0"
+                  className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
                 >
-                  <Icon name="clipboard" size={14} className="text-muted-foreground" />
-                  <span className="truncate">{t('chat.contextToolbox.paste', 'Paste')}</span>
+                  <Icon name="clipboard" size={13} className="text-muted-foreground" />
+                  {t('chat.contextToolbox.paste', 'Paste')}
                 </button>
               </div>
-              {isAddingUrl && (
-                <div className="mt-2 p-3 rounded-lg border border-border bg-accent/20 space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{t('chat.contextToolbox.addUrl', 'Add URL')}</label>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      ref={urlInputRef}
-                      value={urlInput}
-                      onChange={(event) => { setUrlInput(event.target.value); if (urlError) setUrlError(''); }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') { event.preventDefault(); void handleAddUrl(); }
-                        if (event.key === 'Escape') { event.preventDefault(); setIsAddingUrl(false); setUrlInput(''); setUrlError(''); }
-                      }}
-                      error={Boolean(urlError)}
-                      placeholder={t('chat.contextToolbox.urlPlaceholder', 'https://example.com/article')}
-                      className="h-9"
-                    />
-                    <button onClick={() => void handleAddUrl()} disabled={isFetchingUrl} className="h-9 px-3 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-                      {isFetchingUrl ? t('chat.contextToolbox.fetching', 'Fetching...') : t('common.add', 'Add')}
-                    </button>
-                    <button onClick={() => { setIsAddingUrl(false); setUrlInput(''); setUrlError(''); }} className="h-9 px-3 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-                      {t('common.cancel', 'Cancel')}
-                    </button>
-                  </div>
-                  {urlError && <p className="text-xs text-red-500">{urlError}</p>}
+              {documentCitations.length > 0 ? (
+                <div className="space-y-2">
+                  {documentCitations.map((citation) => {
+                    const metadata = [
+                      formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
+                    ].filter(Boolean);
+                    return (
+                      <div
+                        key={citation.id}
+                        className={cn(
+                          'flex items-center gap-3 rounded-lg border border-border px-3 py-2 transition-colors hover:bg-accent/50',
+                          citation.id === lastAddedContextCitationId && 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
+                        )}
+                      >
+                        <div className="w-8 h-8 rounded-md bg-muted flex items-center justify-center shrink-0">
+                          <Icon name="clipboard" size={14} className="text-muted-foreground" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-foreground truncate">{citation.title}</p>
+                          <p className="text-xs text-muted-foreground truncate">{metadata.join(' • ')}</p>
+                        </div>
+                        <button
+                          onClick={() => removeCitation(citation.id)}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                          title={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                          aria-label={t('chat.contextToolbox.removeFromContext', 'Remove from context')}
+                        >
+                          <Icon name="x" size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-5 border border-dashed border-border rounded-lg">
+                  <Icon name="clipboard" size={22} className="text-muted-foreground/50 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">{t('chat.contextToolbox.noPastedText', 'No pasted text added')}</p>
                 </div>
               )}
             </section>
