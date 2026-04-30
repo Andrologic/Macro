@@ -27,7 +27,7 @@ use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use glob::Pattern;
 use regex::RegexBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::env;
@@ -37,10 +37,6 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use workspace_tools::{
-    mount_workspace_path, normalize_tool_path, resolve_virtual_mount_target,
-    virtual_path_for_mount, VirtualWorkspaceContext,
-};
 
 pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
 const DB_INIT_WAIT_RETRIES: usize = 300;
@@ -120,17 +116,17 @@ pub async fn ai_get_dev_provider_overrides(
     Ok(crate::dev_overrides::load_dev_provider_overrides_from_workspace(&workspace_root))
 }
 
-fn json_arg_string(args: &Value, key: &str) -> Option<String> {
+pub(crate) fn json_arg_string(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
 }
 
-fn json_arg_bool(args: &Value, key: &str) -> Option<bool> {
+pub(crate) fn json_arg_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(|value| value.as_bool())
 }
 
-fn json_arg_u32(args: &Value, key: &str) -> Option<u32> {
+pub(crate) fn json_arg_u32(args: &Value, key: &str) -> Option<u32> {
     args.get(key)
         .and_then(|value| value.as_u64())
         .map(|value| value as u32)
@@ -148,7 +144,7 @@ fn json_arg_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
         })
 }
 
-fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
+pub(crate) fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
     lines
         .iter()
         .enumerate()
@@ -258,38 +254,38 @@ fn to_macro_virtual_relative(path: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-enum ParsedPatchOperation {
+pub(crate) enum ParsedPatchOperation {
     Add { path: String, lines: Vec<String> },
     Update { path: String, hunks: Vec<PatchHunk> },
     Delete { path: String },
 }
 
 #[derive(Debug, Clone)]
-struct PatchHunk {
-    lines: Vec<PatchHunkLine>,
+pub(crate) struct PatchHunk {
+    pub(crate) lines: Vec<PatchHunkLine>,
 }
 
 #[derive(Debug, Clone)]
-struct PatchHunkLine {
-    kind: char,
-    content: String,
+pub(crate) struct PatchHunkLine {
+    pub(crate) kind: char,
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Clone)]
-struct PendingFileChange {
-    display_path: String,
-    effective_workspace: PathBuf,
-    effective_path: String,
-    absolute_path: PathBuf,
-    status: String,
-    new_content: Option<String>,
-    created: bool,
-    bytes_written: u64,
-    additions: usize,
-    deletions: usize,
+pub(crate) struct PendingFileChange {
+    pub(crate) display_path: String,
+    pub(crate) effective_workspace: PathBuf,
+    pub(crate) effective_path: String,
+    pub(crate) absolute_path: PathBuf,
+    pub(crate) status: String,
+    pub(crate) new_content: Option<String>,
+    pub(crate) created: bool,
+    pub(crate) bytes_written: u64,
+    pub(crate) additions: usize,
+    pub(crate) deletions: usize,
 }
 
-fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPatchOperation>> {
+pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPatchOperation>> {
     let lines: Vec<&str> = patch_text.lines().collect();
     if lines.first().copied() != Some("*** Begin Patch") {
         return Err(command_error(
@@ -416,7 +412,7 @@ fn split_text_lines(content: &str) -> (Vec<String>, bool) {
     (lines, trailing_newline)
 }
 
-fn join_text_lines(lines: &[String], trailing_newline: bool) -> String {
+pub(crate) fn join_text_lines(lines: &[String], trailing_newline: bool) -> String {
     let mut joined = lines.join("\n");
     if trailing_newline {
         joined.push('\n');
@@ -440,7 +436,7 @@ fn find_line_sequence(lines: &[String], needle: &[String], start_index: usize) -
     None
 }
 
-fn apply_patch_hunks_to_content(
+pub(crate) fn apply_patch_hunks_to_content(
     path: &str,
     current_content: &str,
     hunks: &[PatchHunk],
@@ -476,7 +472,7 @@ fn apply_patch_hunks_to_content(
     Ok(join_text_lines(&lines, trailing_newline))
 }
 
-fn compute_line_change_stats(old_content: &str, new_content: &str) -> (usize, usize) {
+pub(crate) fn compute_line_change_stats(old_content: &str, new_content: &str) -> (usize, usize) {
     let old_lines = old_content.lines().collect::<Vec<_>>();
     let new_lines = new_content.lines().collect::<Vec<_>>();
 
@@ -518,7 +514,7 @@ fn build_diff_summary(changes: &[PendingFileChange]) -> String {
         .join("\n")
 }
 
-fn resolve_validated_tool_path(
+pub(crate) fn resolve_validated_tool_path(
     workspace: &Path,
     path: &str,
     for_write: bool,
@@ -613,7 +609,13 @@ async fn rollback_pending_file_changes(backups: &[(PathBuf, Option<Vec<u8>>)]) -
     errors
 }
 
-async fn commit_pending_file_changes_atomically(
+/// Applies a validated batch with best-effort filesystem atomicity.
+///
+/// Each write uses a temporary file in the destination directory followed by a
+/// rename. If an operation fails after earlier files were mutated, the earlier
+/// files are rolled back in reverse order. Disk or permission errors during
+/// rollback are surfaced to the caller.
+pub(crate) async fn commit_pending_file_changes_atomically(
     changes: &[PendingFileChange],
 ) -> CommandResult<()> {
     let mut backups = Vec::with_capacity(changes.len());
@@ -662,7 +664,7 @@ async fn commit_pending_file_changes_atomically(
     Ok(())
 }
 
-async fn build_post_write_response(
+pub(crate) async fn build_post_write_response(
     changes: &[PendingFileChange],
     extra_fields: serde_json::Map<String, Value>,
 ) -> CommandResult<String> {
@@ -2236,678 +2238,6 @@ pub async fn open_external_target(
     .map_err(|error| command_error(format!("External launch task failed: {}", error)))?
 }
 
-async fn execute_virtual_workspace_search_tool(
-    tool_id: &str,
-    args: &Value,
-    mounts: &[WorkspaceProjectMount],
-) -> CommandResult<String> {
-    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
-    let mut all_files = Vec::new();
-    for mount in mounts {
-        let Ok(workspace) = mount_workspace_path(mount) else {
-            continue;
-        };
-        let entries = fs::list_dir_internal(
-            &workspace,
-            ".".to_string(),
-            Some(true),
-            Some(include_hidden),
-            None,
-            Some(true),
-        )
-        .await
-        .map_err(|error| command_error(error.to_string()))?;
-        for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
-            all_files.push((
-                mount.clone(),
-                workspace.clone(),
-                entry.relative_path.replace('\\', "/"),
-            ));
-        }
-    }
-
-    if tool_id == "glob" {
-        let pattern = json_arg_string(args, "pattern").unwrap_or_else(|| "**/*".to_string());
-        let compiled = Pattern::new(&pattern)
-            .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
-        let paths = all_files
-            .into_iter()
-            .filter_map(|(mount, _, relative)| {
-                let virtual_path = virtual_path_for_mount(&mount, &relative);
-                (compiled.matches(&relative) || compiled.matches(&virtual_path))
-                    .then_some(virtual_path)
-            })
-            .collect::<Vec<_>>();
-        return serde_json::to_string_pretty(&serde_json::json!({
-            "pattern": pattern,
-            "virtual_root": true,
-            "count": paths.len(),
-            "paths": paths
-        }))
-        .map_err(|error| command_error(error.to_string()));
-    }
-
-    let query = json_arg_string(args, "query")
-        .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
-    let is_regexp = json_arg_bool(args, "is_regexp").unwrap_or(false);
-    let include_pattern = json_arg_string(args, "include_pattern");
-    let max_results = json_arg_u32(args, "max_results").unwrap_or(50).max(1) as usize;
-    let include_glob = include_pattern
-        .as_ref()
-        .map(|glob| Pattern::new(glob))
-        .transpose()
-        .map_err(|error| command_error(format!("Invalid include_pattern glob: {}", error)))?;
-    let regex = if is_regexp {
-        Some(
-            RegexBuilder::new(&query)
-                .case_insensitive(true)
-                .build()
-                .map_err(|error| {
-                    command_error(format!("Invalid regex pattern for grep: {}", error))
-                })?,
-        )
-    } else {
-        None
-    };
-    let query_lower = query.to_lowercase();
-    let mut results = Vec::new();
-    for (mount, workspace, relative) in all_files {
-        let virtual_path = virtual_path_for_mount(&mount, &relative);
-        if let Some(pattern) = include_glob.as_ref() {
-            if !pattern.matches(&relative) && !pattern.matches(&virtual_path) {
-                continue;
-            }
-        }
-        let content = fs::read_file_internal(&workspace, relative, Some(true))
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
-        if content.is_binary {
-            continue;
-        }
-        for (index, line) in content.content.lines().enumerate() {
-            let is_match = if let Some(compiled) = regex.as_ref() {
-                compiled.is_match(line)
-            } else {
-                line.to_lowercase().contains(&query_lower)
-            };
-            if is_match {
-                results.push(serde_json::json!({
-                    "path": virtual_path,
-                    "line": index + 1,
-                    "text": line.trim(),
-                    "project_id": mount.project_id,
-                    "mount_name": mount.mount_name,
-                }));
-                if results.len() >= max_results {
-                    break;
-                }
-            }
-        }
-        if results.len() >= max_results {
-            break;
-        }
-    }
-    serde_json::to_string_pretty(&serde_json::json!({
-        "query": query,
-        "total": results.len(),
-        "results": results
-    }))
-    .map_err(|error| command_error(error.to_string()))
-}
-
-async fn execute_virtual_workspace_tool(
-    mode: &str,
-    tool_id: &str,
-    args: &Value,
-    mounts: &[WorkspaceProjectMount],
-    focused_project_id: Option<&str>,
-) -> CommandResult<Option<String>> {
-    if mounts.is_empty() {
-        return Ok(None);
-    }
-    let virtual_context = VirtualWorkspaceContext {
-        mounts,
-        focused_project_id,
-    };
-
-    match tool_id {
-        "list" => {
-            let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let normalized_path = normalize_tool_path(&raw_path);
-            if explicit_project_id.is_none()
-                && (normalized_path.is_empty() || normalized_path == ".")
-            {
-                let entries = mounts
-                    .iter()
-                    .map(|mount| {
-                        serde_json::json!({
-                            "path": mount.mount_name,
-                            "relative_path": mount.mount_name,
-                            "name": mount.mount_name,
-                            "kind": "directory",
-                            "is_hidden": false,
-                            "is_readonly": mount.is_read_only,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                return serde_json::to_string_pretty(&serde_json::json!({
-                    "path": ".",
-                    "virtual_root": true,
-                    "count": entries.len(),
-                    "entries": entries
-                }))
-                .map(Some)
-                .map_err(|error| command_error(error.to_string()));
-            }
-
-            let resolved = resolve_virtual_mount_target(
-                virtual_context,
-                &raw_path,
-                explicit_project_id.as_deref(),
-            )?;
-            let mount = resolved.mount;
-            let relative_path = resolved.relative_path;
-            let workspace = mount_workspace_path(mount)?;
-            let entries = fs::list_dir_internal(
-                &workspace,
-                relative_path.clone(),
-                json_arg_bool(args, "recursive"),
-                json_arg_bool(args, "include_hidden"),
-                json_arg_u32(args, "max_depth"),
-                Some(true),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?
-            .into_iter()
-            .map(|mut entry| {
-                entry.path = virtual_path_for_mount(mount, &entry.relative_path);
-                entry.relative_path = entry.path.clone();
-                entry
-            })
-            .collect::<Vec<_>>();
-
-            serde_json::to_string_pretty(&serde_json::json!({
-                "path": virtual_path_for_mount(mount, &relative_path),
-                "project_id": mount.project_id,
-                "mount_name": mount.mount_name,
-                "count": entries.len(),
-                "entries": entries
-            }))
-            .map(Some)
-            .map_err(|error| command_error(error.to_string()))
-        }
-        "read" => {
-            let raw_path = json_arg_string(args, "path")
-                .ok_or_else(|| command_error("Missing path argument for read tool."))?;
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let resolved = resolve_virtual_mount_target(
-                virtual_context,
-                &raw_path,
-                explicit_project_id.as_deref(),
-            )?;
-            let mount = resolved.mount;
-            let relative_path = resolved.relative_path;
-            let workspace = mount_workspace_path(mount)?;
-            let result = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
-                .await
-                .map_err(|error| command_error(error.to_string()))?;
-            let virtual_path = virtual_path_for_mount(mount, &relative_path);
-            if result.is_binary {
-                return Ok(Some(format!(
-                    "File {} is binary ({} bytes, encoding={}).",
-                    virtual_path, result.size, result.encoding
-                )));
-            }
-
-            let start_line = json_arg_u32(args, "start_line").unwrap_or(1).max(1) as usize;
-            let end_line = json_arg_u32(args, "end_line").map(|value| value as usize);
-            let lines = result.content.lines().collect::<Vec<_>>();
-            let effective_start = start_line.min(lines.len().max(1));
-            let effective_end = end_line
-                .map(|value| value.max(effective_start))
-                .unwrap_or(lines.len().max(effective_start));
-            let selected = if lines.is_empty() {
-                vec![""]
-            } else {
-                lines
-                    .iter()
-                    .skip(effective_start.saturating_sub(1))
-                    .take(effective_end.saturating_sub(effective_start) + 1)
-                    .copied()
-                    .collect::<Vec<_>>()
-            };
-            let numbered = format_with_line_numbers(&selected, effective_start);
-            Ok(Some(format!(
-                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
-                virtual_path,
-                mount.project_id,
-                mount.mount_name,
-                result.language,
-                result.size,
-                effective_start,
-                effective_start + selected.len().saturating_sub(1),
-                numbered
-            )))
-        }
-        "glob" | "grep" => execute_virtual_workspace_search_tool(tool_id, args, mounts)
-            .await
-            .map(Some),
-        "write" => {
-            let raw_path = json_arg_string(args, "path")
-                .ok_or_else(|| command_error("Missing path argument for write tool."))?;
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let resolved = resolve_virtual_mount_target(
-                virtual_context,
-                &raw_path,
-                explicit_project_id.as_deref(),
-            )?;
-            let mount = resolved.mount;
-            let relative_path = resolved.relative_path;
-            if mount.is_read_only {
-                return Ok(Some(format!(
-                    "Cannot write to read-only project mount {}.",
-                    mount.mount_name
-                )));
-            }
-            let content = json_arg_string(args, "content")
-                .ok_or_else(|| command_error("Missing content argument for write tool."))?;
-            let create_dirs = json_arg_bool(args, "create_dirs");
-            let workspace = mount_workspace_path(mount)?;
-            let absolute_path =
-                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal(
-                &workspace,
-                relative_path.clone(),
-                content.clone(),
-                create_dirs,
-                Some(true),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
-            let display_path = virtual_path_for_mount(mount, &relative_path);
-            let change = PendingFileChange {
-                display_path: display_path.clone(),
-                effective_workspace: workspace,
-                effective_path: relative_path,
-                absolute_path,
-                status: if write_result.created {
-                    "created".to_string()
-                } else {
-                    "updated".to_string()
-                },
-                new_content: Some(content.clone()),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
-                additions: content.lines().count(),
-                deletions: 0,
-            };
-            build_post_write_response(
-                &[change],
-                serde_json::Map::from_iter([
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
-                    ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
-            )
-            .await
-            .map(Some)
-        }
-        "edit" => {
-            let raw_path = json_arg_string(args, "path")
-                .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let resolved = resolve_virtual_mount_target(
-                virtual_context,
-                &raw_path,
-                explicit_project_id.as_deref(),
-            )?;
-            let mount = resolved.mount;
-            let relative_path = resolved.relative_path;
-            if mount.is_read_only {
-                return Ok(Some(format!(
-                    "Cannot edit read-only project mount {}.",
-                    mount.mount_name
-                )));
-            }
-            let old_text = json_arg_string(args, "old_text")
-                .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
-            let new_text = json_arg_string(args, "new_text")
-                .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
-            let replace_all = json_arg_bool(args, "replace_all").unwrap_or(false);
-            let workspace = mount_workspace_path(mount)?;
-            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
-                .await
-                .map_err(|error| command_error(error.to_string()))?;
-            let display_path = virtual_path_for_mount(mount, &relative_path);
-            if current.is_binary {
-                return Ok(Some(format!("Cannot edit binary file: {}", display_path)));
-            }
-            let occurrences = current.content.matches(&old_text).count();
-            if occurrences == 0 {
-                return Ok(Some(format!(
-                    "No match found for old_text in {}.",
-                    display_path
-                )));
-            }
-            let updated = if replace_all {
-                current.content.replace(&old_text, &new_text)
-            } else {
-                current.content.replacen(&old_text, &new_text, 1)
-            };
-            let absolute_path =
-                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal(
-                &workspace,
-                relative_path.clone(),
-                updated.clone(),
-                Some(true),
-                Some(true),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
-            let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
-            let change = PendingFileChange {
-                display_path: display_path.clone(),
-                effective_workspace: workspace,
-                effective_path: relative_path,
-                absolute_path,
-                status: if write_result.created {
-                    "created".to_string()
-                } else {
-                    "updated".to_string()
-                },
-                new_content: Some(updated),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
-                additions,
-                deletions,
-            };
-            build_post_write_response(
-                &[change],
-                serde_json::Map::from_iter([
-                    (
-                        "replacements".to_string(),
-                        Value::Number(serde_json::Number::from(if replace_all {
-                            occurrences as u64
-                        } else {
-                            1
-                        })),
-                    ),
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
-                    ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
-            )
-            .await
-            .map(Some)
-        }
-        "delete" => {
-            let raw_path = json_arg_string(args, "path")
-                .ok_or_else(|| command_error("Missing path argument for delete tool."))?;
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let resolved = resolve_virtual_mount_target(
-                virtual_context,
-                &raw_path,
-                explicit_project_id.as_deref(),
-            )?;
-            let mount = resolved.mount;
-            let relative_path = resolved.relative_path;
-            if mount.is_read_only {
-                return Ok(Some(format!(
-                    "Cannot delete from read-only project mount {}.",
-                    mount.mount_name
-                )));
-            }
-            let workspace = mount_workspace_path(mount)?;
-            let absolute_path =
-                resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
-            let display_path = virtual_path_for_mount(mount, &relative_path);
-            let metadata = tokio::fs::metadata(&absolute_path).await.map_err(|error| {
-                command_error(format!(
-                    "Failed to inspect {} before delete: {}",
-                    display_path, error
-                ))
-            })?;
-            if metadata.is_dir() {
-                return Ok(Some(format!(
-                    "Cannot delete directory with delete tool: {}. Only files are supported.",
-                    display_path
-                )));
-            }
-            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
-                .await
-                .map_err(|error| command_error(error.to_string()))?;
-            let deletions = if current.is_binary {
-                0
-            } else {
-                current.content.lines().count()
-            };
-            tokio::fs::remove_file(&absolute_path)
-                .await
-                .map_err(|error| {
-                    command_error(format!("Failed to delete {}: {}", display_path, error))
-                })?;
-            let change = PendingFileChange {
-                display_path: display_path.clone(),
-                effective_workspace: workspace,
-                effective_path: relative_path,
-                absolute_path,
-                status: "deleted".to_string(),
-                new_content: None,
-                created: false,
-                bytes_written: 0,
-                additions: 0,
-                deletions,
-            };
-            build_post_write_response(
-                &[change],
-                serde_json::Map::from_iter([
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
-            )
-            .await
-            .map(Some)
-        }
-        "apply_patch" => {
-            let patch_text = json_arg_string(args, "patch_text").ok_or_else(|| {
-                command_error("Missing patch_text argument for apply_patch tool.")
-            })?;
-            let explicit_project_id = json_arg_string(args, "project_id");
-            let operations = parse_apply_patch(&patch_text)?;
-            let mut pending_changes = Vec::new();
-
-            for operation in operations.iter() {
-                let operation_path = match operation {
-                    ParsedPatchOperation::Add { path, .. }
-                    | ParsedPatchOperation::Update { path, .. }
-                    | ParsedPatchOperation::Delete { path } => path,
-                };
-                let validation =
-                    validate_tool_execution(mode, tool_id, Some(operation_path.as_str()));
-                if !validation.allowed {
-                    return Ok(Some(validation.reason.unwrap_or_else(|| {
-                        format!(
-                            "Tool {} is not allowed for path {}",
-                            tool_id, operation_path
-                        )
-                    })));
-                }
-            }
-
-            for operation in operations {
-                match operation {
-                    ParsedPatchOperation::Add { path, lines } => {
-                        let resolved = resolve_virtual_mount_target(
-                            virtual_context,
-                            &path,
-                            explicit_project_id.as_deref(),
-                        )?;
-                        let mount = resolved.mount;
-                        let relative_path = resolved.relative_path;
-                        if mount.is_read_only {
-                            return Ok(Some(format!(
-                                "Cannot apply patch to read-only project mount {}.",
-                                mount.mount_name
-                            )));
-                        }
-                        let workspace = mount_workspace_path(mount)?;
-                        let absolute_path =
-                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-                        let display_path = virtual_path_for_mount(mount, &relative_path);
-                        if tokio::fs::try_exists(&absolute_path)
-                            .await
-                            .map_err(|error| {
-                                command_error(format!(
-                                    "Failed to inspect {} before apply_patch: {}",
-                                    display_path, error
-                                ))
-                            })?
-                        {
-                            return Ok(Some(format!(
-                                "Cannot add file {} because it already exists.",
-                                display_path
-                            )));
-                        }
-                        let new_content = join_text_lines(&lines, true);
-                        pending_changes.push(PendingFileChange {
-                            display_path,
-                            effective_workspace: workspace,
-                            effective_path: relative_path,
-                            absolute_path,
-                            status: "created".to_string(),
-                            new_content: Some(new_content.clone()),
-                            created: true,
-                            bytes_written: new_content.len() as u64,
-                            additions: new_content.lines().count(),
-                            deletions: 0,
-                        });
-                    }
-                    ParsedPatchOperation::Update { path, hunks } => {
-                        let resolved = resolve_virtual_mount_target(
-                            virtual_context,
-                            &path,
-                            explicit_project_id.as_deref(),
-                        )?;
-                        let mount = resolved.mount;
-                        let relative_path = resolved.relative_path;
-                        if mount.is_read_only {
-                            return Ok(Some(format!(
-                                "Cannot apply patch to read-only project mount {}.",
-                                mount.mount_name
-                            )));
-                        }
-                        let workspace = mount_workspace_path(mount)?;
-                        let display_path = virtual_path_for_mount(mount, &relative_path);
-                        let current =
-                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
-                                .await
-                                .map_err(|error| command_error(error.to_string()))?;
-                        if current.is_binary {
-                            return Ok(Some(format!(
-                                "Cannot apply patch to binary file: {}",
-                                display_path
-                            )));
-                        }
-                        let absolute_path =
-                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-                        let new_content = apply_patch_hunks_to_content(
-                            display_path.as_str(),
-                            &current.content,
-                            &hunks,
-                        )?;
-                        let (additions, deletions) =
-                            compute_line_change_stats(&current.content, &new_content);
-                        pending_changes.push(PendingFileChange {
-                            display_path,
-                            effective_workspace: workspace,
-                            effective_path: relative_path,
-                            absolute_path,
-                            status: "updated".to_string(),
-                            new_content: Some(new_content.clone()),
-                            created: false,
-                            bytes_written: new_content.len() as u64,
-                            additions,
-                            deletions,
-                        });
-                    }
-                    ParsedPatchOperation::Delete { path } => {
-                        let resolved = resolve_virtual_mount_target(
-                            virtual_context,
-                            &path,
-                            explicit_project_id.as_deref(),
-                        )?;
-                        let mount = resolved.mount;
-                        let relative_path = resolved.relative_path;
-                        if mount.is_read_only {
-                            return Ok(Some(format!(
-                                "Cannot apply patch to read-only project mount {}.",
-                                mount.mount_name
-                            )));
-                        }
-                        let workspace = mount_workspace_path(mount)?;
-                        let absolute_path =
-                            resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
-                        let display_path = virtual_path_for_mount(mount, &relative_path);
-                        let current =
-                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
-                                .await
-                                .map_err(|error| command_error(error.to_string()))?;
-                        let deletion_count = if current.is_binary {
-                            0
-                        } else {
-                            current.content.lines().count()
-                        };
-                        pending_changes.push(PendingFileChange {
-                            display_path,
-                            effective_workspace: workspace,
-                            effective_path: relative_path,
-                            absolute_path,
-                            status: "deleted".to_string(),
-                            new_content: None,
-                            created: false,
-                            bytes_written: 0,
-                            additions: 0,
-                            deletions: deletion_count,
-                        });
-                    }
-                }
-            }
-
-            commit_pending_file_changes_atomically(&pending_changes).await?;
-
-            build_post_write_response(
-                &pending_changes,
-                serde_json::Map::from_iter([(
-                    "applied_operations".to_string(),
-                    Value::Number(serde_json::Number::from(pending_changes.len() as u64)),
-                )]),
-            )
-            .await
-            .map(Some)
-        }
-        _ => Ok(None),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_workspace_tool(
     default_workspace: PathBuf,
@@ -2943,7 +2273,7 @@ pub async fn execute_workspace_tool(
     }
 
     if virtual_root_enabled.unwrap_or(false) {
-        if let Some(result) = execute_virtual_workspace_tool(
+        if let Some(result) = workspace_tools::execute_virtual_workspace_tool(
             &mode_trimmed,
             &tool_trimmed,
             &args,
@@ -4207,6 +3537,19 @@ pub async fn db_toggle_pin_conversation(
 
 // ============ MESSAGES ============
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCreateMessageParams {
+    conversation_id: String,
+    role: String,
+    content: String,
+    token_count: Option<i32>,
+    tool_traces_json: Option<String>,
+    hidden_context: Option<String>,
+    provider_input_items_json: Option<String>,
+    provider_turn_state_json: Option<String>,
+}
+
 #[tauri::command]
 pub async fn db_list_messages(
     pool: State<'_, DbPool>,
@@ -4222,28 +3565,21 @@ pub async fn db_list_messages(
 #[tauri::command]
 pub async fn db_create_message(
     pool: State<'_, DbPool>,
-    conversation_id: String,
-    role: String,
-    content: String,
-    token_count: Option<i32>,
-    tool_traces_json: Option<String>,
-    hidden_context: Option<String>,
-    provider_input_items_json: Option<String>,
-    provider_turn_state_json: Option<String>,
+    params: DbCreateMessageParams,
 ) -> CommandResult<Message> {
     let pool = get_pool(&pool).await?;
 
     repository::create_message(
         &pool,
         CreateMessageInput {
-            conversation_id,
-            role,
-            content,
-            token_count,
-            tool_traces_json,
-            hidden_context,
-            provider_input_items_json,
-            provider_turn_state_json,
+            conversation_id: params.conversation_id,
+            role: params.role,
+            content: params.content,
+            token_count: params.token_count,
+            tool_traces_json: params.tool_traces_json,
+            hidden_context: params.hidden_context,
+            provider_input_items_json: params.provider_input_items_json,
+            provider_turn_state_json: params.provider_turn_state_json,
         },
     )
     .await
@@ -4263,9 +3599,9 @@ pub async fn db_import_messages(
         .map_err(Into::into)
 }
 
-#[tauri::command]
-pub async fn db_update_message(
-    pool: State<'_, DbPool>,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbUpdateMessageParams {
     id: String,
     content: String,
     token_count: Option<i32>,
@@ -4273,18 +3609,26 @@ pub async fn db_update_message(
     hidden_context: Option<String>,
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
+}
+
+#[tauri::command]
+pub async fn db_update_message(
+    pool: State<'_, DbPool>,
+    params: DbUpdateMessageParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
     repository::update_message_content(
         &pool,
-        &id,
-        &content,
-        token_count,
-        tool_traces_json,
-        hidden_context,
-        provider_input_items_json,
-        provider_turn_state_json,
+        repository::UpdateMessageContentInput {
+            id: &params.id,
+            content: &params.content,
+            token_count: params.token_count,
+            tool_traces_json: params.tool_traces_json,
+            hidden_context: params.hidden_context,
+            provider_input_items_json: params.provider_input_items_json,
+            provider_turn_state_json: params.provider_turn_state_json,
+        },
     )
     .await
     .map_err(Into::into)
@@ -4411,9 +3755,9 @@ pub async fn db_reveal_provider_api_key(
     Ok(api_key)
 }
 
-#[tauri::command]
-pub async fn db_update_provider_config(
-    pool: State<'_, DbPool>,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbUpdateProviderConfigParams {
     id: String,
     name: Option<String>,
     provider_type: Option<String>,
@@ -4421,22 +3765,28 @@ pub async fn db_update_provider_config(
     api_key: Option<String>,
     is_local: Option<bool>,
     is_enabled: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn db_update_provider_config(
+    pool: State<'_, DbPool>,
+    params: DbUpdateProviderConfigParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
-    let provider_id = id.clone();
-    let api_key_for_store = api_key.clone();
+    let provider_id = params.id.clone();
+    let api_key_for_store = params.api_key.clone();
 
     repository::update_provider_config(
         &pool,
         UpdateProviderConfigInput {
-            id,
-            name,
-            provider_type,
-            base_url,
-            api_key,
-            is_local,
-            is_enabled,
+            id: params.id,
+            name: params.name,
+            provider_type: params.provider_type,
+            base_url: params.base_url,
+            api_key: params.api_key,
+            is_local: params.is_local,
+            is_enabled: params.is_enabled,
         },
     )
     .await
@@ -4737,8 +4087,9 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, execute_workspace_tool, parse_apply_patch,
-        resolve_requested_workspace, resolve_workspace_for_tool_path, ParsedPatchOperation,
+        apply_patch_hunks_to_content, commit_pending_file_changes_atomically,
+        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, ParsedPatchOperation, PendingFileChange,
     };
     use crate::git::GitState;
     use serde_json::json;
@@ -4904,6 +4255,51 @@ mod tests {
             Some(false)
         );
         assert!(!workspace.path().join("delete-me.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn commit_pending_file_changes_rolls_back_first_write_when_later_operation_fails() {
+        let workspace = TempDir::new().expect("workspace");
+        let first_path = workspace.path().join("first.txt");
+        let missing_delete_path = workspace.path().join("missing.txt");
+        fs::write(&first_path, "original\n").expect("write original");
+
+        let changes = vec![
+            PendingFileChange {
+                display_path: "first.txt".to_string(),
+                effective_workspace: workspace.path().to_path_buf(),
+                effective_path: "first.txt".to_string(),
+                absolute_path: first_path.clone(),
+                status: "updated".to_string(),
+                new_content: Some("updated\n".to_string()),
+                created: false,
+                bytes_written: 8,
+                additions: 1,
+                deletions: 1,
+            },
+            PendingFileChange {
+                display_path: "missing.txt".to_string(),
+                effective_workspace: workspace.path().to_path_buf(),
+                effective_path: "missing.txt".to_string(),
+                absolute_path: missing_delete_path,
+                status: "deleted".to_string(),
+                new_content: None,
+                created: false,
+                bytes_written: 0,
+                additions: 0,
+                deletions: 0,
+            },
+        ];
+
+        let error = commit_pending_file_changes_atomically(&changes)
+            .await
+            .expect_err("second operation should fail");
+
+        assert!(error.message.contains("Failed to delete missing.txt"));
+        assert_eq!(
+            fs::read_to_string(first_path).expect("read restored file"),
+            "original\n"
+        );
     }
 }
 

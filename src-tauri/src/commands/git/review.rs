@@ -1,6 +1,8 @@
 use super::*;
 use crate::fs::get_file_language;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 
 const MAX_REVIEW_INLINE_BYTES: usize = 200 * 1024;
 
@@ -325,6 +327,215 @@ fn read_review_file_sides(
     ))
 }
 
+#[derive(Default)]
+struct ReviewSnapshotStats {
+    additions: u32,
+    deletions: u32,
+    is_binary: bool,
+}
+
+#[derive(Default)]
+struct ReviewSideMetadata {
+    exists: bool,
+    is_binary: bool,
+    too_large: bool,
+}
+
+fn review_diff_path(delta: git2::DiffDelta<'_>) -> Option<String> {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+fn build_review_diff_stats(diff: &git2::Diff<'_>) -> Result<HashMap<String, ReviewSnapshotStats>> {
+    let stats_by_path: RefCell<HashMap<String, ReviewSnapshotStats>> = RefCell::new(HashMap::new());
+
+    diff.foreach(
+        &mut |delta, _progress| {
+            if let Some(path) = review_diff_path(delta) {
+                stats_by_path.borrow_mut().entry(path).or_default();
+            }
+            true
+        },
+        Some(&mut |delta, _binary| {
+            if let Some(path) = review_diff_path(delta) {
+                stats_by_path
+                    .borrow_mut()
+                    .entry(path)
+                    .or_default()
+                    .is_binary = true;
+            }
+            true
+        }),
+        None,
+        None,
+    )?;
+
+    let mut stats_by_path = stats_by_path.into_inner();
+    let stats = diff.stats()?;
+    let stats_buffer = stats.to_buf(git2::DiffStatsFormat::NUMBER, 0)?;
+    let stats_text = std::str::from_utf8(stats_buffer.as_ref()).unwrap_or_default();
+    for line in stats_text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(additions) = parts.next() else {
+            continue;
+        };
+        let Some(deletions) = parts.next() else {
+            continue;
+        };
+        let path = parts.collect::<Vec<_>>().join(" ");
+        if path.is_empty() {
+            continue;
+        }
+        let entry = stats_by_path.entry(path).or_default();
+        entry.additions = additions.parse::<u32>().unwrap_or(0);
+        entry.deletions = deletions.parse::<u32>().unwrap_or(0);
+    }
+
+    Ok(stats_by_path)
+}
+
+fn build_staged_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+    let head_commit = get_head_commit(repo)?;
+    let head_tree = match head_commit.as_ref() {
+        Some(commit) => Some(commit.tree()?),
+        None => None,
+    };
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), None)?;
+    build_review_diff_stats(&diff)
+}
+
+fn build_pending_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let mut options = git2::DiffOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_typechange(true);
+    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut options))?;
+    build_review_diff_stats(&diff)
+}
+
+fn build_workdir_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+    let head_commit = get_head_commit(repo)?;
+    let head_tree = match head_commit.as_ref() {
+        Some(commit) => Some(commit.tree()?),
+        None => None,
+    };
+    let mut options = git2::DiffOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_typechange(true);
+    let diff = repo.diff_tree_to_workdir(head_tree.as_ref(), Some(&mut options))?;
+    build_review_diff_stats(&diff)
+}
+
+fn review_blob_side_metadata(blob: git2::Blob<'_>) -> ReviewSideMetadata {
+    ReviewSideMetadata {
+        exists: true,
+        is_binary: blob.is_binary(),
+        too_large: blob.size() > MAX_REVIEW_INLINE_BYTES,
+    }
+}
+
+fn read_head_side_metadata(repo: &Repository, relative_path: &Path) -> Result<ReviewSideMetadata> {
+    let Some(commit) = get_head_commit(repo)? else {
+        return Ok(ReviewSideMetadata::default());
+    };
+
+    let tree = commit.tree()?;
+    let entry = match tree.get_path(relative_path) {
+        Ok(entry) => entry,
+        Err(_) => return Ok(ReviewSideMetadata::default()),
+    };
+    let object = entry.to_object(repo)?;
+    let Some(blob) = object.as_blob() else {
+        return Ok(ReviewSideMetadata::default());
+    };
+
+    Ok(review_blob_side_metadata(blob.clone()))
+}
+
+fn read_index_side_metadata(repo: &Repository, relative_path: &Path) -> Result<ReviewSideMetadata> {
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let Some(entry) = index.get_path(relative_path, 0) else {
+        return Ok(ReviewSideMetadata::default());
+    };
+
+    let blob = repo.find_blob(entry.id)?;
+    Ok(review_blob_side_metadata(blob))
+}
+
+fn read_worktree_side_metadata(
+    repo_root: &Path,
+    relative_path: &Path,
+) -> Result<ReviewSideMetadata> {
+    let absolute_path = repo_root.join(relative_path);
+    let metadata = match fs::metadata(&absolute_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReviewSideMetadata::default());
+        }
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!(
+                    "Failed to inspect worktree file {:?}: {}",
+                    absolute_path, error
+                ),
+                source: error,
+            });
+        }
+    };
+
+    if !metadata.is_file() {
+        return Ok(ReviewSideMetadata::default());
+    }
+
+    let mut sample = [0u8; 8192];
+    let bytes_read =
+        match fs::File::open(&absolute_path).and_then(|mut file| file.read(&mut sample)) {
+            Ok(bytes_read) => bytes_read,
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!(
+                        "Failed to sample worktree file {:?}: {}",
+                        absolute_path, error
+                    ),
+                    source: error,
+                });
+            }
+        };
+
+    Ok(ReviewSideMetadata {
+        exists: true,
+        is_binary: sample[..bytes_read].contains(&0),
+        too_large: metadata.len() > MAX_REVIEW_INLINE_BYTES as u64,
+    })
+}
+
+fn read_review_snapshot_metadata(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+) -> Result<ReviewSideMetadata> {
+    let head = read_head_side_metadata(repo, relative_path)?;
+    let index = read_index_side_metadata(repo, relative_path)?;
+    let worktree = read_worktree_side_metadata(repo_root, relative_path)?;
+
+    Ok(ReviewSideMetadata {
+        exists: head.exists || index.exists || worktree.exists,
+        is_binary: head.is_binary || index.is_binary || worktree.is_binary,
+        too_large: head.too_large || index.too_large || worktree.too_large,
+    })
+}
+
 pub(super) fn build_git_review_file(
     repo: &Repository,
     repo_root: &Path,
@@ -380,6 +591,9 @@ pub(super) fn build_git_review_snapshot(
     repo: &Repository,
     repo_root: &Path,
 ) -> Result<GitReviewSnapshotDto> {
+    let staged_stats = build_staged_review_stats(repo)?;
+    let pending_stats = build_pending_review_stats(repo)?;
+    let workdir_stats = build_workdir_review_stats(repo)?;
     let status = build_git_status(repo)?;
     let staged_paths = {
         let mut paths = status
@@ -391,6 +605,7 @@ pub(super) fn build_git_review_snapshot(
         paths.dedup();
         paths
     };
+    let staged_path_set = staged_paths.iter().cloned().collect::<HashSet<_>>();
 
     let mut visible_by_path: HashMap<String, (String, bool)> = HashMap::new();
     for file in status
@@ -423,28 +638,45 @@ pub(super) fn build_git_review_snapshot(
     let mut changes = Vec::with_capacity(visible_files.len());
     for (path, (raw_status, has_pending_visible_change)) in visible_files {
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let review_file = build_git_review_file(repo, repo_root, &relative_path, &raw_status)?;
-        let requires_hydration = review_file.is_binary
-            || review_file.too_large
-            || !review_file.full_diff.hunks.is_empty()
-            || !review_file.pending_diff.hunks.is_empty();
+        let metadata = read_review_snapshot_metadata(repo, repo_root, &relative_path)?;
+        let pending = match (pending_stats.get(&path), workdir_stats.get(&path)) {
+            (Some(pending), Some(workdir)) if pending.additions == 0 && pending.deletions == 0 => {
+                Some(workdir)
+            }
+            (Some(pending), _) => Some(pending),
+            (None, workdir) => workdir,
+        };
+        let staged = staged_stats.get(&path);
+        let has_validated_stage = staged_path_set.contains(&path);
+        let is_binary = metadata.is_binary
+            || pending.is_some_and(|stats| stats.is_binary)
+            || staged.is_some_and(|stats| stats.is_binary);
 
         changes.push(GitReviewChangeDto {
             path: path.clone(),
-            status: review_file.status,
-            additions: review_file.pending_diff.additions,
-            deletions: review_file.pending_diff.deletions,
+            status: normalize_review_status(&raw_status),
+            additions: if has_pending_visible_change {
+                pending.map(|stats| stats.additions).unwrap_or(0)
+            } else {
+                0
+            },
+            deletions: if has_pending_visible_change {
+                pending.map(|stats| stats.deletions).unwrap_or(0)
+            } else {
+                0
+            },
             has_pending_visible_change,
-            has_validated_stage: review_file.has_validated_stage,
-            validated_removed_line_numbers: review_file.validated_removed_line_numbers,
-            validated_added_line_numbers: review_file.validated_added_line_numbers,
-            is_binary: review_file.is_binary,
-            too_large: review_file.too_large,
-            requires_hydration,
+            has_validated_stage,
+            validated_removed_line_numbers: Vec::new(),
+            validated_added_line_numbers: Vec::new(),
+            is_binary,
+            too_large: metadata.too_large,
+            requires_hydration: true,
             original_content: String::new(),
             index_content: String::new(),
             modified_content: String::new(),
-            language: review_file.language,
+            language: get_file_language(&repo_root.join(&relative_path))
+                .unwrap_or_else(|| "Unknown".to_string()),
             hunks: Vec::new(),
         });
     }
@@ -461,7 +693,29 @@ pub(super) fn build_git_review_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::build_review_diff;
+    use super::{build_git_review_file, build_git_review_snapshot, build_review_diff};
+    use git2::{Repository, Signature};
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn init_review_repo() -> (TempDir, Repository) {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        fs::write(temp.path().join("README.md"), "hello\nworld\n").expect("write readme");
+
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("find tree");
+            let signature = Signature::now("Tester", "tester@example.com").expect("signature");
+            repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+                .expect("commit");
+        }
+
+        (temp, repo)
+    }
 
     #[test]
     fn review_diff_tracks_additions_and_deletions() {
@@ -487,5 +741,81 @@ mod tests {
 
         assert_eq!(diff.deletions, 1100);
         assert_eq!(diff.additions, 1100);
+    }
+
+    #[test]
+    fn git_review_snapshot_is_lightweight_for_modified_files() {
+        let (temp, repo) = init_review_repo();
+        fs::write(temp.path().join("README.md"), "hello\nthere\nworld\n").expect("modify readme");
+
+        let snapshot = build_git_review_snapshot(&repo, temp.path()).expect("snapshot");
+
+        assert_eq!(snapshot.changes.len(), 1);
+        let change = &snapshot.changes[0];
+        assert_eq!(change.path, "README.md");
+        assert_eq!(change.additions, 1);
+        assert_eq!(change.deletions, 0);
+        assert!(change.has_pending_visible_change);
+        assert!(change.requires_hydration);
+        assert!(change.original_content.is_empty());
+        assert!(change.index_content.is_empty());
+        assert!(change.modified_content.is_empty());
+        assert!(change.hunks.is_empty());
+    }
+
+    #[test]
+    fn git_review_snapshot_detects_large_and_binary_without_content() {
+        let (temp, repo) = init_review_repo();
+        fs::write(
+            temp.path().join("large.txt"),
+            "x".repeat(super::MAX_REVIEW_INLINE_BYTES + 1),
+        )
+        .expect("write large file");
+        fs::write(temp.path().join("binary.bin"), b"abc\0def").expect("write binary file");
+
+        let snapshot = build_git_review_snapshot(&repo, temp.path()).expect("snapshot");
+        let large = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "large.txt")
+            .expect("large change");
+        let binary = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "binary.bin")
+            .expect("binary change");
+
+        assert!(large.too_large);
+        assert!(large.modified_content.is_empty());
+        assert!(binary.is_binary);
+        assert!(binary.modified_content.is_empty());
+    }
+
+    #[test]
+    fn git_review_file_hydrates_staged_only_changes() {
+        let (temp, repo) = init_review_repo();
+        fs::write(temp.path().join("README.md"), "hello\nstaged\nworld\n").expect("modify readme");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("stage readme");
+        index.write().expect("write index");
+
+        let snapshot = build_git_review_snapshot(&repo, temp.path()).expect("snapshot");
+        let change = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "README.md")
+            .expect("staged change");
+        assert!(!change.has_pending_visible_change);
+        assert!(change.has_validated_stage);
+
+        let file = build_git_review_file(&repo, temp.path(), Path::new("README.md"), "modified")
+            .expect("review file");
+        assert_eq!(file.head_content, "hello\nworld\n");
+        assert_eq!(file.index_content, "hello\nstaged\nworld\n");
+        assert_eq!(file.worktree_content, "hello\nstaged\nworld\n");
+        assert!(!file.full_diff.hunks.is_empty());
+        assert!(file.has_validated_stage);
     }
 }

@@ -17,6 +17,7 @@ use crate::workspace::metadata::{
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tauri::State;
@@ -416,16 +417,10 @@ pub async fn workspace_update_project_git_flow(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn workspace_update_project_git_flow_with_setup(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
-    project_id: String,
-    git_flow_settings: ProjectGitFlowSettingsDto,
-    git_setup_actions: Vec<String>,
-    expected_repo_root_path: Option<String>,
-    expected_setup_state: String,
-    expected_recommended_action_sequence: Vec<String>,
+    params: WorkspaceUpdateProjectGitFlowWithSetupParams,
 ) -> Result<ProjectGitSetupCommitResultDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -433,14 +428,27 @@ pub async fn workspace_update_project_git_flow_with_setup(
     workspace::update_project_git_flow_with_setup(
         &workspace_path,
         &metadata_root,
-        &project_id,
-        &git_flow_settings,
-        &git_setup_actions,
-        expected_repo_root_path.as_deref(),
-        &expected_setup_state,
-        &expected_recommended_action_sequence,
+        workspace::UpdateProjectGitFlowWithSetupInput {
+            project_id: &params.project_id,
+            git_flow_settings: &params.git_flow_settings,
+            git_setup_actions: &params.git_setup_actions,
+            expected_repo_root_path: params.expected_repo_root_path.as_deref(),
+            expected_setup_state: &params.expected_setup_state,
+            expected_recommended_action_sequence: &params.expected_recommended_action_sequence,
+        },
     )
     .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceUpdateProjectGitFlowWithSetupParams {
+    project_id: String,
+    git_flow_settings: ProjectGitFlowSettingsDto,
+    git_setup_actions: Vec<String>,
+    expected_repo_root_path: Option<String>,
+    expected_setup_state: String,
+    expected_recommended_action_sequence: Vec<String>,
 }
 
 #[tauri::command]

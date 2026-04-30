@@ -1174,20 +1174,22 @@ export async function createMessage(
   },
 ): Promise<DbMessage> {
   return invoke<DbMessage>("db_create_message", {
-    conversationId,
-    role,
-    content,
-    tokenCount: options?.tokenCount ?? null,
-    toolTracesJson: options?.toolTraces
-      ? JSON.stringify(options.toolTraces)
-      : null,
-    hiddenContext: options?.hiddenContext ?? null,
-    providerInputItemsJson: options?.providerInputItems
-      ? JSON.stringify(options.providerInputItems)
-      : null,
-    providerTurnStateJson: options?.providerTurnState
-      ? JSON.stringify(options.providerTurnState)
-      : null,
+    params: {
+      conversationId,
+      role,
+      content,
+      tokenCount: options?.tokenCount ?? null,
+      toolTracesJson: options?.toolTraces
+        ? JSON.stringify(options.toolTraces)
+        : null,
+      hiddenContext: options?.hiddenContext ?? null,
+      providerInputItemsJson: options?.providerInputItems
+        ? JSON.stringify(options.providerInputItems)
+        : null,
+      providerTurnStateJson: options?.providerTurnState
+        ? JSON.stringify(options.providerTurnState)
+        : null,
+    },
   });
 }
 
@@ -1213,19 +1215,21 @@ export async function updateMessage(
   },
 ): Promise<void> {
   return invoke("db_update_message", {
-    id,
-    content,
-    tokenCount: options?.tokenCount ?? null,
-    toolTracesJson: options?.toolTraces
-      ? JSON.stringify(options.toolTraces)
-      : null,
-    hiddenContext: options?.hiddenContext ?? null,
-    providerInputItemsJson: options?.providerInputItems
-      ? JSON.stringify(options.providerInputItems)
-      : null,
-    providerTurnStateJson: options?.providerTurnState
-      ? JSON.stringify(options.providerTurnState)
-      : null,
+    params: {
+      id,
+      content,
+      tokenCount: options?.tokenCount ?? null,
+      toolTracesJson: options?.toolTraces
+        ? JSON.stringify(options.toolTraces)
+        : null,
+      hiddenContext: options?.hiddenContext ?? null,
+      providerInputItemsJson: options?.providerInputItems
+        ? JSON.stringify(options.providerInputItems)
+        : null,
+      providerTurnStateJson: options?.providerTurnState
+        ? JSON.stringify(options.providerTurnState)
+        : null,
+    },
   });
 }
 
@@ -1396,13 +1400,15 @@ export async function updateProviderConfig(params: {
   isEnabled?: boolean;
 }): Promise<void> {
   return invoke("db_update_provider_config", {
-    id: params.id,
-    name: params.name ?? null,
-    providerType: params.providerType ?? null,
-    baseUrl: params.baseUrl ?? null,
-    apiKey: params.apiKey ?? null,
-    isLocal: params.isLocal ?? null,
-    isEnabled: params.isEnabled ?? null,
+    params: {
+      id: params.id,
+      name: params.name ?? null,
+      providerType: params.providerType ?? null,
+      baseUrl: params.baseUrl ?? null,
+      apiKey: params.apiKey ?? null,
+      isLocal: params.isLocal ?? null,
+      isEnabled: params.isEnabled ?? null,
+    },
   });
 }
 
@@ -2122,13 +2128,15 @@ export async function workspaceUpdateProjectGitFlowWithSetup(params: {
   return invoke<ProjectGitSetupCommitResult>(
     "workspace_update_project_git_flow_with_setup",
     {
-      projectId: params.projectId,
-      gitFlowSettings: params.gitFlowSettings,
-      gitSetupActions: params.gitSetupActions,
-      expectedRepoRootPath: params.expectedRepoRootPath ?? null,
-      expectedSetupState: params.expectedSetupState,
-      expectedRecommendedActionSequence:
-        params.expectedRecommendedActionSequence,
+      params: {
+        projectId: params.projectId,
+        gitFlowSettings: params.gitFlowSettings,
+        gitSetupActions: params.gitSetupActions,
+        expectedRepoRootPath: params.expectedRepoRootPath ?? null,
+        expectedSetupState: params.expectedSetupState,
+        expectedRecommendedActionSequence:
+          params.expectedRecommendedActionSequence,
+      },
     },
   );
 }
