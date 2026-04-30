@@ -676,7 +676,7 @@ describe('architectGitFlowService', () => {
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces merge-in-progress repositories in the plan review', async () => {
+  it('surfaces merge-in-progress repositories without conflicts as ready to complete', async () => {
     gitStatusMock.mockImplementation(async (repoPath: string) => {
       if (worktreeStatusByPath.has(repoPath)) {
         return worktreeStatusByPath.get(repoPath)!;
@@ -701,11 +701,14 @@ describe('architectGitFlowService', () => {
       repoPath: '/repos/api',
       mergeable: true,
       mergeInProgress: true,
-      blockingKind: 'merge_in_progress',
-      nextAction: 'finish_or_abort_merge',
+      blockingKind: null,
+      nextAction: 'complete_merge',
       conflictFiles: [],
+      mergeStrategy: 'merge_ready_to_complete',
+      recommendedAction: 'complete_merge',
+      availableActions: ['complete_merge', 'abort_merge', 'retry_check'],
     });
-    expect(review.repositories[1]?.blockingReason).toContain('merge in progress');
+    expect(review.repositories[1]?.blockingReason).toBeNull();
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(2);
   });
 
