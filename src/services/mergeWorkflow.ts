@@ -28,6 +28,7 @@ export type MergeWorkflowStrategy =
   | 'merge_commit_available'
   | 'file_conflict'
   | 'merge_in_progress'
+  | 'merge_ready_to_complete'
   | 'no_source_changes';
 
 export type MergeWorkflowResolutionAction =
@@ -39,6 +40,7 @@ export type MergeWorkflowResolutionAction =
   | 'fast_forward'
   | 'rebase_then_continue'
   | 'merge_commit'
+  | 'complete_merge'
   | 'retry_check';
 
 export interface MergeWorkflowDirtyFile {
@@ -177,7 +179,7 @@ interface MergeWorkflowBranchListLike {
 
 export type MergeWorkflowMergeExecutionAction = Extract<
   MergeWorkflowResolutionAction,
-  'fast_forward' | 'rebase_then_continue' | 'merge_commit'
+  'fast_forward' | 'rebase_then_continue' | 'merge_commit' | 'complete_merge'
 >;
 
 export const isRepositoryRootExecutionTarget = (
@@ -325,9 +327,9 @@ export const resolveMergeWorkflowStrategy = (params: {
 
   if (mergeInProgress) {
     return {
-      mergeStrategy: 'merge_in_progress',
-      recommendedAction: 'abort_merge',
-      availableActions: ['abort_merge', 'assistant', 'retry_check'],
+      mergeStrategy: 'merge_ready_to_complete',
+      recommendedAction: 'complete_merge',
+      availableActions: ['complete_merge', 'abort_merge', 'retry_check'],
       dirtyFiles,
       ahead,
       behind,
@@ -418,6 +420,83 @@ export const resolveMergeWorkflowStrategy = (params: {
   };
 };
 
+const isRepositoryMergeReadyToComplete = (
+  repository: Pick<
+    PlanReviewRepositoryResult,
+    'mergeInProgress' | 'conflictFiles' | 'blockingKind'
+  >
+): boolean =>
+  repository.mergeInProgress &&
+  repository.conflictFiles.length === 0 &&
+  repository.blockingKind !== 'repository_dirty';
+
+const inferRepositoryMergeStrategy = (
+  repository: PlanReviewRepositoryResult
+): MergeWorkflowStrategy => {
+  if (isRepositoryMergeReadyToComplete(repository)) {
+    return 'merge_ready_to_complete';
+  }
+  if (repository.mergeStrategy) {
+    return repository.mergeStrategy;
+  }
+  if (repository.blockingKind === 'repository_dirty') {
+    return 'dirty';
+  }
+  if (repository.blockingKind === 'merge_in_progress') {
+    return 'merge_in_progress';
+  }
+  if (repository.blockingKind === 'merge_conflict') {
+    return 'file_conflict';
+  }
+  return repository.hasChanges ? 'merge_commit_available' : 'no_source_changes';
+};
+
+const inferRepositoryRecommendedAction = (
+  repository: PlanReviewRepositoryResult
+): MergeWorkflowResolutionAction | null => {
+  if (isRepositoryMergeReadyToComplete(repository)) {
+    return 'complete_merge';
+  }
+  if (repository.recommendedAction !== undefined) {
+    return repository.recommendedAction;
+  }
+  if (repository.blockingKind === 'repository_dirty') {
+    return isMergeWorkflowStagedResolutionRepository(repository)
+      ? 'commit_staged_resolution'
+      : 'stash_dirty';
+  }
+  if (repository.blockingKind === 'merge_in_progress') {
+    return 'abort_merge';
+  }
+  if (repository.blockingKind === 'merge_conflict') {
+    return 'assistant';
+  }
+  return repository.hasChanges ? 'merge_commit' : null;
+};
+
+const inferRepositoryAvailableActions = (
+  repository: PlanReviewRepositoryResult
+): MergeWorkflowResolutionAction[] => {
+  if (isRepositoryMergeReadyToComplete(repository)) {
+    return ['complete_merge', 'abort_merge', 'retry_check'];
+  }
+  if (repository.availableActions) {
+    return repository.availableActions;
+  }
+  if (repository.blockingKind === 'repository_dirty') {
+    return isMergeWorkflowStagedResolutionRepository(repository)
+      ? ['commit_staged_resolution', 'revert_dirty', 'assistant', 'retry_check']
+      : ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'];
+  }
+  if (repository.blockingKind === 'merge_in_progress') {
+    return ['abort_merge', 'assistant', 'retry_check'];
+  }
+  if (repository.blockingKind === 'merge_conflict') {
+    return ['assistant', 'retry_check'];
+  }
+  return repository.hasChanges ? ['merge_commit'] : ['retry_check'];
+};
+
 export const toMergeWorkflowRepositoryResult = (
   repository: PlanReviewRepositoryResult
 ): MergeWorkflowRepositoryResult => ({
@@ -443,43 +522,9 @@ export const toMergeWorkflowRepositoryResult = (
   nextAction: repository.nextAction,
   blockingReason: repository.blockingReason,
   isSourcePublished: repository.isSourcePublished ?? false,
-  mergeStrategy:
-    repository.mergeStrategy ??
-    (repository.blockingKind === 'repository_dirty'
-      ? 'dirty'
-      : repository.blockingKind === 'merge_in_progress'
-        ? 'merge_in_progress'
-        : repository.blockingKind === 'merge_conflict'
-          ? 'file_conflict'
-          : repository.hasChanges
-            ? 'merge_commit_available'
-            : 'no_source_changes'),
-  recommendedAction:
-    repository.recommendedAction ??
-    (repository.blockingKind === 'repository_dirty'
-      ? (isMergeWorkflowStagedResolutionRepository(repository)
-          ? 'commit_staged_resolution'
-          : 'stash_dirty')
-      : repository.blockingKind === 'merge_in_progress'
-        ? 'abort_merge'
-        : repository.blockingKind === 'merge_conflict'
-          ? 'assistant'
-          : repository.hasChanges
-            ? 'merge_commit'
-            : null),
-  availableActions:
-    repository.availableActions ??
-    (repository.blockingKind === 'repository_dirty'
-      ? (isMergeWorkflowStagedResolutionRepository(repository)
-          ? ['commit_staged_resolution', 'revert_dirty', 'assistant', 'retry_check']
-          : ['stash_dirty', 'revert_dirty', 'assistant', 'retry_check'])
-      : repository.blockingKind === 'merge_in_progress'
-        ? ['abort_merge', 'assistant', 'retry_check']
-        : repository.blockingKind === 'merge_conflict'
-          ? ['assistant', 'retry_check']
-          : repository.hasChanges
-            ? ['merge_commit']
-            : ['retry_check']),
+  mergeStrategy: inferRepositoryMergeStrategy(repository),
+  recommendedAction: inferRepositoryRecommendedAction(repository),
+  availableActions: inferRepositoryAvailableActions(repository),
 });
 
 export const toPlanFinalizationMergeWorkflowRuntimeState = (params: {
@@ -600,11 +645,6 @@ const formatMergeWorkflowConflictMessage = (
   return `Cannot continue merge because ${repositoryPath} would conflict in: ${conflictFiles.join(', ')}.`;
 };
 
-const formatMergeWorkflowMergeInProgressMessage = (
-  repositoryPath: string
-): string =>
-  `Cannot continue merge because ${repositoryPath} already has a merge in progress. Finish or abort it first.`;
-
 const formatMergeWorkflowDirtyRepositoryMessage = (
   repositoryPath: string
 ): string =>
@@ -636,11 +676,9 @@ export const buildMergeWorkflowRepositoryBlockingState = (params: {
 
   if (mergeInProgress) {
     return {
-      blockingKind: 'merge_in_progress',
-      blockingReason: formatMergeWorkflowMergeInProgressMessage(
-        params.repositoryPath
-      ),
-      nextAction: 'finish_or_abort_merge',
+      blockingKind: null,
+      blockingReason: null,
+      nextAction: 'complete_merge',
       conflictFiles: [],
       mergeInProgress,
     };

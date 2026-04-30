@@ -286,7 +286,8 @@ export type PlanFinalizationBlockingKind =
 export type PlanFinalizationNextAction =
   | 'clean_repository'
   | 'resolve_conflicts'
-  | 'finish_or_abort_merge';
+  | 'finish_or_abort_merge'
+  | 'complete_merge';
 
 export interface PlanFinalizationBlockedError extends Error {
   name: 'PlanFinalizationBlockedError';
@@ -592,9 +593,6 @@ const formatMergeConflictMessage = (repositoryPath: string, conflictFiles: strin
   return `Cannot finalize plan because ${repositoryPath} would conflict in: ${conflictFiles.join(', ')}.`;
 };
 
-const formatMergeInProgressMessage = (repositoryPath: string): string =>
-  `Cannot finalize plan because ${repositoryPath} already has a merge in progress. Finish or abort it first.`;
-
 const formatDirtyRepositoryMessage = (repositoryPath: string): string =>
   `Cannot finalize plan because ${repositoryPath} has uncommitted changes.`;
 
@@ -618,9 +616,9 @@ const buildPlanRepositoryBlockingState = (params: {
 
   if (mergeInProgress) {
     return {
-      blockingKind: 'merge_in_progress',
-      blockingReason: formatMergeInProgressMessage(params.repositoryPath),
-      nextAction: 'finish_or_abort_merge',
+      blockingKind: null,
+      blockingReason: null,
+      nextAction: 'complete_merge',
       conflictFiles: [],
       mergeInProgress,
     };
