@@ -362,6 +362,46 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Retry');
   });
 
+  it('toggles between active-only and archived-only task lists', async () => {
+    seedTasks([
+      makeTask('task-1', 'Pending', {
+        title: 'Active task',
+        sequence_index: 0,
+      }),
+      makeTask('archived-task', 'Completed', {
+        title: 'Archived task',
+        archived_at: '2026-04-30T10:00:00.000Z',
+        archive_reason: 'Done',
+        sequence_index: 1,
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getLastVirtualListKeys()).toEqual(['section:ready', 'task:task-1']);
+    expect(getSectionSummaries()).toEqual([{ title: 'Ready tasks', count: '1' }]);
+    expect(document.body.textContent).toContain('Active task');
+    expect(document.body.textContent).not.toContain('Archived task');
+
+    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-archive-toggle"]'
+    );
+    expect(archiveToggle).not.toBeNull();
+
+    await act(async () => {
+      archiveToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived-task']);
+    expect(getSectionSummaries()).toEqual([{ title: 'Archive', count: '1' }]);
+    expect(document.body.textContent).not.toContain('Active task');
+    expect(document.body.textContent).toContain('Archived task');
+  });
+
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
     seedStores('AwaitingResponse');
 

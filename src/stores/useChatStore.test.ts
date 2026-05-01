@@ -8476,6 +8476,98 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('idle');
   });
 
+  it('stops an active Implement stream when the linked task becomes completed', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+    const { cancelStream } = await import('../services/streamingChat');
+    const cancelStreamMock = cancelStream as unknown as { mockClear: () => void; mock: { calls: unknown[][] } };
+    cancelStreamMock.mockClear();
+
+    const { useChatStore } = await loadChatStore();
+    await Promise.resolve();
+
+    const abortController = new AbortController();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      conversationRuntimeById: {
+        'implement-conv': {
+          phase: 'streaming',
+          sessionId: 'session-task-1',
+          assistantMessageId: 'assistant-1',
+          abortController,
+          lastError: null,
+        },
+      },
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+    });
+
+    const previousTasks = taskStoreState.tasks;
+    taskStoreState.tasks = [createImplementTask({ status: 'Completed' })];
+    emitTaskStoreUpdate(previousTasks);
+    await Promise.resolve();
+
+    expect(useChatStore.getState().getConversationRuntime('implement-conv').phase).toBe('idle');
+    expect(abortController.signal.aborted).toBe(true);
+    expect(cancelStreamMock.mock.calls).toEqual([['session-task-1']]);
+  });
+
+  it('keeps an active Implement stream running for non-completed task transitions', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+
+    for (const status of ['InReview', 'AwaitingResponse']) {
+      taskStoreSubscribers.clear();
+      taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+      const { cancelStream } = await import('../services/streamingChat');
+      const cancelStreamMock = cancelStream as unknown as { mockClear: () => void; mock: { calls: unknown[][] } };
+      cancelStreamMock.mockClear();
+
+      const { useChatStore } = await loadChatStore();
+      await Promise.resolve();
+
+      useChatStore.setState({
+        conversations: [
+          {
+            ...createConversation(`implement-conv-${status}`),
+            scope_mode: 'Implement',
+            task_id: 'task-1',
+            title: 'Task - Implement checkout',
+          },
+        ],
+        conversationRuntimeById: {
+          [`implement-conv-${status}`]: {
+            phase: 'streaming',
+            sessionId: `session-${status}`,
+            assistantMessageId: 'assistant-1',
+            abortController: new AbortController(),
+            lastError: null,
+          },
+        },
+        selectedConversationId: `implement-conv-${status}`,
+        selectedConversationIdsByMode: { Implement: `implement-conv-${status}` },
+      });
+
+      const previousTasks = taskStoreState.tasks;
+      taskStoreState.tasks = [createImplementTask({ status })];
+      emitTaskStoreUpdate(previousTasks);
+      await Promise.resolve();
+
+      expect(useChatStore.getState().getConversationRuntime(`implement-conv-${status}`).phase).toBe('streaming');
+      expect(cancelStreamMock.mock.calls).toEqual([]);
+    }
+  });
+
   it('deletes multiple chat conversations in a single batch and recalculates selection once', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';

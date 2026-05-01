@@ -1362,7 +1362,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const visibleTasks = useMemo(() => {
     if (showArchived) {
-      return filteredTasks;
+      return filteredTasks.filter((task) => Boolean(task.archived_at));
     }
     return filteredTasks.filter((task) => !task.archived_at);
   }, [filteredTasks, showArchived]);
@@ -1395,11 +1395,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [visibleTasks]);
 
   const archivedTasks = useMemo(() => {
-    if (!showArchived) return [];
-    return [...filteredTasks]
+    return [...visibleTasks]
       .filter((task) => Boolean(task.archived_at))
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [filteredTasks, showArchived]);
+  }, [visibleTasks]);
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
     visibleTasks.forEach((task) => {
@@ -1415,6 +1414,28 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, visibleTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
     const rows: TaskListRow[] = [];
+
+    if (showArchived) {
+      if (archivedTasks.length > 0) {
+        rows.push({
+          kind: 'section',
+          id: 'section:archived',
+          title: t('common.archive', 'Archive'),
+          count: archivedTasks.length,
+          tone: 'default',
+        });
+        archivedTasks.forEach((task) => {
+          rows.push({
+            kind: 'task',
+            id: `task:${task.id}`,
+            task,
+            multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
+          });
+        });
+      }
+
+      return rows;
+    }
 
     if (draftTasks.length > 0) {
       rows.push({
@@ -1477,24 +1498,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         tone: 'success',
       });
       completedTasks.forEach((task) => {
-        rows.push({
-          kind: 'task',
-          id: `task:${task.id}`,
-          task,
-          multiRepoPresentation: multiRepoPresentationByTaskId.get(task.id) ?? null,
-        });
-      });
-    }
-
-    if (showArchived && archivedTasks.length > 0) {
-      rows.push({
-        kind: 'section',
-        id: 'section:archived',
-        title: t('common.archive', 'Archive'),
-        count: archivedTasks.length,
-        tone: 'default',
-      });
-      archivedTasks.forEach((task) => {
         rows.push({
           kind: 'task',
           id: `task:${task.id}`,
