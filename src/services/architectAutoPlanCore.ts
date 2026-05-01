@@ -409,11 +409,22 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       params.contextProjectIds
     );
     const mergedExpectedProjectIds = mergeProjectIds(mergedProjectIds, mergedContextProjectIds);
+    const targetBranchesByProjectId = deps.getTargetBranchesByProjectId?.(mergedProjectIds);
+    const currentTargetBranchesByProjectId = Object.fromEntries(
+      mergedProjectIds.map((projectId) => [
+        projectId,
+        reusableBlankPlan.targetBranchesByProjectId?.[projectId] ?? reusableBlankPlan.targetBranch,
+      ])
+    );
+    const targetBranchesChanged =
+      Boolean(targetBranchesByProjectId) &&
+      JSON.stringify(currentTargetBranchesByProjectId) !== JSON.stringify(targetBranchesByProjectId);
 
     if (
       !coversScope(reusableBlankPlan.projectIds || [], params.scopedProjectIds) ||
       !coversScope(reusableBlankPlan.contextProjectIds || [], params.contextProjectIds || []) ||
-      !coversScope(reusableBlankPlan.expectedProjectIds || [], mergedExpectedProjectIds)
+      !coversScope(reusableBlankPlan.expectedProjectIds || [], mergedExpectedProjectIds) ||
+      targetBranchesChanged
     ) {
       const expandedPlan = await deps.updateArchitectPlan({
         branchName: params.branchName,
@@ -421,10 +432,15 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
         projectIds: mergedProjectIds,
         contextProjectIds: mergedContextProjectIds,
         expectedProjectIds: mergedExpectedProjectIds,
-        targetBranchesByProjectId: deps.getTargetBranchesByProjectId?.(mergedProjectIds),
+        targetBranchesByProjectId,
       });
       return {
-        action: 'expanded_blank',
+        action: targetBranchesChanged &&
+          coversScope(reusableBlankPlan.projectIds || [], params.scopedProjectIds) &&
+          coversScope(reusableBlankPlan.contextProjectIds || [], params.contextProjectIds || []) &&
+          coversScope(reusableBlankPlan.expectedProjectIds || [], mergedExpectedProjectIds)
+            ? 'reused_blank'
+            : 'expanded_blank',
         plan: expandedPlan,
       };
     }

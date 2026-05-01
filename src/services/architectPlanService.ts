@@ -1037,10 +1037,18 @@ const buildPlanMarkdown = (plan: ArchitectPlanRecord): string => {
   } else {
     lines.push(`- Plan Integration Branch: ${toPlanIntegrationBranch(plan.slug)}`);
   }
-  lines.push(`- Target Code Branch: ${plan.targetBranch}`);
-  if (plan.targetBranchesByProjectId && Object.keys(plan.targetBranchesByProjectId).length > 0) {
-    lines.push(`- Mixed Target Branches: ${hasMixedPlanTargetBranches(plan.targetBranchesByProjectId) ? 'yes' : 'no'}`);
-    for (const [projectId, branchName] of Object.entries(plan.targetBranchesByProjectId)) {
+  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
+  const targetCodeBranches = Array.from(
+    new Set(
+      Object.values(targetBranchesByProjectId)
+        .map((branchName) => branchName.trim())
+        .filter((branchName) => branchName.length > 0)
+    )
+  );
+  lines.push(`- Target Code Branch: ${targetCodeBranches.length > 0 ? targetCodeBranches.join(', ') : plan.targetBranch}`);
+  if (Object.keys(targetBranchesByProjectId).length > 0) {
+    lines.push(`- Mixed Target Branches: ${hasMixedPlanTargetBranches(targetBranchesByProjectId) ? 'yes' : 'no'}`);
+    for (const [projectId, branchName] of Object.entries(targetBranchesByProjectId)) {
       lines.push(`- Target Branch [${projectId}]: ${branchName}`);
     }
   }
