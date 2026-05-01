@@ -33,12 +33,13 @@ type MockProjectGroup = {
 type MockPlanNode = {
   id: string;
   title: string;
-  type: 'task';
-  status: 'pending' | 'in-progress' | 'completed';
+  type: 'task' | 'milestone';
+  status: 'pending' | 'in-progress' | 'completed' | 'blocked';
   dependencies: string[];
   projectId: string;
   projectIds?: string[];
   branchSlug?: string;
+  archivedAt?: string | null;
 };
 
 type MockPlanContext = {
@@ -67,7 +68,7 @@ type MockTask = {
   id: string;
   title: string;
   status: TaskStatus;
-  task_source: 'architect';
+  task_source: 'architect' | 'plan_finalization';
   draft: boolean;
   archived_at: string | null;
   project_id: string;
@@ -596,6 +597,116 @@ describe('StrategyGraph', () => {
     ).not.toBeNull();
   });
 
+  it('renders a synthetic finalization node after terminal strategy leaves only', async () => {
+    useAppStore.setState({
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [makeProject('project-1', '/tmp/project-1', 'Project One')],
+        },
+      ],
+      activePlanContext: {
+        id: 'plan-1',
+        slug: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'validated',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-a',
+          title: 'Foundation',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Dependent leaf',
+          type: 'task',
+          status: 'pending',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-c',
+          title: 'Independent leaf',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-a',
+          name: 'feature/plan-1/foundation',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-a'],
+          status: 'merged',
+        },
+        {
+          id: 'branch-b',
+          name: 'feature/plan-1/dependent-leaf',
+          color: '#10b981',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-b'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-c',
+          name: 'feature/plan-1/independent-leaf',
+          color: '#f59e0b',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-c'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.querySelector('[data-graph-node-id="plan-finalization:plan-1"]')).not.toBeNull();
+    expect(
+      document.querySelector('[data-graph-edge-source="task-b"][data-graph-edge-target="plan-finalization:plan-1"]')
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-graph-edge-source="task-c"][data-graph-edge-target="plan-finalization:plan-1"]')
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-graph-edge-source="task-a"][data-graph-edge-target="plan-finalization:plan-1"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="plan_finalization"]')
+    ).not.toBeNull();
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(3);
+    expect(document.querySelector('[data-branch-task="plan-finalization:plan-1"]')).toBeNull();
+  });
+
   it('renders a pulsing dot when the linked task awaits a response', async () => {
     seedStores('AwaitingResponse');
 
@@ -938,7 +1049,7 @@ describe('StrategyGraph', () => {
     expect(document.body.textContent).not.toContain('feature/plan-1/internal-name');
   });
 
-  it('merges exact same branch names into one mixed card with deduplicated tasks', async () => {
+  it('does not merge legacy branch cards that contain different task sets', async () => {
     seedStores('Pending');
     useAppStore.setState({
       selectedGroupId: 'group-1',
@@ -1086,21 +1197,12 @@ describe('StrategyGraph', () => {
     });
 
     const branchCards = document.querySelectorAll('[data-branch-card="true"]');
-    expect(branchCards).toHaveLength(1);
+    expect(branchCards).toHaveLength(2);
     expect(document.body.textContent).toContain('shared-feature');
     expect(document.body.textContent).toContain('Web task');
     expect(document.body.textContent).toContain('Shared task');
     expect(document.body.textContent).toContain('API task');
-    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(3);
-
-    const mixedBadge = document.querySelector(
-      '[data-branch-card-status-badge="mixed"]'
-    ) as HTMLSpanElement | null;
-    expect(mixedBadge).not.toBeNull();
-    expect(branchCards[0]?.getAttribute('data-branch-card-status')).toBe('mixed');
-    expect(mixedBadge?.textContent).toContain('Mixed');
-    expect(mixedBadge?.className).toContain('bg-muted');
-    expect(mixedBadge?.className).toContain('text-muted-foreground');
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(4);
 
     const searchInput = document.querySelector('input') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
@@ -1120,8 +1222,8 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
-    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
 
     await act(async () => {
       if (searchInput) {
@@ -1148,12 +1250,12 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
     expect(document.body.textContent).toContain('API task');
   });
 
-  it('merges repo-specific branch names when they share the same explicit logical branch slug', async () => {
+  it('keeps different tasks separate even when they share the same explicit logical branch slug', async () => {
     seedStores('Pending');
     useAppStore.setState({
       selectedGroupId: 'group-1',
@@ -1314,10 +1416,90 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.body.textContent).toContain('checkout-api');
     expect(document.body.textContent).toContain('Web task');
     expect(document.body.textContent).toContain('API task');
+  });
+
+  it('groups repo-specific branch cards for the same multi-project task', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Web'),
+            makeProject('project-2', '/tmp/project-2', 'API'),
+          ],
+        },
+      ],
+      activePlanContext: {
+        id: 'plan-1',
+        slug: 'plan-1',
+        title: 'Plan One',
+        description: '',
+        status: 'draft',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-shared',
+          title: 'Shared task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          branchSlug: 'checkout-api',
+          projectId: 'project-1',
+          projectIds: ['project-1', 'project-2'],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-web',
+          name: 'feature/plan-1/checkout-api',
+          branchSlug: 'checkout-api',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-shared'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-api',
+          name: 'work/plan-1/checkout-api',
+          branchSlug: 'checkout-api',
+          color: '#10b981',
+          parentBranch: 'roadmap/plan-1',
+          projectId: 'project-2',
+          taskIds: ['task-shared'],
+          status: 'active',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
+    expect(document.body.textContent).toContain('Shared task');
   });
 
   it('does not merge different full branch names that share the same short label', async () => {

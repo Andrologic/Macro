@@ -7,8 +7,11 @@ import type {
   TaskStatus,
 } from '../types';
 import {
+  buildPlanFeatureBranchKey,
   getPlanNodeLogicalBranchIdentity,
   getPredictedBranchLogicalIdentity,
+  renderPlanFeatureBranchName,
+  resolvePlanNodeTaskBranchIntents,
 } from './architectBranchIdentity';
 import {
   getPlanNodeBranchIntent,
@@ -123,6 +126,14 @@ const getNodeBranchKey = (node: PlanNode, planSlug?: string): string => {
   return getPlanNodeBranchIntent(node).key;
 };
 
+const getLegacyNodeBranchKey = (node: PlanNode, planSlug?: string): string => {
+  const branchIntent = getPlanNodeBranchIntent(node);
+  if (planSlug?.trim()) {
+    return buildPlanFeatureBranchKey(planSlug, branchIntent.branchSlug);
+  }
+  return branchIntent.key;
+};
+
 const getPredictedBranchKey = (
   branch: PredictedBranch,
   planSlug?: string,
@@ -139,19 +150,40 @@ const getPredictedBranchKey = (
   return getPredictedBranchIntentKey(branch);
 };
 
+const getLegacyPredictedBranchKey = (
+  branch: PredictedBranch,
+  planSlug?: string,
+): string => {
+  const branchIntent = getPredictedBranchIntent(branch);
+  if (planSlug?.trim()) {
+    return buildPlanFeatureBranchKey(planSlug, branchIntent.branchSlug);
+  }
+  return branchIntent.key;
+};
+
 const toBranchTaskOrder = (
   nodes: PlanNode[],
   predictedBranches: PredictedBranch[],
-  planSlug?: string
+  planSlug?: string,
+  options?: {
+    taskScoped?: boolean;
+  },
 ): Map<string, string[]> => {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const orderByBranch = new Map<string, string[]>();
+  const taskScoped = options?.taskScoped !== false;
 
   for (const branch of predictedBranches) {
     const branchName = normalizeBranchName(branch.name);
-    const branchKey = getPredictedBranchKey(branch, planSlug);
     const orderedIds = branch.taskIds.filter((taskId) => nodeById.has(taskId));
     const deduped = unique(orderedIds);
+    if (taskScoped && deduped.length !== 1) {
+      continue;
+    }
+    const branchNode = taskScoped ? nodeById.get(deduped[0]) : null;
+    const branchKey = taskScoped && branchNode
+      ? getNodeBranchKey(branchNode, planSlug)
+      : getLegacyPredictedBranchKey(branch, planSlug);
 
     for (const taskId of deduped) {
       const node = nodeById.get(taskId);
@@ -175,7 +207,9 @@ const toBranchTaskOrder = (
 
   for (const node of nodes) {
     const branchIntent = getPlanNodeBranchIntent(node);
-    const branchKey = getNodeBranchKey(node, planSlug);
+    const branchKey = taskScoped
+      ? getNodeBranchKey(node, planSlug)
+      : getLegacyNodeBranchKey(node, planSlug);
     node.assignedBranch = node.assignedBranch ? normalizeBranchName(node.assignedBranch) : branchIntent.label;
     node.branchType = branchIntent.branchType;
     node.branchSlug = branchIntent.branchSlug;
@@ -200,8 +234,26 @@ const normalizePredictedBranches = (
   planSlug?: string
 ): PredictedBranch[] => {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const resolveBranchStatus = (taskIds: string[]): PredictedBranch['status'] => {
+    const branchNodes = taskIds
+      .map((taskId) => nodeById.get(taskId))
+      .filter((node): node is PlanNode => Boolean(node));
+    if (branchNodes.length > 0 && branchNodes.every((node) => node.status === 'completed')) {
+      return 'merged';
+    }
+    if (branchNodes.some((node) => node.status === 'in-progress')) {
+      return 'active';
+    }
+    return 'pending';
+  };
   const normalized: PredictedBranch[] = [];
   const seenKeys = new Set<string>();
+  const legacyBranchByProjectAndTask = new Map<string, PredictedBranch>();
+  for (const branch of predictedBranches) {
+    for (const taskId of unique(branch.taskIds)) {
+      legacyBranchByProjectAndTask.set(`${branch.projectId}::${taskId}`, branch);
+    }
+  }
 
   for (const branch of predictedBranches) {
     const branchIntent = getPredictedBranchIntent(branch);
@@ -211,6 +263,7 @@ const normalizePredictedBranches = (
 
     const branchKey = getPredictedBranchKey(branch, planSlug);
     const taskIds = branchTaskOrder.get(branchKey) || [];
+    if (taskIds.length === 0) continue;
     const cacheKey = `${projectId}::${branchKey}`;
     if (seenKeys.has(cacheKey)) {
       const existing = normalized.find(
@@ -219,6 +272,7 @@ const normalizePredictedBranches = (
       );
       if (existing) {
         existing.taskIds = unique([...existing.taskIds, ...taskIds]);
+        existing.status = resolveBranchStatus(existing.taskIds);
       }
       continue;
     }
@@ -228,6 +282,7 @@ const normalizePredictedBranches = (
       name: branchName,
       projectId,
       taskIds,
+      status: resolveBranchStatus(taskIds),
       branchType: branchIntent.branchType,
       branchSlug: branchIntent.branchSlug,
     });
@@ -244,20 +299,30 @@ const normalizePredictedBranches = (
     );
     const firstNode = taskIds.map((taskId) => nodeById.get(taskId)).find(Boolean) || null;
     const branchIntent = firstNode ? getPlanNodeBranchIntent(firstNode) : null;
-    const branchName = branchIntent?.label || branchKey;
+    const branchName =
+      branchIntent && planSlug
+        ? renderPlanFeatureBranchName({
+            planSlug,
+            featureSlug: branchIntent.branchSlug,
+          })
+        : branchIntent?.label || branchKey;
+    const branchStatus = resolveBranchStatus(taskIds);
 
     for (const projectId of projectIds) {
       const cacheKey = `${projectId}::${branchKey}`;
       if (seenKeys.has(cacheKey)) continue;
+      const legacyBranch = taskIds.length === 1
+        ? legacyBranchByProjectAndTask.get(`${projectId}::${taskIds[0]}`)
+        : null;
 
       normalized.push({
         id: makeBranchId(branchName, projectId),
         name: branchName,
         color: BRANCH_COLORS[colorIndex % BRANCH_COLORS.length],
-        parentBranch: null,
+        parentBranch: legacyBranch?.parentBranch || null,
         projectId,
         taskIds,
-        status: 'pending',
+        status: branchStatus,
         branchType: branchIntent?.branchType,
         branchSlug: branchIntent?.branchSlug,
       });
@@ -352,12 +417,28 @@ export const normalizeStrategyDependencies = (
     })
     .filter((branch) => branch.projectId.length > 0);
 
+  const legacyBranchTaskOrder = toBranchTaskOrder(
+    clonedNodes,
+    predictedBranches,
+    planSlug,
+    { taskScoped: false },
+  );
+  applySequentialBranchDependencies(clonedNodes, legacyBranchTaskOrder);
+
+  const taskBranchIntents = resolvePlanNodeTaskBranchIntents(clonedNodes);
+  clonedNodes.forEach((node) => {
+    const branchIntent = taskBranchIntents.get(node.id) || getPlanNodeBranchIntent(node);
+    node.assignedBranch = branchIntent.label;
+    node.branchType = branchIntent.branchType;
+    node.branchSlug = branchIntent.branchSlug;
+  });
+
   const branchTaskOrder = toBranchTaskOrder(
     clonedNodes,
     predictedBranches,
     planSlug,
+    { taskScoped: true },
   );
-  applySequentialBranchDependencies(clonedNodes, branchTaskOrder);
 
   const normalizedPredictedBranches = normalizePredictedBranches(
     clonedNodes,

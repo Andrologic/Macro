@@ -13,10 +13,12 @@ import {
 import {
   buildPlanFinalizationTaskId,
   buildPlanFinalizationTaskTitle,
+  derivePlanFinalizationDependencyState,
   isPlanFinalizationTaskSource,
   PLAN_FINALIZATION_TASK_DESCRIPTION,
   PLAN_FINALIZATION_TASK_PREFIX,
   shouldCreatePlanFinalizationTask,
+  type PlanFinalizationDependencyState,
 } from './planFinalization';
 import type {
   MergeWorkflowSummary,
@@ -107,13 +109,21 @@ const buildPlanFinalizationExecutionTargets = (
 
 const buildPlanFinalizationTask = (
   plan: ArchitectPlanRecord,
-  sequenceIndex: number
+  sequenceIndex: number,
+  dependencyState: PlanFinalizationDependencyState,
+  blockingTasks: CatalogedImplementTask[]
 ): CatalogedImplementTask | null => {
   const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
   const projectId = projectIds[0];
   if (!projectId) {
     return null;
   }
+
+  const isBlocked = !dependencyState.isComplete;
+  const blockedByTaskIds = isBlocked ? dependencyState.incompleteNodeIds : [];
+  const blockedBy = blockedByTaskIds
+    .map((taskId) => blockingTasks.find((task) => task.id === taskId)?.title)
+    .filter((title): title is string => Boolean(title));
 
   return {
     id: buildPlanFinalizationTaskId(plan.id),
@@ -123,17 +133,17 @@ const buildPlanFinalizationTask = (
     context_project_ids: plan.contextProjectIds || [],
     title: buildPlanFinalizationTaskTitle(plan),
     description: PLAN_FINALIZATION_TASK_DESCRIPTION,
-    status: 'Pending',
-    dependencies: [],
+    status: isBlocked ? 'Blocked' : 'Pending',
+    dependencies: dependencyState.terminalNodeIds,
     estimated_changes: [],
     assigned_branch: plan.targetBranch,
     branch_name: plan.targetBranch,
     branch_id: null,
     branch_task_index: Number.MAX_SAFE_INTEGER,
-    blocked_by_task_ids: [],
-    blocked_by: [],
-    is_blocked: false,
-    is_ready: true,
+    blocked_by_task_ids: blockedByTaskIds,
+    blocked_by: blockedBy,
+    is_blocked: isBlocked,
+    is_ready: !isBlocked,
     needs_revalidation: false,
     sequence_index: sequenceIndex,
     execution_targets: buildPlanFinalizationExecutionTargets(plan),
@@ -393,20 +403,25 @@ export const buildImplementTaskCatalog = (params: {
   const planFinalizationTasks = executablePlans
     .map((plan) => {
       const planTasks = architectTasksByPlanId.get(plan.id) || [];
-      const completedTaskCount = planTasks.filter((task) => task.status === 'Completed').length;
+      const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
+      const dependencyState = derivePlanFinalizationDependencyState(plan.nodes || []);
       if (!shouldCreatePlanFinalizationTask({
         planStatus: plan.status,
-        taskCount: planTasks.length,
-        completedTaskCount,
+        taskCount: dependencyState.actionableNodeIds.length,
       })) {
         return null;
       }
 
       const lastSequenceIndex = planTasks.reduce(
         (maxValue, task) => Math.max(maxValue, task.sequence_index),
-        0
+          0
       );
-      return buildPlanFinalizationTask(plan, lastSequenceIndex + 1);
+      return buildPlanFinalizationTask(
+        plan,
+        lastSequenceIndex + 1,
+        dependencyState,
+        actionablePlanTasks
+      );
     })
     .filter((task): task is CatalogedImplementTask => Boolean(task));
   const architectTaskIds = new Set(architectTasks.map((task) => task.id));
@@ -420,17 +435,13 @@ export const buildImplementTaskCatalog = (params: {
   });
   const standaloneTasks = deriveFallbackImplementTasks(standaloneFallbackTasks);
 
-  const planTaskCounts = new Map<string, number>();
-  architectTasks.forEach((task) => {
-    planTaskCounts.set(task.plan_id, (planTaskCounts.get(task.plan_id) || 0) + 1);
-  });
-
   const plans = executablePlans
     .map((plan) => {
       const planTasks = architectTasks.filter((task) => task.plan_id === plan.id);
-      const taskCount = planTaskCounts.get(plan.id) || 0;
-      const completedTaskCount = planTasks.filter((task) => task.status === 'Completed').length;
-      const activeTaskCount = planTasks.filter(
+      const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
+      const taskCount = actionablePlanTasks.length;
+      const completedTaskCount = actionablePlanTasks.filter((task) => task.status === 'Completed').length;
+      const activeTaskCount = actionablePlanTasks.filter(
         (task) => task.status === 'InProgress' || task.status === 'AwaitingResponse'
       ).length;
 

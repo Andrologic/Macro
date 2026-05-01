@@ -845,7 +845,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and per-node `featureSlug`) rather than raw git branch names. Concrete branch names are rendered later from each subproject Git workflow profile.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -914,7 +914,7 @@ export const MACRO_TOOL_REGISTRY = [
               featureSlug: {
                 type: "string",
                 description:
-                  "Logical feature slug for this node within the current plan.",
+                  "Unique logical task branch slug for this node within the current plan.",
               },
               feature_slug: {
                 type: "string",
@@ -1120,7 +1120,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and `featureSlug`) when creating or updating nodes; assignedBranch remains legacy fallback only.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, and keep assignedBranch as a legacy fallback only. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1155,7 +1155,7 @@ export const MACRO_TOOL_REGISTRY = [
               featureSlug: {
                 type: "string",
                 description:
-                  "Logical feature slug for this node within the active plan.",
+                  "Unique logical task branch slug for this node within the active plan.",
               },
               feature_slug: {
                 type: "string",
@@ -1198,7 +1198,7 @@ export const MACRO_TOOL_REGISTRY = [
               featureSlug: {
                 type: "string",
                 description:
-                  "Logical feature slug for this node within the active plan.",
+                  "Unique logical task branch slug for this node within the active plan.",
               },
               feature_slug: {
                 type: "string",

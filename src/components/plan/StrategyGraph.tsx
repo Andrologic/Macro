@@ -28,6 +28,13 @@ import {
   resolveRunningTaskIds,
   type TaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
+import {
+  buildPlanFinalizationTaskId,
+  buildPlanFinalizationTaskTitle,
+  derivePlanFinalizationDependencyState,
+  isPlanFinalizationTaskId,
+  PLAN_FINALIZATION_TASK_DESCRIPTION,
+} from '../../services/planFinalization';
 import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
@@ -175,9 +182,13 @@ const getBranchCardLabel = (
 
 const getLogicalBranchLabel = (params: {
   planSlug?: string | null;
-  node?: Pick<PlanNode, 'assignedBranch' | 'branchSlug' | 'title'>;
+  node?: Pick<PlanNode, 'id' | 'assignedBranch' | 'branchSlug' | 'title'>;
   branch?: Pick<PredictedBranch, 'name' | 'branchSlug'>;
 }): string => {
+  if (params.node && isPlanFinalizationTaskId(params.node.id)) {
+    return params.node.assignedBranch?.trim() || 'target';
+  }
+
   if (params.node && params.planSlug?.trim()) {
     const identity = getPlanNodeLogicalBranchIdentity({
       planSlug: params.planSlug,
@@ -217,6 +228,43 @@ const nodeMatchesProjectId = (node: Pick<PlanNode, 'projectId' | 'projectIds'>, 
   return projectIds.length === 0 || projectIds.includes(projectId);
 };
 
+const buildSyntheticPlanFinalizationNode = (params: {
+  activePlanContext: {
+    id: string;
+    title: string;
+    label?: string | null;
+    status: string;
+    targetBranch: string;
+  } | null;
+  nodes: PlanNode[];
+}): PlanNode | null => {
+  if (!params.activePlanContext || params.nodes.length === 0) {
+    return null;
+  }
+
+  const dependencyState = derivePlanFinalizationDependencyState(params.nodes);
+  if (dependencyState.terminalNodeIds.length === 0) {
+    return null;
+  }
+
+  const projectIds = Array.from(
+    new Set(params.nodes.flatMap((node) => normalizeNodeProjectIds(node))),
+  );
+  const isCompletedPlan = params.activePlanContext.status === 'completed';
+
+  return {
+    id: buildPlanFinalizationTaskId(params.activePlanContext.id),
+    title: buildPlanFinalizationTaskTitle(params.activePlanContext),
+    description: PLAN_FINALIZATION_TASK_DESCRIPTION,
+    type: 'milestone',
+    status: isCompletedPlan ? 'completed' : dependencyState.isComplete ? 'pending' : 'blocked',
+    dependencies: dependencyState.terminalNodeIds,
+    assignedBranch: params.activePlanContext.targetBranch,
+    projectId: projectIds[0],
+    projectIds,
+  };
+};
+
 const getProjectGitFlowSettingsFromGroups = (
   projectGroups: ProjectGroup[],
   projectId: string,
@@ -244,6 +292,13 @@ const getBranchCardGroupIdentity = (params: {
   key: string;
   logicalLabel: string;
 } => {
+  if (params.branch.taskIds.length !== 1) {
+    return {
+      key: `legacy::${params.branch.projectId}::${params.branch.id}`,
+      logicalLabel: getBranchCardLabel(params.branch),
+    };
+  }
+
   const projectSettings = params.branch.projectId
     ? getProjectGitFlowSettingsFromGroups(params.projectGroups, params.branch.projectId)
     : undefined;
@@ -685,12 +740,19 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     }
 
     const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
-    const nodes =
+    const scopedNodes =
       scopedProjectIds.length > 0
         ? planNodes.filter((node: PlanNode) =>
             scopedProjectIds.some((projectId) => nodeMatchesProjectId(node, projectId))
           )
         : planNodes;
+    const syntheticFinalizationNode = buildSyntheticPlanFinalizationNode({
+      activePlanContext,
+      nodes: scopedNodes,
+    });
+    const nodes = syntheticFinalizationNode
+      ? [...scopedNodes, syntheticFinalizationNode]
+      : scopedNodes;
 
     if (nodes.length === 0) return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
 
@@ -722,10 +784,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     nodes.forEach(n => getRank(n.id));
 
     // --- Disambiguate Overlaps ---
-    // If nodes share the same branch AND the same rank, they perfectly overlap.
-    // We sort them roughly by ID to be deterministic, then progressively bump ranks.
+    // Task-scoped lanes can still overlap when multi-project cards for one task
+    // land on the same rank. Keep the layout deterministic by bumping ranks.
     const getNodeLaneKey = (node: PlanNode): string =>
-      activePlanSlug
+      isPlanFinalizationTaskId(node.id)
+        ? `plan-finalization::${node.id}`
+        : activePlanSlug
         ? getPlanNodeLogicalBranchIdentity({
             planSlug: activePlanSlug,
             node,
@@ -852,7 +916,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [activePlanSlug, containerWidth, planNodes, projectGroups, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
+  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectGroups, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
 
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
@@ -860,12 +924,23 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     [taskStatusById]
   );
   const getNodeIndicatorState = useCallback(
-    (node: Pick<PlanNode, 'id' | 'status'>): TaskStatusIndicatorState =>
-      resolvePlanNodeStatusIndicatorState({
+    (node: Pick<PlanNode, 'id' | 'status'>): TaskStatusIndicatorState => {
+      const isAssistantRunning = runningTaskIds.has(node.id);
+      const taskStatus = taskStatusById.get(node.id) ?? null;
+      if (isPlanFinalizationTaskId(node.id)) {
+        if (isAssistantRunning) return 'running';
+        const resolvedStatus = taskStatus ?? mapPlanNodeStatusToTaskStatus(node.status);
+        if (resolvedStatus === 'Completed') return 'completed';
+        if (resolvedStatus === 'Failed') return 'failed';
+        return 'plan_finalization';
+      }
+
+      return resolvePlanNodeStatusIndicatorState({
         nodeStatus: node.status,
-        taskStatus: taskStatusById.get(node.id) ?? null,
-        isAssistantRunning: runningTaskIds.has(node.id),
-      }),
+        taskStatus,
+        isAssistantRunning,
+      });
+    },
     [runningTaskIds, taskStatusById]
   );
   const getNodeStatusTone = useCallback(
@@ -1177,6 +1252,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         return (
           <path
             key={`${edge.source}-${edge.target}`}
+            data-graph-edge-source={edge.source}
+            data-graph-edge-target={edge.target}
             d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`}
             fill="none"
             className={cn('transition-all duration-300', strokeColor)}
@@ -1200,6 +1277,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         return (
           <g
             key={node.id}
+            data-graph-node-id={node.id}
             className={cn('transition-opacity duration-300', isDimmed ? 'opacity-30' : 'opacity-100')}
             onMouseEnter={(event) => {
               if (isModalPanning) return;
