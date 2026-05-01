@@ -183,6 +183,35 @@ const summarizeArchitectPlanRecord = (
   hasReplicaDivergence: plan.hasReplicaDivergence,
 });
 
+const resolvePlanTargetSummary = (
+  plan: Pick<ArchitectPlanSummary, 'targetBranch' | 'targetBranchesByProjectId'>,
+  selectedProjectId: string | null,
+): {
+  targetBranch: string;
+  hasMixedTargetBranches: boolean;
+} => {
+  if (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) {
+    return {
+      targetBranch: plan.targetBranchesByProjectId[selectedProjectId],
+      hasMixedTargetBranches:
+        new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
+    };
+  }
+
+  const targetBranches = Array.from(
+    new Set(
+      Object.values(plan.targetBranchesByProjectId || {})
+        .map((branchName) => branchName.trim())
+        .filter((branchName) => branchName.length > 0)
+    )
+  );
+
+  return {
+    targetBranch: targetBranches.length === 1 ? targetBranches[0] : plan.targetBranch,
+    hasMixedTargetBranches: targetBranches.length > 1,
+  };
+};
+
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
   const {
@@ -1256,11 +1285,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const canDeletePlan = crudCapabilities.canDelete;
               const canRenamePlan = crudCapabilities.canEditDetails;
               const canArchivePlan = crudCapabilities.canArchive || crudCapabilities.canRestore;
-              const effectiveTargetBranch =
-                (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) || plan.targetBranch;
-              const hasMixedTargetBranches =
-                Boolean(plan.targetBranchesByProjectId) &&
-                new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1;
+              const {
+                targetBranch: effectiveTargetBranch,
+                hasMixedTargetBranches,
+              } = resolvePlanTargetSummary(plan, selectedProjectId);
               const targetSummary = hasMixedTargetBranches
                 ? selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]
                   ? t('architect.planSelector.mixedTargetsForProject', 'Mixed targets · this repo: {{branchName}}', {
