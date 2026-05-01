@@ -2550,6 +2550,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
   };
 
+  const stopActiveStreamsForCompletedTasks = (
+    previousTasks: Pick<ImplementTask, "id" | "status">[],
+    nextTasks: Pick<ImplementTask, "id" | "status">[],
+  ) => {
+    const previousStatusByTaskId = new Map(
+      previousTasks.map((task) => [task.id, task.status]),
+    );
+    const completedTaskIds = new Set(
+      nextTasks
+        .filter(
+          (task) =>
+            task.status === "Completed" &&
+            previousStatusByTaskId.get(task.id) !== "Completed",
+        )
+        .map((task) => task.id),
+    );
+
+    if (completedTaskIds.size === 0) {
+      return;
+    }
+
+    get().conversations.forEach((conversation) => {
+      if (
+        conversation.scope_mode === "Implement" &&
+        conversation.task_id &&
+        completedTaskIds.has(conversation.task_id)
+      ) {
+        stopConversationRuntimeLocally(conversation.id);
+      }
+    });
+  };
+
   const reconcileImplementAwaitingResponseTasks = async () => {
     const state = get();
     const taskStore = useTaskStore.getState();
@@ -2635,6 +2667,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return;
         }
 
+        stopActiveStreamsForCompletedTasks(
+          previousState.tasks as Pick<ImplementTask, "id" | "status">[],
+          nextState.tasks as Pick<ImplementTask, "id" | "status">[],
+        );
         scheduleImplementAwaitingResponseReconciliation();
       },
     );
