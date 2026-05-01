@@ -145,6 +145,36 @@ type StructuredWriteResultInput = {
   rawPath?: string;
 };
 
+type PatchWriteCommitChange = {
+  displayPath: string;
+  realPath: string;
+  newContent: string | null;
+  existsOptions?: {
+    workspaceScope?: tauriIpc.WorkspaceScope;
+    workspacePath?: string | null;
+  };
+  readOptions?: {
+    allowOutsideWorkspace?: boolean;
+    workspaceScope?: tauriIpc.WorkspaceScope;
+    workspacePath?: string | null;
+  };
+  writeOptions?: {
+    allowOutsideWorkspace?: boolean;
+    workspaceScope?: tauriIpc.WorkspaceScope;
+    workspacePath?: string | null;
+  };
+  deleteOptions?: {
+    workspaceScope?: tauriIpc.WorkspaceScope;
+    workspacePath?: string | null;
+  };
+};
+
+type PatchWriteRollbackSnapshot = {
+  change: PatchWriteCommitChange;
+  existed: boolean;
+  content: string | null;
+};
+
 const formatToolError = (error: unknown): string => {
   if (error instanceof Error) return error.message;
 
@@ -163,6 +193,92 @@ const formatToolError = (error: unknown): string => {
   }
 
   return String(error);
+};
+
+const rollbackPatchWriteChanges = async (
+  snapshots: PatchWriteRollbackSnapshot[],
+): Promise<void> => {
+  for (const snapshot of [...snapshots].reverse()) {
+    if (!snapshot.existed) {
+      try {
+        if (await tauriIpc.fsExists(snapshot.change.realPath, snapshot.change.existsOptions)) {
+          await tauriIpc.fsDelete({
+            path: snapshot.change.realPath,
+            ...snapshot.change.deleteOptions,
+          });
+        }
+      } catch (error) {
+        throw new Error(
+          `Rollback failed for ${snapshot.change.displayPath}: ${formatToolError(error)}`,
+        );
+      }
+      continue;
+    }
+
+    if (snapshot.content === null) {
+      continue;
+    }
+
+    try {
+      await tauriIpc.fsWriteFile({
+        path: snapshot.change.realPath,
+        content: snapshot.content,
+        createDirs: true,
+        ...snapshot.change.writeOptions,
+      });
+    } catch (error) {
+      throw new Error(
+        `Rollback failed for ${snapshot.change.displayPath}: ${formatToolError(error)}`,
+      );
+    }
+  }
+};
+
+const commitPatchWriteChangesWithRollback = async (
+  changes: PatchWriteCommitChange[],
+): Promise<void> => {
+  const snapshots: PatchWriteRollbackSnapshot[] = [];
+
+  try {
+    for (const change of changes) {
+      const existed = await tauriIpc.fsExists(change.realPath, change.existsOptions);
+      const content = existed
+        ? (
+            await tauriIpc.fsReadFileWithOptions({
+              path: change.realPath,
+              ...change.readOptions,
+            })
+          ).content
+        : null;
+      snapshots.push({ change, existed, content });
+    }
+
+    for (const change of changes) {
+      if (change.newContent === null) {
+        await tauriIpc.fsDelete({
+          path: change.realPath,
+          ...change.deleteOptions,
+        });
+        continue;
+      }
+
+      await tauriIpc.fsWriteFile({
+        path: change.realPath,
+        content: change.newContent,
+        createDirs: true,
+        ...change.writeOptions,
+      });
+    }
+  } catch (error) {
+    try {
+      await rollbackPatchWriteChanges(snapshots);
+    } catch (rollbackError) {
+      throw new Error(
+        `${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+      );
+    }
+    throw error;
+  }
 };
 
 const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
@@ -1968,23 +2084,27 @@ export const executeWorkspaceTool = async (
           });
         }
 
-        for (const change of pendingChanges) {
-          if (change.newContent === null) {
-            await tauriIpc.fsDelete({
-              path: change.target.realPath,
+        await commitPatchWriteChangesWithRollback(
+          pendingChanges.map((change) => ({
+            displayPath: change.target.displayPath,
+            realPath: change.target.realPath,
+            newContent: change.newContent,
+            existsOptions: {
               workspacePath: change.target.candidate.workspacePath,
-            });
-            continue;
-          }
-
-          await tauriIpc.fsWriteFile({
-            path: change.target.realPath,
-            content: change.newContent,
-            createDirs: true,
-            allowOutsideWorkspace: true,
-            workspacePath: change.target.candidate.workspacePath,
-          });
-        }
+            },
+            readOptions: {
+              allowOutsideWorkspace: true,
+              workspacePath: change.target.candidate.workspacePath,
+            },
+            writeOptions: {
+              allowOutsideWorkspace: true,
+              workspacePath: change.target.candidate.workspacePath,
+            },
+            deleteOptions: {
+              workspacePath: change.target.candidate.workspacePath,
+            },
+          })),
+        );
 
         const files: PatchChangeRecord[] = [];
         const validationFiles: PatchValidationRecord[] = [];
@@ -3255,25 +3375,33 @@ export const executeWorkspaceTool = async (
         });
       }
 
-      for (const change of pendingChanges) {
-        if (change.newContent === null) {
-          await tauriIpc.fsDelete({
-            path: change.realPath,
+      await commitPatchWriteChangesWithRollback(
+        pendingChanges.map((change) => ({
+          displayPath: change.path,
+          realPath: change.realPath,
+          newContent: change.newContent,
+          existsOptions: {
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
-          });
-          continue;
-        }
-
-        await tauriIpc.fsWriteFile({
-          path: change.realPath,
-          content: change.newContent,
-          createDirs: true,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-          workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-        });
-      }
+          },
+          readOptions: {
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          },
+          writeOptions: {
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          },
+          deleteOptions: {
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          },
+        })),
+      );
 
       const files: PatchChangeRecord[] = [];
       const validationFiles: PatchValidationRecord[] = [];
