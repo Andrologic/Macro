@@ -10,22 +10,32 @@ const executeRegisteredNotificationActionMock = mock(
 
 const loadNotificationCenterPopover = async () => {
   mock.restore();
+  importCounter += 1;
+  const toastServiceModule = await import(
+    `../ui/toastService.tsx?notification-center-popover-toast-service-test=${importCounter}`
+  );
+
   mock.module('react-i18next', () => ({
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
     useTranslation: () => ({
       t: (_key: string, fallback?: string) => fallback ?? _key,
       i18n: {
         language: 'en-US',
+        changeLanguage: mock(async () => undefined),
       },
     }),
   }));
   mock.module('../ui/toastService', () => ({
+    ...toastServiceModule,
     executeRegisteredNotificationAction: (
       notificationId: string,
       actionIndex: number
     ) => executeRegisteredNotificationActionMock(notificationId, actionIndex),
   }));
 
-  importCounter += 1;
   return import(`./NotificationCenterPopover.tsx?test=${importCounter}`);
 };
 

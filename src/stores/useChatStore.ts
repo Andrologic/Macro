@@ -6093,7 +6093,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           allowedToolIds: params.allowedToolIds,
           copilotSendTimeoutMs:
             params.providerConfig.providerType === "copilot"
-              ? (useProviderStore.getState().providerSettingsById[params.selectedProviderId]
+              ? (useProviderStore.getState().providerSettingsById?.[params.selectedProviderId]
                   ?.copilotSendTimeoutMs ?? null)
               : null,
           workspacePath: params.executionContext.workspacePath,
