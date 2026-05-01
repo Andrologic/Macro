@@ -121,6 +121,9 @@ describe('remoteKernelApi', () => {
       args: { path: 'src/App.tsx' },
       workspace_path: 'C:/dev/Smartcards',
       workspace_scope: null,
+      project_mounts: [],
+      virtual_root_enabled: null,
+      focused_project_id: null,
     });
   });
 

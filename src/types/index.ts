@@ -1,5 +1,7 @@
 // Core types for the Macro application
 
+import type { SupportedLanguage } from '../i18n/languages';
+
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
 export type TaskStatus =
@@ -211,7 +213,7 @@ export interface ContextReference {
 export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type Language = 'en' | 'fr';
+export type Language = SupportedLanguage;
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type CodeOverflowMode = 'wrap' | 'horizontal_scroll';
 

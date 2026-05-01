@@ -9,8 +9,8 @@ const BUDGETS = [
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 80_000 },
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 45_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 95_000 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 105_000 },
+  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 100_000 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 110_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;

@@ -2235,7 +2235,7 @@ pub async fn reconcile_project_registry(
 
     for row in project_context_rows {
         let project_id: String = row.get("project_id");
-        if !valid_group_ids.contains(&project_id) {
+        if !valid_project_ids.contains(&project_id) {
             sqlx::query("DELETE FROM project_context_states WHERE project_id = ?")
                 .bind(&project_id)
                 .execute(pool)
@@ -2465,5 +2465,90 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_preserves_valid_project_contexts() {
+        let (_temp_dir, pool) = test_pool().await;
+
+        upsert_project_context_state(
+            &pool,
+            UpsertProjectContextStateInput {
+                project_id: "project-valid".to_string(),
+                group_id: Some("group-valid".to_string()),
+                focus_project_id: Some("project-valid".to_string()),
+                last_plan_id: Some("plan-1".to_string()),
+                last_task_id: Some("task-1".to_string()),
+                architect_conversation_id: None,
+                implement_conversation_id: None,
+            },
+        )
+        .await
+        .expect("insert valid context");
+        upsert_project_context_state(
+            &pool,
+            UpsertProjectContextStateInput {
+                project_id: "project-invalid".to_string(),
+                group_id: Some("group-valid".to_string()),
+                focus_project_id: Some("project-invalid".to_string()),
+                last_plan_id: None,
+                last_task_id: None,
+                architect_conversation_id: None,
+                implement_conversation_id: None,
+            },
+        )
+        .await
+        .expect("insert invalid context");
+        upsert_project_context_state(
+            &pool,
+            UpsertProjectContextStateInput {
+                project_id: "project-stale-links".to_string(),
+                group_id: Some("group-stale".to_string()),
+                focus_project_id: Some("project-invalid".to_string()),
+                last_plan_id: None,
+                last_task_id: None,
+                architect_conversation_id: None,
+                implement_conversation_id: None,
+            },
+        )
+        .await
+        .expect("insert stale linked context");
+
+        let report = reconcile_project_registry(
+            &pool,
+            ReconcileProjectRegistryInput {
+                valid_group_ids: vec!["group-valid".to_string()],
+                valid_project_ids: vec![
+                    "project-valid".to_string(),
+                    "project-stale-links".to_string(),
+                ],
+                selected_group_id: None,
+                selected_project_id: None,
+            },
+        )
+        .await
+        .expect("reconcile registry");
+
+        assert_eq!(report.project_contexts_deleted, 1);
+        assert_eq!(report.project_contexts_updated, 1);
+
+        let preserved = get_project_context_state(&pool, "project-valid")
+            .await
+            .expect("get preserved context")
+            .expect("preserved context");
+        assert_eq!(preserved.group_id.as_deref(), Some("group-valid"));
+        assert_eq!(preserved.focus_project_id.as_deref(), Some("project-valid"));
+
+        assert!(get_project_context_state(&pool, "project-invalid")
+            .await
+            .expect("get deleted context")
+            .is_none());
+
+        let cleaned = get_project_context_state(&pool, "project-stale-links")
+            .await
+            .expect("get cleaned context")
+            .expect("cleaned context");
+        assert_eq!(cleaned.group_id, None);
+        assert_eq!(cleaned.focus_project_id, None);
     }
 }

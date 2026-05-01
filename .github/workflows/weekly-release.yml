@@ -35,6 +35,9 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
@@ -43,6 +46,27 @@ jobs:
 
       - name: Verify version state
         run: bun run version:check
+
+      - name: Typecheck frontend
+        run: bun run typecheck
+
+      - name: Lint frontend
+        run: bun run lint
+
+      - name: Audit i18n coverage
+        run: bun run i18n:audit
+
+      - name: Run frontend tests
+        run: bun run test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Verify frontend bundle budget
+        run: bun run bundle:check
 
       - name: Read release metadata
         id: meta

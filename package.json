@@ -28,11 +28,11 @@
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx eslint . --ext .ts,.tsx",
     "update": "bun update",
-    "test": "bun test",
+    "test": "bun dev/run-tests.mjs",
     "version:sync": "bun dev/version/sync.mjs",
     "version:check": "bun dev/version/check.mjs",
     "version:bump": "bun dev/version/bump.mjs",
-    "ci": "bun install --frozen-lockfile && bun run version:check && bun run typecheck && bun run lint && bun run i18n:audit && cargo check --manifest-path src-tauri/Cargo.toml && bun run build && bun run bundle:check"
+    "ci": "bun install --frozen-lockfile && bun run version:check && bun run typecheck && bun run lint && bun run i18n:audit && bun run test && cargo test --manifest-path src-tauri/Cargo.toml && bun run build && bun run bundle:check"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
