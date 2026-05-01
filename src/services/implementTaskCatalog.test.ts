@@ -163,6 +163,8 @@ describe('buildImplementTaskCatalog', () => {
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-a1',
       'task-b1',
+      buildPlanFinalizationTaskId('plan-a'),
+      buildPlanFinalizationTaskId('plan-b'),
       'standalone-1',
       'legacy-1',
     ]);
@@ -269,6 +271,8 @@ describe('buildImplementTaskCatalog', () => {
       'task-a2',
       'task-b1',
       'task-b2',
+      buildPlanFinalizationTaskId('plan-a'),
+      buildPlanFinalizationTaskId('plan-b'),
     ]);
     expect(catalog.plans.map((plan) => [plan.id, plan.targetBranch])).toEqual([
       ['plan-a', 'develop'],
@@ -276,7 +280,7 @@ describe('buildImplementTaskCatalog', () => {
     ]);
   });
 
-  it('creates a single synthetic plan finalization task when all architect tasks are completed', () => {
+  it('creates a synthetic plan finalization task and blocks it until architect work is complete', () => {
     const completedPlan = makePlan({
       id: 'plan-ready',
       title: 'Checkout refresh',
@@ -327,6 +331,8 @@ describe('buildImplementTaskCatalog', () => {
     expect(finalizationTask?.task_source).toBe('plan_finalization');
     expect(finalizationTask?.plan_id).toBe('plan-ready');
     expect(finalizationTask?.status).toBe('Pending');
+    expect(finalizationTask?.dependencies).toEqual(['task-ready-1']);
+    expect(finalizationTask?.is_blocked).toBe(false);
     expect(finalizationTask?.assigned_branch).toBe('develop');
     expect(finalizationTask?.execution_targets).toEqual([
       {
@@ -360,7 +366,19 @@ describe('buildImplementTaskCatalog', () => {
       fallbackTasks: [],
     });
 
-    expect(reopenedCatalog.tasks.map((task) => task.id)).toEqual(['task-ready-1']);
+    expect(reopenedCatalog.tasks.map((task) => task.id)).toEqual([
+      'task-ready-1',
+      buildPlanFinalizationTaskId('plan-ready'),
+    ]);
+    expect(reopenedCatalog.tasks[1]).toMatchObject({
+      task_source: 'plan_finalization',
+      status: 'Blocked',
+      dependencies: ['task-ready-1'],
+      blocked_by_task_ids: ['task-ready-1'],
+      blocked_by: ['Finish checkout UI'],
+      is_blocked: true,
+      is_ready: false,
+    });
   });
 });
 

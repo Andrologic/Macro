@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildPlanFinalizationFailureState,
+  derivePlanFinalizationDependencyState,
   resolvePlanFinalizationTaskStatus,
   resolvePlanFinalizationViewState,
   shouldCreatePlanFinalizationTask,
@@ -26,12 +27,11 @@ const blockedRepository = {
 };
 
 describe('planFinalization', () => {
-  it('creates the synthetic finalization task only when the plan is fully completed', () => {
+  it('creates the synthetic finalization task for executable plans with actionable work', () => {
     expect(
       shouldCreatePlanFinalizationTask({
-        planStatus: 'in_progress',
+        planStatus: 'validated',
         taskCount: 2,
-        completedTaskCount: 2,
       })
     ).toBe(true);
 
@@ -39,17 +39,51 @@ describe('planFinalization', () => {
       shouldCreatePlanFinalizationTask({
         planStatus: 'in_progress',
         taskCount: 2,
-        completedTaskCount: 1,
       })
-    ).toBe(false);
+    ).toBe(true);
 
     expect(
       shouldCreatePlanFinalizationTask({
         planStatus: 'archived',
         taskCount: 2,
-        completedTaskCount: 2,
       })
     ).toBe(false);
+  });
+
+  it('derives terminal leaves without archived nodes for finalization dependencies', () => {
+    expect(
+      derivePlanFinalizationDependencyState([
+        {
+          id: 'task-a',
+          dependencies: [],
+          status: 'completed',
+          archivedAt: null,
+        },
+        {
+          id: 'task-b',
+          dependencies: ['task-a'],
+          status: 'completed',
+          archivedAt: null,
+        },
+        {
+          id: 'task-c',
+          dependencies: [],
+          status: 'pending',
+          archivedAt: null,
+        },
+        {
+          id: 'task-archived',
+          dependencies: ['task-c'],
+          status: 'pending',
+          archivedAt: '2026-04-01T00:00:00.000Z',
+        },
+      ])
+    ).toEqual({
+      actionableNodeIds: ['task-a', 'task-b', 'task-c'],
+      terminalNodeIds: ['task-b', 'task-c'],
+      incompleteNodeIds: ['task-c'],
+      isComplete: false,
+    });
   });
 
   it('excludes synthetic finalization tasks from implementation progress', () => {

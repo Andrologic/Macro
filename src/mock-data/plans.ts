@@ -145,7 +145,16 @@ export const mockPredictedBranches: PredictedBranch[] = [
     color: '#22c55e',
     parentBranch: 'branch-main',
     projectId: 'proj-1',
-    taskIds: ['node-1', 'node-2'],
+    taskIds: ['node-1'],
+    status: 'merged',
+  },
+  {
+    id: 'branch-database-schema',
+    name: 'feature/database-schema',
+    color: '#06b6d4',
+    parentBranch: 'branch-main',
+    projectId: 'proj-2',
+    taskIds: ['node-2'],
     status: 'merged',
   },
   {
@@ -163,8 +172,17 @@ export const mockPredictedBranches: PredictedBranch[] = [
     color: '#ec4899',
     parentBranch: 'branch-main',
     projectId: 'proj-1',
-    taskIds: ['node-4', 'node-5'],
+    taskIds: ['node-4'],
     status: 'active',
+  },
+  {
+    id: 'branch-frontend-register',
+    name: 'feature/frontend-register',
+    color: '#06b6d4',
+    parentBranch: 'branch-main',
+    projectId: 'proj-1',
+    taskIds: ['node-5'],
+    status: 'pending',
   },
   {
     id: 'branch-backend-products',
@@ -207,12 +225,12 @@ export const mockPredictedBranches: PredictedBranch[] = [
 // Mock Predicted Commits
 export const mockPredictedCommits: PredictedCommit[] = [
   { id: 'commit-1', branchId: 'branch-api-specs', message: 'docs: add API specifications', taskId: 'node-1', status: 'done' },
-  { id: 'commit-2', branchId: 'branch-api-specs', message: 'docs: add database schema', taskId: 'node-2', status: 'done' },
+  { id: 'commit-2', branchId: 'branch-database-schema', message: 'docs: add database schema', taskId: 'node-2', status: 'done' },
   { id: 'commit-3', branchId: 'branch-backend-auth', message: 'feat: implement JWT authentication', taskId: 'node-3', status: 'done' },
   { id: 'commit-4', branchId: 'branch-backend-auth', message: 'feat: add login endpoint', taskId: 'node-3', status: 'pending' },
   { id: 'commit-5', branchId: 'branch-frontend-auth', message: 'feat: create login page component', taskId: 'node-4', status: 'done' },
   { id: 'commit-6', branchId: 'branch-frontend-auth', message: 'feat: add form validation', taskId: 'node-4', status: 'pending' },
-  { id: 'commit-7', branchId: 'branch-frontend-auth', message: 'feat: create register page', taskId: 'node-5', status: 'pending' },
+  { id: 'commit-7', branchId: 'branch-frontend-register', message: 'feat: create register page', taskId: 'node-5', status: 'pending' },
   { id: 'commit-8', branchId: 'branch-backend-products', message: 'feat: implement product CRUD', taskId: 'node-6', status: 'pending' },
   { id: 'commit-9', branchId: 'branch-frontend-products', message: 'feat: create product catalog', taskId: 'node-7', status: 'pending' },
 ];

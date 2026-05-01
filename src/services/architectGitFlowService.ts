@@ -11,7 +11,10 @@ import {
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
-import { collectRenderedPlanPredictedBranchDescriptors } from './architectBranchIdentity';
+import {
+  collectRenderedPlanPredictedBranchDescriptors,
+  getPredictedBranchLogicalIdentity,
+} from './architectBranchIdentity';
 import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
@@ -27,7 +30,7 @@ import {
   renderArchitectPlanIntegrationBranchName,
 } from './architectPlanKinds';
 import { toServiceError } from './contracts/errors';
-import { getPlanNodeBranchIntent, getPredictedBranchIntentKey, type WorkBranchIntent } from './gitFlowBranchIntents';
+import { getPlanNodeBranchIntent, type WorkBranchIntent } from './gitFlowBranchIntents';
 import {
   buildValidProjectRegistrySnapshot,
   isSyntheticProjectId,
@@ -143,9 +146,32 @@ const buildPredictedBranchesForProjectPlan = (params: {
         getProjectById: params.getProjectById,
       }),
   });
+  const nodeById = new Map(params.nodes.map((node) => [node.id, node]));
+  const resolveBranchStatus = (taskIds: string[]): PredictedBranch['status'] => {
+    const branchNodes = taskIds
+      .map((taskId) => nodeById.get(taskId))
+      .filter((node): node is PlanNode => Boolean(node));
+    if (branchNodes.length > 0 && branchNodes.every((node) => node.status === 'completed')) {
+      return 'merged';
+    }
+    if (branchNodes.some((node) => node.status === 'in-progress')) {
+      return 'active';
+    }
+    return 'pending';
+  };
 
   const existingByKey = new Map(
-    (params.existingBranches || []).map((branch) => [`${branch.projectId}::${getPredictedBranchIntentKey(branch)}`, branch])
+    (params.existingBranches || []).map((branch) => [
+      `${branch.projectId}::${getPredictedBranchLogicalIdentity({
+        planSlug: params.plan.slug || params.plan.title,
+        branch,
+        settings: getProjectGitFlowSettings(
+          params.getProjectById,
+          branch.projectId,
+        ),
+      }).key}`,
+      branch,
+    ])
   );
 
   return renderedBranches.map((branch, index) => {
@@ -157,7 +183,7 @@ const buildPredictedBranchesForProjectPlan = (params: {
       parentBranch: branch.parentBranch,
       projectId: branch.projectId,
       taskIds: Array.from(new Set(branch.taskIds)),
-      status: existing?.status || 'pending',
+      status: resolveBranchStatus(branch.taskIds),
       branchType: branch.branchType,
       branchSlug: branch.branchSlug,
     };

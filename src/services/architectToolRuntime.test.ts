@@ -264,6 +264,30 @@ describe('architectToolRuntime strategy scope', () => {
     ]);
   });
 
+  it('normalizes duplicate generated feature slugs into task-specific slugs', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.args.nodes = [
+      {
+        title: 'Configurer la release',
+        description: 'Préparer le build Android.',
+        type: 'task',
+        featureSlug: 'release',
+      },
+      {
+        title: 'Publier la release',
+        description: 'Préparer la publication.',
+        type: 'task',
+        featureSlug: 'release',
+      },
+    ];
+
+    await handleArchitectToolCall(runtime.params);
+
+    const branchSlugs = runtime.getAppliedPlan().nodes.map((node) => node.branchSlug);
+    expect(branchSlugs[0]).toBe('release');
+    expect(branchSlugs[1]).toMatch(/^release-[0-9a-f]{6}$/);
+  });
+
   it('rejects context-only and external subprojects in explicit node scope', async () => {
     const contextRuntime = createRuntime(createPlan({
       contextProjectIds: ['mouillage-context'],

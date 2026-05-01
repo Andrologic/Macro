@@ -494,6 +494,78 @@ describe('architectGitFlowService', () => {
     ).toBe(false);
   });
 
+  it('validates legacy shared feature slugs into one provisioned branch per task', async () => {
+    projectPaths.set('web', {
+      ...projectPaths.get('web')!,
+      gitFlowSettings: createGitFlowSettings(),
+    });
+    currentPlan = {
+      ...buildPlan(),
+      projectId: 'web',
+      projectIds: ['web'],
+      targetBranchesByProjectId: { web: 'develop' },
+      nodes: [
+        {
+          id: 'task-a',
+          title: 'Build foundation',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          branchType: 'feature',
+          branchSlug: 'shared-work',
+          assignedBranch: 'feature/shared-work',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+        {
+          id: 'task-b',
+          title: 'Continue foundation',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          branchType: 'feature',
+          branchSlug: 'shared-work',
+          assignedBranch: 'feature/shared-work',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-shared',
+          name: 'feature/checkout/shared-work',
+          color: '#3b82f6',
+          parentBranch: 'plan/checkout',
+          projectId: 'web',
+          taskIds: ['task-a', 'task-b'],
+          status: 'pending',
+          branchType: 'feature',
+          branchSlug: 'shared-work',
+        },
+      ],
+    };
+    gitBranchCreateMock.mockReset();
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    const createdBranchNames = gitBranchCreateMock.mock.calls.map(
+      ([params]) => params.branchName,
+    );
+    expect(createdBranchNames).toHaveLength(3);
+    expect(createdBranchNames[0]).toBe('plan/checkout');
+    expect(createdBranchNames[1]).toBe('feature/checkout/shared-work');
+    expect(createdBranchNames[2]).toMatch(/^feature\/checkout\/shared-work-[0-9a-f]{6}$/);
+
+    expect(result.plan.predictedBranches).toHaveLength(2);
+    expect(result.plan.predictedBranches.every((branch) => branch.taskIds.length === 1)).toBe(true);
+    expect(new Set(result.plan.predictedBranches.map((branch) => branch.name)).size).toBe(2);
+    expect(result.plan.nodes.find((node) => node.id === 'task-b')?.dependencies).toEqual(['task-a']);
+  });
+
   it('uses typed release branches as plan integration branches and creates them from develop', async () => {
     projectPaths.set('web', {
       ...projectPaths.get('web')!,
