@@ -121,7 +121,6 @@ fn is_unavailable_error(error: &keyring::Error) -> bool {
     message.contains("serviceunknown")
         || message.contains("not activatable")
         || message.contains("secret service")
-        || message.contains("platform secure storage failure")
 }
 
 fn mark_unavailable_once() {
@@ -317,6 +316,40 @@ pub(super) fn cleanup_previous_chunked_secret_best_effort<S: SecretStore>(
             error = %error,
             "failed to delete previous ChatGPT secret chunks"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unavailable_error;
+
+    #[derive(Debug)]
+    struct TestKeyringError(&'static str);
+
+    impl std::fmt::Display for TestKeyringError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for TestKeyringError {}
+
+    #[test]
+    fn generic_platform_failure_is_not_treated_as_session_unavailable() {
+        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
+            "The user name or passphrase you entered is not correct.",
+        )));
+
+        assert!(!is_unavailable_error(&error));
+    }
+
+    #[test]
+    fn missing_secret_service_is_treated_as_session_unavailable() {
+        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
+            "org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided",
+        )));
+
+        assert!(is_unavailable_error(&error));
     }
 }
 

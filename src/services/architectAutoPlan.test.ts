@@ -41,7 +41,9 @@ const createLocalStorageMock = (): LocalStorageMock => {
 
 const branchName = 'develop';
 
-const createArchitectAutoPlanHarness = () => {
+const createArchitectAutoPlanHarness = (options?: {
+  getTargetBranchesByProjectId?: (projectIds: string[]) => Record<string, string>;
+}) => {
   const plans = new Map<string, ArchitectPlanRecord>();
   let activePlanId: string | null = null;
 
@@ -173,6 +175,7 @@ const createArchitectAutoPlanHarness = () => {
     status?: ArchitectPlanRecord['status'];
     projectIds?: string[];
     contextProjectIds?: string[];
+    targetBranchesByProjectId?: Record<string, string>;
     expectedProjectIds?: string[];
     updatedAt?: string;
     setActive?: boolean;
@@ -188,6 +191,7 @@ const createArchitectAutoPlanHarness = () => {
       planKind: params.planKind ?? existing.planKind,
       gitFlowPlan: (params.gitFlowPlan as ArchitectPlanGitFlowMetadata | undefined) ?? existing.gitFlowPlan,
       status: params.status ?? existing.status,
+      targetBranchesByProjectId: params.targetBranchesByProjectId ?? existing.targetBranchesByProjectId,
       projectIds: params.projectIds ? [...params.projectIds] : existing.projectIds ? [...existing.projectIds] : undefined,
       contextProjectIds: params.contextProjectIds
         ? [...params.contextProjectIds]
@@ -247,6 +251,7 @@ const createArchitectAutoPlanHarness = () => {
       isDefaultNewPlanFamilyLabel,
       isDefaultNewPlanBaseLabel,
       listArchitectPlans,
+      getTargetBranchesByProjectId: options?.getTargetBranchesByProjectId,
       setActiveArchitectPlan,
       updateArchitectPlan,
     }).ensureProjectGroupPlan,
@@ -264,6 +269,7 @@ const createArchitectAutoPlanHarness = () => {
       isDefaultNewPlanFamilyLabel,
       isDefaultNewPlanBaseLabel,
       listArchitectPlans,
+      getTargetBranchesByProjectId: options?.getTargetBranchesByProjectId,
       setActiveArchitectPlan,
       updateArchitectPlan,
     }).consolidateScopedBlankPlans,
@@ -281,6 +287,7 @@ const createArchitectAutoPlanHarness = () => {
       isDefaultNewPlanFamilyLabel,
       isDefaultNewPlanBaseLabel,
       listArchitectPlans,
+      getTargetBranchesByProjectId: options?.getTargetBranchesByProjectId,
       setActiveArchitectPlan,
       updateArchitectPlan,
     }).ensureScopedBlankPlan,
@@ -358,6 +365,36 @@ describe('architectAutoPlan', () => {
     const reloaded = await getArchitectPlan(branchName, created.id);
     expect(reloaded?.projectIds).toEqual(['web', 'api']);
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
+  });
+
+  it('resynchronizes reused blank feature plans with project development branches', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, getArchitectPlan } =
+      createArchitectAutoPlanHarness({
+        getTargetBranchesByProjectId: (projectIds) =>
+          Object.fromEntries(projectIds.map((projectId) => [projectId, 'develop'])),
+      });
+    const created = await createArchitectPlan({
+      branchName: 'main',
+      planId: 'blank-plan-main-target',
+      label: 'new plan',
+      projectIds: ['web'],
+      status: 'draft',
+      setActive: true,
+    });
+
+    const ensured = await ensureScopedBlankPlan({
+      branchName: 'main',
+      scopedProjectIds: ['web'],
+      trigger: 'explicit_create',
+    });
+
+    expect(ensured).not.toBeNull();
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe(created.id);
+    expect(ensured?.plan.targetBranchesByProjectId).toEqual({ web: 'develop' });
+
+    const reloaded = await getArchitectPlan('main', created.id);
+    expect(reloaded?.targetBranchesByProjectId).toEqual({ web: 'develop' });
   });
 
   it('keeps read-only subprojects as context when expanding a blank plan', async () => {
