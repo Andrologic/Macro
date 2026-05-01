@@ -510,6 +510,8 @@ Pour le travail planifie, Macro utilise une branche d'integration dediee au plan
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
+Macro ajoute au rendu et a la file Implement une tache de finalisation synthetique. Elle depend des feuilles non archivees de la strategie et n'est pas persistee comme un noeud Architect.
+
 ### 12.3 Branches de feature
 
 Les taches de la strategie peuvent etre reparties sur plusieurs branches de feature rattachees au plan afin de :
@@ -518,9 +520,15 @@ Les taches de la strategie peuvent etre reparties sur plusieurs branches de feat
 - conserver des lots de travail plus petits
 - limiter les changements trop larges
 
+Chaque tache executable dispose de sa propre branche de feature par sous-projet editable.
+
+Les dependances entre taches expriment le sequentiel ; elles ne sont pas modelees par la reutilisation d'une meme branche.
+
+Une fois valide, le travail d'une tache est merge vers la branche d'integration du plan. Les taches dependantes demarrent ensuite depuis cette branche de plan mise a jour.
+
 ### 12.4 Worktrees
 
-Les worktrees permettent d'isoler l'execution par branche ou par tache.
+Les worktrees permettent d'isoler l'execution par tache.
 
 Ils sont utilises pour :
 

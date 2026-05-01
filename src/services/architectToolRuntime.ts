@@ -455,6 +455,19 @@ const buildArchitectStrategyPredictedBranches = (params: {
     "#ec4899",
     "#06b6d4",
   ];
+  const nodeById = new Map(params.nodes.map((node) => [node.id, node]));
+  const resolveBranchStatus = (taskIds: string[]): PredictedBranch["status"] => {
+    const branchNodes = taskIds
+      .map((taskId) => nodeById.get(taskId))
+      .filter((node): node is PlanNode => Boolean(node));
+    if (branchNodes.length > 0 && branchNodes.every((node) => node.status === "completed")) {
+      return "merged";
+    }
+    if (branchNodes.some((node) => node.status === "in-progress")) {
+      return "active";
+    }
+    return "pending";
+  };
 
   return collectRenderedPlanPredictedBranchDescriptors({
     nodes: params.nodes,
@@ -467,7 +480,7 @@ const buildArchitectStrategyPredictedBranches = (params: {
     parentBranch: branch.parentBranch,
     projectId: branch.projectId,
     taskIds: branch.taskIds,
-    status: "pending" as const,
+    status: resolveBranchStatus(branch.taskIds),
     branchType: branch.branchType,
     branchSlug: branch.branchSlug,
   }));

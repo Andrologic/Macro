@@ -333,6 +333,63 @@ const getExecutionTargetsWithRepoPaths = (
     })
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
 
+const findActiveTasksSharingExecutionBranch = (
+  task: CatalogedImplementTask,
+  tasks: CatalogedImplementTask[]
+): CatalogedImplementTask[] => {
+  if (task.task_source !== 'architect') {
+    return [];
+  }
+
+  const targetKeys = new Set(
+    getExecutionTargets(task).map(
+      (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
+    )
+  );
+  if (targetKeys.size === 0) {
+    return [];
+  }
+
+  return tasks.filter((candidate) => {
+    if (candidate.id === task.id) return false;
+    if (candidate.task_source !== 'architect') return false;
+    if (candidate.plan_id !== task.plan_id) return false;
+    if (candidate.archived_at || candidate.status === 'Completed') return false;
+
+    return getExecutionTargets(candidate).some((target) =>
+      targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
+    );
+  });
+};
+
+const assertArchitectTaskBranchIsExclusive = (
+  task: CatalogedImplementTask,
+  tasks: CatalogedImplementTask[]
+): void => {
+  const sharingTasks = findActiveTasksSharingExecutionBranch(task, tasks);
+  if (sharingTasks.length === 0) {
+    return;
+  }
+
+  const sharedBranches = Array.from(
+    new Set(
+      getExecutionTargets(task).map((target) => normalizeBranchName(target.branchName))
+    )
+  ).join(', ');
+  const taskTitles = sharingTasks.map((candidate) => candidate.title).join(', ');
+
+  throw new Error(
+    tTask(
+      'implement.errors.sharedArchitectTaskBranch',
+      'Cannot complete this task because branch {{branchName}} is still assigned to active task(s): {{taskTitles}}. Repair the plan so each task has its own branch before completing.',
+      {
+        branchName: sharedBranches || task.assigned_branch,
+        taskTitles,
+      }
+    )
+  );
+};
+
 const buildMergeWorkflowWorkspaceContext = (
   runtime: MergeWorkflowRuntimeState | null | undefined,
   preferredProjectId?: string | null
@@ -988,6 +1045,44 @@ const PLAN_ACTIVATION_TASK_STATUS_ORDER: Record<TaskStatus, number> = {
 
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const getIncompletePlanFinalizationTasks = (
+  finalizationTask: CatalogedImplementTask,
+  tasks: CatalogedImplementTask[]
+): CatalogedImplementTask[] => {
+  if (!isPlanFinalizationTask(finalizationTask)) {
+    return [];
+  }
+
+  return tasks.filter(
+    (task) =>
+      task.plan_id === finalizationTask.plan_id &&
+      task.task_source === 'architect' &&
+      !task.archived_at &&
+      task.status !== 'Completed'
+  );
+};
+
+const formatPlanFinalizationBlockerReason = (
+  blockers: CatalogedImplementTask[]
+): string => {
+  const names = blockers.slice(0, 3).map((task) => task.title);
+  const remainingCount = blockers.length - names.length;
+  return remainingCount > 0
+    ? `${names.join(', ')} and ${remainingCount} more`
+    : names.join(', ') || 'unfinished tasks';
+};
+
+const createPlanFinalizationBlockedError = (
+  blockers: CatalogedImplementTask[]
+) =>
+  toServiceError(
+    tTask(
+      'implement.errors.planFinalizationBlockedByTasks',
+      'Plan finalization is blocked by unfinished Architect tasks: {{reason}}',
+      { reason: formatPlanFinalizationBlockerReason(blockers) }
+    )
+  );
 
 const MISSING_START_REF_ERROR_PATTERN =
   /^Cannot create branch '([^']+)' from reference '([^']+)'$/i;
@@ -2719,6 +2814,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    const planFinalizationBlockers = getIncompletePlanFinalizationTasks(task, get().tasks);
+    if (planFinalizationBlockers.length > 0) {
+      const error = createPlanFinalizationBlockedError(planFinalizationBlockers);
+      set({ lastError: error.message });
+      return;
+    }
+
     if (task.is_blocked) {
       const reason = task.blocked_by.length > 0 ? task.blocked_by.join(', ') : 'dependency chain';
       set({
@@ -3337,6 +3439,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const kind: MergeWorkflowKind = isPlanFinalizationRuntimeTask(task)
       ? 'plan_finalization'
       : 'task_completion';
+    const planFinalizationBlockers = getIncompletePlanFinalizationTasks(task, get().tasks);
+    if (planFinalizationBlockers.length > 0) {
+      const error = createPlanFinalizationBlockedError(planFinalizationBlockers);
+      set({ lastError: error.message });
+      throw error;
+    }
+
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
     let currentRuntime: MergeWorkflowRuntimeState | null =
       get().mergeWorkflowRuntimeByTaskId[task.id] ??
@@ -3535,6 +3644,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         return;
       }
+
+      assertArchitectTaskBranchIsExclusive(task, get().tasks);
 
       if (
         task.status !== 'InReview' &&
@@ -4179,6 +4290,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ),
       });
       return;
+    }
+
+    if (DEPENDENCY_BLOCKED_TARGET_STATUSES.has(status)) {
+      const planFinalizationBlockers = getIncompletePlanFinalizationTasks(currentTask, get().tasks);
+      if (planFinalizationBlockers.length > 0) {
+        const error = createPlanFinalizationBlockedError(planFinalizationBlockers);
+        set({ lastError: error.message });
+        return;
+      }
     }
 
     if (DEPENDENCY_BLOCKED_TARGET_STATUSES.has(status) && currentTask.is_blocked) {

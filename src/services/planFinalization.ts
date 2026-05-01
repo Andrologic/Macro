@@ -3,7 +3,7 @@ import type {
   PlanReviewResult,
 } from './architectGitFlowService';
 import { toServiceError } from './contracts/errors';
-import type { TaskExecutionTarget, TaskStatus } from '../types';
+import type { PlanNode, TaskExecutionTarget, TaskStatus } from '../types';
 
 export const PLAN_FINALIZATION_TASK_PREFIX = 'plan-finalization:';
 export const PLAN_FINALIZATION_TASK_DESCRIPTION =
@@ -68,6 +68,13 @@ interface PlanFinalizationFocusableTargetLike {
   baseBranchName?: string | null;
 }
 
+export interface PlanFinalizationDependencyState {
+  actionableNodeIds: string[];
+  terminalNodeIds: string[];
+  incompleteNodeIds: string[];
+  isComplete: boolean;
+}
+
 export const buildPlanFinalizationTaskId = (planId: string): string =>
   `${PLAN_FINALIZATION_TASK_PREFIX}${planId.trim()}`;
 
@@ -87,16 +94,47 @@ export const buildPlanFinalizationTaskTitle = (plan: {
   label?: string | null;
 }): string => `Finalize plan: ${plan.label || plan.title}`;
 
+const isActionablePlanFinalizationNode = (
+  node: Pick<PlanNode, 'id' | 'archivedAt'>
+): boolean => Boolean(node.id.trim()) && !node.archivedAt;
+
+export const derivePlanFinalizationDependencyState = (
+  nodes: Array<Pick<PlanNode, 'id' | 'dependencies' | 'status' | 'archivedAt'>>
+): PlanFinalizationDependencyState => {
+  const actionableNodes = nodes.filter(isActionablePlanFinalizationNode);
+  const actionableNodeIds = actionableNodes.map((node) => node.id);
+  const actionableNodeIdSet = new Set(actionableNodeIds);
+  const dependedOnNodeIds = new Set<string>();
+
+  actionableNodes.forEach((node) => {
+    node.dependencies.forEach((dependencyId) => {
+      if (actionableNodeIdSet.has(dependencyId)) {
+        dependedOnNodeIds.add(dependencyId);
+      }
+    });
+  });
+
+  const terminalNodeIds = actionableNodes
+    .filter((node) => !dependedOnNodeIds.has(node.id))
+    .map((node) => node.id);
+  const incompleteNodeIds = actionableNodes
+    .filter((node) => node.status !== 'completed')
+    .map((node) => node.id);
+
+  return {
+    actionableNodeIds,
+    terminalNodeIds,
+    incompleteNodeIds,
+    isComplete: actionableNodes.length > 0 && incompleteNodeIds.length === 0,
+  };
+};
+
 export const shouldCreatePlanFinalizationTask = (params: {
   planStatus: string | null | undefined;
   taskCount: number;
-  completedTaskCount: number;
 }): boolean =>
   params.taskCount > 0 &&
-  params.completedTaskCount === params.taskCount &&
-  params.planStatus !== 'completed' &&
-  params.planStatus !== 'archived' &&
-  params.planStatus !== 'deleted';
+  (params.planStatus === 'validated' || params.planStatus === 'in_progress');
 
 export const shouldIncludeTaskInImplementationProgress = (task: {
   draft: boolean;

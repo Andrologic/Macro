@@ -1,13 +1,15 @@
 import type { PlanNode, PredictedBranch, Project, ProjectGitFlowSettings, ProjectGroup } from '../types';
 import { useAppStore } from '../stores/useAppStore';
-import { collectRenderedPlanPredictedBranchDescriptors } from './architectBranchIdentity';
+import {
+  collectRenderedPlanPredictedBranchDescriptors,
+  getPredictedBranchLogicalIdentity,
+} from './architectBranchIdentity';
 import {
   getArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
 import { provisionPlanBranches, type ProvisionPlanBranchesResult } from './architectGitFlowService';
-import { getPredictedBranchIntentKey } from './gitFlowBranchIntents';
 import { renderArchitectPlanIntegrationBranchName } from './architectPlanKinds';
 
 interface ArchitectScopePromotionAppState {
@@ -73,9 +75,26 @@ const buildPredictedBranchesForPromotedScope = (params: {
         settings: getProjectGitFlowSettings(params.getProjectById, projectId),
       }),
   });
+  const nodeById = new Map(params.nodes.map((node) => [node.id, node]));
+  const resolveBranchStatus = (taskIds: string[]): PredictedBranch['status'] => {
+    const branchNodes = taskIds
+      .map((taskId) => nodeById.get(taskId))
+      .filter((node): node is PlanNode => Boolean(node));
+    if (branchNodes.length > 0 && branchNodes.every((node) => node.status === 'completed')) {
+      return 'merged';
+    }
+    if (branchNodes.some((node) => node.status === 'in-progress')) {
+      return 'active';
+    }
+    return 'pending';
+  };
   const existingByKey = new Map(
     (params.plan.predictedBranches || []).map((branch) => [
-      `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+      `${branch.projectId}::${getPredictedBranchLogicalIdentity({
+        planSlug,
+        branch,
+        settings: getProjectGitFlowSettings(params.getProjectById, branch.projectId),
+      }).key}`,
       branch,
     ])
   );
@@ -89,7 +108,7 @@ const buildPredictedBranchesForPromotedScope = (params: {
       parentBranch: branch.parentBranch,
       projectId: branch.projectId,
       taskIds: unique(branch.taskIds),
-      status: existing?.status || 'pending',
+      status: resolveBranchStatus(branch.taskIds),
       branchType: branch.branchType,
       branchSlug: branch.branchSlug,
     };

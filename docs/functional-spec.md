@@ -198,7 +198,7 @@ Une branche predictive est un artefact de planification qui represente la facon 
 Son but est de :
 - organiser l'execution
 - maximiser le parallelisme lorsque cela reste sans risque
-- conserver une coherence par branche
+- conserver une branche de travail distincte par tache executable
 - reduire la derive de l'IA et les changements trop volumineux
 
 ### 6.8 Tache d'implementation
@@ -530,15 +530,16 @@ La strategie doit :
 - refleter l'intention utilisateur
 - definir un ordre d'execution realiste
 - maximiser le parallelisme lorsque c'est sur
-- conserver une coherence sequentielle au sein d'une branche si necessaire
+- exprimer le sequentiel par des dependances explicites entre taches
 - minimiser les commits trop volumineux et les frontieres de taches floues
 
 ### 10.3 Structuration par branches
 
 La strategie doit organiser le travail de sorte que :
 - plusieurs branches puissent progresser en parallele
-- plusieurs taches puissent s'enchainer dans une meme branche
-- le travail d'une branche reste coherent
+- chaque tache executable dispose de sa propre branche de travail
+- les taches sequentielles soient reliees par des dependances explicites
+- les branches de tache convergent vers la branche d'integration du plan
 
 Cette structuration existe pour reduire le risque et ameliorer la qualite des reviews.
 
@@ -676,7 +677,7 @@ Apres acceptation de la review :
 
 Pour le travail derive d'un plan, le flux par defaut est :
 
-- le travail de tache se fait sur des branches feature rattachees au plan
+- chaque tache se fait sur une branche feature dediee rattachee au plan
 - le travail valide est merge vers la branche d'integration du plan
 - le plan valide est ensuite merge vers la branche de base configuree
 
@@ -894,7 +895,7 @@ Les regles suivantes sont fondatrices :
 - La validation d'un plan prepare automatiquement branches et worktrees.
 - Toute tache completee se termine par un commit.
 - Une review humaine est obligatoire a la fin de chaque tache.
-- Une validation globale du plan est obligatoire avant integration finale.
+- Une tache de finalisation synthetique converge depuis les feuilles de la strategie et pilote l'integration finale.
 - L'edition manuelle du code existe, mais comme mecanisme secondaire d'ajustement en review.
 - Le support du kernel distant fait partie de la cible produit.
 
