@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { MergeWorkflowRepositoryResult } from '../../services/mergeWorkflow';
 import type { GitConflictFileDto } from '../../services/tauriIpc';
+import type { MergeWorkflowConflictResolverModal as MergeWorkflowConflictResolverModalComponent } from './MergeWorkflowConflictResolverModal';
 
 const startManualResolutionMock = mock(async () => ({
   status: 'conflicted',
@@ -50,65 +51,77 @@ const taskStoreState = {
   loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
 };
 
-mock.module('../../stores/useTaskStore', () => ({
-  useTaskStore: (selector: (state: typeof taskStoreState) => unknown) =>
-    selector(taskStoreState),
-}));
+let MergeWorkflowConflictResolverModal!: typeof MergeWorkflowConflictResolverModalComponent;
+let importCounter = 0;
 
-mock.module('../../services/tauriIpc', () => ({
-  gitStatus: gitStatusMock,
-  gitReadConflictFile: gitReadConflictFileMock,
-  gitWriteConflictResolution: gitWriteConflictResolutionMock,
-  gitAcceptConflictSide: gitAcceptConflictSideMock,
-}));
+const registerMergeWorkflowConflictResolverMocks = () => {
+  mock.module('../../stores/useTaskStore', () => ({
+    useTaskStore: (selector: (state: typeof taskStoreState) => unknown) =>
+      selector(taskStoreState),
+  }));
 
-mock.module('../../services/preferences', () => ({
-  PREF_KEYS: {
-    IMPLEMENT_DIFF_PRESENTATION_MODE: 'implement.diff.presentationMode',
-  },
-  loadPreference: loadPreferenceMock,
-  savePreference: savePreferenceMock,
-}));
+  mock.module('../../services/tauriIpc', () => ({
+    gitStatus: gitStatusMock,
+    gitReadConflictFile: gitReadConflictFileMock,
+    gitWriteConflictResolution: gitWriteConflictResolutionMock,
+    gitAcceptConflictSide: gitAcceptConflictSideMock,
+  }));
 
-mock.module('../ui/DiffMergeView', () => ({
-  DiffMergeView: (props: {
-    original: string;
-    modified: string;
-    presentationMode?: string;
-    revertControlLabel?: string;
-    onChange?: (value: string) => void;
-  }) => {
-    diffMergeViewProps.push(props);
-    return React.createElement(
-      'div',
-      {
-        'data-diff-merge-view': 'true',
-        'data-presentation-mode': props.presentationMode,
-        'data-revert-control-label': props.revertControlLabel,
-      },
-      React.createElement('pre', null, props.modified),
-      React.createElement(
-        'button',
+  mock.module('../../services/preferences', () => ({
+    PREF_KEYS: {
+      IMPLEMENT_DIFF_PRESENTATION_MODE: 'implement.diff.presentationMode',
+    },
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
+  }));
+
+  const diffMergeViewMock = () => ({
+    DiffMergeView: (props: {
+      original: string;
+      modified: string;
+      presentationMode?: string;
+      revertControlLabel?: string;
+      onChange?: (value: string) => void;
+    }) => {
+      diffMergeViewProps.push(props);
+      return React.createElement(
+        'div',
         {
-          type: 'button',
-          onClick: () => props.onChange?.('edited resolution'),
+          'data-diff-merge-view': 'true',
+          'data-presentation-mode': props.presentationMode,
+          'data-revert-control-label': props.revertControlLabel,
         },
-        'Edit draft'
-      )
-    );
-  },
-}));
+        React.createElement('pre', null, props.modified),
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            onClick: () => props.onChange?.('edited resolution'),
+          },
+          'Edit draft'
+        )
+      );
+    },
+  });
 
-mock.module('../ui/toastService', () => ({
-  notify: {
-    success: mock(() => undefined),
-    error: mock(() => undefined),
-  },
-}));
+  mock.module('../ui/DiffMergeView', diffMergeViewMock);
 
-const { MergeWorkflowConflictResolverModal } = await import(
-  './MergeWorkflowConflictResolverModal'
-);
+  mock.module('../ui/toastService', () => ({
+    notify: {
+      success: mock(() => undefined),
+      error: mock(() => undefined),
+    },
+  }));
+};
+
+const loadMergeWorkflowConflictResolverModal = async () => {
+  mock.restore();
+  registerMergeWorkflowConflictResolverMocks();
+  importCounter += 1;
+  ({ MergeWorkflowConflictResolverModal } = await import(
+    `./MergeWorkflowConflictResolverModal.tsx?merge-workflow-conflict-resolver-test=${importCounter}`
+  ));
+};
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -151,7 +164,8 @@ describe('MergeWorkflowConflictResolverModal', () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await loadMergeWorkflowConflictResolverModal();
     startManualResolutionMock.mockClear();
     completeManualResolutionMock.mockClear();
     abortManualResolutionMock.mockClear();
@@ -176,6 +190,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
       await flushRender();
     });
     container.remove();
+    mock.restore();
   });
 
   it('loads existing materialized conflicts without starting a second merge resolution', async () => {

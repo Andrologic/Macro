@@ -1,6 +1,9 @@
 .macro
 .codex
 .playwright-cli/
+.toast-placement*.png
+__pycache__/
+*.py[cod]
 
 # Logs
 logs

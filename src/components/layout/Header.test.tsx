@@ -63,15 +63,17 @@ const registerHeaderMocks = () => {
   mock.restore();
 
   mock.module('react-i18next', () => ({
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
     useTranslation: () => ({
       t: (key: string, fallback?: string) => fallback ?? key,
+      i18n: {
+        language: 'en-US',
+        changeLanguage: mock(async () => undefined),
+      },
     }),
-  }));
-
-  mock.module('../../i18n', () => ({
-    default: {
-      t: (_key: string, fallback: string) => fallback,
-    },
   }));
 
   mock.module('../../stores/useAppStore', () => ({
@@ -96,10 +98,6 @@ const registerHeaderMocks = () => {
   mock.module('../../utils/desktopPlatform', () => ({
     ...actualDesktopPlatform,
     getPlatformChromeState: () => chromeState,
-  }));
-
-  mock.module('../ui/Icon', () => ({
-    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
   }));
 
   mock.module('../ui/Logo', () => ({
@@ -160,7 +158,6 @@ describe('Header', () => {
     root = null;
     container?.remove();
     container = null;
-    mock.restore();
   });
 
   it('uses the default centered layout on Windows', async () => {
@@ -178,9 +175,9 @@ describe('Header', () => {
     expect(html).toContain('macro-topbar-inner');
     expect(html).toContain('macro-topbar-center');
     expect(html).toContain('macro-topbar-brand-label hidden lg:inline-flex');
-    expect(html).toContain('data-icon="minus"');
-    expect(html).toContain('data-icon="maximize"');
-    expect(html).toContain('data-icon="x"');
+    expect(html).toContain('title="Minimize"');
+    expect(html).toContain('title="Maximize"');
+    expect(html).toContain('title="Close"');
     expect(html).not.toContain('macro-native-titlebar');
   });
 
@@ -206,9 +203,9 @@ describe('Header', () => {
     expect(html).toContain('--macro-titlebar-height:56px');
     expect(html).toContain('macro-topbar--native-macos');
     expect(html).toContain('macro-topbar-brand-label inline-flex');
-    expect(html).not.toContain('data-icon="minus"');
-    expect(html).not.toContain('data-icon="maximize"');
-    expect(html).not.toContain('data-icon="x"');
+    expect(html).not.toContain('title="Minimize"');
+    expect(html).not.toContain('title="Maximize"');
+    expect(html).not.toContain('title="Close"');
     expect(html).not.toContain('macro-native-titlebar');
   });
 

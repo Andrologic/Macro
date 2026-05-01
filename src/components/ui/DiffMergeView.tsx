@@ -188,6 +188,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   const syncingRef = useRef<'a' | 'b' | null>(null);
   const lastScrollTopRef = useRef({ a: 0, b: 0 });
   const isApplyingExternalUpdateRef = useRef(false);
+
   const collapseUnchanged = useMemo(
     () =>
       presentationMode === 'focused'
@@ -571,6 +572,7 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
   return (
     <div
       ref={containerRef}
+      data-diff-merge-view="true"
       data-layout={layout}
       data-language={resolvedLanguage}
       data-overflow-mode={resolvedOverflowMode}

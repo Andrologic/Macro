@@ -585,6 +585,9 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) =>
+          path === "C:/dev/macro-web/src/App.tsx" ||
+          writes.some((entry) => entry.path === path),
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
           if (path === "C:/dev/macro-web/src/App.tsx") {
             return {
@@ -679,6 +682,95 @@ describe("workspaceToolExecutor helpers", () => {
     expect(writes.map((entry) => entry.path)).toEqual([
       "C:/dev/macro-web/src/App.tsx",
       "C:/dev/macro-web/notes.md",
+    ]);
+    expect(deletes).toEqual([]);
+  });
+
+  it("rolls back earlier apply_patch writes when a later virtual-root write fails", async () => {
+    let appContent = "export const App = 'before';\n";
+    const writes: Array<{ path: string; content: string }> = [];
+    const deletes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) => path === "C:/dev/macro-web/src/App.tsx",
+        fsReadFileWithOptions: async ({ path }: { path: string }) => {
+          if (path === "C:/dev/macro-web/src/App.tsx") {
+            return {
+              content: appContent,
+              language: "typescript",
+              is_binary: false,
+              size: appContent.length,
+              encoding: "utf-8",
+            };
+          }
+          throw new Error(`unexpected read: ${path}`);
+        },
+        fsWriteFile: async ({
+          path,
+          content,
+        }: {
+          path: string;
+          content: string;
+        }) => {
+          if (path === "C:/dev/macro-web/fail.md") {
+            throw new Error("disk full");
+          }
+          writes.push({ path, content });
+          appContent = content;
+          return {
+            path,
+            bytes_written: content.length,
+            created: false,
+          };
+        },
+        fsDelete: async ({ path }: { path: string }) => {
+          deletes.push(path);
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/App.tsx",
+          "@@",
+          "-export const App = 'before';",
+          "+export const App = 'after';",
+          "*** Add File: web/fail.md",
+          "+fail",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: {
+          web: "C:/dev/macro-web",
+        },
+      },
+    );
+
+    expect(result).toContain("disk full");
+    expect(appContent).toBe("export const App = 'before';\n");
+    expect(writes.map((entry) => entry.content)).toEqual([
+      "export const App = 'after';\n",
+      "export const App = 'before';\n",
     ]);
     expect(deletes).toEqual([]);
   });
