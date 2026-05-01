@@ -676,4 +676,86 @@ describe('useTaskStore.finishTask', () => {
     expect(planState.nodes[0]?.archivedAt).toBeNull();
     expect(writeArchitectTaskExecutionMock).not.toHaveBeenCalled();
   });
+
+  it('blocks completion when another active architect task still shares the branch', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask(),
+        buildArchitectTask({
+          id: 'task-2',
+          title: 'Task 2',
+          status: 'Pending',
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/task-1',
+              worktreeKey: 'repo-2',
+              repoPath: '/repos/web',
+              planBranchName: 'plan/checkout',
+              targetBranchName: 'develop',
+            },
+          ],
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'still assigned to active task(s): Task 2',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to run plan finalization while architect tasks are unfinished', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const finalizationTaskId = 'plan-finalization:plan-1';
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({ status: 'Pending' }),
+        buildArchitectTask({
+          id: finalizationTaskId,
+          title: 'Finalize plan: Plan 1',
+          status: 'Blocked',
+          task_source: 'plan_finalization',
+          assigned_branch: 'develop',
+          branch_name: 'develop',
+          branch_task_index: Number.MAX_SAFE_INTEGER,
+          dependencies: ['task-1'],
+          blocked_by_task_ids: ['task-1'],
+          blocked_by: ['Task 1'],
+          is_blocked: true,
+          is_ready: false,
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'develop',
+              targetBranchName: 'develop',
+              executionKind: 'repository_root',
+              worktreeKey: 'plan-finalization:project-1:project-1',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ] as never[],
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().runMergeWorkflow(finalizationTaskId)).rejects.toThrow(
+      'Plan finalization is blocked by unfinished Architect tasks: Task 1',
+    );
+
+    expect(useTaskStore.getState().lastError).toBe(
+      'Plan finalization is blocked by unfinished Architect tasks: Task 1',
+    );
+    expect(finalizePlanIntoBaseBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+  });
 });

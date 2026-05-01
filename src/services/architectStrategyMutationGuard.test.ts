@@ -126,6 +126,28 @@ describe('architectStrategyMutationGuard', () => {
     expect(preview.removedPendingNodes.map((node) => node.title)).toEqual(['Legacy cleanup']);
   });
 
+  it('splits duplicate pending branch slugs into task-specific predicted branches', () => {
+    const plan = createPlan();
+
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: [
+        createNode({ id: 'task-a', title: 'Prepare schema', branchSlug: 'shared-work' }),
+        createNode({ id: 'task-b', title: 'Build endpoint', branchSlug: 'shared-work' }),
+      ],
+      metadataUpdate: { description: plan.description },
+    });
+
+    expect(preview.status).toBe('valid');
+    expect(preview.planNodes.map((node) => node.branchSlug)).toEqual([
+      'shared-work',
+      expect.stringMatching(/^shared-work-[0-9a-f]{6}$/),
+    ]);
+    expect(preview.predictedBranches).toHaveLength(2);
+    expect(preview.predictedBranches.every((branch) => branch.taskIds.length === 1)).toBe(true);
+  });
+
   it('blocks the preview when a frozen node is modified or omitted', () => {
     const plan = createPlan({
       status: 'in_progress',

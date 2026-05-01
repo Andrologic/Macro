@@ -6,11 +6,14 @@ import {
   renderGitFlowBranchName,
   renderStandaloneFeatureBranchName,
   resolveProjectGitFlowSettings,
+  sanitizeBranchSlugInput,
   validateProjectGitFlowParsing as validateProjectGitFlowParsingSettings,
 } from "./architectGitNaming";
 import {
   getPlanNodeBranchIntent,
+  resolveWorkBranchIntent,
   type WorkBranchType,
+  type WorkBranchIntent,
 } from "./gitFlowBranchIntents";
 
 const PLAN_SLUG_FALLBACK = "plan";
@@ -49,8 +52,114 @@ export const buildPlanFeatureBranchKey = (
 ): string =>
   `plan::${normalizePlanSlugInput(planSlug)}::feature::${normalizeFeatureSlugInput(featureSlug)}`;
 
+const normalizePlanTaskKeyInput = (
+  value?: string | null,
+  fallback = "task",
+): string => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  return normalized || fallback;
+};
+
+export const buildPlanTaskFeatureBranchKey = (
+  planSlug: string,
+  taskId: string,
+  featureSlug: string,
+): string =>
+  `plan::${normalizePlanSlugInput(planSlug)}::task::${normalizePlanTaskKeyInput(taskId)}::feature::${normalizeFeatureSlugInput(featureSlug)}`;
+
 export const buildStandaloneFeatureBranchKey = (featureSlug: string): string =>
   `standalone::${normalizeFeatureSlugInput(featureSlug)}`;
+
+const stableHash = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+};
+
+const shouldPreserveExistingNodeBranchSlug = (
+  node: Pick<PlanNode, "status">,
+): boolean => node.status !== "pending";
+
+export const resolvePlanNodeTaskBranchIntents = (
+  nodes: Array<
+    Pick<
+      PlanNode,
+      "id" | "assignedBranch" | "branchSlug" | "branchType" | "status" | "title"
+    >
+  >,
+): Map<string, WorkBranchIntent> => {
+  const entries = nodes.map((node, index) => ({
+    node,
+    index,
+    intent: getPlanNodeBranchIntent(node),
+  }));
+  const entriesByBaseKey = new Map<string, typeof entries>();
+  entries.forEach((entry) => {
+    const existing = entriesByBaseKey.get(entry.intent.key) || [];
+    existing.push(entry);
+    entriesByBaseKey.set(entry.intent.key, existing);
+  });
+
+  const result = new Map<string, WorkBranchIntent>();
+  const usedKeys = new Set<string>();
+
+  for (const group of entriesByBaseKey.values()) {
+    const preservedEntries = group.filter((entry) =>
+      shouldPreserveExistingNodeBranchSlug(entry.node),
+    );
+    const pendingBaseEntry = [...group].sort((left, right) =>
+      left.node.id.localeCompare(right.node.id),
+    )[0]!;
+    const entriesKeepingBaseSlug =
+      preservedEntries.length > 0 ? new Set(preservedEntries) : new Set([pendingBaseEntry]);
+
+    for (const entry of group) {
+      if (entriesKeepingBaseSlug.has(entry)) {
+        result.set(entry.node.id, entry.intent);
+        usedKeys.add(entry.intent.key);
+        continue;
+      }
+
+      const suffix = stableHash(entry.node.id).slice(0, 6);
+      let attempt = 1;
+      let candidateSlug = sanitizeBranchSlugInput(
+        `${entry.intent.branchSlug}-${suffix}`,
+        entry.intent.branchType,
+      );
+      let candidate = resolveWorkBranchIntent({
+        branchType: entry.intent.branchType,
+        branchSlug: candidateSlug,
+        fallbackSlug: entry.node.title,
+      });
+
+      while (usedKeys.has(candidate.key)) {
+        attempt += 1;
+        candidateSlug = sanitizeBranchSlugInput(
+          `${entry.intent.branchSlug}-${suffix}-${attempt}`,
+          entry.intent.branchType,
+        );
+        candidate = resolveWorkBranchIntent({
+          branchType: entry.intent.branchType,
+          branchSlug: candidateSlug,
+          fallbackSlug: entry.node.title,
+        });
+      }
+
+      result.set(entry.node.id, candidate);
+      usedKeys.add(candidate.key);
+    }
+  }
+
+  return result;
+};
 
 export type ParsedBranchIdentity =
   | {
@@ -97,15 +206,20 @@ export const collectRenderedPlanPredictedBranchDescriptors = (params: {
   getPlanIntegrationBranchName?: (projectId: string) => string;
 }): RenderedPlanPredictedBranchDescriptor[] => {
   const descriptors = new Map<string, RenderedPlanPredictedBranchDescriptor>();
+  const branchIntentsByNodeId = resolvePlanNodeTaskBranchIntents(params.nodes);
 
   params.nodes.forEach((node) => {
-    const branchIntent = getPlanNodeBranchIntent(node);
+    const branchIntent = branchIntentsByNodeId.get(node.id) || getPlanNodeBranchIntent(node);
     normalizeNodeProjectIds(node).forEach((projectId) => {
       const settings = params.getProjectGitFlowSettings?.(projectId);
-      const key = `${projectId}::${branchIntent.key}`;
+      const branchKey = buildPlanTaskFeatureBranchKey(
+        params.planSlug,
+        node.id,
+        branchIntent.branchSlug,
+      );
+      const key = `${projectId}::${branchKey}`;
       const existing = descriptors.get(key);
       if (existing) {
-        existing.taskIds.push(node.id);
         return;
       }
 
@@ -232,12 +346,21 @@ export const parseRenderedBranchIdentity = (
 
 export const getPlanNodeLogicalBranchIdentity = (params: {
   planSlug: string;
-  node: Pick<PlanNode, "assignedBranch" | "branchSlug" | "title">;
+  node: Pick<PlanNode, "assignedBranch" | "branchSlug" | "title"> & {
+    id?: string | null;
+  };
 }): ParsedBranchIdentity => {
   const branchIntent = getPlanNodeBranchIntent(params.node);
+  const taskId = params.node.id?.trim();
   return {
     kind: "plan_feature",
-    key: buildPlanFeatureBranchKey(params.planSlug, branchIntent.branchSlug),
+    key: taskId
+      ? buildPlanTaskFeatureBranchKey(
+          params.planSlug,
+          taskId,
+          branchIntent.branchSlug,
+        )
+      : buildPlanFeatureBranchKey(params.planSlug, branchIntent.branchSlug),
     branchName: renderGitFlowBranchName({
       branchType: "feature",
       planSlug: params.planSlug,
@@ -250,7 +373,9 @@ export const getPlanNodeLogicalBranchIdentity = (params: {
 
 export const getPredictedBranchLogicalIdentity = (params: {
   planSlug?: string | null;
-  branch: Pick<PredictedBranch, "name" | "branchSlug">;
+  branch: Pick<PredictedBranch, "name" | "branchSlug"> & {
+    taskIds?: string[];
+  };
   settings?: Partial<ProjectGitFlowSettings> | null;
 }): ParsedBranchIdentity => {
   const normalizedPlanSlug = normalizePlanSlugInput(
@@ -259,15 +384,41 @@ export const getPredictedBranchLogicalIdentity = (params: {
   );
   const explicitBranchSlug = params.branch.branchSlug?.trim();
   if (explicitBranchSlug) {
+    const taskId =
+      Array.isArray(params.branch.taskIds) && params.branch.taskIds.length === 1
+        ? params.branch.taskIds[0]?.trim()
+        : "";
     return {
       kind: "plan_feature",
-      key: buildPlanFeatureBranchKey(normalizedPlanSlug, explicitBranchSlug),
+      key: taskId
+        ? buildPlanTaskFeatureBranchKey(
+            normalizedPlanSlug,
+            taskId,
+            explicitBranchSlug,
+          )
+        : buildPlanFeatureBranchKey(normalizedPlanSlug, explicitBranchSlug),
       branchName: normalizeGitBranchName(params.branch.name),
       planSlug: normalizedPlanSlug,
       featureSlug: normalizeFeatureSlugInput(explicitBranchSlug),
     };
   }
-  return parseRenderedBranchIdentity(params.branch.name, params.settings);
+  const parsed = parseRenderedBranchIdentity(params.branch.name, params.settings);
+  const taskId =
+    Array.isArray(params.branch.taskIds) && params.branch.taskIds.length === 1
+      ? params.branch.taskIds[0]?.trim()
+      : "";
+  if (parsed.kind === "plan_feature" && taskId) {
+    return {
+      ...parsed,
+      key: buildPlanTaskFeatureBranchKey(
+        normalizedPlanSlug,
+        taskId,
+        parsed.featureSlug,
+      ),
+      planSlug: normalizedPlanSlug,
+    };
+  }
+  return parsed;
 };
 
 export const renderPlanFeatureBranchName = (params: {

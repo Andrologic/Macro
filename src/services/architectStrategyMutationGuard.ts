@@ -13,10 +13,10 @@ import {
 import { provisionPlanBranches } from "./architectGitFlowService";
 import {
   collectRenderedPlanPredictedBranchDescriptors,
+  getPredictedBranchLogicalIdentity,
 } from "./architectBranchIdentity";
 import {
   getPlanNodeBranchIntent,
-  getPredictedBranchIntentKey,
 } from "./gitFlowBranchIntents";
 import {
   normalizeNodeProjectIds,
@@ -330,10 +330,27 @@ const buildPredictedBranchesForMutation = (params: {
     planSlug,
     getProjectGitFlowSettings: params.getProjectGitFlowSettings,
   });
+  const nodeById = new Map(params.nodes.map((node) => [node.id, node]));
+  const resolveBranchStatus = (taskIds: string[]): PredictedBranch["status"] => {
+    const branchNodes = taskIds
+      .map((taskId) => nodeById.get(taskId))
+      .filter((node): node is PlanNode => Boolean(node));
+    if (branchNodes.length > 0 && branchNodes.every((node) => node.status === "completed")) {
+      return "merged";
+    }
+    if (branchNodes.some((node) => node.status === "in-progress")) {
+      return "active";
+    }
+    return "pending";
+  };
 
   const existingByKey = new Map(
     (params.plan.predictedBranches || []).map((branch) => [
-      `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+      `${branch.projectId}::${getPredictedBranchLogicalIdentity({
+        planSlug,
+        branch,
+        settings: params.getProjectGitFlowSettings?.(branch.projectId),
+      }).key}`,
       branch,
     ]),
   );
@@ -349,7 +366,7 @@ const buildPredictedBranchesForMutation = (params: {
       parentBranch: branch.parentBranch,
       projectId: branch.projectId,
       taskIds: unique(branch.taskIds),
-      status: existing?.status || "pending",
+      status: resolveBranchStatus(branch.taskIds),
       branchType: branch.branchType,
       branchSlug: branch.branchSlug,
     };
@@ -648,14 +665,22 @@ export const prepareStrategyMutationPreview = (
   });
   const expectedRenderedBranchByKey = new Map(
     expectedRenderedBranches.map((branch) => [
-      `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+      `${branch.projectId}::${getPredictedBranchLogicalIdentity({
+        planSlug: targetPlanSlug,
+        branch,
+        settings: params.getProjectGitFlowSettings?.(branch.projectId),
+      }).key}`,
       branch,
     ]),
   );
   const staleRenderedBranchConflicts = normalized.predictedBranches
     .map((branch) => {
       const expected = expectedRenderedBranchByKey.get(
-        `${branch.projectId}::${getPredictedBranchIntentKey(branch)}`,
+        `${branch.projectId}::${getPredictedBranchLogicalIdentity({
+          planSlug: targetPlanSlug,
+          branch,
+          settings: params.getProjectGitFlowSettings?.(branch.projectId),
+        }).key}`,
       );
       if (!expected) {
         return null;
