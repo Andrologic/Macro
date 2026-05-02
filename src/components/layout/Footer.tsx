@@ -184,8 +184,14 @@ export const Footer: React.FC = () => {
     [scopeProjects, setFooterMetadataSyncStatus]
   );
 
-  const totalBehind = codeStatus.behind + (macroSnapshot?.behind ?? 0);
-  const totalAhead = codeStatus.ahead + (macroSnapshot?.ahead ?? 0);
+  const codeBehind = codeStatus.behind;
+  const codeAhead = codeStatus.ahead;
+  const macroBehind = macroSnapshot?.behind ?? 0;
+  const macroAhead = macroSnapshot?.ahead ?? 0;
+  const pullCountLabel = macroBehind > 0 ? `${codeBehind}@${macroBehind}` : String(codeBehind);
+  const pushCountLabel = macroAhead > 0 ? `${codeAhead}@${macroAhead}` : String(codeAhead);
+  const hasPullWork = codeBehind > 0 || macroBehind > 0;
+  const hasPushWork = codeAhead > 0 || macroAhead > 0;
   const hasUnreadNotificationDot = useMemo(() => hasUnreadNotifications(notificationItems), [notificationItems]);
 
   const presentConflictIfNeeded = useCallback((result: tauriIpc.MacroBranchSyncDto, context: MacroConflictContext) => {
@@ -513,7 +519,7 @@ export const Footer: React.FC = () => {
                 )}
               />
             </Button>
-            {(focusProjects.length > 0 || codeStatus.branch || totalAhead > 0 || totalBehind > 0) && (
+            {(focusProjects.length > 0 || codeStatus.branch || hasPushWork || hasPullWork) && (
               <div className="flex min-w-0 items-center overflow-hidden">
                 <span aria-hidden="true" className="mx-2 h-4 w-px shrink-0 bg-border/70" />
                 <div className="flex min-w-0 items-center gap-2 overflow-hidden">
@@ -551,28 +557,28 @@ export const Footer: React.FC = () => {
                   variant="ghost"
                   className={cn(
                     'h-6 shrink-0 gap-1 px-2 text-[11px] font-medium',
-                    totalBehind > 0 ? 'text-amber-400 hover:text-amber-300' : 'text-muted-foreground/80'
+                    hasPullWork ? 'text-amber-400 hover:text-amber-300' : 'text-muted-foreground/80'
                   )}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('pull')}
                   data-tour-id="footer-pull"
                 >
                   <Icon name="arrow-down" size={12} className={cn(syncAction === 'pull' && 'animate-bounce')} />
-                  <span>{totalBehind}</span>
+                  <span>{pullCountLabel}</span>
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
                   className={cn(
                     'h-6 shrink-0 gap-1 px-2 text-[11px] font-medium',
-                    totalAhead > 0 ? 'text-emerald-400 hover:text-emerald-300' : 'text-muted-foreground/80'
+                    hasPushWork ? 'text-emerald-400 hover:text-emerald-300' : 'text-muted-foreground/80'
                   )}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('push')}
                   data-tour-id="footer-push"
                 >
                   <Icon name="arrow-up" size={12} className={cn(syncAction === 'push' && 'animate-bounce')} />
-                  <span>{totalAhead}</span>
+                  <span>{pushCountLabel}</span>
                 </Button>
                 </div>
               </div>
