@@ -79,8 +79,13 @@ const renderWorkBranchNameForProject = (params: {
 
 const resolvePlanProjectBaseBranchName = (
   plan: ArchitectPlanRecord,
-  projectId: string
-): string => getArchitectPlanTargetBranchForProject(plan, projectId);
+  projectId: string,
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined
+): string =>
+  getArchitectPlanTargetBranchForProject(plan, projectId, {
+    getProjectGitFlowSettings: (targetProjectId) =>
+      getProjectGitFlowSettings(getProjectById, targetProjectId),
+  });
 
 const resolvePlanProjectSourceBranchName = (
   plan: ArchitectPlanRecord,
@@ -1092,7 +1097,11 @@ export const createArchitectGitFlowService = (
           projectId: repository.projectId,
           getProjectById: deps.getAppState().getProjectById,
         });
-        const repositoryBaseBranchName = resolvePlanProjectBaseBranchName(params.plan, repository.projectId);
+        const repositoryBaseBranchName = resolvePlanProjectBaseBranchName(
+          params.plan,
+          repository.projectId,
+          deps.getAppState().getProjectById
+        );
         const status = await deps.tauri.gitStatus(repository.repoPath);
         const diff = await deps.tauri.gitDiff({
           repoPath: repository.repoPath,
@@ -1180,7 +1189,11 @@ export const createArchitectGitFlowService = (
 
     await Promise.all(
       repositories.map(async (repository) => {
-        const baseBranchName = resolvePlanProjectBaseBranchName(params.plan, repository.projectId);
+        const baseBranchName = resolvePlanProjectBaseBranchName(
+          params.plan,
+          repository.projectId,
+          deps.getAppState().getProjectById
+        );
         await deps.tauri.gitCheckout({
           repoPath: repository.repoPath,
           branchOrCommit: baseBranchName,

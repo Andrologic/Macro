@@ -15,7 +15,7 @@ import type { InternalAgentProfile } from './internalAgentProfile';
 import type { TaskStatus } from '../types';
 
 export const loadPlanFinalizationReviewRuntime = async (params: {
-  summary: Pick<ImplementTaskPlanSummary, 'id' | 'targetBranch'>;
+  summary: Pick<ImplementTaskPlanSummary, 'id' | 'storageBranch'>;
   loadReview?: (params: {
     branchName: string;
     planId: string;
@@ -24,7 +24,7 @@ export const loadPlanFinalizationReviewRuntime = async (params: {
 }): Promise<PlanFinalizationRuntimeState> => {
   const reviewLoader = params.loadReview || loadPlanReview;
   const review = await reviewLoader({
-    branchName: params.summary.targetBranch,
+    branchName: params.summary.storageBranch,
     planId: params.summary.id,
     syncBaseBranches: true,
   });

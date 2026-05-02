@@ -35,7 +35,7 @@ describe('planFinalizationRuntime', () => {
     const runtime = await loadPlanFinalizationReviewRuntime({
       summary: {
         id: 'plan-1',
-        targetBranch: 'develop',
+        storageBranch: 'develop',
       },
       loadReview,
     });

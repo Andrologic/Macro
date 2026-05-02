@@ -16,7 +16,7 @@ import type { InternalAgentProfile } from './internalAgentProfile';
 
 export const loadPlanFinalizationMergeWorkflowRuntime = async (params: {
   taskId: string;
-  summary: Pick<ImplementTaskPlanSummary, 'id' | 'targetBranch'>;
+  summary: Pick<ImplementTaskPlanSummary, 'id' | 'storageBranch'>;
   loadReview?: (params: {
     branchName: string;
     planId: string;
@@ -25,7 +25,7 @@ export const loadPlanFinalizationMergeWorkflowRuntime = async (params: {
 }): Promise<MergeWorkflowRuntimeState> => {
   const reviewLoader = params.loadReview || loadPlanReview;
   const review = await reviewLoader({
-    branchName: params.summary.targetBranch,
+    branchName: params.summary.storageBranch,
     planId: params.summary.id,
     syncBaseBranches: true,
   });

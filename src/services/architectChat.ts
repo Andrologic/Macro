@@ -6,6 +6,8 @@ import type {
 } from './architectStrategyMutationGuard';
 import {
   getArchitectPlanActionableProjectIds,
+  getArchitectPlanEffectiveTargetBranch,
+  getArchitectPlanTargetBranchesByProjectId,
   getArchitectPlanVisibleProjectIds,
 } from './architectPlanService';
 import { getArchitectPlanDisplayName, isCanonicalArchitectPlan } from './architectPlanPresentation';
@@ -30,6 +32,7 @@ type ArchitectPlanListItem = Pick<
   | 'planKind'
   | 'gitFlowPlan'
   | 'targetBranch'
+  | 'targetBranchesByProjectId'
   | 'conversationId'
 > & {
   nodeCount?: number;
@@ -235,6 +238,8 @@ export const formatArchitectPlanListToolResult = (params: {
       git_flow: plan.gitFlowPlan ?? null,
       description: cleanLine(plan.description) || '',
       target_branch: plan.targetBranch,
+      target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+      effective_target_branch: getArchitectPlanEffectiveTargetBranch(plan),
       node_count: plan.nodeCount ?? 0,
       conversation_id: plan.conversationId ?? null,
     })),
@@ -258,6 +263,8 @@ export const formatArchitectPlanCreateToolResult = (
       git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
+      target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+      effective_target_branch: getArchitectPlanEffectiveTargetBranch(plan),
       active: plan.id === activePlanId,
       conversation_id: plan.conversationId ?? null,
       project_ids: getArchitectPlanActionableProjectIds(plan),
@@ -280,6 +287,8 @@ export const formatArchitectPlanGetToolResult = (plan: ArchitectPlanRecord): str
       git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
+      target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+      effective_target_branch: getArchitectPlanEffectiveTargetBranch(plan),
       conversation_id: plan.conversationId ?? null,
       project_ids: getArchitectPlanActionableProjectIds(plan),
       actionable_project_ids: getArchitectPlanActionableProjectIds(plan),
@@ -310,6 +319,8 @@ export const formatArchitectPlanUpdateToolResult = (
       git_flow: plan.gitFlowPlan ?? null,
       status: plan.status,
       target_branch: plan.targetBranch,
+      target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+      effective_target_branch: getArchitectPlanEffectiveTargetBranch(plan),
       active: plan.id === activePlanId,
       ...(replicaWarning ? { replica_warning: replicaWarning } : {}),
     }
