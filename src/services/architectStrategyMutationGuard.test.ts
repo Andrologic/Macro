@@ -148,6 +148,41 @@ describe('architectStrategyMutationGuard', () => {
     expect(preview.predictedBranches.every((branch) => branch.taskIds.length === 1)).toBe(true);
   });
 
+  it('uses effective project targets when a feature plan is stored on main', () => {
+    const plan = createPlan({
+      targetBranch: 'main',
+      targetBranchesByProjectId: { web: 'master' },
+      planKind: 'feature',
+    });
+
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: [
+        createNode({ id: 'task-a', title: 'Prepare schema' }),
+        createNode({ id: 'task-b', title: 'Build endpoint', projectId: 'api', projectIds: ['api'] }),
+      ],
+      metadataUpdate: { description: plan.description },
+      getProjectGitFlowSettings: (projectId) => ({
+        baseBranch: 'develop',
+        mainBranch: projectId === 'web' ? 'master' : 'main',
+        planBranchTemplate: 'plan/{planSlug}',
+        featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+        standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+        releaseBranchTemplate: 'release/v{releaseSlug}',
+        hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+        bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+      }),
+    });
+
+    expect(preview.status).toBe('valid');
+    expect(preview.targetBranch).toBe('main');
+    expect(preview.targetBranchesByProjectId).toEqual({
+      web: 'develop',
+      api: 'develop',
+    });
+  });
+
   it('blocks the preview when a frozen node is modified or omitted', () => {
     const plan = createPlan({
       status: 'in_progress',

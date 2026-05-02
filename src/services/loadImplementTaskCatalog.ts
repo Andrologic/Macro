@@ -2,6 +2,7 @@ import type { PlanNode, PredictedBranch, ProjectGroup, Task } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import {
   getArchitectPlan,
+  getArchitectPlanEffectiveTargetBranchesByProjectId,
   getGitFlowBaseBranch,
   listArchitectPlans,
   listArchitectPlanTargetBranches,
@@ -116,7 +117,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     )
   );
 
-  return {
+  const draftPlan = {
     id: activePlanId,
     slug:
       (typeof activePlanContext.slug === 'string' && activePlanContext.slug.trim().length > 0
@@ -135,6 +136,18 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     updatedAt: new Date().toISOString(),
     nodes: appState.planNodes,
     predictedBranches: appState.predictedBranches,
+  };
+  return {
+    ...draftPlan,
+    targetBranchesByProjectId: getArchitectPlanEffectiveTargetBranchesByProjectId(
+      draftPlan,
+      {
+        getProjectGitFlowSettings: (projectId) =>
+          appState.projectGroups
+            .flatMap((group) => group.projects)
+            .find((project) => project.id === projectId)?.gitFlowSettings ?? null,
+      }
+    ),
   };
 };
 
