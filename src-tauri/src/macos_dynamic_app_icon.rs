@@ -7,7 +7,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSPoint, NSRect, NSSize};
 
-const LOGO_SVG_TEMPLATE: &str = include_str!("../../src/assets/logo.svg");
+const LOGO_SVG_TEMPLATE: &str = include_str!("../../public/logo.svg");
 const DEFAULT_LOGO_START_COLOR: &str = "#3B82F6";
 const DEFAULT_LOGO_END_COLOR: &str = "#1E40AF";
 

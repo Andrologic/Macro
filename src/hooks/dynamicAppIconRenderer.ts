@@ -1,15 +1,18 @@
-import logoSvgSource from '../assets/logo.svg?raw';
-import type { Theme } from '../types/theme';
+export type DynamicLogoPlatform = 'macos' | 'windows' | 'linux' | 'web';
 
-export type DynamicAppIconPlatform = 'macos' | 'windows' | 'linux' | 'web';
+export interface DynamicLogoThemeColors {
+  backgroundColor: string;
+  primaryColor: string;
+  themeType: 'light' | 'dark';
+}
 
-export interface DynamicAppIconPalette {
+export interface DynamicLogoPalette {
   backgroundColor: string;
   logoStartColor: string;
   logoEndColor: string;
 }
 
-export const WINDOWS_DYNAMIC_APP_ICON_SIZE = 128;
+export const THEMED_LOGO_ICON_SIZE = 128;
 const DEFAULT_LOGO_START_COLOR = '#3b82f6';
 const DEFAULT_LOGO_END_COLOR = '#1e40af';
 
@@ -57,7 +60,10 @@ function mixHex(sourceHex: string, targetHex: string, weight: number): string {
   )}${toHexChannel(source.blue + (target.blue - source.blue) * clampedWeight)}`;
 }
 
-function buildThemedLogoSvg(palette: DynamicAppIconPalette): string {
+export function buildThemedLogoSvg(
+  logoSvgSource: string,
+  palette: DynamicLogoPalette
+): string {
   return logoSvgSource
     .replaceAll('#3B82F6', palette.logoStartColor)
     .replaceAll('#1E40AF', palette.logoEndColor)
@@ -65,30 +71,32 @@ function buildThemedLogoSvg(palette: DynamicAppIconPalette): string {
     .replaceAll(DEFAULT_LOGO_END_COLOR, palette.logoEndColor);
 }
 
-export function deriveDynamicAppIconPalette(theme: Theme): DynamicAppIconPalette {
-  const logoStartColor = normalizeHex(theme.colors.primary);
+export function deriveDynamicLogoPalette(colors: DynamicLogoThemeColors): DynamicLogoPalette {
+  const logoStartColor = normalizeHex(colors.primaryColor);
 
   return {
-    backgroundColor: normalizeHex(theme.colors.background),
+    backgroundColor: normalizeHex(colors.backgroundColor),
     logoStartColor,
     logoEndColor: mixHex(logoStartColor, '#000000', 0.2),
   };
 }
 
-export function buildWindowsDynamicAppIconSvg(theme: Theme): string {
-  return buildThemedLogoSvg(deriveDynamicAppIconPalette(theme));
+export function buildMacosDynamicAppIconThemeSpec(
+  colors: DynamicLogoThemeColors
+): MacosDynamicAppIconThemeSpec {
+  return deriveDynamicLogoPalette(colors);
 }
 
-export function buildMacosDynamicAppIconThemeSpec(theme: Theme): MacosDynamicAppIconThemeSpec {
-  return deriveDynamicAppIconPalette(theme);
+export function buildThemedLogoDataUrl(themedLogoSvg: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(themedLogoSvg)}`;
 }
 
-export function shouldUseMacosDynamicAppIcon({
+export function shouldUseMacosNativeLogoIcon({
   isTauriEnvironment,
   platform,
 }: {
   isTauriEnvironment: boolean;
-  platform: DynamicAppIconPlatform;
+  platform: DynamicLogoPlatform;
 }): boolean {
   return isTauriEnvironment && platform === 'macos';
 }

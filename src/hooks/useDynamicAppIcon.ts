@@ -1,25 +1,63 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Theme } from '../types/theme';
 import { getDesktopPlatform } from '../utils/desktopPlatform';
 import { isTauriEnvironment, windowSetMacosAppIconTheme } from '../services/tauriWindow';
 import {
-  buildWindowsDynamicAppIconSvg,
-  WINDOWS_DYNAMIC_APP_ICON_SIZE,
+  buildThemedLogoDataUrl,
+  buildThemedLogoSvg,
+  deriveDynamicLogoPalette,
+  THEMED_LOGO_ICON_SIZE,
   buildMacosDynamicAppIconThemeSpec,
-  type DynamicAppIconPlatform,
+  type DynamicLogoPlatform,
+  type DynamicLogoThemeColors,
   type MacosDynamicAppIconThemeSpec,
-  shouldUseMacosDynamicAppIcon,
+  shouldUseMacosNativeLogoIcon,
 } from './dynamicAppIconRenderer';
 
-export interface DynamicAppIconSyncDeps {
+export const PUBLIC_LOGO_URL = '/logo.svg';
+
+export type DynamicLogoSyncStatus = 'updated' | 'skipped' | 'failed';
+export type DynamicLogoSurface = 'favicon' | 'nativeIcon';
+
+export interface DynamicLogoSurfaceResult {
+  surface: DynamicLogoSurface;
+  status: DynamicLogoSyncStatus;
+  reason?: string;
+}
+
+export interface DynamicLogoSyncResult {
+  favicon: DynamicLogoSurfaceResult;
+  nativeIcon: DynamicLogoSurfaceResult;
+}
+
+export interface DynamicLogoSyncDeps {
   isTauriEnvironment: () => boolean;
-  getPlatform: () => DynamicAppIconPlatform;
-  renderWindowsAppIconPngBytes: (theme: Theme) => Promise<Uint8Array>;
-  buildMacosAppIconThemeSpec: (theme: Theme) => MacosDynamicAppIconThemeSpec;
+  getPlatform: () => DynamicLogoPlatform;
+  renderThemedLogoPngBytes: (themedLogoSvg: string) => Promise<Uint8Array>;
+  loadLogoSvgSource: () => Promise<string>;
+  buildMacosAppIconThemeSpec: (colors: DynamicLogoThemeColors) => MacosDynamicAppIconThemeSpec;
+  setFaviconFromSvg: (themedLogoSvg: string) => void;
   setWindowIconFromPng: (pngBytes: Uint8Array) => Promise<void>;
   setMacosAppIconTheme: (spec: MacosDynamicAppIconThemeSpec) => Promise<void>;
+  logDynamicLogoWarning: (message: string, error?: unknown) => void;
+}
+
+function buildDynamicLogoThemeColors({
+  backgroundColor,
+  primaryColor,
+  themeType,
+}: {
+  backgroundColor: string;
+  primaryColor: string;
+  themeType: Theme['type'];
+}): DynamicLogoThemeColors {
+  return {
+    backgroundColor,
+    primaryColor,
+    themeType,
+  };
 }
 
 function createIconCanvas(size: number): {
@@ -74,9 +112,41 @@ async function renderSvgToPngBytes(svgString: string, size: number): Promise<Uin
   }
 }
 
-async function renderWindowsAppIconPngBytes(theme: Theme): Promise<Uint8Array> {
-  const svgString = buildWindowsDynamicAppIconSvg(theme);
-  return renderSvgToPngBytes(svgString, WINDOWS_DYNAMIC_APP_ICON_SIZE);
+let logoSvgSourcePromise: Promise<string> | null = null;
+let windowsTaskbarLimitLogged = false;
+
+async function loadLogoSvgSource(): Promise<string> {
+  logoSvgSourcePromise ??= fetch(PUBLIC_LOGO_URL).then((response) => {
+    if (!response.ok) {
+      throw new Error(`Failed to load logo SVG: ${response.status}`);
+    }
+
+    return response.text();
+  });
+
+  return logoSvgSourcePromise;
+}
+
+async function renderThemedLogoPngBytes(themedLogoSvg: string): Promise<Uint8Array> {
+  return renderSvgToPngBytes(themedLogoSvg, THEMED_LOGO_ICON_SIZE);
+}
+
+function findOrCreateFaviconLink(): HTMLLinkElement {
+  const existingLink = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+  if (existingLink) {
+    return existingLink;
+  }
+
+  const link = document.createElement('link');
+  link.rel = 'icon';
+  document.head.appendChild(link);
+  return link;
+}
+
+function setFaviconFromSvg(themedLogoSvg: string): void {
+  const link = findOrCreateFaviconLink();
+  link.type = 'image/svg+xml';
+  link.href = buildThemedLogoDataUrl(themedLogoSvg);
 }
 
 async function setWindowIconFromPng(pngBytes: Uint8Array): Promise<void> {
@@ -84,65 +154,182 @@ async function setWindowIconFromPng(pngBytes: Uint8Array): Promise<void> {
   await getCurrentWindow().setIcon(icon);
 }
 
-const defaultDynamicAppIconSyncDeps: DynamicAppIconSyncDeps = {
-  isTauriEnvironment,
-  getPlatform: getDesktopPlatform,
-  renderWindowsAppIconPngBytes,
-  buildMacosAppIconThemeSpec: buildMacosDynamicAppIconThemeSpec,
-  setWindowIconFromPng,
-  setMacosAppIconTheme: windowSetMacosAppIconTheme,
-};
-
-export async function syncDynamicAppIcon(
-  theme: Theme,
-  deps: DynamicAppIconSyncDeps = defaultDynamicAppIconSyncDeps
-): Promise<void> {
-  const tauriAvailable = deps.isTauriEnvironment();
-  if (!tauriAvailable) {
+function logDynamicLogoWarning(message: string, error?: unknown): void {
+  if (error === undefined) {
+    console.warn(`[dynamicLogo] ${message}`);
     return;
   }
 
+  console.warn(`[dynamicLogo] ${message}`, error);
+}
+
+const defaultDynamicLogoSyncDeps: DynamicLogoSyncDeps = {
+  isTauriEnvironment,
+  getPlatform: getDesktopPlatform,
+  renderThemedLogoPngBytes,
+  loadLogoSvgSource,
+  buildMacosAppIconThemeSpec: buildMacosDynamicAppIconThemeSpec,
+  setFaviconFromSvg,
+  setWindowIconFromPng,
+  setMacosAppIconTheme: windowSetMacosAppIconTheme,
+  logDynamicLogoWarning,
+};
+
+export async function syncDynamicAppIcon(
+  colors: DynamicLogoThemeColors,
+  deps: DynamicLogoSyncDeps = defaultDynamicLogoSyncDeps
+): Promise<DynamicLogoSyncResult> {
+  const result: DynamicLogoSyncResult = {
+    favicon: {
+      surface: 'favicon',
+      status: 'skipped',
+    },
+    nativeIcon: {
+      surface: 'nativeIcon',
+      status: 'skipped',
+    },
+  };
+  let logoSvgSource: string;
+
+  try {
+    logoSvgSource = await deps.loadLogoSvgSource();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    deps.logDynamicLogoWarning('Failed to load the public logo SVG.', error);
+    return {
+      favicon: {
+        surface: 'favicon',
+        status: 'failed',
+        reason,
+      },
+      nativeIcon: {
+        surface: 'nativeIcon',
+        status: 'failed',
+        reason,
+      },
+    };
+  }
+
+  const themedLogoSvg = buildThemedLogoSvg(logoSvgSource, deriveDynamicLogoPalette(colors));
+
+  try {
+    deps.setFaviconFromSvg(themedLogoSvg);
+    result.favicon = {
+      surface: 'favicon',
+      status: 'updated',
+    };
+  } catch (error) {
+    deps.logDynamicLogoWarning('Failed to update themed favicon.', error);
+    result.favicon = {
+      surface: 'favicon',
+      status: 'failed',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const tauriAvailable = deps.isTauriEnvironment();
+  if (!tauriAvailable) {
+    result.nativeIcon = {
+      surface: 'nativeIcon',
+      status: 'skipped',
+      reason: 'not-tauri',
+    };
+    return result;
+  }
+
   const platform = deps.getPlatform();
-  const useMacosNativeIcon = shouldUseMacosDynamicAppIcon({
+  const useMacosNativeIcon = shouldUseMacosNativeLogoIcon({
     isTauriEnvironment: tauriAvailable,
     platform,
   });
 
   if (useMacosNativeIcon) {
-    await deps.setMacosAppIconTheme(deps.buildMacosAppIconThemeSpec(theme));
-    return;
+    try {
+      await deps.setMacosAppIconTheme(deps.buildMacosAppIconThemeSpec(colors));
+      result.nativeIcon = {
+        surface: 'nativeIcon',
+        status: 'updated',
+      };
+    } catch (error) {
+      deps.logDynamicLogoWarning('Failed to update the native macOS app icon.', error);
+      result.nativeIcon = {
+        surface: 'nativeIcon',
+        status: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return result;
   }
 
-  const pngBytes = await deps.renderWindowsAppIconPngBytes(theme);
-  await deps.setWindowIconFromPng(pngBytes);
+  try {
+    const pngBytes = await deps.renderThemedLogoPngBytes(themedLogoSvg);
+    await deps.setWindowIconFromPng(pngBytes);
+    result.nativeIcon = {
+      surface: 'nativeIcon',
+      status: 'updated',
+      reason: platform === 'windows' ? 'windows-taskbar-best-effort' : undefined,
+    };
+    if (platform === 'windows') {
+      if (!windowsTaskbarLimitLogged) {
+        windowsTaskbarLimitLogged = true;
+        deps.logDynamicLogoWarning(
+          'Updated the native window icon. Windows 11 may keep showing the pinned taskbar icon from its shell cache.'
+        );
+      }
+    }
+  } catch (error) {
+    deps.logDynamicLogoWarning('Failed to update the native window icon.', error);
+    result.nativeIcon = {
+      surface: 'nativeIcon',
+      status: 'failed',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return result;
 }
 
 export function useDynamicAppIcon(theme: Theme, enabled = true): void {
+  const backgroundColor = theme.colors.background;
+  const primaryColor = theme.colors.primary;
+  const themeType = theme.type;
+  const logoColors = useMemo(
+    () => buildDynamicLogoThemeColors({ backgroundColor, primaryColor, themeType }),
+    [backgroundColor, primaryColor, themeType]
+  );
+
   useEffect(() => {
     if (!enabled) {
       return;
     }
 
     let cancelled = false;
-    const guardedDeps: DynamicAppIconSyncDeps = {
-      ...defaultDynamicAppIconSyncDeps,
+    const guardedDeps: DynamicLogoSyncDeps = {
+      ...defaultDynamicLogoSyncDeps,
+      setFaviconFromSvg: (themedLogoSvg) => {
+        if (cancelled) {
+          return;
+        }
+
+        defaultDynamicLogoSyncDeps.setFaviconFromSvg(themedLogoSvg);
+      },
       setWindowIconFromPng: async (pngBytes) => {
         if (cancelled) {
           return;
         }
 
-        await defaultDynamicAppIconSyncDeps.setWindowIconFromPng(pngBytes);
+        await defaultDynamicLogoSyncDeps.setWindowIconFromPng(pngBytes);
       },
       setMacosAppIconTheme: async (spec) => {
         if (cancelled) {
           return;
         }
 
-        await defaultDynamicAppIconSyncDeps.setMacosAppIconTheme(spec);
+        await defaultDynamicLogoSyncDeps.setMacosAppIconTheme(spec);
       },
     };
 
-    void syncDynamicAppIcon(theme, guardedDeps).catch((error) => {
+    void syncDynamicAppIcon(logoColors, guardedDeps).catch((error) => {
       if (!cancelled) {
         console.error('Error updating app icon:', error);
       }
@@ -151,5 +338,5 @@ export function useDynamicAppIcon(theme: Theme, enabled = true): void {
     return () => {
       cancelled = true;
     };
-  }, [enabled, theme]);
+  }, [enabled, logoColors]);
 }

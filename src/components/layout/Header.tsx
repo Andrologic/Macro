@@ -303,7 +303,7 @@ export function Header({
         <div className="macro-topbar-inner grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-3">
           <div className="macro-topbar-leading flex min-w-0 items-center gap-2">
             <div className="macro-topbar-brand flex items-center gap-2 shrink-0" data-tour-id="app-brand">
-              <Logo size={24} strokeWidth={3} />
+              <Logo size={24} />
               <span
                 className={cn(
                   'macro-topbar-brand-label',
