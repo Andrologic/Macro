@@ -4,6 +4,7 @@ import {
   archiveArchitectPlan,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
+  getArchitectPlanTargetDisplay,
   getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
   getGitFlowMainBranch,
@@ -182,35 +183,6 @@ const summarizeArchitectPlanRecord = (
   replicas: plan.replicas,
   hasReplicaDivergence: plan.hasReplicaDivergence,
 });
-
-const resolvePlanTargetSummary = (
-  plan: Pick<ArchitectPlanSummary, 'targetBranch' | 'targetBranchesByProjectId'>,
-  selectedProjectId: string | null,
-): {
-  targetBranch: string;
-  hasMixedTargetBranches: boolean;
-} => {
-  if (selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]) {
-    return {
-      targetBranch: plan.targetBranchesByProjectId[selectedProjectId],
-      hasMixedTargetBranches:
-        new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
-    };
-  }
-
-  const targetBranches = Array.from(
-    new Set(
-      Object.values(plan.targetBranchesByProjectId || {})
-        .map((branchName) => branchName.trim())
-        .filter((branchName) => branchName.length > 0)
-    )
-  );
-
-  return {
-    targetBranch: targetBranches.length === 1 ? targetBranches[0] : plan.targetBranch,
-    hasMixedTargetBranches: targetBranches.length > 1,
-  };
-};
 
 export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -1287,10 +1259,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               const canArchivePlan = crudCapabilities.canArchive || crudCapabilities.canRestore;
               const {
                 targetBranch: effectiveTargetBranch,
+                targetBranchesByProjectId: effectiveTargetBranchesByProjectId,
                 hasMixedTargetBranches,
-              } = resolvePlanTargetSummary(plan, selectedProjectId);
+              } = getArchitectPlanTargetDisplay(plan, selectedProjectId, {
+                getProjectGitFlowSettings: (projectId) =>
+                  getProjectById(projectId)?.gitFlowSettings ?? null,
+              });
               const targetSummary = hasMixedTargetBranches
-                ? selectedProjectId && plan.targetBranchesByProjectId?.[selectedProjectId]
+                ? selectedProjectId && effectiveTargetBranchesByProjectId[selectedProjectId]
                   ? t('architect.planSelector.mixedTargetsForProject', 'Mixed targets · this repo: {{branchName}}', {
                     branchName: effectiveTargetBranch,
                   })

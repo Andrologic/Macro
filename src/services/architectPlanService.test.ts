@@ -636,6 +636,91 @@ describe('architectPlanService', () => {
     });
   });
 
+  it('uses project development branches as effective feature plan targets even when storage branch is main', async () => {
+    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
+    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+
+    const created = await service.createArchitectPlan({
+      branchName: 'main',
+      planId: '1710000000016',
+      slug: 'feature-target-repair',
+      planKind: 'feature',
+      projectIds: ['web'],
+    }, {
+      tauri: {
+        ...actualTauriIpc,
+        isTauriAvailable: () => false,
+      } as any,
+      getAppState: async () => ({
+        projectGroups: [
+          {
+            id: 'workspace',
+            name: 'Workspace',
+            projects: [
+              {
+                id: 'web',
+                name: 'Web',
+                path: '/repos/web',
+                gitFlowSettings: {
+                  baseBranch: 'develop',
+                  mainBranch: 'master',
+                  planBranchTemplate: 'plan/{planSlug}',
+                  featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+                  standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+                  releaseBranchTemplate: 'release/v{releaseSlug}',
+                  hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+                  bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+                },
+              },
+            ],
+          },
+        ],
+      }) as any,
+    });
+
+    expect(created.targetBranch).toBe('main');
+    expect(created.targetBranchesByProjectId).toEqual({ web: 'develop' });
+    expect(service.getArchitectPlanEffectiveTargetBranch(created)).toBe('develop');
+    expect(service.getArchitectPlanEffectiveTargetBranchesByProjectId(
+      {
+        ...created,
+        targetBranchesByProjectId: { web: 'master' },
+      },
+      {
+        getProjectGitFlowSettings: () => ({
+          baseBranch: 'develop',
+          mainBranch: 'master',
+        }),
+      }
+    )).toEqual({ web: 'develop' });
+    expect(service.getArchitectPlanEffectiveTargetBranchesByProjectId(
+      {
+        ...created,
+        planKind: 'bugfix',
+        targetBranchesByProjectId: { web: 'master' },
+      },
+      {
+        getProjectGitFlowSettings: () => ({
+          baseBranch: 'develop',
+          mainBranch: 'master',
+        }),
+      }
+    )).toEqual({ web: 'develop' });
+    expect(service.getArchitectPlanEffectiveTargetBranchesByProjectId(
+      {
+        ...created,
+        planKind: 'release',
+        targetBranchesByProjectId: { web: 'master' },
+      },
+      {
+        getProjectGitFlowSettings: () => ({
+          baseBranch: 'develop',
+          mainBranch: 'master',
+        }),
+      }
+    )).toEqual({ web: 'master' });
+  });
+
   it('hydrates legacy expected-only scope without letting stale expected ids expand modern plans', async () => {
     const legacyExpectedOnlyPlan: ArchitectPlanRecord = {
       id: 'legacy-expected-only',
@@ -735,6 +820,7 @@ describe('architectPlanService', () => {
         ['web', '/repos/web'],
         ['api', '/repos/api'],
       ]),
+      gitFlowSettingsByProjectId: new Map(),
       hasRegisteredProjects: true,
     };
 
@@ -794,6 +880,7 @@ describe('architectPlanService', () => {
       validProjectIds: ['web'],
       validProjectIdSet: new Set(['web']),
       repoPathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
       hasRegisteredProjects: true,
     };
     const filesByWorkspacePath: Record<string, Record<string, string>> = {

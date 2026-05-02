@@ -23,6 +23,7 @@ export interface ValidProjectRegistrySnapshot {
   validProjectIds: string[];
   validProjectIdSet: Set<string>;
   repoPathByProjectId: Map<string, string>;
+  gitFlowSettingsByProjectId: Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>;
   hasRegisteredProjects: boolean;
 }
 
@@ -37,6 +38,7 @@ const emptySnapshot = (): ValidProjectRegistrySnapshot => ({
   validProjectIds: [],
   validProjectIdSet: new Set<string>(),
   repoPathByProjectId: new Map<string, string>(),
+  gitFlowSettingsByProjectId: new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>(),
   hasRegisteredProjects: false,
 });
 
@@ -61,6 +63,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const readOnlyProjectIds: string[] = [];
   const readOnlyProjectIdSet = new Set<string>();
   const repoPathByProjectId = new Map<string, string>();
+  const gitFlowSettingsByProjectId = new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>();
 
   for (const group of params.projectGroups) {
     for (const project of group.projects) {
@@ -71,6 +74,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
       }
       validProjectIds.push(projectId);
       validProjectIdSet.add(projectId);
+      gitFlowSettingsByProjectId.set(projectId, project.gitFlowSettings);
       if (project.isReadOnly) {
         readOnlyProjectIds.push(projectId);
         readOnlyProjectIdSet.add(projectId);
@@ -121,6 +125,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
     validProjectIds,
     validProjectIdSet,
     repoPathByProjectId,
+    gitFlowSettingsByProjectId,
     hasRegisteredProjects: validProjectIds.length > 0,
   };
 };

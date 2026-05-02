@@ -68,6 +68,7 @@ import {
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatTranscript,
+  getArchitectPlanTargetDisplay,
   getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   getArchitectPlanNeeds,
@@ -4204,7 +4205,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
+        const appState = useAppStore.getState();
         const planKind = activePlanContext.planKind || "feature";
+        const targetDisplay = getArchitectPlanTargetDisplay(activePlanContext, null, {
+          getProjectGitFlowSettings: (projectId) =>
+            appState.getProjectById(projectId)?.gitFlowSettings ?? null,
+        });
         const typedPlanInstruction =
           planKind === "release"
             ? "This is a Release plan. First inspect likely version files and relevant repositories, then use the question tool to confirm per-repository versions and actionable repositories before generating the stabilization checklist. Do not create tags or GitHub releases."
@@ -4214,7 +4220,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 ? "This is a Bugfix plan. Ask the user to describe the bug if they have not already done so. Then inspect from the development-branch mindset, infer affected repositories, propose a concise bugfix slug, and use the question tool to confirm scope/slug before generating the fix checklist."
                 : "This is a Feature plan. Keep the existing lightweight planning flow; do not force an initial questionnaire unless a clarification is blocking.";
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", targetBranch="${activePlanContext.targetBranch}". ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
+          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", storageTargetBranch="${activePlanContext.targetBranch}", effectiveTargetBranch="${targetDisplay.effectiveTargetBranch || targetDisplay.targetBranch}", targetBranchesByProjectId=${JSON.stringify(targetDisplay.targetBranchesByProjectId)}. ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
         );
       }
     }

@@ -228,6 +228,10 @@ const isPlanFinalizationRuntimeTask = (
   task: Pick<CatalogedImplementTask, 'task_source'> | null | undefined
 ): boolean => (task ? isPlanFinalizationTask(task) : false);
 
+const getTaskPlanStorageBranch = (
+  task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
+): string => resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+
 const createInitialMergeWorkflowStateForTask = (
   task: Pick<CatalogedImplementTask, 'id' | 'task_source'>
 ): MergeWorkflowRuntimeState =>
@@ -239,11 +243,11 @@ const createInitialMergeWorkflowStateForTask = (
   });
 
 const createPlanFinalizationRuntimeState = (
-  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_target_branch'>
+  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_storage_branch' | 'plan_target_branch'>
 ): PlanFinalizationRuntimeState =>
   buildInitialPlanFinalizationRuntimeState({
     planId: task.plan_id,
-    branchName: resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch()),
+    branchName: getTaskPlanStorageBranch(task),
   });
 
 const toPlanFinalizationRepositoryResult = (
@@ -267,12 +271,10 @@ const toPlanFinalizationRepositoryResult = (
 });
 
 const toPlanFinalizationRuntimeFromMergeWorkflow = (
-  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_target_branch' | 'plan_title' | 'title'>,
+  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_storage_branch' | 'plan_target_branch' | 'plan_title' | 'title'>,
   runtime: MergeWorkflowRuntimeState | null | undefined
 ): PlanFinalizationRuntimeState => {
-  const branchName = resolveTargetBranch(
-    task.plan_target_branch || getGitFlowBaseBranch()
-  );
+  const branchName = getTaskPlanStorageBranch(task);
   const fallback = buildInitialPlanFinalizationRuntimeState({
     planId: task.plan_id,
     branchName,
@@ -736,12 +738,12 @@ const persistMergeWorkflowSessionForTask = async (
     return;
   }
 
-  if (!task.plan_id || !task.plan_target_branch) {
+  if (!task.plan_id || !(task.plan_storage_branch || task.plan_target_branch)) {
     return;
   }
 
   await persistArchitectPlanMergeWorkflowSession({
-    branchName: resolveTargetBranch(task.plan_target_branch),
+    branchName: getTaskPlanStorageBranch(task),
     plan: {
       id: task.plan_id,
       projectId: task.project_id,
@@ -1493,7 +1495,7 @@ const persistTaskStatusToArchitectPlan = async (
       return false;
     }
 
-    const targetBranch = resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch());
+    const targetBranch = getTaskPlanStorageBranch(task);
     const plan = await getArchitectPlan(targetBranch, task.plan_id);
     if (!plan || plan.status === 'deleted') {
       setError(
@@ -1521,7 +1523,9 @@ const persistTaskStatusToArchitectPlan = async (
         task_source: 'architect',
         plan_title: plan.title,
         plan_status: plan.status,
-        plan_target_branch: plan.targetBranch,
+        plan_storage_branch: plan.targetBranch,
+        plan_target_branch: task.plan_target_branch,
+        plan_target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
         draft: false,
         standalone_kind: 'legacy',
         base_branch: null,
@@ -1616,13 +1620,13 @@ const commitArchitectPlanMetadataForTask = async (
   message: string,
   setError?: (message: string | null) => void
 ): Promise<void> => {
-  if (task.task_source !== 'architect' || !task.plan_id || !task.plan_target_branch) {
+  if (task.task_source !== 'architect' || !task.plan_id || !(task.plan_storage_branch || task.plan_target_branch)) {
     return;
   }
 
   try {
     await commitArchitectPlanMetadata({
-      branchName: resolveTargetBranch(task.plan_target_branch),
+      branchName: getTaskPlanStorageBranch(task),
       planId: task.plan_id,
       commitMessage: message,
     });
@@ -2493,7 +2497,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         return;
       }
 
-      const targetBranch = resolveTargetBranch(task.plan_target_branch || getGitFlowBaseBranch());
+      const targetBranch = getTaskPlanStorageBranch(task);
       const plan = await getArchitectPlan(targetBranch, task.plan_id);
       if (!plan || plan.status === 'deleted') {
         set({
@@ -2934,7 +2938,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: message });
       throw toServiceError(message);
     }
-    if (task.task_source !== 'architect' || !task.plan_id || !task.plan_target_branch) {
+    if (task.task_source !== 'architect' || !task.plan_id || !(task.plan_storage_branch || task.plan_target_branch)) {
       const message = tTask(
         'implement.errors.contextPromotionUnsupportedTask',
         'Context promotion is only available for Architect tasks.'
@@ -2945,7 +2949,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const promotion = await promoteArchitectTaskContextProjects({
-        branchName: resolveTargetBranch(task.plan_target_branch),
+        branchName: getTaskPlanStorageBranch(task),
         planId: task.plan_id,
         taskId: task.id,
         projectIds,
@@ -3518,7 +3522,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           );
         }
 
-        const branchName = resolveTargetBranch(summary.targetBranch);
+        const branchName = resolveTargetBranch(summary.storageBranch);
         const reviewRuntime = overlayPersistedMergeWorkflowSession({
           runtime: await loadPlanFinalizationMergeWorkflowRuntime({
             taskId: task.id,
@@ -3886,9 +3890,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         return;
       }
 
-      if (task.task_source === 'architect' && task.plan_target_branch) {
+      if (task.task_source === 'architect' && (task.plan_storage_branch || task.plan_target_branch)) {
         try {
-          const targetBranch = resolveTargetBranch(task.plan_target_branch);
+          const targetBranch = getTaskPlanStorageBranch(task);
           const plan = await getArchitectPlan(targetBranch, task.plan_id);
           if (!plan || plan.status === 'deleted') {
             set({
@@ -3932,7 +3936,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
         try {
           await writeArchitectTaskExecution({
-            branchName: resolveTargetBranch(task.plan_target_branch),
+            branchName: getTaskPlanStorageBranch(task),
             planId: task.plan_id,
             execution: {
               taskId: task.id,
@@ -4026,7 +4030,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    const branchName = resolveTargetBranch(summary.targetBranch);
+    const branchName = resolveTargetBranch(summary.storageBranch);
     const taskId = buildPlanFinalizationTaskId(planId);
     set((state) => ({
       lastError: null,

@@ -216,6 +216,8 @@ describe('createLoadImplementTaskCatalog', () => {
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-api',
       'task-web',
+      'plan-finalization:plan-api',
+      'plan-finalization:plan-web',
       'standalone-1',
     ]);
     expect(catalog.plans.map((plan) => ({
@@ -318,7 +320,10 @@ describe('createLoadImplementTaskCatalog', () => {
 
     const catalog = await loadImplementTaskCatalog([]);
 
-    expect(catalog.tasks.map((task) => task.id)).toEqual(['live-task']);
+    expect(catalog.tasks.map((task) => task.id)).toEqual([
+      'live-task',
+      'plan-finalization:plan-live',
+    ]);
     expect(catalog.tasks[0]?.plan_target_branch).toBe('feature/live-checkout');
     expect(catalog.plans).toEqual([
       expect.objectContaining({
@@ -451,6 +456,7 @@ describe('createLoadImplementTaskCatalog', () => {
 
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-web',
+      'plan-finalization:plan-web',
       'standalone-1',
     ]);
     expect(catalog.plans).toEqual([
