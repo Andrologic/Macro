@@ -859,20 +859,22 @@ fn binary_candidates(binary: &str) -> Vec<String> {
 }
 
 fn is_binary_available(binary: &str) -> bool {
+    resolve_binary_path(binary).is_some()
+}
+
+fn resolve_binary_path(binary: &str) -> Option<PathBuf> {
     let binary_path = Path::new(binary);
     if binary_path.components().count() > 1 {
-        return binary_path.exists();
+        return binary_path.exists().then(|| binary_path.to_path_buf());
     }
 
-    let Some(path_var) = env::var_os("PATH") else {
-        return false;
-    };
+    let path_var = env::var_os("PATH")?;
 
-    env::split_paths(&path_var).any(|dir| {
+    env::split_paths(&path_var).find_map(|dir| {
         binary_candidates(binary)
             .into_iter()
             .map(|candidate| dir.join(candidate))
-            .any(|candidate| candidate.is_file())
+            .find(|candidate| candidate.is_file())
     })
 }
 
@@ -1718,6 +1720,26 @@ fn escape_cmd_literal(value: &str) -> String {
     value.replace('"', "\"\"")
 }
 
+#[cfg(target_os = "windows")]
+fn windows_binary_program(binary: &str) -> CommandResult<String> {
+    resolve_binary_path(binary)
+        .map(|path| path.to_string_lossy().to_string())
+        .ok_or_else(|| command_error(format!("App launch binary not found: {}", binary)))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_binary_launch_command(
+    binary: &str,
+    args: Vec<String>,
+    target_path: &Path,
+) -> CommandResult<ExternalLaunchCommand> {
+    Ok(ExternalLaunchCommand {
+        program: windows_binary_program(binary)?,
+        args,
+        current_dir: target_parent_dir(target_path),
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn mac_binary_or_app_command(
     binary_names: &[&str],
@@ -1836,100 +1858,100 @@ fn build_external_open_command(
 
     #[cfg(target_os = "windows")]
     let command = match app_id {
-        "vscode" => ExternalLaunchCommand {
-            program: "code".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "vscode-insiders" => ExternalLaunchCommand {
-            program: "code-insiders".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "vscodium" => ExternalLaunchCommand {
-            program: "codium".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "cursor" => ExternalLaunchCommand {
-            program: "cursor".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "windsurf" => ExternalLaunchCommand {
-            program: "windsurf".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "zed" => ExternalLaunchCommand {
-            program: "zed".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "sublime-text" => ExternalLaunchCommand {
-            program: "subl".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "lapce" => ExternalLaunchCommand {
-            program: "lapce".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "fleet" => ExternalLaunchCommand {
-            program: "fleet".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "intellij-idea" => ExternalLaunchCommand {
-            program: "idea64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "pycharm" => ExternalLaunchCommand {
-            program: "pycharm64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "webstorm" => ExternalLaunchCommand {
-            program: "webstorm64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "phpstorm" => ExternalLaunchCommand {
-            program: "phpstorm64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "goland" => ExternalLaunchCommand {
-            program: "goland64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "clion" => ExternalLaunchCommand {
-            program: "clion64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "rider" => ExternalLaunchCommand {
-            program: "rider64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "rustrover" => ExternalLaunchCommand {
-            program: "rustrover64".to_string(),
-            args: vec![target_path.to_string_lossy().to_string()],
-            current_dir: target_parent_dir(target_path),
-        },
-        "windows-terminal" => ExternalLaunchCommand {
-            program: "wt".to_string(),
-            args: vec![
+        "vscode" => windows_binary_launch_command(
+            "code",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "vscode-insiders" => windows_binary_launch_command(
+            "code-insiders",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "vscodium" => windows_binary_launch_command(
+            "codium",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "cursor" => windows_binary_launch_command(
+            "cursor",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "windsurf" => windows_binary_launch_command(
+            "windsurf",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "zed" => windows_binary_launch_command(
+            "zed",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "sublime-text" => windows_binary_launch_command(
+            "subl",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "lapce" => windows_binary_launch_command(
+            "lapce",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "fleet" => windows_binary_launch_command(
+            "fleet",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "intellij-idea" => windows_binary_launch_command(
+            "idea64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "pycharm" => windows_binary_launch_command(
+            "pycharm64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "webstorm" => windows_binary_launch_command(
+            "webstorm64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "phpstorm" => windows_binary_launch_command(
+            "phpstorm64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "goland" => windows_binary_launch_command(
+            "goland64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "clion" => windows_binary_launch_command(
+            "clion64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "rider" => windows_binary_launch_command(
+            "rider64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "rustrover" => windows_binary_launch_command(
+            "rustrover64",
+            vec![target_path.to_string_lossy().to_string()],
+            target_path,
+        )?,
+        "windows-terminal" => windows_binary_launch_command(
+            "wt",
+            vec![
                 "new-tab".to_string(),
                 "--startingDirectory".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
+            target_path,
+        )?,
         "powershell" => ExternalLaunchCommand {
             program: "powershell".to_string(),
             args: vec![
@@ -1953,9 +1975,9 @@ fn build_external_open_command(
             ],
             current_dir: target_parent_dir(target_path),
         },
-        "pwsh" => ExternalLaunchCommand {
-            program: "pwsh".to_string(),
-            args: vec![
+        "pwsh" => windows_binary_launch_command(
+            "pwsh",
+            vec![
                 "-NoExit".to_string(),
                 "-Command".to_string(),
                 format!(
@@ -1963,34 +1985,34 @@ fn build_external_open_command(
                     escape_powershell_literal(&target_path.to_string_lossy())
                 ),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
-        "wezterm" => ExternalLaunchCommand {
-            program: "wezterm".to_string(),
-            args: vec![
+            target_path,
+        )?,
+        "wezterm" => windows_binary_launch_command(
+            "wezterm",
+            vec![
                 "start".to_string(),
                 "--cwd".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
-        "ghostty" => ExternalLaunchCommand {
-            program: "ghostty".to_string(),
-            args: vec![
+            target_path,
+        )?,
+        "ghostty" => windows_binary_launch_command(
+            "ghostty",
+            vec![
                 "--working-directory".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
-        "kitty" => ExternalLaunchCommand {
-            program: "kitty".to_string(),
-            args: vec![
+            target_path,
+        )?,
+        "kitty" => windows_binary_launch_command(
+            "kitty",
+            vec![
                 "launch".to_string(),
                 "--cwd".to_string(),
                 target_path.to_string_lossy().to_string(),
             ],
-            current_dir: target_parent_dir(target_path),
-        },
+            target_path,
+        )?,
         "explorer" => ExternalLaunchCommand {
             program: "explorer".to_string(),
             args: vec![target_path.to_string_lossy().to_string()],
@@ -4086,15 +4108,104 @@ pub async fn db_set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::build_external_open_command;
+    #[cfg(target_os = "windows")]
+    use super::resolve_binary_path;
     use super::{
-        apply_patch_hunks_to_content, commit_pending_file_changes_atomically,
+        apply_patch_hunks_to_content, binary_candidates, commit_pending_file_changes_atomically,
         execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
         resolve_workspace_for_tool_path, ParsedPatchOperation, PendingFileChange,
     };
     use crate::git::GitState;
     use serde_json::json;
+    #[cfg(target_os = "windows")]
+    use std::env;
     use std::fs;
+    #[cfg(target_os = "windows")]
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "windows")]
+    static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn binary_candidates_expands_windows_script_extensions() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            binary_candidates("code"),
+            vec![
+                "code.exe".to_string(),
+                "code.cmd".to_string(),
+                "code.bat".to_string(),
+                "code".to_string(),
+            ]
+        );
+
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(binary_candidates("code"), vec!["code".to_string()]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolve_binary_path_finds_windows_cmd_candidate_on_path() {
+        let _guard = PATH_TEST_LOCK.lock().expect("lock PATH test");
+        let original_path = env::var_os("PATH");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let code_cmd = temp_dir.path().join("code.cmd");
+        fs::write(&code_cmd, "@echo off\r\n").expect("write code.cmd");
+
+        let next_path = match original_path.as_ref() {
+            Some(path) => env::join_paths(
+                std::iter::once(temp_dir.path().to_path_buf()).chain(env::split_paths(path)),
+            )
+            .expect("join PATH"),
+            None => temp_dir.path().as_os_str().to_os_string(),
+        };
+
+        env::set_var("PATH", next_path);
+        let resolved = resolve_binary_path("code").expect("resolve code");
+        if let Some(path) = original_path {
+            env::set_var("PATH", path);
+        } else {
+            env::remove_var("PATH");
+        }
+
+        assert_eq!(resolved, code_cmd);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_vscode_open_command_uses_resolved_cmd_candidate() {
+        let _guard = PATH_TEST_LOCK.lock().expect("lock PATH test");
+        let original_path = env::var_os("PATH");
+        let temp_dir = TempDir::new().expect("temp dir");
+        let code_cmd = temp_dir.path().join("code.cmd");
+        fs::write(&code_cmd, "@echo off\r\n").expect("write code.cmd");
+
+        let next_path = match original_path.as_ref() {
+            Some(path) => env::join_paths(
+                std::iter::once(temp_dir.path().to_path_buf()).chain(env::split_paths(path)),
+            )
+            .expect("join PATH"),
+            None => temp_dir.path().as_os_str().to_os_string(),
+        };
+
+        env::set_var("PATH", next_path);
+        let command = build_external_open_command(temp_dir.path(), "vscode")
+            .expect("build vscode launch command");
+        if let Some(path) = original_path {
+            env::set_var("PATH", path);
+        } else {
+            env::remove_var("PATH");
+        }
+
+        assert_eq!(command.program, code_cmd.to_string_lossy().to_string());
+        assert_eq!(
+            command.args,
+            vec![temp_dir.path().to_string_lossy().to_string()]
+        );
+    }
 
     #[test]
     fn resolve_requested_workspace_uses_metadata_root_for_relative_paths() {
