@@ -176,6 +176,14 @@ const buildMacroStatus = (behind: number, ahead: number): MacroBranchSyncDto => 
   error: null,
 });
 
+const buildDirtyMacroStatus = (): MacroBranchSyncDto => ({
+  ...buildMacroStatus(0, 0),
+  state: 'pending',
+  is_dirty: true,
+  reason: 'dirty',
+  next_action: 'commit',
+});
+
 const useAppStore = createStoreHook(() => appState);
 const useNotificationCenterStore = createStoreHook(() => notificationState);
 
@@ -392,16 +400,16 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('19');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('14');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('6@13');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('4@10');
 
     await selectGitScope(container!, 'project-b');
 
     expect(appState.switchProjectContext).not.toHaveBeenCalled();
     expect(appState.selectedProjectId).toBe('project-a');
     expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('project-b');
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('12');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('9');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('4@8');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@6');
   });
 
   it('targets footer git actions to the selected local scope and aggregates all projects when reset', async () => {
@@ -476,8 +484,8 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('__all__');
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('3');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('16');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('1@2');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('7@9');
     expect(container?.textContent ?? '').toContain('release-c');
   });
 
@@ -506,7 +514,59 @@ describe('Footer', () => {
       '__all__',
       'project-a',
     ]);
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('7');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('5');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@5');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('1@4');
+  });
+
+  it('marks macro-only pull and push counts without adding them to code counts', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(2, 3),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    const pullButton = findButtonByIcon(container!, 'arrow-down');
+    const pushButton = findButtonByIcon(container!, 'arrow-up');
+    expect(pullButton?.textContent?.trim()).toBe('0@2');
+    expect(pushButton?.textContent?.trim()).toBe('0@3');
+    expect(pullButton?.className).toContain('text-amber-400');
+    expect(pushButton?.className).toContain('text-emerald-400');
+  });
+
+  it('keeps plain code counts when macro has no commits or is dirty only', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 3),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildDirtyMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('0');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3');
   });
 });
