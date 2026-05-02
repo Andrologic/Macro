@@ -5,6 +5,7 @@ import type {
   TaskStatus,
 } from "../types";
 import {
+  getArchitectPlanEffectiveTargetBranchesByProjectId,
   getArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanRecord,
@@ -460,6 +461,19 @@ const buildBlockedPreview = (
           ...(params.plan.projectIds || []),
           ...(params.plan.projectId ? [params.plan.projectId] : []),
         ]);
+  const targetBranchesByProjectId = getArchitectPlanEffectiveTargetBranchesByProjectId(
+    {
+      ...params.plan,
+      projectId: resolvedProjectIds[0],
+      projectIds: resolvedProjectIds,
+      targetBranchesByProjectId:
+        params.targetBranchesByProjectId || params.plan.targetBranchesByProjectId,
+    },
+    {
+      getProjectGitFlowSettings: params.getProjectGitFlowSettings,
+      fallbackTargetBranch: params.plan.targetBranch,
+    },
+  );
   return {
     planId: params.plan.id,
     planTitle: params.plan.label || params.plan.title,
@@ -479,10 +493,7 @@ const buildBlockedPreview = (
         params.metadataUpdate?.description ?? params.plan.description,
     },
     resolvedProjectIds,
-    targetBranchesByProjectId:
-      params.targetBranchesByProjectId ||
-      params.plan.targetBranchesByProjectId ||
-      {},
+    targetBranchesByProjectId,
     planNodes: params.plan.nodes.map((node) => ({
       ...node,
       dependencies: [...node.dependencies],
@@ -735,13 +746,18 @@ export const prepareStrategyMutationPreview = (
   );
   const nextPlanStatus: ArchitectPlanStatus =
     frozenNodes.length > 0 ? "in_progress" : params.plan.status;
-  const targetBranchesByProjectId = Object.fromEntries(
-    resolvedProjectIds.map((projectId) => [
-      projectId,
-      params.targetBranchesByProjectId?.[projectId] ||
-        params.plan.targetBranchesByProjectId?.[projectId] ||
-        params.plan.targetBranch,
-    ]),
+  const targetBranchesByProjectId = getArchitectPlanEffectiveTargetBranchesByProjectId(
+    {
+      ...params.plan,
+      projectId: resolvedProjectIds[0],
+      projectIds: resolvedProjectIds,
+      targetBranchesByProjectId:
+        params.targetBranchesByProjectId || params.plan.targetBranchesByProjectId,
+    },
+    {
+      getProjectGitFlowSettings: params.getProjectGitFlowSettings,
+      fallbackTargetBranch: params.plan.targetBranch,
+    },
   );
 
   return {

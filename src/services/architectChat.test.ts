@@ -49,6 +49,8 @@ describe('architectChat', () => {
     expect(output).toContain('Active plan: Checkout refresh - plan-1.');
     expect(output).toContain('Structured context:');
     expect(output).toContain('"node_count": 4');
+    expect(output).toContain('"target_branches_by_project_id"');
+    expect(output).toContain('"effective_target_branch": "develop"');
   });
 
   it('formats generated strategies as recap-first tool outputs', () => {

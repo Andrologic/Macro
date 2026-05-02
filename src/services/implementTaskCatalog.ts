@@ -35,6 +35,7 @@ export interface ImplementTaskPlanSummary {
   title: string;
   label?: string;
   status: ArchitectPlanStatus;
+  storageBranch: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
   hasMixedTargetBranches?: boolean;
@@ -48,6 +49,7 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   task_source: ImplementTaskSource;
   plan_title: string | null;
   plan_status: ArchitectPlanStatus | null;
+  plan_storage_branch?: string | null;
   plan_target_branch: string | null;
   plan_target_branches_by_project_id?: Record<string, string> | null;
   has_mixed_target_branches?: boolean;
@@ -90,6 +92,24 @@ const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[
     ...(projectId ? [projectId] : []),
   ]);
 
+const getUniqueTargetBranch = (
+  targetBranchesByProjectId: Record<string, string>,
+  fallbackTargetBranch?: string | null
+): string | null => {
+  const uniqueTargets = unique(
+    Object.values(targetBranchesByProjectId)
+      .map((branchName) => branchName.trim())
+      .filter(Boolean)
+  );
+  if (uniqueTargets.length === 1) {
+    return uniqueTargets[0];
+  }
+  if (uniqueTargets.length === 0) {
+    return fallbackTargetBranch?.trim() || null;
+  }
+  return null;
+};
+
 const buildPlanFinalizationExecutionTargets = (
   plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId'>
 ): TaskExecutionTarget[] => {
@@ -124,6 +144,8 @@ const buildPlanFinalizationTask = (
   const blockedBy = blockedByTaskIds
     .map((taskId) => blockingTasks.find((task) => task.id === taskId)?.title)
     .filter((title): title is string => Boolean(title));
+  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
+  const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
 
   return {
     id: buildPlanFinalizationTaskId(plan.id),
@@ -136,8 +158,8 @@ const buildPlanFinalizationTask = (
     status: isBlocked ? 'Blocked' : 'Pending',
     dependencies: dependencyState.terminalNodeIds,
     estimated_changes: [],
-    assigned_branch: plan.targetBranch,
-    branch_name: plan.targetBranch,
+    assigned_branch: effectiveTargetBranch || '',
+    branch_name: effectiveTargetBranch || '',
     branch_id: null,
     branch_task_index: Number.MAX_SAFE_INTEGER,
     blocked_by_task_ids: blockedByTaskIds,
@@ -150,12 +172,13 @@ const buildPlanFinalizationTask = (
     task_source: 'plan_finalization',
     plan_title: plan.title,
     plan_status: plan.status,
-    plan_target_branch: plan.targetBranch,
-    plan_target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+    plan_storage_branch: plan.targetBranch,
+    plan_target_branch: effectiveTargetBranch,
+    plan_target_branches_by_project_id: targetBranchesByProjectId,
     has_mixed_target_branches: planHasMixedTargetBranches(plan),
     draft: false,
     standalone_kind: 'legacy',
-    base_branch: plan.targetBranch,
+    base_branch: effectiveTargetBranch,
     feature_slug: null,
     conversation_id: null,
     archived_at: null,
@@ -268,6 +291,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       task_source: 'standalone' as const,
       plan_title: null,
       plan_status: null,
+      plan_storage_branch: null,
       plan_target_branch: null,
       plan_target_branches_by_project_id: null,
       has_mixed_target_branches: false,
@@ -316,6 +340,7 @@ export const deriveImplementTasksFromArchitectPlan = (
   plan: ArchitectPlanRecord
 ): CatalogedImplementTask[] => {
   const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
+  const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
   const strategy = deriveImplementTasksFromStrategy({
     planId: plan.id,
     planSlug: plan.slug,
@@ -333,7 +358,8 @@ export const deriveImplementTasksFromArchitectPlan = (
       context_project_ids: plan.contextProjectIds || [],
       plan_title: plan.title,
       plan_status: plan.status,
-      plan_target_branch: plan.targetBranch,
+      plan_storage_branch: plan.targetBranch,
+      plan_target_branch: effectiveTargetBranch,
       plan_target_branches_by_project_id: targetBranchesByProjectId,
       has_mixed_target_branches: planHasMixedTargetBranches(plan),
       draft: false,
@@ -451,7 +477,8 @@ export const buildImplementTaskCatalog = (params: {
         title: plan.title,
         label: plan.label,
         status: plan.status,
-        targetBranch: plan.targetBranch,
+        storageBranch: plan.targetBranch,
+        targetBranch: getUniqueTargetBranch(getArchitectPlanTargetBranchesByProjectId(plan), plan.targetBranch) || '',
         targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
         hasMixedTargetBranches: planHasMixedTargetBranches(plan),
         projectIds: unique(

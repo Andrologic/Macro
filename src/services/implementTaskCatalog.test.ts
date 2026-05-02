@@ -174,6 +174,7 @@ describe('buildImplementTaskCatalog', () => {
     expect(architectTask?.task_source).toBe('architect');
     expect(architectTask?.plan_title).toBe('Payments');
     expect(architectTask?.plan_status).toBe('in_progress');
+    expect(architectTask?.plan_storage_branch).toBe('develop');
     expect(architectTask?.plan_target_branch).toBe('develop');
 
     const standaloneTask = catalog.tasks.find((task) => task.id === 'standalone-1');
@@ -333,7 +334,8 @@ describe('buildImplementTaskCatalog', () => {
     expect(finalizationTask?.status).toBe('Pending');
     expect(finalizationTask?.dependencies).toEqual(['task-ready-1']);
     expect(finalizationTask?.is_blocked).toBe(false);
-    expect(finalizationTask?.assigned_branch).toBe('develop');
+    expect(finalizationTask?.assigned_branch).toBe('');
+    expect(finalizationTask?.plan_target_branch).toBeNull();
     expect(finalizationTask?.execution_targets).toEqual([
       {
         projectId: 'web',
@@ -378,6 +380,106 @@ describe('buildImplementTaskCatalog', () => {
       blocked_by: ['Finish checkout UI'],
       is_blocked: true,
       is_ready: false,
+    });
+  });
+
+  it('separates plan storage branch from effective feature targets', () => {
+    const catalog = buildImplementTaskCatalog({
+      plans: [
+        makePlan({
+          id: 'plan-storage-main',
+          title: 'Stored on main',
+          status: 'validated',
+          targetBranch: 'main',
+          targetBranchesByProjectId: { web: 'develop' },
+          nodes: [
+            {
+              id: 'task-web',
+              title: 'Build web',
+              type: 'task',
+              status: 'pending',
+              dependencies: [],
+              assignedBranch: 'feature/web',
+              projectId: 'web',
+              projectIds: ['web'],
+            },
+          ],
+          predictedBranches: [],
+        }),
+      ],
+      fallbackTasks: [],
+    });
+
+    const architectTask = catalog.tasks.find((task) => task.id === 'task-web');
+    expect(architectTask?.plan_storage_branch).toBe('main');
+    expect(architectTask?.plan_target_branch).toBe('develop');
+    expect(architectTask?.plan_target_branches_by_project_id).toEqual({ web: 'develop' });
+    expect(architectTask?.execution_targets[0]?.targetBranchName).toBe('develop');
+
+    const finalizationTask = catalog.tasks.find((task) => task.id === buildPlanFinalizationTaskId('plan-storage-main'));
+    expect(finalizationTask?.plan_storage_branch).toBe('main');
+    expect(finalizationTask?.plan_target_branch).toBe('develop');
+    expect(finalizationTask?.assigned_branch).toBe('develop');
+    expect(finalizationTask?.execution_targets[0]?.targetBranchName).toBe('develop');
+
+    expect(catalog.plans[0]).toMatchObject({
+      storageBranch: 'main',
+      targetBranch: 'develop',
+      targetBranchesByProjectId: { web: 'develop' },
+    });
+  });
+
+  it('does not invent a unique target for mixed-target plans', () => {
+    const catalog = buildImplementTaskCatalog({
+      plans: [
+        makePlan({
+          id: 'plan-mixed',
+          title: 'Mixed targets',
+          status: 'validated',
+          targetBranch: 'main',
+          projectId: 'web',
+          projectIds: ['web', 'api'],
+          targetBranchesByProjectId: { web: 'develop', api: 'integration' },
+          nodes: [
+            {
+              id: 'task-web-api',
+              title: 'Build web api',
+              type: 'task',
+              status: 'pending',
+              dependencies: [],
+              assignedBranch: 'feature/mixed',
+              projectId: 'web',
+              projectIds: ['web', 'api'],
+            },
+          ],
+          predictedBranches: [],
+        }),
+      ],
+      fallbackTasks: [],
+    });
+
+    const architectTask = catalog.tasks.find((task) => task.id === 'task-web-api');
+    expect(architectTask?.plan_storage_branch).toBe('main');
+    expect(architectTask?.plan_target_branch).toBeNull();
+    expect(architectTask?.plan_target_branches_by_project_id).toEqual({
+      web: 'develop',
+      api: 'integration',
+    });
+    expect(architectTask?.execution_targets.map((target) => [
+      target.projectId,
+      target.targetBranchName,
+    ])).toEqual([
+      ['web', 'develop'],
+      ['api', 'integration'],
+    ]);
+
+    const finalizationTask = catalog.tasks.find((task) => task.id === buildPlanFinalizationTaskId('plan-mixed'));
+    expect(finalizationTask?.plan_target_branch).toBeNull();
+    expect(finalizationTask?.assigned_branch).toBe('');
+    expect(catalog.plans[0]).toMatchObject({
+      storageBranch: 'main',
+      targetBranch: '',
+      hasMixedTargetBranches: true,
     });
   });
 });
