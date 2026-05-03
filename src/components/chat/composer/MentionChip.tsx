@@ -1,11 +1,13 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
-import type { ContextRefKind } from '../../../types';
+import type { ContextRefKind, Need } from '../../../types';
 import { useChatStore } from '../../../stores/useChatStore';
 import { Icon, type IconName } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 import { $isMentionNode } from './MentionNode';
+import { NeedReferenceChip } from '../../architect/NeedReferenceChip';
 
 const KIND_CONFIG: Record<ContextRefKind, { label: string; icon: IconName; color: string; bg: string }> = {
   'need': { label: '', icon: 'target', color: 'text-yellow-500', bg: 'bg-yellow-500/10' },
@@ -21,8 +23,15 @@ interface MentionChipProps {
 }
 
 export const MentionChip: React.FC<MentionChipProps> = ({ nodeKey, kind, refId, title }) => {
+  const { t } = useTranslation();
   const [editor] = useLexicalComposerContext();
   const config = KIND_CONFIG[kind];
+  const contextRef = useChatStore((state) =>
+    state.composerContextRefs.find((ref) => ref.id === refId && ref.kind === kind)
+  );
+  const need = kind === 'need' && contextRef?.data && 'category' in contextRef.data
+    ? contextRef.data as Need
+    : undefined;
 
   const handleRemove = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -36,11 +45,34 @@ export const MentionChip: React.FC<MentionChipProps> = ({ nodeKey, kind, refId, 
     useChatStore.getState().removeComposerContextRef(refId, kind);
   };
 
+  const removeButton = (
+    <button
+      type="button"
+      onMouseDown={handleRemove}
+      className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm opacity-50 transition-opacity hover:bg-primary/15 hover:opacity-100"
+      tabIndex={-1}
+    >
+      <Icon name="x" size={10} />
+    </button>
+  );
+
+  if (kind === 'need') {
+    return (
+      <NeedReferenceChip
+        need={need}
+        title={title}
+        surface="composer"
+        renderAction={removeButton}
+        priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
+      />
+    );
+  }
+
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 mx-0.5',
-        'text-xs leading-5 align-middle cursor-default',
+        'inline-flex h-6 items-center gap-1 rounded-md border px-1.5 mx-0.5',
+        'text-xs leading-none align-[-0.1875rem] cursor-default',
         'bg-primary/8 border-primary/20'
       )}
     >
@@ -60,14 +92,7 @@ export const MentionChip: React.FC<MentionChipProps> = ({ nodeKey, kind, refId, 
       <span className="max-w-[130px] truncate text-foreground/90">{title}</span>
 
       {/* Remove button */}
-      <button
-        type="button"
-        onMouseDown={handleRemove}
-        className="ml-0.5 rounded-sm p-px opacity-50 hover:opacity-100 hover:bg-primary/15 transition-opacity"
-        tabIndex={-1}
-      >
-        <Icon name="x" size={10} />
-      </button>
+      {removeButton}
     </span>
   );
 };
