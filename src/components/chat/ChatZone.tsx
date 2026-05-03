@@ -253,6 +253,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     <div
       ref={measureElement}
       data-index={messageIndex}
+      data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}
       className={cn(
         'absolute left-0 top-0 w-full rounded-lg transition-colors duration-500',
@@ -660,6 +661,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
     for (const need of needs) {
+      if (typeof need.title !== 'string') continue;
       indexed.set(normalizeNeedMentionTitle(need.title), need);
     }
     return indexed;
@@ -927,6 +929,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isStreaming,
     [currentMessages],
   );
+  const disableVirtualizerScrollAdjustment = useCallback(() => false, []);
   const {
     virtualItems: virtualMessageItems,
     totalSize: virtualMessageTotalSize,
@@ -934,10 +937,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     scrollToIndex: scrollToMessageIndex,
   } = useVirtualMessages(currentMessages, {
     parentRef: scrollContainerRef,
+    getItemKey: (message) => message.id,
     estimateSize: 220,
     overscan: isStreaming ? 10 : 6,
     dynamicHeight: true,
     gap: 24,
+    shouldAdjustScrollPositionOnItemSizeChange:
+      separatorState === 'detached'
+        ? disableVirtualizerScrollAdjustment
+        : undefined,
   });
   const messageIndexById = useMemo(
     () => new Map(currentMessages.map((message, index) => [message.id, index])),
@@ -1467,6 +1475,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <div
           ref={scrollContainerRef}
           className="flex-1 min-h-0 overflow-y-auto px-12 pt-8 pb-4"
+          style={{
+            overflowAnchor: separatorState === 'detached' ? 'none' : undefined,
+          }}
           data-tour-id="chat-transcript"
         >
           {isConversationPending ? (

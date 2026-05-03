@@ -9,10 +9,14 @@ let capturedVirtualizerOptions: Array<{
   getItemKey?: (index: number) => string | number;
   estimateSize: (index: number) => number;
 }> = [];
+let capturedVirtualizers: Array<{
+  shouldAdjustScrollPositionOnItemSizeChange?: (...args: unknown[]) => boolean;
+}> = [];
 
 const loadUseVirtualListModule = async () => {
   importCounter += 1;
   capturedVirtualizerOptions = [];
+  capturedVirtualizers = [];
   mock.restore();
 
   mock.module('@tanstack/react-virtual', () => ({
@@ -23,7 +27,8 @@ const loadUseVirtualListModule = async () => {
     }) => {
       capturedVirtualizerOptions.push(options);
       const itemCount = options.count ?? 0;
-      return {
+      const virtualizer = {
+        shouldAdjustScrollPositionOnItemSizeChange: undefined,
         getVirtualItems: () =>
           Array.from({ length: itemCount }, (_, index) => ({
             index,
@@ -39,6 +44,8 @@ const loadUseVirtualListModule = async () => {
         scrollToIndex: () => undefined,
         measureElement: () => undefined,
       };
+      capturedVirtualizers.push(virtualizer);
+      return virtualizer;
     },
   }));
 
@@ -126,5 +133,34 @@ describe('useVirtualList', () => {
     }
     expect(options?.getItemKey).toBeUndefined();
     expect(result.virtualItems[0]?.key).toBe(0);
+  });
+
+  it('applies item resize scroll correction control to the TanStack Virtual instance', async () => {
+    const { useVirtualList } = await loadUseVirtualListModule();
+    const shouldAdjustScrollPositionOnItemSizeChange = () => false;
+
+    const TestComponent = () => {
+      useVirtualList({
+        items: [{ id: 'row-a' }],
+        estimateSize: 96,
+        shouldAdjustScrollPositionOnItemSizeChange,
+      });
+      return null;
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<TestComponent />);
+    });
+
+    const virtualizer = capturedVirtualizers[capturedVirtualizers.length - 1];
+
+    expect(virtualizer).toBeDefined();
+    expect(virtualizer?.shouldAdjustScrollPositionOnItemSizeChange).toBe(
+      shouldAdjustScrollPositionOnItemSizeChange
+    );
   });
 });
