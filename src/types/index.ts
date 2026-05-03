@@ -1,6 +1,7 @@
 // Core types for the Macro application
 
 import type { SupportedLanguage } from '../i18n/languages';
+import type { IconName } from '../components/ui/Icon';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
@@ -241,7 +242,7 @@ export interface Tool {
   category: ToolCategory;
   status: ToolStatus;
   description: string;
-  icon: string;
+  icon: IconName;
   config?: Record<string, unknown>;
 }
 
@@ -256,7 +257,7 @@ export interface MCPServer {
   category: MCPServerCategory;
   status: MCPServerStatus;
   description: string;
-  icon: string;
+  icon: IconName;
   website?: string;
   config?: Record<string, unknown>;
 }
