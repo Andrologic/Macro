@@ -83,6 +83,7 @@ import {
   updateArchitectPlan,
 } from "../services/architectPlanService";
 import {
+  getArchitectPlanLifecyclePhase,
   getArchitectPlanConversationTitle,
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
@@ -6508,15 +6509,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const isLightweightBlankArchitectPlanPayload = (
     payload: ArchitectPlanActivationPayload,
   ): boolean =>
-    payload.resolutionMode === "blank_fast_path" ||
-    (payload.plan.status === "draft" &&
-      payload.plan.description.trim().length === 0 &&
-      payload.plan.nodes.length === 0 &&
-      payload.plan.predictedBranches.length === 0 &&
-      payload.needs.length === 0 &&
-      payload.chatMessages.length === 0 &&
-      !payload.conversationId &&
-      !payload.sharedConversation);
+    !payload.conversationId &&
+    !payload.sharedConversation &&
+    (payload.resolutionMode === "blank_fast_path" ||
+      getArchitectPlanLifecyclePhase({
+        status: payload.plan.status,
+        nodes: payload.plan.nodes,
+        predictedBranches: payload.plan.predictedBranches,
+        needCount: payload.needs.length,
+        chatMessageCount: payload.chatMessages.length,
+      }) === "blank");
 
   const createConversationRecord = async (params: {
     title: string;
@@ -9035,6 +9037,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
               });
             if (!bindingSucceeded) {
               skipMetadataGeneration = true;
+            } else {
+              await syncArchitectMetadataFromDb({
+                branchName: architectPlan.targetBranch,
+                planId: architectPlan.planId,
+                conversationId,
+                reason: "metadata_prefix",
+              });
             }
           }
 

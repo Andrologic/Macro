@@ -432,6 +432,10 @@ describe('Footer', () => {
     });
     await flushAsyncWork();
 
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+
     act(() => {
       findButtonByIcon(container!, 'arrow-down')?.click();
     });
@@ -568,5 +572,7 @@ describe('Footer', () => {
 
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('0');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3');
+    expect(container?.textContent ?? '').not.toContain('Review');
+    expect(container?.textContent ?? '').not.toContain('Resolve');
   });
 });

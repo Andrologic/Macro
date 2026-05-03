@@ -10,6 +10,7 @@ import {
   type ArchitectPlanGitFlowMetadata,
   type ArchitectPlanKind,
 } from './architectPlanKinds';
+import { getArchitectPlanLifecyclePhase } from './architectPlanPresentation';
 
 export type ArchitectAutoPlanTrigger = 'implicit_resume' | 'explicit_create';
 
@@ -111,11 +112,6 @@ interface ScopedBlankPlanParams {
   trigger?: ArchitectAutoPlanTrigger;
 }
 
-const trimToNull = (value?: string | null): string | null => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed.length > 0 ? trimmed : null;
-};
-
 const mergeProjectIds = (...collections: Array<string[] | undefined>): string[] =>
   Array.from(
     new Set(
@@ -171,12 +167,13 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     needs: Need[],
     chatMessages: Array<unknown>
   ): boolean =>
-    belongsToPlaceholderFamily(plan) &&
-    !trimToNull(plan.description) &&
-    (plan.nodes?.length || 0) === 0 &&
-    (plan.predictedBranches?.length || 0) === 0 &&
-    needs.length === 0 &&
-    chatMessages.length === 0;
+    getArchitectPlanLifecyclePhase({
+      status: plan.status,
+      nodes: plan.nodes,
+      predictedBranches: plan.predictedBranches,
+      needCount: needs.length,
+      chatMessageCount: chatMessages.length,
+    }) === 'blank';
 
   const isStructurallyBlankDraft = (
     plan: Pick<
@@ -186,12 +183,13 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     needs: Need[],
     chatMessages: Array<unknown>
   ): boolean =>
-    plan.status === 'draft' &&
-    !trimToNull(plan.description) &&
-    (plan.nodes?.length || 0) === 0 &&
-    (plan.predictedBranches?.length || 0) === 0 &&
-    needs.length === 0 &&
-    chatMessages.length === 0;
+    getArchitectPlanLifecyclePhase({
+      status: plan.status,
+      nodes: plan.nodes,
+      predictedBranches: plan.predictedBranches,
+      needCount: needs.length,
+      chatMessageCount: chatMessages.length,
+    }) === 'blank';
 
   const compareBlankDraftPriority = (
     left: Pick<ArchitectPlanSummary, 'id' | 'createdAt' | 'updatedAt'>,
@@ -221,13 +219,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
 
   const isDefinitelyBlankSummary = (plan: ArchitectPlanSummary, planKind: ArchitectPlanKind): boolean =>
     planMatchesKind(plan, planKind) &&
-    plan.status === 'draft' &&
-    (planKind !== 'feature' || belongsToPlaceholderFamily(plan)) &&
-    !trimToNull(plan.description) &&
-    plan.nodeCount === 0 &&
-    (plan.predictedBranchCount || 0) === 0 &&
-    plan.needCount === 0 &&
-    plan.chatMessageCount === 0;
+    getArchitectPlanLifecyclePhase(plan) === 'blank';
 
   const getBlankScopeSignature = (plan: ArchitectPlanSummary): string => {
     const explicitActionableProjectIds = normalizePlanIdList(plan.projectIds);
@@ -261,15 +253,17 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   }> => {
     const candidatesByScope = new Map<string, InspectedDraftCandidate[]>();
     params.draftCandidates.forEach((candidate) => {
+      if (!candidate.isBlank) {
+        return;
+      }
       const scopeSignature = getBlankScopeSignature(candidate.summary);
       const existing = candidatesByScope.get(scopeSignature) || [];
       existing.push(candidate);
       candidatesByScope.set(scopeSignature, existing);
     });
 
-    const keptDraftCandidates: ArchitectPlanSummary[] = [];
+    const keptBlankCandidates: ArchitectPlanSummary[] = [];
     const deletedPlanIds: string[] = [];
-    const archivedPlanIds: string[] = [];
 
     for (const candidates of candidatesByScope.values()) {
       const sortedCandidates = [...candidates].sort((left, right) =>
@@ -277,7 +271,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       );
       const keptCandidate = sortedCandidates[0];
       if (keptCandidate) {
-        keptDraftCandidates.push(keptCandidate.summary);
+        keptBlankCandidates.push(keptCandidate.summary);
       }
 
       const losers = sortedCandidates.slice(1);
@@ -286,37 +280,31 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       }
 
       for (const candidate of losers) {
-        if (candidate.isBlank) {
-          await deps.deleteArchitectPlan({
-            branchName: params.branchName,
-            planId: candidate.summary.id,
-            hardDelete: true,
-          });
-          deletedPlanIds.push(candidate.summary.id);
-          continue;
-        }
-
-        await deps.updateArchitectPlan({
+        await deps.deleteArchitectPlan({
           branchName: params.branchName,
           planId: candidate.summary.id,
-          status: 'archived',
+          hardDelete: true,
         });
-        archivedPlanIds.push(candidate.summary.id);
+        deletedPlanIds.push(candidate.summary.id);
       }
     }
 
+    const keptDraftCandidates = params.draftCandidates
+      .filter((candidate) => !candidate.isBlank)
+      .map((candidate) => candidate.summary);
+    keptDraftCandidates.push(...keptBlankCandidates);
     keptDraftCandidates.sort((left, right) =>
       compareBlankDraftPriority(left, right, params.preferredPlanId)
     );
-    const keptBlankCandidates = keptDraftCandidates.filter((candidate) =>
-      params.draftCandidates.some((draft) => draft.summary.id === candidate.id && draft.isBlank)
+    keptBlankCandidates.sort((left, right) =>
+      compareBlankDraftPriority(left, right, params.preferredPlanId)
     );
 
     return {
       draftCandidates: keptDraftCandidates,
       blankCandidates: keptBlankCandidates,
       deletedPlanIds,
-      archivedPlanIds,
+      archivedPlanIds: [],
     };
   };
 
@@ -468,32 +456,6 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     return null;
   };
 
-  const resolveScopedDraftPlan = async (
-    params: Pick<ScopedBlankPlanParams, 'branchName' | 'scopedProjectIds' | 'contextProjectIds'> & {
-      draftCandidates: ArchitectPlanSummary[];
-    }
-  ): Promise<ResolvedBlankPlanResult | null> => {
-    const coveringCandidates = params.draftCandidates.filter((candidate) => {
-      const candidateProjectIds = candidate.projectIds || [];
-      return (
-        coversScope(candidateProjectIds, params.scopedProjectIds) &&
-        coversScope(candidate.contextProjectIds || [], params.contextProjectIds || [])
-      );
-    });
-    const candidatePool = coveringCandidates.length > 0 ? coveringCandidates : params.draftCandidates;
-
-    for (const candidate of candidatePool) {
-      const reusableDraftPlan = await deps.getArchitectPlan(params.branchName, candidate.id);
-      if (!reusableDraftPlan || reusableDraftPlan.status === 'deleted') {
-        continue;
-      }
-
-      return synchronizeBlankPlanToScope(reusableDraftPlan, params);
-    }
-
-    return null;
-  };
-
   const getPlaceholderLabelForNewPlan = (plans: ArchitectPlanSummary[]): string => {
     const activePlaceholderPlans = plans.filter(
       (plan) => plan.status !== 'deleted' && belongsToPlaceholderFamily(plan)
@@ -554,15 +516,6 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     });
     if (resolvedBlankPlan) {
       return resolvedBlankPlan;
-    }
-
-    const resolvedDraftPlan = await resolveScopedDraftPlan({
-      ...params,
-      draftCandidates: inspectedPlans.draftCandidates,
-    });
-    if (resolvedDraftPlan) {
-      await deps.setActiveArchitectPlan(params.branchName, resolvedDraftPlan.plan.id);
-      return resolvedDraftPlan;
     }
 
     if (trigger !== 'explicit_create') {

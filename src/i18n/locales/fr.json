@@ -1289,9 +1289,12 @@
   "architect": {
     "needs": "Besoins identifiés",
     "status": {
+      "blank": "Vierge",
+      "editing": "Prépa",
       "draft": "Brouillon",
       "validated": "Validé",
-      "in_progress": "En cours",
+      "in_progress": "Impl.",
+      "completed": "Terminé",
       "archived": "Archivé",
       "deleted": "Supprimé"
     },
