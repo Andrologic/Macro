@@ -5657,6 +5657,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       });
 
       await useChatStore.getState().deleteConversation('implement-conv', { mode: 'implement' });
+
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBeNull();
+
       const recreatedId = await useChatStore.getState().ensureConversationForCurrentMode();
 
       expect(recreatedId).toBe('conv-1773920000000');

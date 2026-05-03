@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export type SeparatorState =
     | 'idle'
@@ -11,6 +11,12 @@ export type SeparatorState =
 const SCROLL_THRESHOLD = 50; // px from bottom to consider "at bottom"
 const RELEASE_DURATION = 400; // ms for releasing / detaching animation
 const REATTACH_DURATION = 300; // ms for reattaching animation
+const VIEWPORT_ANCHOR_SELECTOR = '[data-scroll-magnet-anchor]';
+
+interface ViewportAnchor {
+    anchorId: string;
+    offsetTop: number;
+}
 
 /**
  * useScrollMagnet – Manages auto-scroll magnetism during streaming.
@@ -39,6 +45,9 @@ export function useScrollMagnet(
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const [state, setState] = useState<SeparatorState>('idle');
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
+    const programmaticScrollRef = useRef(false);
+    const scrollCaptureRafRef = useRef<number | null>(null);
     const prevStreamingRef = useRef(isStreaming);
     // Keep a mutable ref in sync with state so event handlers always read fresh
     const stateRef = useRef<SeparatorState>(state);
@@ -71,6 +80,70 @@ export function useScrollMagnet(
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }, []);
 
+    const findViewportAnchor = useCallback((): ViewportAnchor | null => {
+        const el = scrollContainerRef.current;
+        if (!el) return null;
+
+        const containerRect = el.getBoundingClientRect();
+        const anchors = Array.from(el.querySelectorAll<HTMLElement>(VIEWPORT_ANCHOR_SELECTOR));
+
+        for (const anchor of anchors) {
+            const anchorId = anchor.dataset.scrollMagnetAnchor;
+            if (!anchorId) continue;
+
+            const anchorRect = anchor.getBoundingClientRect();
+            const intersectsViewport =
+                anchorRect.bottom > containerRect.top &&
+                anchorRect.top < containerRect.bottom;
+            if (!intersectsViewport) continue;
+
+            return {
+                anchorId,
+                offsetTop: anchorRect.top - containerRect.top,
+            };
+        }
+
+        return null;
+    }, []);
+
+    const captureViewportAnchor = useCallback(() => {
+        viewportAnchorRef.current = findViewportAnchor();
+    }, [findViewportAnchor]);
+
+    const restoreViewportAnchor = useCallback(() => {
+        const el = scrollContainerRef.current;
+        const anchor = viewportAnchorRef.current;
+        if (!el) return;
+        if (!anchor) {
+            captureViewportAnchor();
+            return;
+        }
+
+        const target = Array.from(
+            el.querySelectorAll<HTMLElement>(VIEWPORT_ANCHOR_SELECTOR),
+        ).find((candidate) => candidate.dataset.scrollMagnetAnchor === anchor.anchorId);
+        if (!target) {
+            captureViewportAnchor();
+            return;
+        }
+
+        const containerRect = el.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const delta = targetRect.top - containerRect.top - anchor.offsetTop;
+
+        if (Math.abs(delta) > 0.5) {
+            programmaticScrollRef.current = true;
+            el.scrollTop += delta;
+            requestAnimationFrame(() => {
+                programmaticScrollRef.current = false;
+                captureViewportAnchor();
+            });
+            return;
+        }
+
+        captureViewportAnchor();
+    }, [captureViewportAnchor]);
+
     // ---------------------------------------------------------------------------
     // React to streaming start / stop
     // ---------------------------------------------------------------------------
@@ -101,6 +174,7 @@ export function useScrollMagnet(
                     return prev;
                 }
                 if (prev === 'detached') {
+                    viewportAnchorRef.current = null;
                     return 'idle';
                 }
                 return 'idle';
@@ -115,6 +189,7 @@ export function useScrollMagnet(
 
     useEffect(() => {
         if (state === 'locked' || state === 'detaching' || state === 'reattaching') {
+            viewportAnchorRef.current = null;
             requestAnimationFrame(() => {
                 const el = scrollContainerRef.current;
                 if (el) {
@@ -124,6 +199,28 @@ export function useScrollMagnet(
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [...deps, state]);
+
+    // ---------------------------------------------------------------------------
+    // Preserve the user's viewport while detached.
+    //
+    // Streaming content and virtual row re-measurements can change scrollTop even
+    // when we are no longer intentionally pinned to the bottom. Keep the same
+    // visible message at the same viewport offset until the user scrolls again.
+    // ---------------------------------------------------------------------------
+
+    useLayoutEffect(() => {
+        if (state !== 'detached') return;
+        restoreViewportAnchor();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [...deps, state]);
+
+    useEffect(() => {
+        if (state === 'detached') {
+            requestAnimationFrame(captureViewportAnchor);
+        } else {
+            viewportAnchorRef.current = null;
+        }
+    }, [captureViewportAnchor, state]);
 
     // ---------------------------------------------------------------------------
     // Wheel event interception — the "gate" mechanism
@@ -186,6 +283,33 @@ export function useScrollMagnet(
             el.removeEventListener('wheel', handleWheel);
         };
     }, [clearTimer, isNearBottom]);
+
+    useEffect(() => {
+        const el = scrollContainerRef.current;
+        if (!el) return;
+
+        const handleScroll = () => {
+            if (stateRef.current !== 'detached' || programmaticScrollRef.current) {
+                return;
+            }
+            if (scrollCaptureRafRef.current !== null) {
+                cancelAnimationFrame(scrollCaptureRafRef.current);
+            }
+            scrollCaptureRafRef.current = requestAnimationFrame(() => {
+                scrollCaptureRafRef.current = null;
+                captureViewportAnchor();
+            });
+        };
+
+        el.addEventListener('scroll', handleScroll, { passive: true });
+        return () => {
+            el.removeEventListener('scroll', handleScroll);
+            if (scrollCaptureRafRef.current !== null) {
+                cancelAnimationFrame(scrollCaptureRafRef.current);
+                scrollCaptureRafRef.current = null;
+            }
+        };
+    }, [captureViewportAnchor]);
 
     // ---------------------------------------------------------------------------
     // Cleanup

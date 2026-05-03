@@ -62,6 +62,8 @@ const gitBranchListMock = mock(async () => ({
   current: 'develop',
 }));
 const gitBranchDeleteMock = mock(async () => undefined);
+const workspaceDeleteManualFeatureDraftMock = mock(async () => undefined);
+const workspaceDeleteManualFeatureMock = mock(async () => undefined);
 const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   id: 'task-1',
   conversationId: 'conv-1',
@@ -97,6 +99,8 @@ const persistArchitectPlanMergeWorkflowSessionMock = mock(async () => undefined)
 const ensureConversationForCurrentModeMock = mock(async () => null as string | null);
 const createConversationMock = mock(async () => ({ id: 'conv-1' }));
 const sendMessageMock = mock(async () => undefined);
+const deleteConversationMock = mock(async () => undefined);
+let chatStoreConversations: Array<{ id: string }> = [];
 const appStoreState = {
   selectedTaskId: null as string | null,
   selectedGroupId: 'group-1' as string | null,
@@ -129,6 +133,8 @@ mock.module('../services/tauriIpc', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
+  workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -151,6 +157,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
+  workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -175,7 +183,8 @@ mock.module('./useChatStore', () => ({
       ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
       createConversation: createConversationMock,
       sendMessage: sendMessageMock,
-      deleteConversation: mock(async () => undefined),
+      deleteConversation: deleteConversationMock,
+      conversations: chatStoreConversations,
     }),
   },
 }));
@@ -400,10 +409,19 @@ describe('useTaskStore merge workflow review loading', () => {
     gitRebaseBranchMock.mockClear();
     gitStartMergeResolutionMock.mockClear();
     gitCompleteMergeMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+    gitBranchListMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    workspaceDeleteManualFeatureDraftMock.mockClear();
+    workspaceDeleteManualFeatureMock.mockClear();
+    workspaceRevertManualFeatureToDraftMock.mockClear();
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
     createConversationMock.mockClear();
     sendMessageMock.mockClear();
+    deleteConversationMock.mockClear();
+    chatStoreConversations = [];
     appStoreState.selectedTaskId = null;
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
@@ -498,6 +516,42 @@ describe('useTaskStore merge workflow review loading', () => {
       lastLoadedAt: '2026-04-22T10:00:00.000Z',
     };
   };
+
+  it('deletes a standalone task when its linked implement conversation is already gone', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-1',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      conversation_id: 'missing-conv',
+      branch_name: undefined,
+      assigned_branch: '',
+      execution_targets: [],
+    });
+    appStoreState.selectedTaskId = task.id;
+    chatStoreConversations = [];
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      refreshFromPlan: mock(async () => {
+        useTaskStore.setState({ tasks: [] });
+      }),
+      lastError: null,
+    });
+
+    await useTaskStore.getState().deleteTask(task.id);
+
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith(task.id);
+    expect(deleteConversationMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks).toEqual([]);
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
 
   it('reuses an in-flight merge review load for repeated non-forced calls', async () => {
     let resolveDiff: (() => void) | null = null;
