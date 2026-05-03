@@ -63,7 +63,6 @@ import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
-import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
 
 interface TaskQueueProps {
@@ -646,6 +645,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const reviewCurrentTaskId = useFileChangesStore((state) => state.currentTaskId);
   const liveReviewSummary = useFileChangesStore((state) => state.reviewSummary);
   const lastErrorToastRef = useRef<string | null>(null);
+  const readOnlyScopeToastRef = useRef<string | null>(null);
   const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
@@ -669,10 +669,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const taskMutationDisabled = !runtimeCapabilities.taskMutation;
   const taskExecutionDisabled = !runtimeCapabilities.implementExecution;
   const taskCommandsDisabled = !runtimeCapabilities.taskProjectCommands;
-  const projectManagementDisabledTitle = t(
-    'projects.remoteProjectManagementUnavailable',
-    'Project creation and editing are unavailable in remote mode.'
-  );
   const taskMutationDisabledTitle = t(
     'implement.remoteTaskMutationUnavailable',
     'Task management actions are unavailable in remote mode.'
@@ -685,12 +681,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     'implement.remoteTaskCommandsUnavailable',
     'Project commands are unavailable in remote mode.'
   );
-
-  useEffect(() => {
-    if (!taskError || taskError === lastErrorToastRef.current) return;
-    lastErrorToastRef.current = taskError;
-    notify.error(taskError);
-  }, [taskError]);
 
   useEffect(() => {
     if (!missingBaseBranchIssue) {
@@ -1002,13 +992,73 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ? t('projects.createInitialCommitAction', 'Create initial commit')
       : t('projects.projectSettings', 'Project settings');
 
-  const openReadOnlyProjectSettings = () => {
+  const openReadOnlyProjectSettings = useCallback(() => {
     if (!firstReadOnlyProject || projectManagementDisabled) {
       return;
     }
     setSelectedProject(firstReadOnlyProject.id);
     openProjectGitFlowModal(firstReadOnlyProject.id);
-  };
+  }, [
+    firstReadOnlyProject,
+    openProjectGitFlowModal,
+    projectManagementDisabled,
+    setSelectedProject,
+  ]);
+
+  useEffect(() => {
+    if (!isReadOnlyOnlyScope) {
+      readOnlyScopeToastRef.current = null;
+      return;
+    }
+
+    const notificationKey = `implement-read-only-scope:${selectedGroupId || selectedProjectId || 'workspace'}`;
+    if (readOnlyScopeToastRef.current === notificationKey) {
+      return;
+    }
+
+    readOnlyScopeToastRef.current = notificationKey;
+    const title = t(
+      'projects.readOnlyWorkspaceTitle',
+      'This scope is currently read-only.'
+    );
+    const description = t(
+      'projects.readOnlyWorkspaceImplementBody',
+      'Implementation needs at least one editable repository. Read-only subprojects stay available for navigation, search, and context.'
+    );
+    const canOpenSettings = Boolean(firstReadOnlyProject) && !projectManagementDisabled;
+
+    if (canOpenSettings) {
+      notify.actionRequired(title, {
+        notificationKey,
+        tone: 'warning',
+        description,
+        category: 'task_attention_required',
+        actions: [
+          {
+            label: readOnlyCtaLabel,
+            variant: 'primary',
+            onClick: openReadOnlyProjectSettings,
+          },
+        ],
+      });
+      return;
+    }
+
+    notify.warning(title, {
+      notificationKey,
+      description,
+      category: 'task_attention_required',
+    });
+  }, [
+    firstReadOnlyProject,
+    isReadOnlyOnlyScope,
+    projectManagementDisabled,
+    readOnlyCtaLabel,
+    openReadOnlyProjectSettings,
+    selectedGroupId,
+    selectedProjectId,
+    t,
+  ]);
 
   const scopedTasks = useMemo(() => {
     if (scopedProjectIds.length === 0) return [];
@@ -1566,7 +1616,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskErrorPresentation?.primaryAction === 'configure_git'
       ? t('projects.projectSettings', 'Project settings')
       : t('common.retry', 'Retry');
-  const handleTaskErrorAction = () => {
+  const handleTaskErrorAction = useCallback(() => {
     if (!taskErrorPresentation) return;
     const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
     if (
@@ -1581,7 +1631,86 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (selectedTaskForError) {
       void activateTask(selectedTaskForError.id);
     }
-  };
+  }, [
+    activateTask,
+    openProjectGitFlowModal,
+    selectedProjectId,
+    selectedTaskForError,
+    setSelectedProject,
+    taskErrorPresentation,
+  ]);
+
+  useEffect(() => {
+    if (!taskError || !taskErrorPresentation) {
+      lastErrorToastRef.current = null;
+      return;
+    }
+    if (missingBaseBranchIssue?.message === taskError) {
+      lastErrorToastRef.current = taskError;
+      return;
+    }
+    if (taskError === lastErrorToastRef.current) return;
+
+    lastErrorToastRef.current = taskError;
+    const nextStep = taskErrorPresentation.nextStep
+      ? `${t('errors.nextStep', 'Next step')}: ${taskErrorPresentation.nextStep}`
+      : null;
+    const description = [taskErrorPresentation.body, nextStep]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\n\n');
+    const notificationKey = `implement-task-error:${taskError}`;
+    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    const canOpenProjectSettings =
+      (taskErrorPresentation.primaryAction === 'open_project_settings' ||
+        taskErrorPresentation.primaryAction === 'configure_git') &&
+      Boolean(targetProjectId);
+    const canRetry =
+      !canOpenProjectSettings &&
+      taskErrorPresentation.primaryAction === 'retry' &&
+      Boolean(selectedTaskForError);
+    const tone = taskErrorPresentation.severity === 'danger' ? 'error' : 'warning';
+
+    if (canOpenProjectSettings || canRetry) {
+      notify.actionRequired(taskErrorPresentation.title, {
+        notificationKey,
+        tone,
+        description,
+        category: 'task_attention_required',
+        actions: [
+          {
+            label: taskErrorActionLabel,
+            variant: 'primary',
+            onClick: handleTaskErrorAction,
+          },
+        ],
+      });
+      return;
+    }
+
+    const notifyOptions = {
+      notificationKey,
+      description,
+      category: 'task_attention_required' as const,
+    };
+    if (taskErrorPresentation.severity === 'warning') {
+      notify.warning(taskErrorPresentation.title, notifyOptions);
+      return;
+    }
+
+    notify.error(taskErrorPresentation.title, notifyOptions);
+  }, [
+    activateTask,
+    openProjectGitFlowModal,
+    selectedProjectId,
+    selectedTaskForError,
+    setSelectedProject,
+    t,
+    taskError,
+    taskErrorActionLabel,
+    taskErrorPresentation,
+    handleTaskErrorAction,
+    missingBaseBranchIssue?.message,
+  ]);
 
   if (isWorkspaceMissing) {
     return (
@@ -1667,48 +1796,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           </button>
         </div>
       </div>
-
-      {isReadOnlyOnlyScope && (
-        <div className="border-b border-border px-4 py-4">
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-4">
-            <div className="text-sm font-medium text-amber-100">
-              {t(
-                'projects.readOnlyWorkspaceTitle',
-                'This scope is currently read-only.'
-              )}
-            </div>
-            <p className="mt-1 text-xs leading-relaxed text-amber-50/80">
-              {t(
-                'projects.readOnlyWorkspaceImplementBody',
-                'Implementation needs at least one editable repository. Read-only subprojects stay available for navigation, search, and context.'
-              )}
-            </p>
-            {firstReadOnlyProject && (
-              <button
-                type="button"
-                onClick={openReadOnlyProjectSettings}
-                disabled={projectManagementDisabled}
-                title={projectManagementDisabled ? projectManagementDisabledTitle : undefined}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-100/10 px-2.5 py-1.5 text-xs font-medium text-amber-50 transition-colors hover:bg-amber-100/15"
-              >
-                <Icon name="settings" size={12} />
-                {readOnlyCtaLabel}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {taskErrorPresentation && (
-        <div className="border-b border-border px-4 py-3">
-          <ActionableErrorCallout
-            presentation={taskErrorPresentation}
-            actionLabel={taskErrorActionLabel}
-            onAction={handleTaskErrorAction}
-            compact
-          />
-        </div>
-      )}
 
       <div className="px-4 py-3 border-b border-border">
         <div className="mb-3">

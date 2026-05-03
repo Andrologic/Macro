@@ -328,8 +328,8 @@ export function Header({
                   data-tauri-drag-region="false"
                   data-tour-id="project-picker"
                 >
-                  <Icon name="folder-git-2" size={14} className="text-muted-foreground shrink-0" />
-                  <span className="truncate text-foreground min-w-0">
+                  <Icon name="layers" size={14} className="text-muted-foreground shrink-0" />
+                  <span className="inline-flex min-w-0 items-center truncate leading-none text-foreground">
                     {projectName || t('header.selectProject')}
                   </span>
                   <Icon name="chevron-down" size={12} className="text-muted-foreground shrink-0" />

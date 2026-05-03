@@ -14,6 +14,23 @@ let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
 let virtualListRowKeys: Array<Array<string | number>> = [];
+let notifyMock!: {
+  info: ReturnType<typeof mock>;
+  success: ReturnType<typeof mock>;
+  warning: ReturnType<typeof mock>;
+  error: ReturnType<typeof mock>;
+  actionRequired: ReturnType<typeof mock>;
+  dismiss: ReturnType<typeof mock>;
+};
+
+const createNotifyMock = () => ({
+  info: mock(() => 'toast-info'),
+  success: mock(() => 'toast-success'),
+  warning: mock(() => 'toast-warning'),
+  error: mock(() => 'toast-error'),
+  actionRequired: mock(() => 'toast-action-required'),
+  dismiss: mock(() => undefined),
+});
 
 const registerVirtualListMock = () => {
   mock.module('../../hooks/useVirtualList', () => ({
@@ -64,7 +81,11 @@ const loadTaskQueueModules = async () => {
   importCounter += 1;
   mock.restore();
   virtualListRowKeys = [];
+  notifyMock = createNotifyMock();
   registerVirtualListMock();
+  mock.module('../ui/toastService', () => ({
+    notify: notifyMock,
+  }));
 
   const appStoreModule = await import(
     `../../stores/useAppStore.ts?task-queue-app-store-test=${importCounter}`
@@ -344,10 +365,12 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
   });
 
-  it('keeps task workspace errors visible with a retry action', async () => {
+  it('sends task workspace errors to an actionable retry notification', async () => {
     seedStores('Pending');
+    const activateTask = mock(() => undefined);
     useTaskStore.setState({
       ...useTaskStore.getState(),
+      activateTask: activateTask as never,
       lastError:
         'Cannot create a task worktree for feature/demo because that branch is still checked out in the primary repository and has uncommitted changes',
     });
@@ -357,9 +380,126 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
-    expect(document.body.textContent).toContain('Commit, stash, or discard');
-    expect(document.body.textContent).toContain('Retry');
+    expect(document.body.textContent).not.toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).not.toContain('Commit, stash, or discard');
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      {
+        tone: string;
+        notificationKey: string;
+        description: string;
+        actions: Array<{ label: string; onClick: () => void }>;
+      },
+    ];
+    expect(title).toBe('Macro could not prepare the task workspace');
+    expect(options.tone).toBe('error');
+    expect(options.notificationKey).toContain('implement-task-error:');
+    expect(options.description).toContain('Commit, stash, or discard');
+    expect(options.actions[0]?.label).toBe('Retry');
+
+    await act(async () => {
+      options.actions[0]?.onClick();
+      await flushRender();
+    });
+    expect(activateTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('sends read-only scope warnings to an actionable notification instead of rendering inline', async () => {
+    seedStores('Pending');
+    const setSelectedProject = mock(() => undefined);
+    const openProjectGitFlowModal = mock(() => undefined);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      setSelectedProject: setSelectedProject as never,
+      openProjectGitFlowModal: openProjectGitFlowModal as never,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            {
+              ...makeProject('project-1', '/tmp/project-1', 'Project One'),
+              isReadOnly: true,
+              readOnlyReason: 'missing_git',
+            },
+          ],
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('This scope is currently read-only.');
+    expect(document.body.textContent).not.toContain('Implementation needs at least one editable repository.');
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      {
+        tone: string;
+        notificationKey: string;
+        description: string;
+        actions: Array<{ label: string; onClick: () => void }>;
+      },
+    ];
+    expect(title).toBe('This scope is currently read-only.');
+    expect(options.tone).toBe('warning');
+    expect(options.notificationKey).toBe('implement-read-only-scope:group-1');
+    expect(options.description).toContain('Implementation needs at least one editable repository.');
+    expect(options.actions[0]?.label).toBe('Initialize Git');
+
+    await act(async () => {
+      options.actions[0]?.onClick();
+      await flushRender();
+    });
+    expect(setSelectedProject).toHaveBeenCalledWith('project-1');
+    expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-1');
+  });
+
+  it('keeps task Git setup errors actionable through project settings notifications', async () => {
+    seedStores('Pending');
+    const setSelectedProject = mock(() => undefined);
+    const openProjectGitFlowModal = mock(() => undefined);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      setSelectedProject: setSelectedProject as never,
+      openProjectGitFlowModal: openProjectGitFlowModal as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Base branch develop does not exist in this repository.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('Macro could not find the base branch');
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      {
+        tone: string;
+        notificationKey: string;
+        actions: Array<{ label: string; onClick: () => void }>;
+      },
+    ];
+    expect(title).toBe('Macro could not find the base branch');
+    expect(options.tone).toBe('warning');
+    expect(options.notificationKey).toContain('implement-task-error:');
+    expect(options.actions[0]?.label).toBe('Project settings');
+
+    await act(async () => {
+      options.actions[0]?.onClick();
+      await flushRender();
+    });
+    expect(setSelectedProject).toHaveBeenCalledWith('project-1');
+    expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-1');
   });
 
   it('toggles between active-only and archived-only task lists', async () => {

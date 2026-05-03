@@ -118,7 +118,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
               >
                 <div className="flex items-center gap-2">
                   <Icon
-                    name="folder"
+                    name="layers"
                     size={14}
                     className={cn(
                       selectedGroupId === group.id
@@ -153,7 +153,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({ className, width }) => {
                     >
                       <div className="flex items-center gap-2">
                         <Icon
-                          name="folder-open"
+                          name="layers"
                           size={14}
                           className={cn(
                             project.status === 'active'

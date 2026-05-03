@@ -146,7 +146,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
           )}
         >
           <Icon
-            name="folder-open"
+            name="layers"
             size={14}
             className={cn(
               project.status === 'active'
@@ -680,7 +680,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                         onClick={() => handleSelectGroup(group.id)}
                       >
                         <Icon
-                          name="folder"
+                          name="layers"
                           size={16}
                           className={cn(
                             isGroupSelected ? 'text-primary' : 'text-muted-foreground'
@@ -771,7 +771,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             {draggedProject && (
               <div className="px-3 py-2 rounded-lg bg-card border border-primary shadow-lg">
                 <div className="flex items-center gap-2">
-                  <Icon name="folder-open" size={14} className="text-primary" />
+                  <Icon name="layers" size={14} className="text-primary" />
                   <span className="text-sm text-foreground">{draggedProject.name}</span>
                 </div>
               </div>
