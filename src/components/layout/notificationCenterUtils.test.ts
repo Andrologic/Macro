@@ -15,7 +15,7 @@ const buildItem = (
 });
 
 describe('notificationCenterUtils', () => {
-  it('groups notification items by recent time buckets and older calendar dates', () => {
+  it('groups notification items into one linear time scale', () => {
     const now = new Date('2026-04-13T12:30:00.000Z').getTime();
     const items = [
       buildItem('just-now', '2026-04-13T12:29:40.000Z'),
@@ -38,13 +38,13 @@ describe('notificationCenterUtils', () => {
         items: [items[0]],
       },
       {
-        id: 'this-hour',
-        label: 'This hour',
+        id: 'today:minute:25',
+        label: '25 min. ago',
         items: [items[1]],
       },
       {
-        id: 'today',
-        label: 'Today',
+        id: 'today:hour:3',
+        label: '3 hr. ago',
         items: [items[2]],
       },
       {

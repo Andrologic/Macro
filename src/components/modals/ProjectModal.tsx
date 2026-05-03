@@ -9,7 +9,6 @@ import { GroupCombobox } from '../ui/GroupCombobox';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toServiceError } from '../../services/contracts/errors';
 import {
-  isMainlineGitWorkflow,
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
 } from '../../services/architectGitNaming';
@@ -121,11 +120,8 @@ export const ProjectModal: React.FC = () => {
     : isAttachingToExistingGroup
       ? t('project.addSubproject', 'Add subproject')
       : t('project.createProject', 'Create project');
-  const destinationSummary = isAttachingToExistingGroup
-    ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project')
-    : globalProjectName.trim() || t('project.newGlobalProject', 'New global project');
+  const destinationSummary = targetGroup?.name || t('project.chooseGlobalProject', 'Choose a global project');
   const derivedSubProjectName = inferProjectNameFromPath(subProjectPath);
-  const isDefaultMainlineWorkflow = isMainlineGitWorkflow(resolveProjectGitFlowSettings());
   const pendingGitFlowValidationError = pendingGitFlowConfirmation
     ? validateProjectGitFlowSettings(
         resolveProjectGitFlowSettings({
@@ -544,25 +540,22 @@ export const ProjectModal: React.FC = () => {
                     {t('common.browse', 'Browse')}
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>
-                    {t('project.targetSummary', 'Target')}: {destinationSummary}
-                  </span>
-                  {isDefaultMainlineWorkflow && (
-                    <span className="rounded-full bg-sky-500/15 px-2 py-0.5 font-semibold text-sky-300">
-                      {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
-                    </span>
-                  )}
-                  {targetGroup && isAttachingToExistingGroup && (
+                {isAttachingToExistingGroup && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span>
-                      |{' '}
-                      {t('project.attachedReposCount', {
-                        count: targetGroup.projects.length,
-                        defaultValue: '{{count}} repos already attached',
-                      })}
+                      {t('project.targetSummary', 'Target')}: {destinationSummary}
                     </span>
-                  )}
-                </div>
+                    {targetGroup && (
+                      <span>
+                        |{' '}
+                        {t('project.attachedReposCount', {
+                          count: targetGroup.projects.length,
+                          defaultValue: '{{count}} repos already attached',
+                        })}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {duplicatePathProject && (
                   <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
                     {t('project.folderAlreadyAttached', 'This folder is already attached to {{name}}.', {
