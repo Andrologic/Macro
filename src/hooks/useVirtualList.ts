@@ -6,7 +6,18 @@
  */
 
 import { useRef, useCallback } from "react";
-import { useVirtualizer, VirtualizerOptions } from "@tanstack/react-virtual";
+import {
+  useVirtualizer,
+  type VirtualItem,
+  type Virtualizer,
+  type VirtualizerOptions,
+} from "@tanstack/react-virtual";
+
+type ScrollPositionAdjustmentControl = (
+  item: VirtualItem,
+  delta: number,
+  instance: Virtualizer<HTMLDivElement, Element>,
+) => boolean;
 
 export interface UseVirtualListOptions<T> {
   /** Items to virtualize */
@@ -23,6 +34,8 @@ export interface UseVirtualListOptions<T> {
   dynamicHeight?: boolean;
   /** Gap between items in pixels */
   gap?: number;
+  /** Optional control over TanStack Virtual scroll corrections on row resize */
+  shouldAdjustScrollPositionOnItemSizeChange?: ScrollPositionAdjustmentControl;
 }
 
 export interface UseVirtualListResult<T> {
@@ -57,6 +70,7 @@ export function useVirtualList<T>({
   overscan = 5,
   dynamicHeight = false,
   gap = 0,
+  shouldAdjustScrollPositionOnItemSizeChange,
 }: UseVirtualListOptions<T>): UseVirtualListResult<T> {
   const internalParentRef = useRef<HTMLDivElement>(null);
   const parentRef = externalParentRef ?? internalParentRef;
@@ -73,6 +87,8 @@ export function useVirtualList<T>({
   };
 
   const virtualizer = useVirtualizer(virtualizerOptions as VirtualizerOptions<HTMLDivElement, Element>);
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange =
+    shouldAdjustScrollPositionOnItemSizeChange;
 
   const virtualItems = virtualizer.getVirtualItems().map((virtualItem) => ({
     index: virtualItem.index,
@@ -126,6 +142,8 @@ export function useVirtualMessages<T>(
     overscan: options.overscan ?? 5,
     dynamicHeight: options.dynamicHeight ?? true,
     gap: options.gap ?? 16,
+    shouldAdjustScrollPositionOnItemSizeChange:
+      options.shouldAdjustScrollPositionOnItemSizeChange,
   });
 
   return result;

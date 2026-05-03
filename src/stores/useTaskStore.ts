@@ -2757,7 +2757,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       if (task.conversation_id) {
-        await useChatStore.getState().deleteConversation(task.conversation_id, { mode: 'implement' });
+        const chatState = useChatStore.getState();
+        const conversationExists = chatState.conversations.some(
+          (conversation) => conversation.id === task.conversation_id
+        );
+        if (conversationExists) {
+          await chatState.deleteConversation(task.conversation_id, { mode: 'implement' });
+        }
       }
     } catch (error) {
       const normalized = toServiceError(error);
