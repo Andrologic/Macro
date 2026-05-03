@@ -46,6 +46,9 @@ const loadMarkdownRenderer = async () => {
       <div data-testid="markdown-rich-content">{content}</div>
     ),
   }));
+  mock.module('../ui/Icon', () => ({
+    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+  }));
 
   markdownRendererImportCounter += 1;
   return import(`./MarkdownRenderer.tsx?test=${markdownRendererImportCounter}`);
@@ -60,6 +63,14 @@ const getToolGroupContainers = (container: HTMLElement): Element[] =>
   Array.from(
     container.querySelectorAll('[data-testid="tool-traces-running"], [data-testid="tool-traces-completed"]')
   );
+
+const getToolItemIconNames = (container: HTMLElement): string[] =>
+  Array.from(container.querySelectorAll('[data-testid="tool-trace-item"] [data-icon]')).map(
+    (element) => element.getAttribute('data-icon') || ''
+  );
+
+const getGroupHeaderIconName = (group: Element | null | undefined): string | null =>
+  group?.querySelector('[data-icon]')?.getAttribute('data-icon') ?? null;
 
 describe('MarkdownRenderer tool trace rendering', () => {
   let container: HTMLDivElement | null = null;
@@ -101,7 +112,10 @@ describe('MarkdownRenderer tool trace rendering', () => {
 
     const messageRoot = container?.querySelector('.markdown-content');
     expect(messageRoot?.lastElementChild?.getAttribute('data-testid')).toBe('tool-traces-running');
+    expect(getGroupHeaderIconName(messageRoot?.lastElementChild)).toBe('tool');
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
+    expect(getToolItemIconNames(container!)).toEqual(['file-text', 'search']);
+    expect(container?.querySelector('[data-testid="tool-trace-item"]')?.textContent).not.toContain('Tool');
   });
 
   it('does not move a completed tool while another tool is still running', async () => {
@@ -173,6 +187,8 @@ describe('MarkdownRenderer tool trace rendering', () => {
 
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
+    expect(getGroupHeaderIconName(container?.querySelector('[data-testid="tool-traces-completed"]'))).toBe('tool');
+    expect(getToolItemIconNames(container!)).toEqual(['file-text', 'search']);
   });
 
   it('renders Copilot final tool traces with the shared structured UI', async () => {
@@ -257,6 +273,7 @@ describe('MarkdownRenderer tool trace rendering', () => {
       )
     );
     expect(toolNamesByGroup).toEqual([['read', 'grep'], ['terminal_run']]);
+    expect(getToolItemIconNames(container!)).toEqual(['file-text', 'search', 'terminal']);
   });
 
   it('applies the same grouped rendering to legacy TOOL markers', async () => {
@@ -285,5 +302,32 @@ describe('MarkdownRenderer tool trace rendering', () => {
     });
 
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
+    expect(getToolItemIconNames(container!)).toEqual(['file-text', 'search']);
+  });
+
+  it('falls back to the generic tool icon for unknown tool traces', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+
+    await act(async () => {
+      root?.render(
+        <MarkdownRenderer
+          content="Assistant response"
+          isStreaming
+          toolTraces={[
+            {
+              tool_call_id: 'call_unknown',
+              tool_name: 'external_tool',
+              status: 'running',
+            },
+          ]}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const group = container?.querySelector('[data-testid="tool-traces-running"]');
+    expect(getGroupHeaderIconName(group)).toBe('tool');
+    expect(getToolNames(container!)).toEqual(['external_tool']);
+    expect(getToolItemIconNames(container!)).toEqual(['tool']);
   });
 });
