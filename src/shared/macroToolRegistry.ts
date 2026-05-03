@@ -727,7 +727,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "need_list",
-    "List needs for the active Architect plan. Supports lightweight filtering by status, category, priority, or tag.",
+    "List a compact index of needs for the active Architect plan (id, title, priority only). Use need_get for full details of a single need. Supports filtering by status, category, priority, or tag.",
     {
       type: "object",
       properties: {
@@ -765,7 +765,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "need_get",
-    "Load a single need from the active Architect plan by need_id.",
+    "Load the full details of a single need from the active Architect plan by need_id.",
     {
       type: "object",
       properties: {
