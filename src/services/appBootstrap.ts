@@ -37,7 +37,6 @@ interface AppBootstrapDependencies {
   initializeAppCritical: () => Promise<void>;
   resumeAppAfterInitialize: () => Promise<void>;
   initializeChatCritical: () => Promise<void>;
-  resumeChatAfterInitialize: () => Promise<void>;
   initializeTasksCritical: () => Promise<void>;
   resumeTasksAfterInitialize: () => Promise<void>;
   initializeTerminal: () => Promise<void>;
@@ -238,18 +237,15 @@ export const createAppBootstrapController = (
           void (async () => {
             await Promise.all([
               initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
-              (async () => {
-                await initWithTracking('Provider Store', dependencies.initializeProviders, 'low');
-                await initWithTracking('Chat Resume', dependencies.resumeChatAfterInitialize, 'low', {
-                  warningOnly: true,
-                });
-                await initWithTracking(
-                  'Chat Context Restore',
-                  dependencies.restoreChatSelectionAfterProviderInit,
-                  'low'
-                );
-              })(),
+              initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
             ]);
+            await highPriorityInit;
+            await initWithTracking(
+              'Chat Context Restore',
+              dependencies.restoreChatSelectionAfterProviderInit,
+              'low',
+              { warningOnly: true }
+            );
 
             if (!dependencies.isPageShuttingDown()) {
               updateSnapshotForRun(activeRunId, (current) => ({ ...current, low: true }));
@@ -306,7 +302,6 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeAppCritical: useAppStore.getState().initializeCritical,
   resumeAppAfterInitialize: useAppStore.getState().resumeAfterInitialize,
   initializeChatCritical: useChatStore.getState().initializeCritical,
-  resumeChatAfterInitialize: useChatStore.getState().resumeAfterInitialize,
   initializeTasksCritical: useTaskStore.getState().initializeCritical,
   resumeTasksAfterInitialize: useTaskStore.getState().resumeAfterInitialize,
   initializeTerminal: useTerminalStore.getState().initialize,
