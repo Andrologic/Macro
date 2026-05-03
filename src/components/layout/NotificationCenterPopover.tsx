@@ -58,6 +58,7 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
         calculateNotificationCenterPosition(
           {
             top: rect.top,
+            bottom: rect.bottom,
             right: rect.right,
           },
           {
@@ -142,7 +143,7 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
         left: `${position.left}px`,
         width: `${position.width}px`,
         maxHeight: `${position.maxHeight}px`,
-        transform: 'translateY(-100%)',
+        transform: position.placement === 'above' ? 'translateY(-100%)' : undefined,
       }}
       className="z-[94] flex flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl animate-in fade-in zoom-in-95 duration-100"
     >
@@ -181,55 +182,55 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
             </div>
           </div>
         ) : (
-            <div className="space-y-4">
-              {groupedItems.map((group) => (
-                <section
-                  key={group.id}
-                  className="space-y-2"
-                  data-testid={`notification-group-${group.id}`}
-                >
-                  <div className="px-1">
-                    <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      {group.label}
-                    </h3>
-                  </div>
+          <div className="space-y-4">
+            {groupedItems.map((group) => (
+              <section
+                key={group.id}
+                className="space-y-2"
+                data-testid={`notification-group-${group.id}`}
+              >
+                <div className="px-1">
+                  <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {group.label}
+                  </h3>
+                </div>
 
-                  <div className="space-y-2">
-                    {group.items.map((item) => (
-                      <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
-                        {item.variant === 'actionable' ? (
-                          <ActionableNotificationTemplate
-                            tone={item.level}
-                            title={item.title}
-                            description={item.description}
-                            onDismiss={() => removeItem(item.id)}
-                            actions={item.sessionActions}
-                            interactive={Boolean(item.sessionActions?.length)}
-                            pendingActionIndex={item.pendingActionIndex ?? null}
-                            onActionClick={(actionIndex) => {
-                              void executeRegisteredNotificationAction(item.id, actionIndex);
-                            }}
-                            snapshotLabel={
-                              item.sessionActions?.length
-                                ? undefined
-                                : t('notifications.actionRequired', 'Action required')
-                            }
-                          />
-                        ) : (
-                          <InformationalNotificationTemplate
-                            tone={item.level}
-                            title={item.title}
-                            description={item.description}
-                            onDismiss={() => removeItem(item.id)}
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </div>
-          )}
+                <div className="space-y-2">
+                  {group.items.map((item) => (
+                    <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
+                      {item.variant === 'actionable' ? (
+                        <ActionableNotificationTemplate
+                          tone={item.level}
+                          title={item.title}
+                          description={item.description}
+                          onDismiss={() => removeItem(item.id)}
+                          actions={item.sessionActions}
+                          interactive={Boolean(item.sessionActions?.length)}
+                          pendingActionIndex={item.pendingActionIndex ?? null}
+                          onActionClick={(actionIndex) => {
+                            void executeRegisteredNotificationAction(item.id, actionIndex);
+                          }}
+                          snapshotLabel={
+                            item.sessionActions?.length
+                              ? undefined
+                              : t('notifications.actionRequired', 'Action required')
+                          }
+                        />
+                      ) : (
+                        <InformationalNotificationTemplate
+                          tone={item.level}
+                          title={item.title}
+                          description={item.description}
+                          onDismiss={() => removeItem(item.id)}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
       </div>
     </div>,
     document.body

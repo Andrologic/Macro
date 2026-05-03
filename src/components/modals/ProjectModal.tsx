@@ -15,51 +15,31 @@ import {
 import { cn } from '../../utils/cn';
 import { ProjectGitFlowConfirmationModal } from './ProjectGitFlowConfirmationModal';
 import {
-  buildProjectSetupPrompts,
-  getProjectSetupAction,
   hasProjectSetupRisks,
-  type ProjectSetupPromptDetails,
 } from './projectGitSetup';
+import {
+  advanceProjectSetupPrompt,
+  buildDeclinedProjectSetupPayload,
+  buildPendingGitFlowConfirmation,
+  buildPendingProjectCreation,
+  buildPendingProjectSetupPrompt,
+  buildProjectWithGitSetupPayload,
+  findProjectByPath,
+  getAcceptedActionsAfterConfirmingPrompt,
+  getAcceptedActionsAfterDecliningPrompt,
+  getActiveProjectSetupPrompt,
+  hasDuplicateSubProjectName,
+  inferProjectNameFromPath,
+  shouldConfirmDetectedGitFlow,
+  type PendingGitFlowConfirmation,
+  type PendingProjectCreation,
+  type PendingProjectSetupPrompt,
+  type ProjectModalMode,
+} from './ProjectModal.helpers';
 import type {
   ProjectGitFlowDetection,
-  ProjectGitSetupAction,
   ProjectGitSetupRiskFlag,
 } from '../../types';
-
-type ProjectModalMode = 'new_group' | 'existing_group';
-
-interface PendingProjectCreation {
-  name: string;
-  description: string;
-  groupId: string | null;
-  groupName?: string | null;
-  path?: string;
-  gitFlowSettings?: ReturnType<typeof resolveProjectGitFlowSettings>;
-}
-
-interface PendingGitFlowConfirmation {
-  createPayload: PendingProjectCreation;
-  branches: string[];
-  currentBranch: string | null;
-  mainBranch: string;
-  baseBranch: string;
-}
-
-interface PendingProjectSetupPrompt {
-  createPayload: PendingProjectCreation;
-  detection: ProjectGitFlowDetection;
-  prompts: ProjectSetupPromptDetails[];
-  promptIndex: number;
-  acceptedActions: ProjectGitSetupAction[];
-}
-
-const normalizeProjectPath = (value: string): string =>
-  value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-
-const inferProjectNameFromPath = (value: string): string => {
-  const parts = value.trim().replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);
-  return parts[parts.length - 1] || '';
-};
 
 export const ProjectModal: React.FC = () => {
   const { t } = useTranslation();
@@ -109,12 +89,7 @@ export const ProjectModal: React.FC = () => {
 
   if (!projectModalOpen) return null;
 
-  const allProjects = projectGroups.flatMap((group) => group.projects);
-  const normalizedRequestedPath = normalizeProjectPath(subProjectPath);
-  const duplicatePathProject =
-    normalizedRequestedPath.length > 0
-      ? allProjects.find((project) => normalizeProjectPath(project.path) === normalizedRequestedPath) ?? null
-      : null;
+  const duplicatePathProject = findProjectByPath(projectGroups, subProjectPath);
   const submitLabel = isSubmitting
     ? t('project.saving', 'Saving...')
     : isAttachingToExistingGroup
@@ -131,7 +106,7 @@ export const ProjectModal: React.FC = () => {
       )[0] ?? null
     : null;
   const activeProjectSetupPrompt =
-    pendingProjectSetupPrompt?.prompts[pendingProjectSetupPrompt.promptIndex] ?? null;
+    getActiveProjectSetupPrompt(pendingProjectSetupPrompt);
 
   const persistProject = async (payload: PendingProjectCreation) => {
     await createProject(payload);
@@ -163,43 +138,15 @@ export const ProjectModal: React.FC = () => {
       await services.previewProjectGitSetup({
         path: projectPath,
       });
-    const setupState = detection.setupState || (detection.repoDetected ? 'ready' : 'not_git');
 
-    if (detection.repoDetected && (detection.requiresConfirmation || setupState === 'needs_branch_confirmation')) {
-      const branches = Array.from(
-        new Set(
-          [
-            ...detection.branches,
-            detection.currentBranch ?? null,
-            detection.suggestedMainBranch ?? null,
-            detection.suggestedBaseBranch ?? null,
-          ].filter((branch): branch is string => Boolean(branch?.trim()))
-        )
-      );
-      const defaultBranch = branches[0] || '';
-      setPendingGitFlowConfirmation({
-        createPayload: payload,
-        branches,
-        currentBranch: detection.currentBranch ?? null,
-        mainBranch: detection.suggestedMainBranch ?? detection.currentBranch ?? defaultBranch,
-        baseBranch:
-          detection.suggestedBaseBranch ??
-          detection.currentBranch ??
-          detection.suggestedMainBranch ??
-          defaultBranch,
-      });
+    if (shouldConfirmDetectedGitFlow(detection)) {
+      setPendingGitFlowConfirmation(buildPendingGitFlowConfirmation(payload, detection));
       return;
     }
 
-    const prompts = buildProjectSetupPrompts(projectPath, detection);
-    if (prompts.length > 0) {
-      setPendingProjectSetupPrompt({
-        createPayload: payload,
-        detection,
-        prompts,
-        promptIndex: 0,
-        acceptedActions: [],
-      });
+    const projectSetupPrompt = buildPendingProjectSetupPrompt(payload, projectPath, detection);
+    if (projectSetupPrompt) {
+      setPendingProjectSetupPrompt(projectSetupPrompt);
       return;
     }
 
@@ -254,26 +201,23 @@ export const ProjectModal: React.FC = () => {
     }
 
     setError('');
+    const nextPromptState = advanceProjectSetupPrompt(
+      pendingProjectSetupPrompt,
+      activeProjectSetupPrompt
+    );
+
+    if (nextPromptState) {
+      setPendingProjectSetupPrompt(nextPromptState);
+      return;
+    }
+
+    const nextAcceptedActions = getAcceptedActionsAfterConfirmingPrompt(
+      pendingProjectSetupPrompt,
+      activeProjectSetupPrompt
+    );
+
     setIsSubmitting(true);
     try {
-      const nextAcceptedActions = [
-        ...pendingProjectSetupPrompt.acceptedActions,
-        getProjectSetupAction(activeProjectSetupPrompt.kind),
-      ];
-
-      if (pendingProjectSetupPrompt.promptIndex < pendingProjectSetupPrompt.prompts.length - 1) {
-        setPendingProjectSetupPrompt((prev) =>
-          prev
-            ? {
-                ...prev,
-                acceptedActions: nextAcceptedActions,
-                promptIndex: prev.promptIndex + 1,
-              }
-            : prev
-        );
-        return;
-      }
-
       const finalPayload = pendingProjectSetupPrompt.createPayload;
       const finalPath = activeProjectSetupPrompt.projectPath;
       const detection = pendingProjectSetupPrompt.detection;
@@ -285,12 +229,12 @@ export const ProjectModal: React.FC = () => {
       }
 
       await createProjectWithGitSetup({
-        ...finalPayload,
-        path: finalPath,
-        gitSetupActions: nextAcceptedActions,
-        expectedRepoRootPath: detection.resolvedRepoRootPath ?? null,
-        expectedSetupState: detection.setupState,
-        expectedRecommendedActionSequence: detection.recommendedActionSequence,
+        ...buildProjectWithGitSetupPayload(
+          finalPayload,
+          finalPath,
+          detection,
+          nextAcceptedActions
+        ),
       });
       closeProjectModal();
     } catch (submitError: unknown) {
@@ -308,20 +252,14 @@ export const ProjectModal: React.FC = () => {
     setError('');
     setIsSubmitting(true);
     try {
-      const payload =
-        activeProjectSetupPrompt.kind === 'create_develop'
-          ? {
-              ...pendingProjectSetupPrompt.createPayload,
-              gitFlowSettings: resolveProjectGitFlowSettings({
-                mainBranch: activeProjectSetupPrompt.mainBranch || 'main',
-                baseBranch: activeProjectSetupPrompt.mainBranch || 'main',
-              }),
-            }
-          : pendingProjectSetupPrompt.createPayload;
-      const acceptedActions =
-        activeProjectSetupPrompt.kind === 'create_develop'
-          ? pendingProjectSetupPrompt.acceptedActions
-          : [];
+      const payload = buildDeclinedProjectSetupPayload(
+        pendingProjectSetupPrompt.createPayload,
+        activeProjectSetupPrompt
+      );
+      const acceptedActions = getAcceptedActionsAfterDecliningPrompt(
+        pendingProjectSetupPrompt,
+        activeProjectSetupPrompt
+      );
       const finalPath = activeProjectSetupPrompt.projectPath;
       const detection = pendingProjectSetupPrompt.detection;
       setPendingProjectSetupPrompt(null);
@@ -331,12 +269,12 @@ export const ProjectModal: React.FC = () => {
         && finalPath.trim()
       ) {
         await createProjectWithGitSetup({
-          ...payload,
-          path: finalPath,
-          gitSetupActions: acceptedActions,
-          expectedRepoRootPath: detection.resolvedRepoRootPath ?? null,
-          expectedSetupState: detection.setupState,
-          expectedRecommendedActionSequence: detection.recommendedActionSequence,
+          ...buildProjectWithGitSetupPayload(
+            payload,
+            finalPath,
+            detection,
+            acceptedActions
+          ),
         });
         closeProjectModal();
         return;
@@ -374,10 +312,7 @@ export const ProjectModal: React.FC = () => {
 
     if (
       isAttachingToExistingGroup &&
-      targetGroup?.projects.some(
-        (project) =>
-          project.name.trim().toLowerCase() === derivedSubProjectName.toLowerCase()
-      )
+      hasDuplicateSubProjectName(targetGroup, derivedSubProjectName)
     ) {
       setError(
         t(
@@ -397,13 +332,13 @@ export const ProjectModal: React.FC = () => {
       return;
     }
 
-    const createPayload: PendingProjectCreation = {
-      name: derivedSubProjectName,
-      description: '',
-      groupId: isAttachingToExistingGroup ? targetGroupId : null,
-      groupName: isAttachingToExistingGroup ? null : trimmedGlobalProjectName,
-      path: trimmedSubProjectPath || undefined,
-    };
+    const createPayload = buildPendingProjectCreation({
+      isAttachingToExistingGroup,
+      targetGroupId,
+      globalProjectName: trimmedGlobalProjectName,
+      subProjectPath: trimmedSubProjectPath,
+      derivedSubProjectName,
+    });
 
     try {
       setIsSubmitting(true);
