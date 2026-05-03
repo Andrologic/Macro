@@ -10,7 +10,6 @@ describe('appBootstrap', () => {
   let resumeTasks: ReturnType<typeof mock>;
   let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
-  let resumeChat: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
   let initializeProviders: ReturnType<typeof mock>;
   let restoreChatSelectionAfterProviderInit: ReturnType<typeof mock>;
@@ -39,9 +38,6 @@ describe('appBootstrap', () => {
     initializeChat = mock(async () => {
       callOrder.push('chat');
     });
-    resumeChat = mock(async () => {
-      callOrder.push('resume-chat');
-    });
     initializeTools = mock(async () => {
       callOrder.push('tools');
     });
@@ -67,7 +63,6 @@ describe('appBootstrap', () => {
       initializeAppCritical: initializeApp,
       resumeAppAfterInitialize: resumeApp,
       initializeChatCritical: initializeChat,
-      resumeChatAfterInitialize: resumeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
@@ -101,7 +96,6 @@ describe('appBootstrap', () => {
     expect(initializeChat.mock.calls.length).toBe(1);
     expect(resumeApp.mock.calls.length).toBe(1);
     expect(resumeTasks.mock.calls.length).toBe(1);
-    expect(resumeChat.mock.calls.length).toBe(1);
     expect(checkSession.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
     expect(initializeTerminal.mock.calls.length).toBe(1);
@@ -111,8 +105,9 @@ describe('appBootstrap', () => {
     expect(callOrder.slice(1, 3).sort()).toEqual(['chat', 'tasks']);
     expect(callOrder).toContain('resume-app');
     expect(callOrder).toContain('resume-tasks');
-    expect(callOrder).toContain('resume-chat');
-    expect(callOrder.indexOf('providers')).toBeLessThan(callOrder.indexOf('resume-chat'));
+    expect(callOrder.indexOf('providers')).toBeLessThan(callOrder.indexOf('restore-chat-selection'));
+    expect(callOrder.indexOf('resume-app')).toBeLessThan(callOrder.indexOf('restore-chat-selection'));
+    expect(callOrder.indexOf('resume-tasks')).toBeLessThan(callOrder.indexOf('restore-chat-selection'));
     expect(callOrder).toContain('preload');
 
     expect(controller.getSnapshot()).toEqual({
@@ -147,7 +142,6 @@ describe('appBootstrap', () => {
       initializeAppCritical: initializeApp,
       resumeAppAfterInitialize: resumeApp,
       initializeChatCritical: initializeChat,
-      resumeChatAfterInitialize: resumeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
@@ -192,7 +186,6 @@ describe('appBootstrap', () => {
       initializeAppCritical: initializeApp,
       resumeAppAfterInitialize: resumeApp,
       initializeChatCritical: initializeChat,
-      resumeChatAfterInitialize: resumeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
@@ -244,7 +237,6 @@ describe('appBootstrap', () => {
       initializeAppCritical: initializeApp,
       resumeAppAfterInitialize: resumeApp,
       initializeChatCritical: initializeChat,
-      resumeChatAfterInitialize: resumeChat,
       initializeTasksCritical: initializeTasks,
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,

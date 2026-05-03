@@ -8372,10 +8372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     reapplySelectionForCurrentContext: async () => {
       await waitForHydration();
-      const conversationId = await get().ensureConversationForCurrentMode();
-      if (conversationId) {
-        await ensureMessagesLoadedForConversation(conversationId);
-      }
+      await get().ensureConversationForCurrentMode();
     },
 
     renameConversation: async (conversationId, title) => {
