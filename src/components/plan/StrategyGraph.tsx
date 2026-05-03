@@ -1354,7 +1354,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       >
         <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="git-branch" size={16} className="text-primary" />
+            <Icon name="strategy" size={16} className="text-primary" />
             {t('architect.strategy', 'Strategy')}
           </h1>
         </div>
@@ -1379,12 +1379,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       >
         <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="git-branch" size={16} className="text-primary" />
+            <Icon name="strategy" size={16} className="text-primary" />
             {t('architect.strategy', 'Strategy')}
           </h1>
         </div>
         <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
-          <Icon name="git-merge" size={48} className="text-muted-foreground/30 mb-4" />
+          <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
           <h3 className="text-sm font-semibold text-foreground mb-1">
             {t('architect.noStrategyTitle', 'No strategy generated yet')}
           </h3>
@@ -1404,7 +1404,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       {/* Header */}
       <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
         <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Icon name="git-branch" size={16} className="text-primary" />
+          <Icon name="strategy" size={16} className="text-primary" />
           {t('architect.strategy', 'Strategy')}
         </h1>
         {viewMode === 'graph' && (
