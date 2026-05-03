@@ -96,4 +96,14 @@ describe('preferences legacy cleanup', () => {
 
     expect(value).toBeNull();
   });
+
+  it('keeps Architect action plans concise by default', async () => {
+    const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
+
+    const prompt = getDefaultPromptForPreferenceKey(PREF_KEYS.PROMPT_ARCHITECT);
+
+    expect(prompt).toContain('When the user asks for an action plan');
+    expect(prompt).toContain('Prefer 3-5 short sections or bullets');
+    expect(prompt).toContain('16. Do not create a "Finalize plan" strategy node yourself');
+  });
 });
