@@ -1,4 +1,5 @@
 import {
+  getArchitectPlanLifecyclePhase,
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
 } from "./architectPlanPresentation";
@@ -48,15 +49,15 @@ const isActivatableBlankArchitectPlan = (input: {
   const { plan } = input;
   return Boolean(
     plan &&
-      (plan.status ?? "draft") === "draft" &&
       isCanonicalArchitectPlan(plan) &&
       isDefaultNewPlanFamilyLabel(plan.label) &&
-      (plan.description ?? "").trim().length === 0 &&
-      input.nodeCount === 0 &&
-      input.predictedBranchCount === 0 &&
-      input.needCount === 0 &&
-      input.chatMessageCount === 0 &&
-      !plan.conversationId,
+      getArchitectPlanLifecyclePhase({
+        status: plan.status ?? "draft",
+        nodeCount: input.nodeCount,
+        predictedBranchCount: input.predictedBranchCount,
+        needCount: input.needCount,
+        chatMessageCount: input.chatMessageCount,
+      }) === "blank",
   );
 };
 

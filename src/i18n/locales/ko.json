@@ -1290,9 +1290,12 @@
   "architect": {
     "needs": "확인된 요구사항",
     "status": {
+      "blank": "빈 계획",
+      "editing": "준비 중",
       "draft": "초안",
       "validated": "검증됨",
       "in_progress": "진행 중",
+      "completed": "완료",
       "archived": "보관됨",
       "deleted": "삭제됨"
     },

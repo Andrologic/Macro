@@ -1290,9 +1290,12 @@
   "architect": {
     "needs": "Identified Needs",
     "status": {
+      "blank": "Blank",
+      "editing": "Prep",
       "draft": "Draft",
       "validated": "Validated",
-      "in_progress": "In Progress",
+      "in_progress": "Impl.",
+      "completed": "Done",
       "archived": "Archived",
       "deleted": "Deleted"
     },

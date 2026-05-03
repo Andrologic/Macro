@@ -51,6 +51,7 @@ import { formatDate } from '../../i18n/format';
 import {
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
+  getArchitectPlanLifecyclePhase,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
   isCanonicalArchitectPlan,
@@ -119,6 +120,8 @@ const arePlanSelectorActivationContextsEqual = (
 };
 
 const statusClassName: Record<string, string> = {
+  blank: 'text-slate-500 bg-slate-500/10 border-slate-500/20',
+  editing: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
   draft: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
   validated: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   in_progress: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
@@ -1233,7 +1236,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
             {plans.map((plan) => {
               const isActive = plan.id === activePlanId;
-              const statusClass = statusClassName[plan.status] || statusClassName.draft;
+              const planPhase = getArchitectPlanLifecyclePhase(plan);
+              const statusClass = statusClassName[planPhase] || statusClassName.draft;
               const isBusy = isActivating === plan.id;
               const isUnavailable = plan.status === 'deleted';
               const isMissingProjects = plan.replicationState === 'missing_projects';
@@ -1327,7 +1331,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className={cn('text-[10px] px-1.5 py-0.5 rounded border uppercase', statusClass)}>
-                        {t(`architect.status.${plan.status}`, plan.status)}
+                        {t(`architect.status.${planPhase}`, planPhase)}
                       </span>
                       <button
                         type="button"

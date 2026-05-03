@@ -5,6 +5,10 @@ import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { getProjectGroupByProjectId, getScopedProjectIds } from './globalProjects';
 import {
+  flushMacroMetadata,
+  recordMacroMetadataMutation,
+} from './macroMetadataCoordinator';
+import {
   getArchitectPlan,
   getArchitectPlanVisibleProjectIds,
   getGitFlowBaseBranch,
@@ -71,21 +75,22 @@ export interface MacroSyncService {
   commitMacroMetadata: (options?: { commitMessage?: string }) => Promise<MacroSyncResult | null>;
   pullMacroMetadata: () => Promise<MacroSyncResult | null>;
   pushMacroMetadata: () => Promise<MacroSyncResult | null>;
+  syncMacroMetadataForCodeAction: (params: { action: 'pull' | 'push' }) => Promise<MacroSyncResult | null>;
   syncMacroMetadataAfterStream: (params: StreamMetadataSyncParams) => Promise<MacroSyncResult | null>;
 }
 
 const MACRO_REASON_MESSAGES: Record<tauriIpc.MacroSyncReason, string | null> = {
   clean: null,
-  dirty: 'Metadata changes are local only. Commit @macro before pulling or pushing.',
-  ahead: 'Metadata is ahead of origin. Push @macro to publish it.',
-  behind: 'Metadata is behind origin. Pull @macro before pushing.',
-  diverged: 'Metadata diverged from origin. Pull @macro and resolve any conflicts before pushing.',
-  merge_conflict: 'Metadata has unresolved merge conflicts. Resolve the conflicted files first.',
-  missing_origin: 'Remote origin is not configured for metadata sync.',
-  missing_upstream: 'Branch @macro has no upstream yet. Push @macro to publish it.',
-  auth_required: 'Git authentication for origin is not configured.',
-  network_error: 'Network error while reaching the metadata remote.',
-  unknown_error: 'Metadata sync failed.',
+  dirty: '@macro has local changes and will be saved automatically before sync.',
+  ahead: '@macro has local commits ready to push.',
+  behind: '@macro needs a code pull before it can be pushed.',
+  diverged: '@macro needs conflict resolution before syncing.',
+  merge_conflict: '@macro has unresolved conflicts. Resolve the conflicted files first.',
+  missing_origin: 'Remote origin is not configured.',
+  missing_upstream: '@macro has no upstream yet. Push code to publish it.',
+  auth_required: 'Git authentication for origin is required.',
+  network_error: 'Network error while syncing @macro.',
+  unknown_error: '@macro sync failed.',
 };
 
 const STATE_PRIORITY: Record<tauriIpc.MacroSyncState, number> = {
@@ -386,6 +391,35 @@ const shouldBlockMacroAction = (
   );
 };
 
+const shouldBlockMacroCodeAction = (
+  result: MacroSyncResult,
+  action: 'pull' | 'push',
+  options?: { allowCommitFlush?: boolean }
+): boolean => {
+  if (result.state === 'conflict') {
+    return true;
+  }
+
+  const nextAction = result.next_action;
+  if (!nextAction) {
+    return false;
+  }
+
+  if (nextAction === 'commit') {
+    return options?.allowCommitFlush !== true;
+  }
+
+  if (
+    nextAction === 'resolve_conflict' ||
+    nextAction === 'configure_remote' ||
+    nextAction === 'configure_auth'
+  ) {
+    return true;
+  }
+
+  return action === 'push' && nextAction === 'pull';
+};
+
 const toRepositoryStatus = (
   target: MetadataSyncTarget,
   result: MacroSyncResult
@@ -626,6 +660,28 @@ export const createMacroSyncService = (
     };
   };
 
+  const ensureTargets = async (
+    targets: MetadataSyncTarget[]
+  ): Promise<Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>> => {
+    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
+    for (const target of targets) {
+      try {
+        entries.push({
+          target,
+          result: await dependencies.tauriIpc.macroBranchEnsure({
+            workspacePath: target.repoPath,
+          }),
+        });
+      } catch (error) {
+        entries.push({
+          target,
+          result: toFailedMacroResult(dependencies.toServiceError(error).message),
+        });
+      }
+    }
+    return entries;
+  };
+
   const refreshMacroSyncStatus = async (options?: {
     ensure?: boolean;
   }): Promise<MacroSyncResult | null> => {
@@ -750,6 +806,68 @@ export const createMacroSyncService = (
     });
   };
 
+  const syncMacroMetadataForCodeAction = async (
+    params: { action: 'pull' | 'push' }
+  ): Promise<MacroSyncResult | null> => {
+    if (!dependencies.tauriIpc.isTauriAvailable()) {
+      return null;
+    }
+
+    return runWithMacroSyncLock(async () => {
+      const targets = await resolveTargets();
+      if (targets.length === 0) {
+        return applyMacroSyncResult(createAggregateMacroResult([]), []);
+      }
+
+      try {
+        const preflightEntries = await ensureTargets(targets);
+        if (
+          preflightEntries.some(({ result }) =>
+            shouldBlockMacroCodeAction(result, params.action, { allowCommitFlush: true })
+          )
+        ) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(preflightEntries),
+            preflightEntries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
+
+        setMacroSyncPending(targets);
+        await flushMacroMetadata({
+          trigger: params.action === 'pull' ? 'code_pull' : 'code_push',
+          workspacePaths: targets.map((target) => target.repoPath),
+        }, {
+          tauri: dependencies.tauriIpc,
+        });
+
+        const postFlushEntries = await ensureTargets(targets);
+        if (
+          postFlushEntries.some(({ result }) =>
+            shouldBlockMacroCodeAction(result, params.action)
+          )
+        ) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(postFlushEntries),
+            postFlushEntries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
+
+        setMacroSyncPending(targets);
+        return await runAcrossTargets(targets, (target) =>
+          params.action === 'pull'
+            ? dependencies.tauriIpc.macroBranchPull({
+                workspacePath: target.repoPath,
+              })
+            : dependencies.tauriIpc.macroBranchPush({
+                workspacePath: target.repoPath,
+              })
+        );
+      } catch (error) {
+        return applyMacroSyncFailure(error, targets);
+      }
+    });
+  };
+
   const syncMacroMetadataAfterStream = async (
     params: StreamMetadataSyncParams
   ): Promise<MacroSyncResult | null> => {
@@ -765,7 +883,6 @@ export const createMacroSyncService = (
 
       try {
         const appState = dependencies.getAppState();
-        const metadataAutoPush = Boolean(appState.metadataAutoPush);
         if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
           try {
             await syncArchitectPlanChatFromConversation({
@@ -788,40 +905,19 @@ export const createMacroSyncService = (
           }
         }
 
-        const commitEntries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
         for (const target of targets) {
-          try {
-            commitEntries.push({
-              target,
-              result: await dependencies.tauriIpc.macroBranchCommitIfDirty({
-                message: 'chore(metadata): sync architect chat',
-                workspacePath: target.repoPath,
-              }),
-            });
-          } catch (error) {
-            commitEntries.push({
-              target,
-              result: toFailedMacroResult(dependencies.toServiceError(error).message),
-            });
-          }
+          recordMacroMetadataMutation({
+            workspacePath: target.repoPath,
+            kind: 'chat_synced',
+            entityId: appState.activeArchitectPlanId,
+            importance: 'light',
+          }, {
+            tauri: dependencies.tauriIpc,
+          });
         }
 
-        const commitAggregate = createAggregateMacroResult(commitEntries);
-        const commitRepositories = commitEntries.map(({ target, result }) =>
-          toRepositoryStatus(target, result)
-        );
-
-        if (
-          !metadataAutoPush ||
-          !commitEntries.some(({ result }) => result.committed) ||
-          commitEntries.some(({ result }) => shouldBlockMacroAction(result, 'push'))
-        ) {
-          return applyMacroSyncResult(commitAggregate, commitRepositories);
-        }
-
-        setMacroSyncPending(targets);
         return await runAcrossTargets(targets, (target) =>
-          dependencies.tauriIpc.macroBranchPush({
+          dependencies.tauriIpc.macroBranchStatus({
             workspacePath: target.repoPath,
           })
         );
@@ -836,6 +932,7 @@ export const createMacroSyncService = (
     commitMacroMetadata,
     pullMacroMetadata,
     pushMacroMetadata,
+    syncMacroMetadataForCodeAction,
     syncMacroMetadataAfterStream,
   };
 };
@@ -846,4 +943,5 @@ export const refreshMacroSyncStatus = defaultMacroSyncService.refreshMacroSyncSt
 export const commitMacroMetadata = defaultMacroSyncService.commitMacroMetadata;
 export const pullMacroMetadata = defaultMacroSyncService.pullMacroMetadata;
 export const pushMacroMetadata = defaultMacroSyncService.pushMacroMetadata;
+export const syncMacroMetadataForCodeAction = defaultMacroSyncService.syncMacroMetadataForCodeAction;
 export const syncMacroMetadataAfterStream = defaultMacroSyncService.syncMacroMetadataAfterStream;
