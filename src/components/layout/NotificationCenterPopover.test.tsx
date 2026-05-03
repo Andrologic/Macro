@@ -96,6 +96,7 @@ describe('NotificationCenterPopover', () => {
     Object.defineProperty(anchor, 'getBoundingClientRect', {
       value: () => ({
         top: 720,
+        bottom: 752,
         right: 380,
       }),
       configurable: true,
@@ -268,5 +269,110 @@ describe('NotificationCenterPopover', () => {
     expect(document.body.textContent).toContain('Yesterday');
     expect(document.body.textContent).toContain('April 10');
     expect(document.body.textContent).not.toContain('1d');
+  });
+
+  it('closes on Escape and outside pointer down without closing from inside the panel', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+    const onClose = mock(() => undefined);
+
+    await act(async () => {
+      root?.render(
+        <NotificationCenterPopover
+          isOpen
+          anchorRef={{ current: anchor }}
+          onClose={onClose}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const panel = document.body.querySelector('[role="dialog"]');
+    expect(panel).toBeDefined();
+
+    await act(async () => {
+      panel?.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.body.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes single items and clears all notifications', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+
+    await act(async () => {
+      root?.render(
+        <NotificationCenterPopover
+          isOpen
+          anchorRef={{ current: anchor }}
+          onClose={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const dismissButton = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Dismiss notification"]'
+    );
+    expect(dismissButton).toBeDefined();
+
+    await act(async () => {
+      dismissButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('Background indexing finished');
+
+    const clearAllButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Clear all'
+    );
+    expect(clearAllButton).toBeDefined();
+
+    await act(async () => {
+      clearAllButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(0);
+    expect(document.body.textContent).toContain('No notifications');
+  });
+
+  it('uses below placement when the anchor is near the top of the viewport', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+    Object.defineProperty(anchor, 'getBoundingClientRect', {
+      value: () => ({
+        top: 36,
+        bottom: 68,
+        right: 120,
+      }),
+      configurable: true,
+    });
+
+    await act(async () => {
+      root?.render(
+        <NotificationCenterPopover
+          isOpen
+          anchorRef={{ current: anchor }}
+          onClose={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const panel = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(panel?.style.top).toBe('78px');
+    expect(panel?.style.transform).toBe('');
   });
 });

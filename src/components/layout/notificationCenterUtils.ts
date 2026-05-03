@@ -2,6 +2,7 @@ import type { NotificationCenterItem } from '../../stores/useNotificationCenterS
 
 export interface NotificationCenterAnchorRect {
   top: number;
+  bottom?: number;
   right: number;
 }
 
@@ -15,6 +16,7 @@ export interface NotificationCenterPosition {
   left: number;
   width: number;
   maxHeight: number;
+  placement: 'above' | 'below';
 }
 
 export interface NotificationCenterTimeGroup {
@@ -35,20 +37,40 @@ export const calculateNotificationCenterPosition = (
   const availableWidth = Math.max(0, viewport.width - NOTIFICATION_CENTER_PANEL_MARGIN * 2);
   const width = Math.min(NOTIFICATION_CENTER_PANEL_WIDTH, availableWidth);
   const unclampedLeft = anchorRect.right - width;
+  const maxLeft = Math.max(
+    NOTIFICATION_CENTER_PANEL_MARGIN,
+    viewport.width - width - NOTIFICATION_CENTER_PANEL_MARGIN
+  );
   const left = Math.min(
     Math.max(NOTIFICATION_CENTER_PANEL_MARGIN, unclampedLeft),
-    Math.max(NOTIFICATION_CENTER_PANEL_MARGIN, viewport.width - width - NOTIFICATION_CENTER_PANEL_MARGIN)
+    maxLeft
   );
+  const availableAbove = Math.max(
+    0,
+    anchorRect.top - NOTIFICATION_CENTER_PANEL_MARGIN - NOTIFICATION_CENTER_PANEL_GAP
+  );
+  const anchorBottom = anchorRect.bottom ?? anchorRect.top;
+  const availableBelow = Math.max(
+    0,
+    viewport.height - anchorBottom - NOTIFICATION_CENTER_PANEL_MARGIN - NOTIFICATION_CENTER_PANEL_GAP
+  );
+  const placement = availableAbove >= 160 || availableAbove >= availableBelow ? 'above' : 'below';
+  const availableHeight = placement === 'above' ? availableAbove : availableBelow;
   const maxHeight = Math.min(
     NOTIFICATION_CENTER_PANEL_MAX_HEIGHT,
-    Math.max(160, Math.floor(Math.min(viewport.height * 0.6, anchorRect.top - NOTIFICATION_CENTER_PANEL_MARGIN - NOTIFICATION_CENTER_PANEL_GAP)))
+    Math.max(120, Math.floor(Math.min(viewport.height * 0.6, availableHeight)))
   );
 
   return {
-    top: Math.round(anchorRect.top - NOTIFICATION_CENTER_PANEL_GAP),
+    top: Math.round(
+      placement === 'above'
+        ? anchorRect.top - NOTIFICATION_CENTER_PANEL_GAP
+        : anchorBottom + NOTIFICATION_CENTER_PANEL_GAP
+    ),
     left: Math.round(left),
     width: Math.round(width),
     maxHeight,
+    placement,
   };
 };
 
