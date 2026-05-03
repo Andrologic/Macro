@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
-import type { ChatMessage } from '../../types';
+import type { ChatMessage, Need } from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
@@ -39,6 +39,7 @@ import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { NeedReferenceChip } from '../architect/NeedReferenceChip';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -155,7 +156,60 @@ interface ChatMessageRowProps {
   onCopy: (content: string, messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
+  needsByTitle: Map<string, Need>;
 }
+
+const NEED_MENTION_PATTERN = /\[need:\s*([^\]]+)\]/gi;
+
+const normalizeNeedMentionTitle = (value: string): string =>
+  value.trim().normalize('NFC').toLocaleLowerCase();
+
+const UserMessageContent: React.FC<{
+  content: string;
+  needsByTitle: Map<string, Need>;
+}> = ({ content, needsByTitle }) => {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      {content.split('\n').map((line, lineIndex) => {
+        const parts: React.ReactNode[] = [];
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+        const needMentionPattern = new RegExp(NEED_MENTION_PATTERN);
+
+        while ((match = needMentionPattern.exec(line)) !== null) {
+          if (match.index > lastIndex) {
+            parts.push(line.slice(lastIndex, match.index));
+          }
+
+          const title = match[1]?.trim() ?? '';
+          const need = needsByTitle.get(normalizeNeedMentionTitle(title));
+          parts.push(
+            <NeedReferenceChip
+              key={`${lineIndex}-${match.index}-${title}`}
+              need={need}
+              title={title}
+              surface="composer"
+              priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
+            />
+          );
+          lastIndex = match.index + match[0].length;
+        }
+
+        if (lastIndex < line.length) {
+          parts.push(line.slice(lastIndex));
+        }
+
+        return (
+          <p key={lineIndex} className="mb-2 last:mb-0 break-words">
+            {parts.length > 0 ? parts : line}
+          </p>
+        );
+      })}
+    </>
+  );
+};
 
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
@@ -178,6 +232,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onCopy,
   onEditStart,
   onRegenerate,
+  needsByTitle,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item;
@@ -301,11 +356,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               ) : questionnaireResponseSummary ? (
                 <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (
-                message.content.split('\n').map((line, i) => (
-                  <p key={i} className="mb-2 last:mb-0 break-words">
-                    {line}
-                  </p>
-                ))
+                <UserMessageContent
+                  content={message.content}
+                  needsByTitle={needsByTitle}
+                />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -409,7 +463,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
     prev.streamingAssistantMessageId === next.streamingAssistantMessageId &&
-    prev.showToolTraces === next.showToolTraces
+    prev.showToolTraces === next.showToolTraces &&
+    prev.needsByTitle === next.needsByTitle
 );
 
 /**
@@ -602,6 +657,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+  const needsByMentionTitle = useMemo(() => {
+    const indexed = new Map<string, Need>();
+    for (const need of needs) {
+      indexed.set(normalizeNeedMentionTitle(need.title), need);
+    }
+    return indexed;
+  }, [needs]);
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
@@ -1455,6 +1517,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onCopy={handleCopy}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
+                    needsByTitle={needsByMentionTitle}
                   />
                 );
               })}

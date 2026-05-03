@@ -5,7 +5,7 @@ import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { NeedCategory } from '../../types';
-import { Icon, IconName } from '../ui/Icon';
+import { Icon } from '../ui/Icon';
 import { Skeleton } from '../shared/Skeleton';
 import { cn } from '../../utils/cn';
 import {
@@ -17,32 +17,15 @@ import {
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import {
+  NEED_CATEGORY_COLORS,
+  NEED_CATEGORY_ICONS,
+  NeedReferenceChip,
+} from './NeedReferenceChip';
 
 interface NeedsPanelProps {
   className?: string;
 }
-
-const CATEGORY_ICONS: Record<NeedCategory, IconName> = {
-  functional: 'target',
-  technical: 'code',
-  ux: 'palette',
-  performance: 'zap',
-  security: 'shield',
-  data: 'database',
-  business: 'milestone',
-  other: 'more-horizontal',
-};
-
-const CATEGORY_COLORS: Record<NeedCategory, string> = {
-  functional: 'text-blue-500',
-  technical: 'text-slate-500',
-  ux: 'text-purple-500',
-  performance: 'text-amber-500',
-  security: 'text-red-500',
-  data: 'text-emerald-500',
-  business: 'text-indigo-500',
-  other: 'text-muted-foreground',
-};
 
 const IDLE_ARCHITECT_PLAN_SWITCH = {
   requestId: 0,
@@ -221,7 +204,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
                 : 'text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
           >
-            <Icon name={CATEGORY_ICONS[cat]} size={12} className={CATEGORY_COLORS[cat]} />
+            <Icon name={NEED_CATEGORY_ICONS[cat]} size={12} className={NEED_CATEGORY_COLORS[cat]} />
             <span>{t(`architect.needCategory.${cat}`, cat)}</span>
           </button>
         ))}
@@ -237,48 +220,15 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
           </div>
         ) : (
           filteredNeeds.map((need) => (
-            <div
+            <NeedReferenceChip
               key={need.id}
               onClick={() => handleNeedClick(need.id)}
-              className={cn(
-                "group relative p-3 rounded-lg border transition-all duration-200 cursor-pointer hover:shadow-sm",
-                selectedNeedId === need.id
-                  ? "bg-accent border-primary/50"
-                  : "bg-card border-border hover:border-border/80 hover:bg-accent/50"
-              )}
-            >
-              <div className="flex items-start justify-between gap-3 mb-1.5">
-                <h3 className="text-sm font-medium text-foreground leading-tight line-clamp-2">
-                  {need.title}
-                </h3>
-                <div className="w-6 h-6 rounded-md flex items-center justify-center bg-muted border border-border/50 shrink-0">
-                  <Icon name={CATEGORY_ICONS[need.category]} size={12} className="text-muted-foreground" />
-                </div>
-              </div>
-
-              <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
-                {need.description}
-              </p>
-
-              <div className="flex items-center gap-2">
-                <span className={cn(
-                  "text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border",
-                  need.priority === 'high' ? "border-red-500/20 text-red-500 bg-red-500/5" :
-                    need.priority === 'medium' ? "border-amber-500/20 text-amber-500 bg-amber-500/5" :
-                      "border-emerald-500/20 text-emerald-500 bg-emerald-500/5"
-                )}>
-                  {t(`architect.needPriority.${need.priority}`, need.priority)}
-                </span>
-                {need.tags.slice(0, 2).map(tag => (
-                  <span key={tag} className="text-[10px] text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
-                    #{tag}
-                  </span>
-                ))}
-                {need.tags.length > 2 && (
-                  <span className="text-[10px] text-muted-foreground">+{need.tags.length - 2}</span>
-                )}
-              </div>
-            </div>
+              need={need}
+              title={need.title}
+              surface="card"
+              selected={selectedNeedId === need.id}
+              priorityLabel={t(`architect.needPriority.${need.priority}`, need.priority)}
+            />
           ))
         )}
       </div>
