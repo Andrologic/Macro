@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { Icon } from './Icon';
+import { mockInternalTools } from '../../mock-data/tools';
+import { Icon, isIconName } from './Icon';
 
 describe('Icon', () => {
   let container: HTMLDivElement | null = null;
@@ -32,5 +33,14 @@ describe('Icon', () => {
     });
 
     expect(container.querySelector('svg')).not.toBeNull();
+  });
+
+  it('supports every visible built-in tool icon', () => {
+    const unsupportedToolIcons = mockInternalTools
+      .filter((tool) => tool.config?.visible !== false)
+      .filter((tool) => !isIconName(tool.icon))
+      .map((tool) => `${tool.id}:${tool.icon}`);
+
+    expect(unsupportedToolIcons).toEqual([]);
   });
 });

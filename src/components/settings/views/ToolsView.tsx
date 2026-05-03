@@ -317,7 +317,7 @@ export const ToolsView: React.FC = () => {
               >
                 <div className={cn('flex gap-4', switchDisabled && 'opacity-50')}>
                   <div className="p-2 bg-primary/10 rounded-lg text-primary h-fit">
-                    <Icon name={(tool.icon as any) || 'tool'} size={18} />
+                    <Icon name={tool.icon || 'tool'} size={18} />
                   </div>
                   <div className="space-y-1">
                     <h4 className="font-medium text-foreground">{tool.name}</h4>
