@@ -22,6 +22,228 @@ const readPackageVersion = (rootDir: string = projectRoot): string => {
   return packageJson.version.trim();
 };
 
+const hasNodePackage = (moduleId: string, packageName: string): boolean =>
+  moduleId.includes(`/node_modules/${packageName}/`);
+
+const sanitizeChunkName = (name: string): string =>
+  name.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+const manualVendorChunk = (id: string): string | undefined => {
+  const moduleId = id.replace(/\\/g, "/");
+
+  if (!moduleId.includes("/node_modules/")) {
+    return undefined;
+  }
+
+  if (
+    hasNodePackage(moduleId, "react") ||
+    hasNodePackage(moduleId, "react-dom")
+  ) {
+    return "react-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "zustand") || hasNodePackage(moduleId, "jotai")) {
+    return "state-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "@xyflow/react")) {
+    return "graph-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "@dnd-kit/core") ||
+    hasNodePackage(moduleId, "@dnd-kit/sortable") ||
+    hasNodePackage(moduleId, "@dnd-kit/utilities")
+  ) {
+    return "dnd-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "@codemirror/merge")) {
+    return "editor-merge";
+  }
+
+  if (
+    hasNodePackage(moduleId, "codemirror") ||
+    hasNodePackage(moduleId, "@codemirror/autocomplete") ||
+    hasNodePackage(moduleId, "@codemirror/commands") ||
+    hasNodePackage(moduleId, "@codemirror/lang-javascript") ||
+    hasNodePackage(moduleId, "@codemirror/lang-rust") ||
+    hasNodePackage(moduleId, "@codemirror/language") ||
+    hasNodePackage(moduleId, "@codemirror/lint") ||
+    hasNodePackage(moduleId, "@codemirror/search") ||
+    hasNodePackage(moduleId, "@codemirror/theme-one-dark") ||
+    hasNodePackage(moduleId, "@lezer/common") ||
+    hasNodePackage(moduleId, "@lezer/highlight") ||
+    hasNodePackage(moduleId, "@lezer/javascript") ||
+    hasNodePackage(moduleId, "@lezer/lr")
+  ) {
+    return "editor-extensions";
+  }
+
+  if (
+    hasNodePackage(moduleId, "@codemirror/state") ||
+    hasNodePackage(moduleId, "@codemirror/view")
+  ) {
+    return "editor-core";
+  }
+
+  if (
+    hasNodePackage(moduleId, "lexical") ||
+    hasNodePackage(moduleId, "@lexical/clipboard") ||
+    hasNodePackage(moduleId, "@lexical/react") ||
+    hasNodePackage(moduleId, "@lexical/selection") ||
+    hasNodePackage(moduleId, "@lexical/utils")
+  ) {
+    return "composer-lexical";
+  }
+
+  if (hasNodePackage(moduleId, "katex")) {
+    return "markdown-math-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "highlight.js")) {
+    return "markdown-highlight-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "react-markdown") ||
+    hasNodePackage(moduleId, "rehype-katex") ||
+    hasNodePackage(moduleId, "remark-gfm") ||
+    hasNodePackage(moduleId, "remark-math") ||
+    hasNodePackage(moduleId, "remark-parse") ||
+    hasNodePackage(moduleId, "remark-rehype") ||
+    hasNodePackage(moduleId, "rehype-react") ||
+    hasNodePackage(moduleId, "unified") ||
+    hasNodePackage(moduleId, "micromark") ||
+    hasNodePackage(moduleId, "mdast-util-from-markdown") ||
+    hasNodePackage(moduleId, "mdast-util-gfm") ||
+    hasNodePackage(moduleId, "mdast-util-math") ||
+    hasNodePackage(moduleId, "mdast-util-to-hast") ||
+    hasNodePackage(moduleId, "hast-util-to-jsx-runtime") ||
+    hasNodePackage(moduleId, "hast-util-whitespace") ||
+    hasNodePackage(moduleId, "hast-util-to-text") ||
+    hasNodePackage(moduleId, "unist-util-is") ||
+    hasNodePackage(moduleId, "unist-util-position") ||
+    hasNodePackage(moduleId, "unist-util-stringify-position") ||
+    hasNodePackage(moduleId, "unist-util-visit") ||
+    hasNodePackage(moduleId, "unist-util-visit-parents") ||
+    hasNodePackage(moduleId, "vfile") ||
+    hasNodePackage(moduleId, "vfile-message")
+  ) {
+    return "markdown-parser-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "cose-base") ||
+    hasNodePackage(moduleId, "layout-base")
+  ) {
+    return "diagram-cytoscape-layout-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "cytoscape")) {
+    return "diagram-cytoscape-core-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "cytoscape-cose-bilkent") ||
+    hasNodePackage(moduleId, "cytoscape-fcose")
+  ) {
+    return "diagram-cytoscape-extensions-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "d3") ||
+    moduleId.includes("/node_modules/d3-")
+  ) {
+    return "diagram-d3-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "dagre-d3-es") ||
+    hasNodePackage(moduleId, "dagre") ||
+    hasNodePackage(moduleId, "graphlib")
+  ) {
+    return "diagram-layout-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "roughjs")) {
+    return "diagram-render-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "@mermaid-js/parser")) {
+    return "diagram-parser-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "lodash-es")) {
+    return "diagram-utility-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "@braintree/sanitize-url") ||
+    hasNodePackage(moduleId, "@iconify/utils") ||
+    hasNodePackage(moduleId, "dayjs") ||
+    hasNodePackage(moduleId, "dompurify") ||
+    hasNodePackage(moduleId, "khroma") ||
+    hasNodePackage(moduleId, "marked") ||
+    hasNodePackage(moduleId, "stylis") ||
+    hasNodePackage(moduleId, "ts-dedent") ||
+    hasNodePackage(moduleId, "uuid")
+  ) {
+    return "diagram-support-vendor";
+  }
+
+  if (
+    moduleId.includes("/node_modules/mermaid/dist/diagram-api/") ||
+    moduleId.includes("/node_modules/mermaid/dist/rendering-util/") ||
+    moduleId.includes("/node_modules/mermaid/dist/themes/") ||
+    moduleId.includes("/node_modules/mermaid/dist/utils/")
+  ) {
+    return "diagram-mermaid-runtime";
+  }
+
+  if (
+    moduleId.includes("/node_modules/mermaid/dist/mermaid") ||
+    moduleId.includes("/node_modules/mermaid/dist/defaultConfig") ||
+    moduleId.includes("/node_modules/mermaid/dist/config") ||
+    moduleId.includes("/node_modules/mermaid/dist/Diagram")
+  ) {
+    return "diagram-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "xterm") || hasNodePackage(moduleId, "xterm-addon-fit")) {
+    return "terminal-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "@tauri-apps/api") ||
+    hasNodePackage(moduleId, "@tauri-apps/plugin-dialog") ||
+    hasNodePackage(moduleId, "@tauri-apps/plugin-http") ||
+    hasNodePackage(moduleId, "@tauri-apps/plugin-notification") ||
+    hasNodePackage(moduleId, "@tauri-apps/plugin-opener") ||
+    hasNodePackage(moduleId, "@tauri-apps/plugin-store")
+  ) {
+    return "desktop-vendor";
+  }
+
+  if (hasNodePackage(moduleId, "sonner")) {
+    return "notifications-vendor";
+  }
+
+  if (
+    hasNodePackage(moduleId, "i18next") ||
+    hasNodePackage(moduleId, "react-i18next") ||
+    hasNodePackage(moduleId, "i18next-browser-languagedetector") ||
+    hasNodePackage(moduleId, "lucide-react") ||
+    hasNodePackage(moduleId, "class-variance-authority") ||
+    hasNodePackage(moduleId, "clsx") ||
+    hasNodePackage(moduleId, "tailwind-merge")
+  ) {
+    return "utils-vendor";
+  }
+
+  return undefined;
+};
+
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {
     return [];
@@ -106,82 +328,16 @@ export default defineConfig(({ command }) => {
       rollupOptions: {
         output: {
           // Manual chunks for optimal code splitting
-          manualChunks: {
-            // Core React runtime shared by every route
-            'react-vendor': ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'],
-
-            // State management
-            'state-vendor': ['zustand', 'jotai'],
-
-            // Graph and drag dependencies used by isolated features
-            'graph-vendor': ['@xyflow/react'],
-            'dnd-vendor': ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
-
-            // Code editor - loaded on demand
-            'editor-vendor': [
-              '@codemirror/view',
-              '@codemirror/state',
-              'codemirror',
-              '@codemirror/lang-javascript',
-              '@codemirror/lang-rust',
-              '@codemirror/theme-one-dark',
-              '@codemirror/autocomplete',
-              '@codemirror/commands',
-              '@codemirror/lint',
-            ],
-
-            // Markdown, syntax highlighting, and diagram rendering
-            'markdown-vendor': [
-              'react-markdown',
-              'remark-gfm',
-              'remark-math',
-              'rehype-katex',
-              'katex',
-              'highlight.js',
-            ],
-
-            // Mermaid runtime
-            'diagram-vendor': ['mermaid'],
-
-            // Terminal runtime
-            'terminal-vendor': ['xterm', 'xterm-addon-fit'],
-
-            // Desktop runtime and plugins
-            'desktop-vendor': [
-              '@tauri-apps/api/app',
-              '@tauri-apps/api/core',
-              '@tauri-apps/api/event',
-              '@tauri-apps/api/image',
-              '@tauri-apps/api/path',
-              '@tauri-apps/api/window',
-              '@tauri-apps/plugin-dialog',
-              '@tauri-apps/plugin-http',
-              '@tauri-apps/plugin-notification',
-              '@tauri-apps/plugin-opener',
-              '@tauri-apps/plugin-store',
-            ],
-
-            // Notifications UI
-            'notifications-vendor': ['sonner'],
-
-            // Utilities
-            'utils-vendor': [
-              'i18next',
-              'react-i18next',
-              'i18next-browser-languagedetector',
-              'lucide-react',
-              'class-variance-authority',
-              'clsx',
-              'tailwind-merge',
-            ],
-          },
+          manualChunks: manualVendorChunk,
 
           // Chunk naming strategy
           chunkFileNames: (chunkInfo) => {
-            const facadeModuleId = chunkInfo.facadeModuleId
-              ? chunkInfo.facadeModuleId.split('/').pop()?.replace(/\.[^/.]+$/, '')
-              : 'chunk';
-            return `assets/${facadeModuleId}-[hash].js`;
+            const chunkName = chunkInfo.name || (
+              chunkInfo.facadeModuleId
+                ? chunkInfo.facadeModuleId.split('/').pop()?.replace(/\.[^/.]+$/, '')
+                : undefined
+            );
+            return `assets/${sanitizeChunkName(chunkName || 'chunk')}-[hash].js`;
           },
 
           // Entry file naming

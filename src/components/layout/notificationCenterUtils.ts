@@ -78,13 +78,15 @@ export const formatNotificationRelativeTime = (
 const startOfDay = (value: Date): Date =>
   new Date(value.getFullYear(), value.getMonth(), value.getDate());
 
-const isSameDay = (left: Date, right: Date): boolean =>
-  left.getFullYear() === right.getFullYear() &&
-  left.getMonth() === right.getMonth() &&
-  left.getDate() === right.getDate();
-
-const isSameHour = (left: Date, right: Date): boolean =>
-  isSameDay(left, right) && left.getHours() === right.getHours();
+const formatNotificationRelativeGroupLabel = (
+  unit: Intl.RelativeTimeFormatUnit,
+  value: number,
+  locale: string
+): string =>
+  new Intl.RelativeTimeFormat(locale, {
+    numeric: 'auto',
+    style: 'short',
+  }).format(value, unit);
 
 export const groupNotificationCenterItemsByDate = (
   items: NotificationCenterItem[],
@@ -93,8 +95,6 @@ export const groupNotificationCenterItemsByDate = (
     locale?: string;
     labels?: {
       lessThanMinute?: string;
-      thisHour?: string;
-      today?: string;
       yesterday?: string;
     };
   }
@@ -103,8 +103,6 @@ export const groupNotificationCenterItemsByDate = (
   const locale = options?.locale ?? 'en';
   const labels = {
     lessThanMinute: options?.labels?.lessThanMinute ?? 'Less than a minute ago',
-    thisHour: options?.labels?.thisHour ?? 'This hour',
-    today: options?.labels?.today ?? 'Today',
     yesterday: options?.labels?.yesterday ?? 'Yesterday',
   };
   const nowDate = new Date(nowTimestamp);
@@ -135,15 +133,20 @@ export const groupNotificationCenterItemsByDate = (
     let groupId: string;
     let label: string;
 
-    if (deltaMs < 60 * 1000) {
+    if (itemDayStart === todayStart && deltaMs < 60 * 1000) {
       groupId = 'less-than-minute';
       label = labels.lessThanMinute;
-    } else if (isSameHour(parsed, nowDate)) {
-      groupId = 'this-hour';
-      label = labels.thisHour;
     } else if (itemDayStart === todayStart) {
-      groupId = 'today';
-      label = labels.today;
+      const deltaMinutes = Math.max(1, Math.floor(deltaMs / (60 * 1000)));
+
+      if (deltaMinutes < 60) {
+        groupId = `today:minute:${deltaMinutes}`;
+        label = formatNotificationRelativeGroupLabel('minute', -deltaMinutes, locale);
+      } else {
+        const deltaHours = Math.max(1, Math.floor(deltaMinutes / 60));
+        groupId = `today:hour:${deltaHours}`;
+        label = formatNotificationRelativeGroupLabel('hour', -deltaHours, locale);
+      }
     } else if (itemDayStart === yesterdayStart) {
       groupId = 'yesterday';
       label = labels.yesterday;
