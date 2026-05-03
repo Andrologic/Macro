@@ -19,6 +19,7 @@ import {
   GitCommit,
   GitMerge,
   GitCompare,
+  History,
   Terminal,
   MessageSquare,
   MessageCircle,
@@ -74,6 +75,7 @@ import {
   Map,
   Network,
   FolderGit2,
+  FolderTree,
   Upload,
   Link,
   Clipboard,
@@ -97,6 +99,7 @@ import {
   BookOpen,
   Expand,
   Save,
+  Split,
 } from 'lucide-react';
 
 export type IconName =
@@ -120,6 +123,7 @@ export type IconName =
   | 'git-commit'
   | 'git-merge'
   | 'git-compare'
+  | 'history'
   | 'terminal'
   | 'message-square'
   | 'message-circle'
@@ -181,6 +185,7 @@ export type IconName =
   | 'map'
   | 'network'
   | 'folder-git-2'
+  | 'folder-tree'
   | 'upload'
   | 'link'
   | 'clipboard'
@@ -198,6 +203,7 @@ export type IconName =
   | 'external-link'
   | 'book-open'
   | 'save'
+  | 'split'
   | 'expand';
 
 interface IconProps {
@@ -253,6 +259,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'git-commit': GitCommit,
   'git-merge': GitMerge,
   'git-compare': GitCompare,
+  'history': History,
   'terminal': Terminal,
   'message-square': MessageSquare,
   'message-circle': MessageCircle,
@@ -314,6 +321,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'map': Map,
   'network': Network,
   'folder-git-2': FolderGit2,
+  'folder-tree': FolderTree,
   'upload': Upload,
   'link': Link,
   'clipboard': Clipboard,
@@ -331,8 +339,11 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'external-link': ExternalLink,
   'book-open': BookOpen,
   'save': Save,
+  'split': Split,
   'expand': Expand,
 };
+
+export const isIconName = (name: string): name is IconName => name in iconMap;
 
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className, style }) => {
   const IconComponent = iconMap[name];
