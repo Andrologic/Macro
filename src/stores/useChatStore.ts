@@ -8372,18 +8372,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     reapplySelectionForCurrentContext: async () => {
       await waitForHydration();
-      const mode = useAppStore.getState().mode;
-      const conversationId =
-        get().selectedConversationIdsByMode[mode] ?? get().selectedConversationId;
+      const conversationId = await get().ensureConversationForCurrentMode();
       if (conversationId) {
         await ensureMessagesLoadedForConversation(conversationId);
       }
-      await runAiSelectionRestore({
-        mode,
-        conversationId: conversationId ?? null,
-        activeContextKey: get().activeContextKey,
-        shouldShowResolving: true,
-      });
     },
 
     renameConversation: async (conversationId, title) => {
