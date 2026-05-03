@@ -669,9 +669,7 @@ const getArchitectPlanActivationPayloadMock = mock(
       ),
       targetBranch: branchName,
       resolutionMode:
-        !conversationId &&
         plan.status === 'draft' &&
-        plan.description.length === 0 &&
         plan.nodes.length === 0 &&
         plan.predictedBranches.length === 0 &&
         (architectPlanMessages.get(planId)?.length ?? 0) === 0
@@ -3187,6 +3185,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     expect(architectPlans.get(plan.id)?.conversationId).not.toBe(conversationId);
     expect(architectPlans.get(plan.id)?.conversationId).toBeTruthy();
+    expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({
+      branchName: 'develop',
+      planId: plan.id,
+      conversationId: architectPlans.get(plan.id)?.conversationId,
+    });
   });
 
   it('removes a pending blank architect conversation when switching away before the first message', async () => {

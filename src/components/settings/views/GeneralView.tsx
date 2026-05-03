@@ -32,8 +32,6 @@ export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
     const projectSwitchPolicy = useAppStore((state) => state.projectSwitchPolicy);
     const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
-    const metadataAutoPush = useAppStore((state) => state.metadataAutoPush);
-    const setMetadataAutoPush = useAppStore((state) => state.setMetadataAutoPush);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
     const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
         editor: [],
@@ -332,19 +330,6 @@ export const GeneralView: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="h-px bg-border/50" />
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.metadataAutoPush', 'Auto-push @macro metadata')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t('settings.metadataAutoPushDesc', 'Automatically push the @macro branch after metadata commits created at stream completion.')}
-                            </p>
-                        </div>
-                        <Switch checked={metadataAutoPush} onCheckedChange={setMetadataAutoPush} />
-                    </div>
-                    <div className="h-px bg-border/50" />
                     <div className="space-y-4">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">

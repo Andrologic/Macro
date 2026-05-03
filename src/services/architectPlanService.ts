@@ -3,6 +3,7 @@ import type { Need } from '../types';
 import * as tauriIpc from './tauriIpc';
 import { devLogger } from '../utils/devLogger';
 import {
+  getArchitectPlanLifecyclePhase,
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
 } from './architectPlanPresentation';
@@ -35,6 +36,11 @@ import {
   type ArchitectPlanGitFlowMetadata,
   type ArchitectPlanKind,
 } from './architectPlanKinds';
+import {
+  flushMacroMetadata,
+  recordMacroMetadataMutation,
+  type MacroMetadataMutationKind,
+} from './macroMetadataCoordinator';
 
 export type ArchitectPlanStatus =
   | 'draft'
@@ -393,15 +399,9 @@ const canUseBlankActivationSummary = (
   }
 
   return (
-    summary.status === 'draft' &&
     isCanonicalArchitectPlan(summary) &&
     isDefaultNewPlanFamilyLabel(summary.label) &&
-    summary.description.trim().length === 0 &&
-    summary.nodeCount === 0 &&
-    (summary.predictedBranchCount ?? 0) === 0 &&
-    summary.needCount === 0 &&
-    summary.chatMessageCount === 0 &&
-    !summary.conversationId
+    getArchitectPlanLifecyclePhase(summary) === 'blank'
   );
 };
 
@@ -3957,18 +3957,44 @@ const assertPlanReplicaSetWritable = (
   );
 };
 
+const extractMacroMutationLabel = (message: string): string | null => {
+  const normalized = message.trim();
+  const match = normalized.match(/(?:plan|metadata)\s+([a-zA-Z0-9._/-]+)$/);
+  return match?.[1] ?? null;
+};
+
+const inferMacroMutationKind = (message: string): MacroMetadataMutationKind => {
+  const lower = message.toLowerCase();
+  if (lower.includes('create architect plan')) return 'plan_created';
+  if (lower.includes('archive architect plan')) return 'plan_archived';
+  if (lower.includes('delete architect plan')) return 'plan_deleted';
+  if (lower.includes('repair architect plan')) return 'plan_repaired';
+  if (lower.includes('task')) return 'task_metadata';
+  if (lower.includes('chat')) return 'chat_synced';
+  if (lower.includes('plan')) return 'plan_updated';
+  return 'project_state';
+};
+
+const isStructuralMacroMutation = (kind: MacroMetadataMutationKind): boolean =>
+  kind === 'plan_created' ||
+  kind === 'plan_archived' ||
+  kind === 'plan_deleted' ||
+  kind === 'plan_repaired' ||
+  kind === 'task_metadata' ||
+  kind === 'manual_feature';
+
 const commitMetadataScopes = async (
   scopes: ArchitectMetadataScope[],
   commitMessage: string,
   options?: {
     commit?: boolean;
+    mutationKind?: MacroMetadataMutationKind;
+    mutationLabel?: string | null;
+    structural?: boolean;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<void> => {
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
-  if (!options?.commit) {
-    return;
-  }
 
   if (
     !resolvedDeps.tauri.isTauriAvailable() ||
@@ -3988,30 +4014,30 @@ const commitMetadataScopes = async (
     return;
   }
 
-  let metadataAutoPush = false;
-  try {
-    metadataAutoPush = Boolean((await resolvedDeps.getAppState()).metadataAutoPush);
-  } catch {
-    metadataAutoPush = false;
+  if (options?.commit) {
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: repoScopes.map((scope) => scope.workspacePath as string),
+      message: commitMessage,
+    }, {
+      tauri: resolvedDeps.tauri,
+    });
+    return;
   }
 
-  await Promise.all(
-    repoScopes.map(async (scope) => {
-      const commitResult = await resolvedDeps.tauri.macroBranchCommitIfDirty({
-        message: commitMessage,
-        workspacePath: scope.workspacePath,
-      });
-      if (
-        metadataAutoPush &&
-        commitResult.committed &&
-        typeof resolvedDeps.tauri.macroBranchPush === 'function'
-      ) {
-        await resolvedDeps.tauri.macroBranchPush({
-          workspacePath: scope.workspacePath,
-        });
-      }
-    })
-  );
+  const inferredKind = options?.mutationKind ?? inferMacroMutationKind(commitMessage);
+  const structural = options?.structural ?? isStructuralMacroMutation(inferredKind);
+  for (const scope of repoScopes) {
+    recordMacroMetadataMutation({
+      workspacePath: scope.workspacePath as string,
+      kind: inferredKind,
+      entityId: options?.mutationLabel ?? extractMacroMutationLabel(commitMessage),
+      label: options?.mutationLabel ?? extractMacroMutationLabel(commitMessage),
+      importance: structural ? 'structural' : 'light',
+    }, {
+      tauri: resolvedDeps.tauri,
+    });
+  }
 };
 
 const upsertPlanInScopeIndex = async (
@@ -5401,6 +5427,19 @@ export const writeArchitectTaskExecution = async (params: {
       })
     )
   );
+
+  for (const scope of dedupeScopes(replicaSet.expectedScopes)) {
+    if (scope.source === 'local' || !scope.workspacePath) continue;
+    recordMacroMetadataMutation({
+      workspacePath: scope.workspacePath,
+      kind: 'task_metadata',
+      entityId: params.execution.taskId,
+      label: params.execution.taskId,
+      importance: 'structural',
+    }, {
+      tauri: deps.tauri,
+    });
+  }
 };
 
 export interface ArchitectPlanService {

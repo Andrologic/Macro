@@ -6,6 +6,7 @@ import {
   getArchitectPlanConversationTitle,
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
+  getArchitectPlanLifecyclePhase,
   getArchitectPlanPrimaryName,
   getArchitectPlanSecondaryLabel,
   isDefaultNewPlanBaseLabel,
@@ -72,5 +73,32 @@ describe('architectPlanPresentation', () => {
     ).toBe('new plan 3');
     expect(getNextDefaultNewPlanLabel([])).toBe('new plan');
     expect(getNextDefaultNewPlanLabel([{ label: 'new plan' }])).toBe('new plan 2');
+  });
+
+  it('derives compact lifecycle phases without using conversation id alone', () => {
+    expect(
+      getArchitectPlanLifecyclePhase({
+        status: 'draft',
+        conversationId: 'empty-conversation',
+        nodeCount: 0,
+        predictedBranchCount: 0,
+        needCount: 0,
+        chatMessageCount: 0,
+      })
+    ).toBe('blank');
+    expect(
+      getArchitectPlanLifecyclePhase({
+        status: 'draft',
+        nodeCount: 0,
+        predictedBranchCount: 0,
+        needCount: 0,
+        chatMessageCount: 1,
+      })
+    ).toBe('editing');
+    expect(getArchitectPlanLifecyclePhase({ status: 'validated' })).toBe('validated');
+    expect(getArchitectPlanLifecyclePhase({ status: 'in_progress' })).toBe('in_progress');
+    expect(getArchitectPlanLifecyclePhase({ status: 'completed' })).toBe('completed');
+    expect(getArchitectPlanLifecyclePhase({ status: 'archived' })).toBe('archived');
+    expect(getArchitectPlanLifecyclePhase({ status: 'deleted' })).toBe('deleted');
   });
 });

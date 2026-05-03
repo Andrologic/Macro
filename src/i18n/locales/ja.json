@@ -1290,9 +1290,12 @@
   "architect": {
     "needs": "特定されたニーズ",
     "status": {
+      "blank": "未入力",
+      "editing": "準備中",
       "draft": "下書き",
       "validated": "検証済み",
       "in_progress": "進行中",
+      "completed": "完了",
       "archived": "アーカイブ済み",
       "deleted": "削除されました"
     },

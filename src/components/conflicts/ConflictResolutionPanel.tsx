@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConflictResolutionEntry } from '../../services/conflictResolution';
 import { Button } from '../ui/Button';
@@ -13,6 +13,8 @@ interface ConflictResolutionPanelProps {
   retryLabel?: string;
   retryDisabled?: boolean;
   retryLoading?: boolean;
+  showWorktreeDetails?: boolean;
+  showConflictFiles?: boolean;
   onRetry?: () => void;
   onUseAiAssistant?: () => void;
   onDismiss?: () => void;
@@ -33,12 +35,16 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
   retryLabel,
   retryDisabled = false,
   retryLoading = false,
+  showWorktreeDetails = false,
+  showConflictFiles,
   onRetry,
   onUseAiAssistant,
   onDismiss,
   dismissLabel,
 }) => {
   const { t } = useTranslation();
+  const [showDetails, setShowDetails] = useState(false);
+  const hasTechnicalDetails = Boolean(error?.trim());
 
   return (
     <div className="rounded-xl border border-red-500/20 bg-red-500/5">
@@ -50,7 +56,6 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-foreground">{title}</h3>
             <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-            {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
           </div>
         </div>
       </div>
@@ -70,7 +75,7 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
               </span>
             </div>
 
-            {repository.worktreePath && (
+            {showWorktreeDetails && repository.worktreePath && (
               <div className="mt-3 text-xs text-muted-foreground">
                 {t('conflicts.panel.worktree', 'Worktree')}:{' '}
                 <span className="break-all text-foreground/90">{repository.worktreePath}</span>
@@ -88,30 +93,39 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
               </div>
             )}
 
-            <div className="mt-3 rounded-md border border-border bg-background/70 px-3 py-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {t('conflicts.panel.conflictedFiles', 'Conflicted files')}
-              </div>
-              <div className="mt-2 space-y-1">
-                {repository.conflictFiles.length > 0 ? (
-                  repository.conflictFiles.map((file) => (
-                    <div key={`${repository.id}:${file}`} className="break-all text-xs text-foreground/90">
-                      {file}
+            {(showConflictFiles ?? repository.conflictFiles.length > 0) && (
+              <div className="mt-3 rounded-md border border-border bg-background/70 px-3 py-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t('conflicts.panel.conflictedFiles', 'Conflicted files')}
+                </div>
+                <div className="mt-2 space-y-1">
+                  {repository.conflictFiles.length > 0 ? (
+                    repository.conflictFiles.map((file) => (
+                      <div key={`${repository.id}:${file}`} className="break-all text-xs text-foreground/90">
+                        {file}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      {t('conflicts.panel.noConflictFiles', 'No conflict file list reported.')}
                     </div>
-                  ))
-                ) : (
-                  <div className="text-xs text-muted-foreground">
-                    {t('conflicts.panel.noConflictFiles', 'No conflict file list reported.')}
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         ))}
       </div>
 
-      {(onDismiss || onRetry || onUseAiAssistant) && (
+      {(hasTechnicalDetails || onDismiss || onRetry || onUseAiAssistant) && (
         <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          {hasTechnicalDetails && (
+            <Button variant="ghost" size="sm" onClick={() => setShowDetails((value) => !value)}>
+              {showDetails
+                ? t('errors.hideDetails', 'Hide details')
+                : t('errors.showDetails', 'Show details')}
+            </Button>
+          )}
           {onDismiss && (
             <Button variant="ghost" size="sm" onClick={onDismiss}>
               {dismissLabel || t('conflicts.panel.close', 'Close')}
@@ -134,6 +148,11 @@ export const ConflictResolutionPanel: React.FC<ConflictResolutionPanelProps> = (
             </Button>
           )}
         </div>
+      )}
+      {showDetails && error && (
+        <pre className="mx-4 mb-4 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-background/70 p-3 text-[11px] text-muted-foreground">
+          {error}
+        </pre>
       )}
     </div>
   );

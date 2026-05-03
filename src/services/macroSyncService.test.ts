@@ -349,7 +349,7 @@ describe('macroSyncService', () => {
     expect(macroBranchPushMock).not.toHaveBeenCalled();
   });
 
-  it('auto-pushes stream metadata updates across all repositories when enabled', async () => {
+  it('records stream metadata without committing or pushing even when auto-push is enabled', async () => {
     const service = loadMacroSyncService({ metadataAutoPush: true });
 
     const result = await service.syncMacroMetadataAfterStream({
@@ -358,13 +358,14 @@ describe('macroSyncService', () => {
       trigger: 'send',
     });
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
-    expect(macroBranchPushMock).toHaveBeenCalledTimes(2);
-    expect(result?.state).toBe('clean');
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(macroBranchStatusMock).toHaveBeenCalledTimes(2);
+    expect(result?.reason).toBe('behind');
   });
 
-  it('blocks stream auto-push globally when a committed repository still has merge conflicts', async () => {
-    macroBranchCommitIfDirtyMock.mockImplementation(async ({ workspacePath }: { message?: string; workspacePath?: string | null } = {}) =>
+  it('surfaces stream metadata conflicts without committing or pushing', async () => {
+    macroBranchStatusMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
       workspacePath?.includes('web')
         ? createMacroResult({
             state: 'conflict',
@@ -374,13 +375,7 @@ describe('macroSyncService', () => {
             error: 'Metadata has unresolved merge conflicts.',
           })
         : createMacroResult({
-            state: 'pending',
-            has_upstream: false,
-            committed: true,
-            commit_hash: 'api123',
-            reason: 'missing_upstream',
-            next_action: 'push',
-            output: `commit ok:${workspacePath || 'default'}`,
+            output: `status ok:${workspacePath || 'default'}`,
           })
     );
 
@@ -391,10 +386,122 @@ describe('macroSyncService', () => {
       trigger: 'send',
     });
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
     expect(macroBranchPushMock).not.toHaveBeenCalled();
     expect(result?.state).toBe('conflict');
     expect(result?.conflicted_files).toEqual(['macro/state.json']);
+  });
+
+  it('flushes dirty metadata before code-triggered pull without pushing', async () => {
+    const ensureCallsByPath = new Map<string, number>();
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+      const key = workspacePath || 'default';
+      const calls = ensureCallsByPath.get(key) || 0;
+      ensureCallsByPath.set(key, calls + 1);
+      if (workspacePath?.includes('web') && calls === 0) {
+        return createMacroResult({
+          state: 'pending',
+          is_dirty: true,
+          reason: 'dirty',
+          next_action: 'commit',
+        });
+      }
+      return createMacroResult({
+        output: `ensured:${workspacePath || 'default'}`,
+      });
+    });
+    macroBranchCommitIfDirtyMock.mockImplementation(async ({ workspacePath, message }: { message?: string; workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        committed: true,
+        commit_hash: workspacePath?.includes('api') ? 'api123' : 'web123',
+        output: `commit ${message}:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'pull' });
+
+    expect(macroBranchCommitIfDirtyMock.mock.calls.map(([params]) => params?.message)).toEqual([
+      'chore(@macro): sync project state',
+      'chore(@macro): sync project state',
+    ]);
+    expect(macroBranchPullMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('clean');
+  });
+
+  it('blocks code-triggered push when metadata must pull first', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('web')
+        ? createMacroResult({
+            state: 'pending',
+            behind: 2,
+            reason: 'behind',
+            next_action: 'pull',
+          })
+        : createMacroResult({
+            output: `ensured:${workspacePath || 'default'}`,
+          })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'push' });
+
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(result?.reason).toBe('behind');
+  });
+
+  it('flushes dirty metadata before code-triggered push without pulling', async () => {
+    const ensureCallsByPath = new Map<string, number>();
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+      const key = workspacePath || 'default';
+      const calls = ensureCallsByPath.get(key) || 0;
+      ensureCallsByPath.set(key, calls + 1);
+      if (workspacePath?.includes('web') && calls === 0) {
+        return createMacroResult({
+          state: 'pending',
+          is_dirty: true,
+          reason: 'dirty',
+          next_action: 'commit',
+        });
+      }
+      return createMacroResult({
+        output: `ensured:${workspacePath || 'default'}`,
+      });
+    });
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'push' });
+
+    expect(macroBranchCommitIfDirtyMock.mock.calls.map(([params]) => params?.message)).toEqual([
+      'chore(@macro): sync project state',
+      'chore(@macro): sync project state',
+    ]);
+    expect(macroBranchPushMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('clean');
+  });
+
+  it('blocks code-triggered pull when dirty metadata still needs a commit after flushing', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        is_dirty: true,
+        reason: 'dirty',
+        next_action: 'commit',
+        output: `still dirty:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'pull' });
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(result?.next_action).toBe('commit');
   });
 
   it('normalizes thrown failures into actionable metadata diagnostics', async () => {

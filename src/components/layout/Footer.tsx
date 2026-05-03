@@ -193,6 +193,12 @@ export const Footer: React.FC = () => {
   const hasPullWork = codeBehind > 0 || macroBehind > 0;
   const hasPushWork = codeAhead > 0 || macroAhead > 0;
   const hasUnreadNotificationDot = useMemo(() => hasUnreadNotifications(notificationItems), [notificationItems]);
+  const macroNeedsAttention = footerMetadataSync.state === 'conflict' || footerMetadataSync.state === 'failed';
+  const canUseMacroAssistant =
+    footerMetadataSync.state === 'conflict' ||
+    footerMetadataSync.reason === 'merge_conflict' ||
+    footerMetadataSync.reason === 'diverged' ||
+    footerMetadataSync.reason === 'unknown_error';
 
   const presentConflictIfNeeded = useCallback((result: tauriIpc.MacroBranchSyncDto, context: MacroConflictContext) => {
     if (result.state !== 'conflict') return;
@@ -325,51 +331,16 @@ export const Footer: React.FC = () => {
       return action === 'fetch'
         ? t(
           'footer.sync.fetchDirtyDescription',
-          'Le fetch du code est terminé. @macro a encore des changements locaux a enregistrer.'
+          'Le fetch du code est terminé. @macro sera enregistré automatiquement au prochain pull ou push du code.'
         )
         : t(
           'footer.sync.macroDirtyDescription',
-          '@macro a encore des changements locaux a enregistrer avant le pull ou le push.'
+          '@macro sera enregistré automatiquement avant la synchronisation du code.'
         );
     }
 
     return `@macro: ${getMacroSyncDescription(result) || formatGitOutput(result.output, translate)}`;
   }, [t, translate]);
-
-  const handleCommitMacroMetadata = useCallback(async () => {
-    if (!isTauriRuntime || syncAction || scopeProjects.length === 0) {
-      return;
-    }
-
-    setIsRefreshing(true);
-    try {
-      const result = await scopedMacroSyncService.commitMacroMetadata();
-      if (result) {
-        setMacroSnapshot(result);
-        presentConflictIfNeeded(result, 'refresh');
-      }
-
-      const description = describeMacroResultForToast('fetch', result);
-      const hasErrors = result?.state === 'failed' || result?.state === 'conflict';
-      if (hasErrors) {
-        notify.error(t('footer.sync.macroCommitFailed', '@macro commit failed'), {
-          description,
-          category: 'git_sync_attention_required',
-        });
-      } else {
-        notify.success(t('footer.sync.macroCommitComplete', '@macro commit complete'), {
-          description,
-          category:
-            result?.state === 'pending'
-              ? 'git_sync_attention_required'
-              : 'git_sync_completed',
-        });
-      }
-    } finally {
-      await refreshFooterStatus({ ensureMacro: true });
-      setIsRefreshing(false);
-    }
-  }, [describeMacroResultForToast, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
 
   const handleSyncAction = useCallback(async (action: FooterSyncAction) => {
     if (!isTauriRuntime || syncAction || scopeProjects.length === 0) return;
@@ -379,9 +350,7 @@ export const Footer: React.FC = () => {
       const codeResults = await runCodeAction(action);
       const macroResult = action === 'fetch'
         ? await scopedMacroSyncService.refreshMacroSyncStatus({ ensure: true })
-        : action === 'pull'
-          ? await scopedMacroSyncService.pullMacroMetadata()
-          : await scopedMacroSyncService.pushMacroMetadata();
+        : await scopedMacroSyncService.syncMacroMetadataForCodeAction({ action });
       if (macroResult) {
         setMacroSnapshot(macroResult);
         presentConflictIfNeeded(macroResult, action);
@@ -394,27 +363,18 @@ export const Footer: React.FC = () => {
         : '';
       const macroSummary = describeMacroResultForToast(action, macroResult);
       const description = [codeSummary, macroSummary].filter(Boolean).join(' | ');
+      const hasMacroBlocker =
+        macroResult?.state === 'failed' ||
+        macroResult?.state === 'conflict' ||
+        macroResult?.next_action === 'configure_auth' ||
+        macroResult?.next_action === 'configure_remote' ||
+        macroResult?.next_action === 'resolve_conflict' ||
+        (action === 'push' && macroResult?.next_action === 'pull');
       const hasErrors = failures.length > 0 || macroResult?.state === 'failed' || macroResult?.state === 'conflict';
-      const hasPending = macroResult?.state === 'pending';
-      const pendingActions = macroResult?.next_action === 'commit'
-        ? [{
-          label: t('footer.sync.macroSaveAction', 'Enregistrer @macro'),
-          variant: 'primary' as const,
-          onClick: async () => {
-            await handleCommitMacroMetadata();
-          },
-        }]
-        : undefined;
+      const hasPending = macroResult?.state === 'pending' && hasMacroBlocker;
       if (hasErrors) {
         notify.error(t(`footer.sync.${action}Incomplete`, `${action} incomplete`), {
           description,
-          category: 'git_sync_attention_required',
-        });
-      } else if (hasPending && pendingActions && pendingActions.length > 0) {
-        notify.actionRequired(t(`footer.sync.${action}Pending`, `${action} requires attention`), {
-          description,
-          actions: pendingActions,
-          tone: 'info',
           category: 'git_sync_attention_required',
         });
       } else if (hasPending) {
@@ -432,7 +392,7 @@ export const Footer: React.FC = () => {
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [describeMacroResultForToast, handleCommitMacroMetadata, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
+  }, [describeMacroResultForToast, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -586,16 +546,14 @@ export const Footer: React.FC = () => {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {footerMetadataSync.state !== 'clean' && (
+            {macroNeedsAttention && (
               <Button
                 size="sm"
-                variant={footerMetadataSync.state === 'conflict' || footerMetadataSync.state === 'failed' ? 'error' : 'secondary'}
+                variant="error"
                 className="h-6 px-2 text-[11px]"
                 onClick={() => setShowConflictModal(true)}
               >
-                {footerMetadataSync.state === 'conflict'
-                  ? t('footer.sync.resolve', 'Resolve')
-                  : t('footer.sync.review', 'Review')}
+                {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
             <Button
@@ -628,10 +586,11 @@ export const Footer: React.FC = () => {
               retryLabel={t('footer.sync.retrySync', 'Retry sync')}
               retryDisabled={Boolean(syncAction)}
               retryLoading={Boolean(syncAction) || isRefreshing}
+              showConflictFiles={footerMetadataSync.state === 'conflict'}
               onDismiss={() => setShowConflictModal(false)}
               dismissLabel={t('common.close', 'Close')}
               onRetry={() => void handleRetryMacroSync()}
-              onUseAiAssistant={() => void openAiConflictAssistant()}
+              onUseAiAssistant={canUseMacroAssistant ? () => void openAiConflictAssistant() : undefined}
             />
           </div>
         </div>
