@@ -532,7 +532,7 @@ export const Footer: React.FC = () => {
                       {selectedProjectLabel}
                     </span>
                     <select
-                      className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] text-foreground"
+                      className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] leading-6 text-foreground"
                       value={gitScopeProjectId ?? ALL_PROJECTS_OPTION}
                       data-tour-id="footer-project-scope"
                       onChange={(event) => setGitScopeProjectId(

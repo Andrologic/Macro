@@ -163,7 +163,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
                   : 'text-muted-foreground hover:bg-accent'
               )}
             >
-              <Icon name="folder" size={14} />
+              <Icon name="layers" size={14} />
               <span>{group.name}</span>
             </button>
           ))}
