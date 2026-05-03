@@ -8,7 +8,6 @@ import { InformationalNotificationTemplate } from '../ui/notifications/Informati
 import { executeRegisteredNotificationAction } from '../ui/toastService';
 import {
   calculateNotificationCenterPosition,
-  formatNotificationRelativeTime,
   groupNotificationCenterItemsByDate,
   type NotificationCenterPosition,
 } from './notificationCenterUtils';
@@ -39,8 +38,6 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
         'notifications.group.lessThanMinute',
         'Less than a minute ago'
       ),
-      thisHour: t('notifications.group.thisHour', 'This hour'),
-      today: t('notifications.group.today', 'Today'),
       yesterday: t('notifications.group.yesterday', 'Yesterday'),
     },
   });
@@ -200,26 +197,12 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
                   <div className="space-y-2">
                     {group.items.map((item) => (
                       <div key={item.id} className="group space-y-1.5 rounded-xl px-1 py-1">
-                        <div className="flex items-center justify-between gap-3 px-1">
-                          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
-                            {formatNotificationRelativeTime(item.createdAt, now)}
-                          </span>
-                          <button
-                            type="button"
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                            aria-label={t('notifications.remove', 'Remove notification')}
-                            title={t('notifications.remove', 'Remove notification')}
-                            onClick={() => removeItem(item.id)}
-                          >
-                            <Icon name="x" size={12} />
-                          </button>
-                        </div>
-
                         {item.variant === 'actionable' ? (
                           <ActionableNotificationTemplate
                             tone={item.level}
                             title={item.title}
                             description={item.description}
+                            onDismiss={() => removeItem(item.id)}
                             actions={item.sessionActions}
                             interactive={Boolean(item.sessionActions?.length)}
                             pendingActionIndex={item.pendingActionIndex ?? null}
@@ -237,6 +220,7 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
                             tone={item.level}
                             title={item.title}
                             description={item.description}
+                            onDismiss={() => removeItem(item.id)}
                           />
                         )}
                       </div>

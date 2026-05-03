@@ -194,7 +194,7 @@ describe('NotificationCenterPopover', () => {
     expect(document.body.textContent).not.toContain('Create');
   });
 
-  it('renders separate date groups for recent, today, yesterday, and older notifications', async () => {
+  it('renders a single linear time scale without per-item timestamps', async () => {
     const { NotificationCenterPopover } = await loadNotificationCenterPopover();
 
     useNotificationCenterStore.setState({
@@ -211,7 +211,7 @@ describe('NotificationCenterPopover', () => {
           id: 'this-hour',
           level: 'info',
           variant: 'informational',
-          title: 'This hour',
+          title: 'Recent item',
           createdAt: '2026-04-13T12:05:00.000Z',
           readAt: null,
         },
@@ -262,9 +262,11 @@ describe('NotificationCenterPopover', () => {
     }
 
     expect(document.body.textContent).toContain('Less than a minute ago');
-    expect(document.body.textContent).toContain('This hour');
-    expect(document.body.textContent).toContain('Today');
+    expect(document.body.textContent).toContain('25 min. ago');
+    expect(document.body.textContent).toContain('3 hr. ago');
+    expect(document.body.textContent).not.toContain('Today');
     expect(document.body.textContent).toContain('Yesterday');
     expect(document.body.textContent).toContain('April 10');
+    expect(document.body.textContent).not.toContain('1d');
   });
 });

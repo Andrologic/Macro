@@ -1,7 +1,8 @@
 import { readdirSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-const ASSETS_DIR = new URL('../dist/assets/', import.meta.url);
+const ASSETS_DIR = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 
 const BUDGETS = [
   { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 800_000 },
@@ -19,7 +20,7 @@ const assetFiles = readdirSync(ASSETS_DIR)
   .filter((fileName) => fileName.endsWith('.js'))
   .map((fileName) => ({
     fileName,
-    sizeBytes: statSync(join(ASSETS_DIR.pathname, fileName)).size,
+    sizeBytes: statSync(join(ASSETS_DIR, fileName)).size,
   }));
 
 const failures = [];
@@ -39,10 +40,13 @@ for (const budget of BUDGETS) {
     continue;
   }
 
-  const largest = [...candidates].sort((left, right) => right.sizeBytes - left.sizeBytes)[0];
-  if (largest.sizeBytes > budget.limitBytes) {
+  const oversizedCandidates = candidates
+    .filter((candidate) => candidate.sizeBytes > budget.limitBytes)
+    .sort((left, right) => right.sizeBytes - left.sizeBytes);
+
+  for (const candidate of oversizedCandidates) {
     failures.push(
-      `${budget.name}: ${largest.fileName} is ${formatKiB(largest.sizeBytes)} (limit ${formatKiB(budget.limitBytes)})`
+      `${budget.name}: ${candidate.fileName} is ${formatKiB(candidate.sizeBytes)} (limit ${formatKiB(budget.limitBytes)})`
     );
   }
 }

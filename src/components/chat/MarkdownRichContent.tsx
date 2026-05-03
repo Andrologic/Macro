@@ -54,6 +54,190 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 
 let blockKeySeed = 0;
 
+const MATH_DELIMITER_CLOSE: Record<string, string> = {
+  '\\(': '\\)',
+  '\\[': '\\]',
+};
+
+const MATH_DELIMITER_MARKDOWN: Record<string, string> = {
+  '\\(': '$',
+  '\\[': '$$',
+};
+
+const hasLatexBracketMathDelimiters = (content: string): boolean =>
+  content.includes('\\(') ||
+  content.includes('\\)') ||
+  content.includes('\\[') ||
+  content.includes('\\]');
+
+const countRun = (content: string, start: number, character: string): number => {
+  let cursor = start;
+  while (cursor < content.length && content[cursor] === character) {
+    cursor += 1;
+  }
+  return cursor - start;
+};
+
+const isMarkdownFenceStart = (content: string, start: number): { marker: string; length: number } | null => {
+  let cursor = start;
+  let leadingSpaces = 0;
+
+  while (cursor < content.length && content[cursor] === ' ' && leadingSpaces < 4) {
+    cursor += 1;
+    leadingSpaces += 1;
+  }
+
+  if (leadingSpaces > 3) return null;
+
+  const marker = content[cursor];
+  if (marker !== '`' && marker !== '~') return null;
+
+  const length = countRun(content, cursor, marker);
+  return length >= 3 ? { marker, length } : null;
+};
+
+const startsWithClosingFence = (
+  content: string,
+  start: number,
+  marker: string,
+  length: number
+): boolean => {
+  const candidate = isMarkdownFenceStart(content, start);
+  return !!candidate && candidate.marker === marker && candidate.length >= length;
+};
+
+const findLatexMathClose = (
+  content: string,
+  start: number,
+  closeDelimiter: string
+): number => {
+  let cursor = start;
+  let lineStart = start === 0 || content[start - 1] === '\n';
+
+  while (cursor < content.length) {
+    if (lineStart && isMarkdownFenceStart(content, cursor)) {
+      return -1;
+    }
+
+    const current = content[cursor];
+    if (current === '`') {
+      return -1;
+    }
+
+    if (content.startsWith(closeDelimiter, cursor)) {
+      return cursor;
+    }
+
+    cursor += 1;
+    lineStart = current === '\n';
+  }
+
+  return -1;
+};
+
+export const normalizeLatexBracketMath = (content: string): string => {
+  if (!hasLatexBracketMathDelimiters(content)) return content;
+
+  let output = '';
+  let cursor = 0;
+  let lineStart = true;
+  let inlineCodeTicks = 0;
+  let fenceMarker: string | null = null;
+  let fenceLength = 0;
+  let fenceClosesAtLineEnd = false;
+  let changed = false;
+
+  while (cursor < content.length) {
+    if (fenceMarker) {
+      const closesFence = lineStart && startsWithClosingFence(content, cursor, fenceMarker, fenceLength);
+      if (closesFence) {
+        fenceClosesAtLineEnd = true;
+      }
+      const current = content[cursor];
+      output += current;
+      cursor += 1;
+      lineStart = current === '\n';
+      if (fenceClosesAtLineEnd && (lineStart || cursor >= content.length)) {
+        fenceMarker = null;
+        fenceLength = 0;
+        fenceClosesAtLineEnd = false;
+      }
+      continue;
+    }
+
+    if (inlineCodeTicks > 0) {
+      if (content[cursor] === '`') {
+        const ticks = countRun(content, cursor, '`');
+        output += content.slice(cursor, cursor + ticks);
+        cursor += ticks;
+        if (ticks === inlineCodeTicks) {
+          inlineCodeTicks = 0;
+        }
+        lineStart = false;
+        continue;
+      }
+
+      const current = content[cursor];
+      output += current;
+      cursor += 1;
+      lineStart = current === '\n';
+      continue;
+    }
+
+    if (lineStart) {
+      const fence = isMarkdownFenceStart(content, cursor);
+      if (fence) {
+        fenceMarker = fence.marker;
+        fenceLength = fence.length;
+        fenceClosesAtLineEnd = false;
+        const currentFenceCharacter = content[cursor];
+        output += currentFenceCharacter;
+        cursor += 1;
+        lineStart = currentFenceCharacter === '\n';
+        continue;
+      }
+    }
+
+    const current = content[cursor];
+    if (current === '`') {
+      const ticks = countRun(content, cursor, '`');
+      output += content.slice(cursor, cursor + ticks);
+      cursor += ticks;
+      inlineCodeTicks = ticks;
+      lineStart = false;
+      continue;
+    }
+
+    const openDelimiter = content.startsWith('\\[', cursor)
+      ? '\\['
+      : content.startsWith('\\(', cursor)
+        ? '\\('
+        : null;
+
+    if (openDelimiter) {
+      const closeDelimiter = MATH_DELIMITER_CLOSE[openDelimiter];
+      const closeIndex = findLatexMathClose(content, cursor + openDelimiter.length, closeDelimiter);
+
+      if (closeIndex !== -1) {
+        const markdownDelimiter = MATH_DELIMITER_MARKDOWN[openDelimiter];
+        output += markdownDelimiter;
+        output += content.slice(cursor + openDelimiter.length, closeIndex);
+        output += markdownDelimiter;
+        cursor = closeIndex + closeDelimiter.length;
+        changed = true;
+        lineStart = false;
+        continue;
+      }
+    }
+
+    output += current;
+    cursor += 1;
+    lineStart = current === '\n';
+  }
+
+  return changed ? output : content;
+};
+
 const omitMarkdownDomProps = <T extends { node?: unknown; ref?: unknown }>(
   props: T
 ): Omit<T, 'node' | 'ref'> => {
@@ -161,6 +345,7 @@ export interface MarkdownRichContentProps {
 }
 
 const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }) => {
+  const normalizedContent = useMemo(() => normalizeLatexBracketMath(content), [content]);
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
@@ -311,7 +496,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       skipHtml
       components={components}
     >
-      {content}
+      {normalizedContent}
     </ReactMarkdown>
   );
 };
