@@ -93,7 +93,13 @@ const summarizeFrozenPlanNode = (node: FrozenPlanNode) => ({
   project_ids: node.projectIds,
 });
 
-const summarizeNeed = (need: Need) => ({
+const summarizeNeedListItem = (need: Need) => ({
+  id: need.id,
+  title: need.title,
+  priority: need.priority,
+});
+
+const summarizeNeedDetails = (need: Need) => ({
   id: need.id,
   title: need.title,
   description: cleanLine(need.description) || '',
@@ -101,6 +107,9 @@ const summarizeNeed = (need: Need) => ({
   priority: need.priority,
   status: need.status,
   tags: need.tags,
+  ...(need.groupId ? { group_id: need.groupId } : {}),
+  ...(need.projectId ? { project_id: need.projectId } : {}),
+  ...(need.sourceMessageId ? { source_message_id: need.sourceMessageId } : {}),
   created_at: need.createdAt,
   updated_at: need.updatedAt,
 });
@@ -170,7 +179,7 @@ export const formatArchitectNeedListToolResult = (params: {
       plan_id: params.planId,
       filters: params.filters,
       total_needs: params.needs.length,
-      needs: params.needs.map(summarizeNeed),
+      needs: params.needs.map(summarizeNeedListItem),
     }
   );
 
@@ -182,7 +191,7 @@ export const formatArchitectNeedGetToolResult = (params: {
     `Loaded need "${params.need.title}" from plan ${params.planId}.`,
     {
       plan_id: params.planId,
-      need: summarizeNeed(params.need),
+      need: summarizeNeedDetails(params.need),
     }
   );
 
@@ -196,7 +205,7 @@ export const formatArchitectNeedUpdateToolResult = (params: {
     {
       plan_id: params.planId,
       changed_fields: params.changedFields,
-      need: summarizeNeed(params.need),
+      need: summarizeNeedDetails(params.need),
     }
   );
 

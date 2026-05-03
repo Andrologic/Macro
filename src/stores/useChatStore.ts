@@ -4183,7 +4183,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (appMode === "Architect") {
       systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
       systemInstructions.push(
-        "In Architect mode, use `need_add`, `need_list`, `need_get`, and `need_update` to keep the active plan's needs structured and up to date instead of only describing requirements in prose.",
+        "In Architect mode, use `need_add`, `need_list`, `need_get`, and `need_update` to keep the active plan's needs structured and up to date instead of only describing requirements in prose. Use `need_list` as a compact id/title/priority index, then call `need_get` when the user asks for details about one need or before making a targeted update. Do not treat `need_list` as complete need detail.",
       );
       systemInstructions.push(
         "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
