@@ -1,7 +1,9 @@
 import React, { Suspense, lazy, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
-import { Icon } from '../ui/Icon';
+import { mockInternalTools } from '../../mock-data/tools';
+import { normalizeArchitectToolId } from '../../services/architectToolNames';
+import { Icon, type IconName } from '../ui/Icon';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/Accordion';
 import type { ToolTrace } from '../../types';
 
@@ -33,6 +35,27 @@ const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
     {content}
   </div>
 );
+
+const TOOL_TRACE_ICON_BY_NAME = new Map<string, IconName>(
+  mockInternalTools.flatMap((tool) => {
+    const normalizedId = normalizeArchitectToolId(tool.id);
+    return normalizedId === tool.id
+      ? [[tool.id, tool.icon]]
+      : [
+          [tool.id, tool.icon],
+          [normalizedId, tool.icon],
+        ];
+  })
+);
+
+const getToolTraceIconName = (toolName: string): IconName => {
+  const normalizedToolName = normalizeArchitectToolId(toolName);
+  return (
+    TOOL_TRACE_ICON_BY_NAME.get(toolName) ??
+    TOOL_TRACE_ICON_BY_NAME.get(normalizedToolName) ??
+    'tool'
+  );
+};
 
 const ThinkingBlock: React.FC<{ content: string; blockKey: number; children?: React.ReactNode }> = ({
   content,
@@ -83,6 +106,7 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
   const isRunning = status === 'running';
   const isPendingApproval = status === 'pending_approval';
   const isDenied = status === 'denied';
+  const iconName = getToolTraceIconName(toolName);
   const badgeLabel =
     status === 'pending_approval'
       ? t('chat.toolPendingApproval', 'pending approval')
@@ -99,9 +123,8 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
     >
       <div className="flex items-center gap-2 min-w-0">
         <div className="w-5 h-5 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-          <Icon name="tool" size={11} className="text-primary" />
+          <Icon name={iconName} size={11} className="text-primary" />
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">{t('chat.tool', 'Tool')}</span>
         <span className="text-xs font-medium text-foreground truncate">{toolName}</span>
         {detail && (
           <span className="text-xs text-muted-foreground/80 font-mono truncate">
@@ -515,6 +538,7 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
 export const __testables = {
   buildRenderState,
   buildStructuredToolGroups,
+  getToolTraceIconName,
   splitLegacyToolBlocks,
 };
 
