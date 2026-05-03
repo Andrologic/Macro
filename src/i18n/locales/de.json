@@ -1290,9 +1290,12 @@
   "architect": {
     "needs": "Identifizierte Bedürfnisse",
     "status": {
+      "blank": "Leer",
+      "editing": "Vorber.",
       "draft": "Entwurf",
       "validated": "Validiert",
-      "in_progress": "In Bearbeitung",
+      "in_progress": "Impl.",
+      "completed": "Fertig",
       "archived": "Archiviert",
       "deleted": "Gelöscht"
     },

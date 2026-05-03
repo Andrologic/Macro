@@ -1,0 +1,123 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import {
+  clearMacroMetadataCoordinatorForTests,
+  flushMacroMetadata,
+  recordMacroMetadataMutation,
+} from './macroMetadataCoordinator';
+import type { MacroBranchSyncDto } from './tauriIpc';
+
+const createMacroResult = (overrides: Partial<MacroBranchSyncDto> = {}): MacroBranchSyncDto => ({
+  branch: '@macro',
+  state: 'clean',
+  worktree_path: '/workspace/.git/macro-metadata-worktree',
+  is_dirty: false,
+  has_origin: true,
+  has_upstream: true,
+  ahead: 0,
+  behind: 0,
+  conflicted_files: [],
+  committed: false,
+  commit_hash: null,
+  reason: 'clean',
+  next_action: null,
+  output: null,
+  error: null,
+  ...overrides,
+});
+
+const macroBranchCommitIfDirtyMock = mock(
+  async ({ message, workspacePath }: { message?: string; workspacePath?: string | null } = {}) =>
+    createMacroResult({
+      committed: true,
+      commit_hash: `${workspacePath || 'default'}:${message || 'default'}`,
+    })
+);
+
+const deps = {
+  tauri: {
+    isTauriAvailable: () => true,
+    macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+  },
+  debounceMs: 0,
+};
+
+describe('macroMetadataCoordinator', () => {
+  beforeEach(() => {
+    clearMacroMetadataCoordinatorForTests();
+    macroBranchCommitIfDirtyMock.mockClear();
+  });
+
+  afterEach(() => {
+    clearMacroMetadataCoordinatorForTests();
+  });
+
+  it('keeps light mutations dirty until an explicit flush', async () => {
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, deps);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+
+    await flushMacroMetadata({
+      trigger: 'code_push',
+      workspacePaths: ['/repos/web'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
+
+  it('debounces structural mutations into one local checkpoint', async () => {
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'plan_updated',
+      label: 'first-plan',
+      importance: 'structural',
+    }, deps);
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'plan_updated',
+      label: 'final-plan',
+      importance: 'structural',
+    }, deps);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): update plan final-plan',
+    });
+  });
+
+  it('does not let light mutations cancel a pending structural checkpoint', async () => {
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'plan_created',
+      label: 'checkout-flow',
+      importance: 'structural',
+    }, {
+      ...deps,
+      debounceMs: 10,
+    });
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, deps);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): create plan checkout-flow',
+    });
+  });
+});

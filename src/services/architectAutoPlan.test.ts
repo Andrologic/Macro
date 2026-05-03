@@ -10,6 +10,7 @@ import {
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
 import type { ArchitectPlanGitFlowMetadata, ArchitectPlanKind } from './architectPlanKinds';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import type { Need } from '../types';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -45,6 +46,8 @@ const createArchitectAutoPlanHarness = (options?: {
   getTargetBranchesByProjectId?: (projectIds: string[]) => Record<string, string>;
 }) => {
   const plans = new Map<string, ArchitectPlanRecord>();
+  const needsByPlanId = new Map<string, Need[]>();
+  const chatMessagesByPlanId = new Map<string, Array<unknown>>();
   let activePlanId: string | null = null;
 
   const toSummary = (plan: ArchitectPlanRecord): ArchitectPlanSummary => ({
@@ -67,8 +70,8 @@ const createArchitectAutoPlanHarness = (options?: {
     updatedAt: plan.updatedAt,
     nodeCount: plan.nodes.length,
     predictedBranchCount: plan.predictedBranches.length,
-    needCount: 0,
-    chatMessageCount: 0,
+    needCount: needsByPlanId.get(plan.id)?.length ?? 0,
+    chatMessageCount: chatMessagesByPlanId.get(plan.id)?.length ?? 0,
   });
 
   const clonePlan = (plan: ArchitectPlanRecord): ArchitectPlanRecord => ({
@@ -96,6 +99,8 @@ const createArchitectAutoPlanHarness = (options?: {
     updatedAt?: string;
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
+    needCount?: number;
+    chatMessageCount?: number;
   }) => {
     const id = params.planId ?? `plan-${plans.size + 1}`;
     const now = params.updatedAt ?? params.createdAt ?? new Date().toISOString();
@@ -125,6 +130,26 @@ const createArchitectAutoPlanHarness = (options?: {
       predictedBranches: [],
     };
     plans.set(plan.id, plan);
+    needsByPlanId.set(
+      plan.id,
+      Array.from({ length: params.needCount ?? 0 }, (_, index) => ({
+        id: `need-${plan.id}-${index + 1}`,
+        title: `Need ${index + 1}`,
+        description: '',
+        category: 'functional',
+        priority: 'medium',
+        status: 'identified',
+        tags: [],
+        createdAt: now,
+        updatedAt: now,
+      } satisfies Need))
+    );
+    chatMessagesByPlanId.set(
+      plan.id,
+      Array.from({ length: params.chatMessageCount ?? 0 }, (_, index) => ({
+        id: `message-${plan.id}-${index + 1}`,
+      }))
+    );
     if (params.setActive) {
       activePlanId = plan.id;
     }
@@ -226,8 +251,8 @@ const createArchitectAutoPlanHarness = (options?: {
     activePlanId = planId;
   };
 
-  const getArchitectPlanNeeds = async (_branchName: string, _planId: string) => [];
-  const getArchitectPlanChatMessages = async (_branchName: string, _planId: string) => [];
+  const getArchitectPlanNeeds = async (_branchName: string, planId: string) => needsByPlanId.get(planId) ?? [];
+  const getArchitectPlanChatMessages = async (_branchName: string, planId: string) => chatMessagesByPlanId.get(planId) ?? [];
   const getArchitectPlanVisibleProjectIds = (
     plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>,
   ) => Array.from(new Set([plan.projectId, ...(plan.projectIds ?? []), ...(plan.expectedProjectIds ?? [])].filter(Boolean))) as string[];
@@ -430,7 +455,7 @@ describe('architectAutoPlan', () => {
   });
 
   it('does not expand a plan automatically once it is no longer blank', async () => {
-    const { createArchitectPlan, ensureProjectGroupPlan, getArchitectPlan, updateArchitectPlan } =
+    const { createArchitectPlan, ensureProjectGroupPlan, getArchitectPlan } =
       createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
       branchName,
@@ -438,13 +463,8 @@ describe('architectAutoPlan', () => {
       label: 'new plan',
       projectIds: ['web'],
       status: 'draft',
+      chatMessageCount: 1,
       setActive: true,
-    });
-
-    await updateArchitectPlan({
-      branchName,
-      planId: created.id,
-      description: 'Started planning',
     });
 
     const ensured = await ensureProjectGroupPlan({
@@ -484,7 +504,7 @@ describe('architectAutoPlan', () => {
     expect(listed.plans).toHaveLength(2);
   });
 
-  it('does not implicitly resume placeholder blanks when a renamed empty draft is visible in the scope', async () => {
+  it('treats a renamed empty draft as the reusable blank during implicit resume', async () => {
     const { createArchitectPlan, ensureProjectGroupPlan } = createArchitectAutoPlanHarness();
     await createArchitectPlan({
       branchName,
@@ -510,11 +530,13 @@ describe('architectAutoPlan', () => {
       trigger: 'implicit_resume',
     });
 
-    expect(ensured).toBeNull();
+    expect(ensured).not.toBeNull();
+    expect(ensured?.action).toBe('reused_blank');
+    expect(ensured?.plan.id).toBe('renamed-empty-plan');
   });
 
   it('does not implicitly resume a blank draft when a real non-blank plan is visible in the scope', async () => {
-    const { createArchitectPlan, ensureProjectGroupPlan, updateArchitectPlan } = createArchitectAutoPlanHarness();
+    const { createArchitectPlan, ensureProjectGroupPlan } = createArchitectAutoPlanHarness();
     await createArchitectPlan({
       branchName,
       planId: 'blank-plan',
@@ -529,12 +551,9 @@ describe('architectAutoPlan', () => {
       label: 'new plan 2',
       projectIds: ['web'],
       status: 'draft',
+      chatMessageCount: 1,
     });
-    await updateArchitectPlan({
-      branchName,
-      planId: startedPlan.id,
-      description: 'Started planning',
-    });
+    void startedPlan;
 
     const ensured = await ensureProjectGroupPlan({
       branchName,
@@ -545,8 +564,8 @@ describe('architectAutoPlan', () => {
     expect(ensured).toBeNull();
   });
 
-  it('reuses an existing started draft of the same type during explicit create', async () => {
-    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan, updateArchitectPlan } =
+  it('creates a new blank plan when an existing draft already has a first message', async () => {
+    const { createArchitectPlan, ensureScopedBlankPlan, listArchitectPlans, getArchitectPlan } =
       createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({
       branchName,
@@ -554,13 +573,8 @@ describe('architectAutoPlan', () => {
       label: 'new plan',
       projectIds: ['web'],
       status: 'draft',
+      chatMessageCount: 1,
       setActive: true,
-    });
-
-    await updateArchitectPlan({
-      branchName,
-      planId: created.id,
-      description: 'Started planning',
     });
 
     const ensured = await ensureScopedBlankPlan({
@@ -570,15 +584,15 @@ describe('architectAutoPlan', () => {
     });
 
     expect(ensured).not.toBeNull();
-    expect(ensured?.action).toBe('reused_blank');
-    expect(ensured?.plan.id).toBe(created.id);
-    expect(ensured?.plan.label).toBe('new plan');
+    expect(ensured?.action).toBe('created');
+    expect(ensured?.plan.id).not.toBe(created.id);
 
     const reloadedOriginal = await getArchitectPlan(branchName, created.id);
     expect(reloadedOriginal?.label).toBe('new plan');
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.map((plan) => plan.label)).toEqual(['new plan']);
+    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans.find((plan) => plan.id === created.id)?.chatMessageCount).toBe(1);
   });
 
   it('reuses a renamed empty draft of the same type during explicit create', async () => {
@@ -815,7 +829,7 @@ describe('architectAutoPlan', () => {
     expect(listed.plans.map((plan) => plan.projectIds?.join(','))).toEqual(['web', 'api']);
   });
 
-  it('archives duplicate non-empty typed drafts that share the same exact scope', async () => {
+  it('keeps multiple oriented typed drafts that share the same exact scope', async () => {
     const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } =
       createArchitectAutoPlanHarness();
     await createArchitectPlan({
@@ -826,10 +840,11 @@ describe('architectAutoPlan', () => {
       planKind: 'release',
       projectIds: ['web'],
       status: 'draft',
+      chatMessageCount: 1,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
-    const releaseWinner = await createArchitectPlan({
+    const releaseNewer = await createArchitectPlan({
       branchName,
       planId: 'release-newer',
       label: 'New Release Plan',
@@ -837,6 +852,7 @@ describe('architectAutoPlan', () => {
       planKind: 'release',
       projectIds: ['web'],
       status: 'draft',
+      chatMessageCount: 1,
       createdAt: '2026-01-02T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
     });
@@ -848,11 +864,12 @@ describe('architectAutoPlan', () => {
     });
 
     expect(result.deletedPlanIds).toEqual([]);
-    expect(result.archivedPlanIds).toEqual(['release-older']);
+    expect(result.archivedPlanIds).toEqual([]);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.find((plan) => plan.id === releaseWinner.id)?.status).toBe('draft');
-    expect(listed.plans.find((plan) => plan.id === 'release-older')?.status).toBe('archived');
+    expect(listed.plans.map((plan) => plan.id).sort()).toEqual(['release-newer', 'release-older'].sort());
+    expect(listed.plans.find((plan) => plan.id === releaseNewer.id)?.status).toBe('draft');
+    expect(listed.plans.find((plan) => plan.id === 'release-older')?.status).toBe('draft');
   });
 
   it('consolidates duplicate blank drafts only within the same plan type', async () => {

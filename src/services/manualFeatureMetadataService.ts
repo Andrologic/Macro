@@ -1,6 +1,10 @@
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
+import {
+  flushMacroMetadata,
+  recordMacroMetadataMutation,
+} from './macroMetadataCoordinator';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
@@ -197,18 +201,11 @@ const commitMetadataTargets = async (workspacePaths: string[], message: string):
     return;
   }
 
-  const metadataAutoPush = useAppStore.getState().metadataAutoPush;
-  await Promise.all(
-    workspacePaths.map(async (workspacePath) => {
-      await tauriIpc.macroBranchCommitIfDirty({
-        message,
-        workspacePath,
-      });
-      if (metadataAutoPush) {
-        await tauriIpc.macroBranchPush({ workspacePath });
-      }
-    })
-  );
+  await flushMacroMetadata({
+    trigger: 'explicit_checkpoint',
+    workspacePaths,
+    message,
+  });
 };
 
 export const commitManualFeatureMetadata = async (
@@ -229,7 +226,7 @@ export const commitManualFeatureMetadata = async (
 
   await commitMetadataTargets(
     workspacePaths,
-    message?.trim().length ? message.trim() : `chore(metadata): sync manual feature ${task.id}`
+    message?.trim().length ? message.trim() : 'chore(@macro): update task metadata'
   );
 };
 
@@ -296,6 +293,14 @@ export const syncManualFeatureMetadataFromTask = async (
       if (legacyMetadataRoot !== metadataRoot) {
         await deleteMetadataRootIfPresent(legacyMetadataRoot, workspacePath);
       }
+
+      recordMacroMetadataMutation({
+        workspacePath,
+        kind: 'manual_feature',
+        entityId: task.id,
+        label: task.id,
+        importance: 'light',
+      });
     })
   );
 };
@@ -325,6 +330,13 @@ export const removeManualFeatureMetadata = async (
           deleteMetadataRootIfPresent(metadataRoot, workspacePath)
         )
       );
+      recordMacroMetadataMutation({
+        workspacePath,
+        kind: 'manual_feature',
+        entityId: task.id,
+        label: task.id,
+        importance: 'structural',
+      });
     })
   );
 };

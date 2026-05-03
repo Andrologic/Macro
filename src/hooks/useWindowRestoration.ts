@@ -12,6 +12,7 @@ import {
   loadPreferences,
   PREF_KEYS,
 } from "../services/preferences";
+import { useAppStore } from "../stores/useAppStore";
 import {
   isTauriEnvironment,
   showMainWindow,
@@ -53,6 +54,17 @@ let lastSavedState: string | null = null;
 let restorePromise: Promise<void> | null = null;
 
 type NativeWindowThemePreference = 'light' | 'dark' | null;
+
+const getSelectedProjectGroupWorkspacePaths = (): string[] => {
+  const { projectGroups, selectedGroupId } = useAppStore.getState();
+  if (!selectedGroupId) return [];
+  return (
+    projectGroups
+      .find((group) => group.id === selectedGroupId)
+      ?.projects.map((project) => project.path)
+      .filter((path) => path.trim().length > 0) ?? []
+  );
+};
 
 const MACOS_WINDOW_BOOTSTRAP_VERSION = 2;
 const LEGACY_MACOS_DEFAULT_WINDOW_SIZE = {
@@ -393,7 +405,10 @@ export function useWindowRestoration() {
 
     void windowOnCloseRequested(() => {
       clearPendingWindowStateSave();
-      markWindowCloseShutdown();
+      markWindowCloseShutdown(
+        'window-close-requested',
+        getSelectedProjectGroupWorkspacePaths()
+      );
     })
       .then((unlisten) => {
         if (cancelled) {

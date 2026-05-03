@@ -84,6 +84,7 @@ import {
 } from "../services/projectRegistry";
 import { consolidateScopedBlankPlans } from "../services/architectAutoPlan";
 import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
+import { flushMacroMetadata } from "../services/macroMetadataCoordinator";
 import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
 import * as tauriIpc from "../services/tauriIpc";
@@ -111,6 +112,22 @@ const normalizeCodeOverflowMode = (
   value: CodeOverflowMode | string | null | undefined,
 ): CodeOverflowMode =>
   value === "horizontal_scroll" ? "horizontal_scroll" : "wrap";
+
+const flushMacroMetadataForProjectGroupSwitch = async (
+  state: { projectGroups: ProjectGroup[]; selectedGroupId: string | null },
+): Promise<void> => {
+  if (!tauriIpc.isTauriAvailable() || !state.selectedGroupId) return;
+  const workspacePaths =
+    state.projectGroups
+      .find((group: ProjectGroup) => group.id === state.selectedGroupId)
+      ?.projects.map((project: Project) => project.path)
+      .filter((path: string) => path.trim().length > 0) ?? [];
+  if (workspacePaths.length === 0) return;
+  await flushMacroMetadata({
+    trigger: "project_switch",
+    workspacePaths,
+  });
+};
 
 export interface MetadataSyncRepositoryStatus {
   repoPath: string;
@@ -1537,6 +1554,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isProjectSwitching: true, lastError: null });
 
     try {
+      if (previous.selectedGroupId !== nextGroupId) {
+        try {
+          await flushMacroMetadataForProjectGroupSwitch(previous);
+        } catch (error) {
+          devLogger.warn(
+            JSON.stringify({
+              event: "macro_metadata_flush_before_project_switch_failed",
+              at: new Date().toISOString(),
+              error: toServiceError(error).message,
+            }),
+          );
+        }
+      }
+
       const isFocusChangeWithinSameGroup =
         Boolean(nextGroupId) && previous.selectedGroupId === nextGroupId;
 

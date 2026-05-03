@@ -5,6 +5,26 @@ interface ArchitectPlanPresentationShape {
   label?: string | null;
 }
 
+export type ArchitectPlanLifecyclePhase =
+  | 'blank'
+  | 'editing'
+  | 'validated'
+  | 'in_progress'
+  | 'completed'
+  | 'archived'
+  | 'deleted';
+
+type ArchitectPlanLifecycleShape = {
+  status?: string | null;
+  conversationId?: string | null;
+  nodes?: unknown[] | null;
+  predictedBranches?: unknown[] | null;
+  nodeCount?: number | null;
+  predictedBranchCount?: number | null;
+  needCount?: number | null;
+  chatMessageCount?: number | null;
+};
+
 export const DEFAULT_NEW_PLAN_LABEL = 'new plan';
 
 const trimToNull = (value?: string | null): string | null => {
@@ -96,3 +116,41 @@ export const getArchitectPlanEditableName = (plan: ArchitectPlanPresentationShap
 
 export const getArchitectPlanConversationTitle = (plan: ArchitectPlanPresentationShape): string =>
   `Plan - ${getArchitectPlanDisplayName(plan)}`;
+
+const normalizeCount = (value?: number | null): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : 0;
+
+export const getArchitectPlanLifecyclePhase = (
+  plan: ArchitectPlanLifecycleShape
+): ArchitectPlanLifecyclePhase => {
+  if (plan.status !== 'draft') {
+    if (
+      plan.status === 'validated' ||
+      plan.status === 'in_progress' ||
+      plan.status === 'completed' ||
+      plan.status === 'archived' ||
+      plan.status === 'deleted'
+    ) {
+      return plan.status;
+    }
+    return 'editing';
+  }
+
+  const nodeCount = Array.isArray(plan.nodes)
+    ? plan.nodes.length
+    : normalizeCount(plan.nodeCount);
+  const predictedBranchCount = Array.isArray(plan.predictedBranches)
+    ? plan.predictedBranches.length
+    : normalizeCount(plan.predictedBranchCount);
+  const needCount = normalizeCount(plan.needCount);
+  const chatMessageCount = normalizeCount(plan.chatMessageCount);
+
+  return nodeCount === 0 &&
+    predictedBranchCount === 0 &&
+    needCount === 0 &&
+    chatMessageCount === 0
+    ? 'blank'
+    : 'editing';
+};
