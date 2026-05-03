@@ -1993,6 +1993,25 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('resolves the current conversation during context restore when startup has no selected conversation yet', async () => {
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createIdleChatStoreState({
+        conversations: [createConversation('conv-a')],
+        selectedConversationId: null,
+        selectedConversationIdsByMode: {},
+        hydrationStatus: 'ready',
+        restoreStatus: 'idle',
+      }),
+    );
+
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-a');
+    expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBe('conv-a');
+    expect(useChatStore.getState().restoreStatus).toBe('ready');
+  });
+
   it('restores the provider, model, and thinking for the selected conversation', async () => {
     providerState.providerConfigs = [
       ...providerState.providerConfigs,

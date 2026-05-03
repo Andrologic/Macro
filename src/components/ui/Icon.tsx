@@ -181,6 +181,7 @@ export type IconName =
   | 'pin'
   | 'pin-off'
   | 'archive'
+  | 'strategy'
   | 'compass'
   | 'map'
   | 'network'
@@ -317,6 +318,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'pin': Pin,
   'pin-off': PinOff,
   'archive': Archive,
+  'strategy': Compass,
   'compass': Compass,
   'map': Map,
   'network': Network,
