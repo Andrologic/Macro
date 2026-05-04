@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tar::Archive;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{watch, Mutex};
@@ -340,17 +340,36 @@ fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
-fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
+fn resource_candidates_from_paths(
+    resolved_resource_path: Option<PathBuf>,
+    resource_dir: Option<PathBuf>,
+    manifest_dir: &Path,
+    relative_path: &str,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join(relative_path));
+    if let Some(resolved_resource_path) = resolved_resource_path {
+        candidates.push(resolved_resource_path);
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(relative_path),
-    );
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join(relative_path));
+        candidates.push(resource_dir.join("resources").join(relative_path));
+    }
+    candidates.push(manifest_dir.join("resources").join(relative_path));
     candidates
+}
+
+fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
+    let resolved_resource_path = app_handle
+        .path()
+        .resolve(relative_path, BaseDirectory::Resource)
+        .ok();
+    let resource_dir = app_handle.path().resource_dir().ok();
+    resource_candidates_from_paths(
+        resolved_resource_path,
+        resource_dir,
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        relative_path,
+    )
 }
 
 fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -2159,5 +2178,57 @@ mod tests {
             }
             _ => panic!("expected done event"),
         }
+    }
+
+    #[test]
+    fn resource_candidates_include_flat_packaged_legacy_packaged_and_dev_paths() {
+        let resolved =
+            PathBuf::from("/App/Macro.app/Contents/Resources/copilot-runtime-manifest.json");
+        let resource_dir = PathBuf::from("/App/Macro.app/Contents/Resources");
+        let manifest_dir = PathBuf::from("/repo/src-tauri");
+
+        let candidates = resource_candidates_from_paths(
+            Some(resolved.clone()),
+            Some(resource_dir.clone()),
+            &manifest_dir,
+            COPILOT_RUNTIME_MANIFEST_RESOURCE,
+        );
+
+        assert_eq!(candidates[0], resolved);
+        assert!(candidates.contains(
+            &resource_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_MANIFEST_RESOURCE)
+        ));
+        assert!(candidates.contains(
+            &manifest_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_MANIFEST_RESOURCE)
+        ));
+    }
+
+    #[test]
+    fn resource_candidates_handle_nested_license_path() {
+        let resource_dir = PathBuf::from("/App/Macro.app/Contents/Resources");
+        let manifest_dir = PathBuf::from("/repo/src-tauri");
+
+        let candidates = resource_candidates_from_paths(
+            Some(resource_dir.join(COPILOT_RUNTIME_LICENSE_RESOURCE)),
+            Some(resource_dir.clone()),
+            &manifest_dir,
+            COPILOT_RUNTIME_LICENSE_RESOURCE,
+        );
+
+        assert!(candidates.contains(&resource_dir.join(COPILOT_RUNTIME_LICENSE_RESOURCE)));
+        assert!(candidates.contains(
+            &resource_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_LICENSE_RESOURCE)
+        ));
+        assert!(candidates.contains(
+            &manifest_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_LICENSE_RESOURCE)
+        ));
     }
 }

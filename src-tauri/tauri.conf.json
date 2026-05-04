@@ -15,10 +15,10 @@
     "externalBin": [
       "binaries/macro-ai-runtime"
     ],
-    "resources": [
-      "resources/copilot-runtime-manifest.json",
-      "resources/licenses/github-copilot-cli-LICENSE.md"
-    ],
+    "resources": {
+      "resources/copilot-runtime-manifest.json": "copilot-runtime-manifest.json",
+      "resources/licenses/github-copilot-cli-LICENSE.md": "licenses/github-copilot-cli-LICENSE.md"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

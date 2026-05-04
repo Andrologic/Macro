@@ -10,46 +10,76 @@ const OUTPUT_BASENAME = 'macro-ai-runtime';
 const LEGACY_OUTPUT_BASENAME = 'macro-copilot-bridge';
 
 const TARGETS = {
-  'darwin:arm64': {
+  'aarch64-apple-darwin': {
     bunTarget: 'bun-darwin-arm64',
     tauriTriple: 'aarch64-apple-darwin',
     extension: '',
   },
-  'darwin:x64': {
+  'x86_64-apple-darwin': {
     bunTarget: 'bun-darwin-x64',
     tauriTriple: 'x86_64-apple-darwin',
     extension: '',
   },
-  'linux:x64': {
+  'x86_64-unknown-linux-gnu': {
     bunTarget: 'bun-linux-x64',
     tauriTriple: 'x86_64-unknown-linux-gnu',
     extension: '',
   },
-  'linux:arm64': {
+  'aarch64-unknown-linux-gnu': {
     bunTarget: 'bun-linux-arm64',
     tauriTriple: 'aarch64-unknown-linux-gnu',
     extension: '',
   },
-  'win32:x64': {
+  'x86_64-pc-windows-msvc': {
     bunTarget: 'bun-windows-x64',
     tauriTriple: 'x86_64-pc-windows-msvc',
     extension: '.exe',
   },
-  'win32:arm64': {
+  'aarch64-pc-windows-msvc': {
     bunTarget: 'bun-windows-arm64',
     tauriTriple: 'aarch64-pc-windows-msvc',
     extension: '.exe',
   },
 };
 
-const forcedTarget =
-  process.env.MACRO_AI_RUNTIME_TARGET?.trim() ||
-  process.env.MACRO_COPILOT_BRIDGE_TARGET?.trim();
-const targetKey = forcedTarget || `${process.platform}:${process.arch}`;
+const HOST_TARGET_KEYS = {
+  'darwin:arm64': 'aarch64-apple-darwin',
+  'darwin:x64': 'x86_64-apple-darwin',
+  'linux:x64': 'x86_64-unknown-linux-gnu',
+  'linux:arm64': 'aarch64-unknown-linux-gnu',
+  'win32:x64': 'x86_64-pc-windows-msvc',
+  'win32:arm64': 'aarch64-pc-windows-msvc',
+};
+
+const TARGET_ALIASES = {
+  ...HOST_TARGET_KEYS,
+  arm64: 'aarch64-apple-darwin',
+  aarch64: 'aarch64-apple-darwin',
+  x64: 'x86_64-apple-darwin',
+  x86_64: 'x86_64-apple-darwin',
+};
+
+const resolveTargetKey = () => {
+  const requestedTarget =
+    process.env.TAURI_ENV_TARGET_TRIPLE?.trim() ||
+    process.env.MACRO_AI_RUNTIME_TARGET?.trim() ||
+    process.env.MACRO_COPILOT_BRIDGE_TARGET?.trim();
+
+  if (requestedTarget) {
+    return TARGET_ALIASES[requestedTarget] || requestedTarget;
+  }
+
+  const hostKey = `${process.platform}:${process.arch}`;
+  return HOST_TARGET_KEYS[hostKey] || hostKey;
+};
+
+const targetKey = resolveTargetKey();
 const target = TARGETS[targetKey];
 
 if (!target) {
-  throw new Error(`Unsupported Macro AI runtime target: ${targetKey}`);
+  throw new Error(
+    `Unsupported Macro AI runtime target "${targetKey}". Supported targets: ${Object.keys(TARGETS).join(', ')}.`
+  );
 }
 
 const output = resolve(
@@ -77,6 +107,7 @@ const child = spawn(
 await new Promise((resolvePromise, rejectPromise) => {
   child.on('exit', (code) => {
     if (code === 0) {
+      console.log(`Built ${output} for ${target.tauriTriple} using ${target.bunTarget}.`);
       resolvePromise();
       return;
     }
