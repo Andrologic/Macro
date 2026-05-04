@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run build:ai-runtime && bun run dev",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "bunx tauri icon public/logo.svg --output src-tauri/icons && bun run build:ai-runtime && bun run build",
+    "beforeBuildCommand": "bun run build:ai-runtime && bun run build",
     "frontendDist": "../dist"
   },
   "bundle": {

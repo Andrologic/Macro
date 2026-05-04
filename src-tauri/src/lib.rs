@@ -5,8 +5,6 @@ pub mod core;
 mod db;
 mod dev_overrides;
 #[cfg(target_os = "macos")]
-mod macos_dynamic_app_icon;
-#[cfg(target_os = "macos")]
 mod macos_window_menu;
 mod secrets;
 
@@ -27,7 +25,7 @@ use fs::watcher::init_watcher;
 use git::GitState;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
@@ -51,14 +49,6 @@ struct WindowSizePayload {
 struct WindowPositionPayload {
     x: i32,
     y: i32,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MacosAppIconThemeSpec {
-    background_color: String,
-    logo_start_color: String,
-    logo_end_color: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -230,37 +220,6 @@ async fn window_set_traffic_light_position(
     }
 }
 
-#[tauri::command]
-async fn set_macos_app_icon_theme(
-    window: tauri::WebviewWindow,
-    spec: MacosAppIconThemeSpec,
-) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-
-        window
-            .run_on_main_thread(move || {
-                let result = macos_dynamic_app_icon::set_application_icon_for_theme(&spec);
-                let _ = sender.send(result);
-            })
-            .map_err(|error| error.to_string())?;
-
-        receiver.await.map_err(|error| error.to_string())?
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let MacosAppIconThemeSpec {
-            background_color,
-            logo_start_color,
-            logo_end_color,
-        } = spec;
-        let _ = (window, background_color, logo_start_color, logo_end_color);
-        Ok(())
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_process_environment();
@@ -397,7 +356,6 @@ pub fn run() {
             window_scale_factor,
             window_set_zoom,
             window_set_traffic_light_position,
-            set_macos_app_icon_theme,
             commands::db_list_conversations,
             commands::db_get_chat_snapshot,
             commands::db_get_chat_bootstrap_snapshot,

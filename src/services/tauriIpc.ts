@@ -662,6 +662,7 @@ export interface CopilotDownloadCompleteEvent {
   provider_id: string;
   runtime_version: string;
   runtime_source: "managed" | "system" | "none";
+  status?: CopilotStatusDto;
 }
 
 export interface CopilotDownloadErrorEvent {

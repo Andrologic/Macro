@@ -173,6 +173,7 @@ pub struct CopilotDownloadCompleteEvent {
     pub provider_id: String,
     pub runtime_version: String,
     pub runtime_source: String,
+    pub status: CopilotStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1076,6 +1077,7 @@ fn emit_download_complete(
     request_id: &str,
     provider_id: &str,
     runtime_version: &str,
+    status: CopilotStatus,
 ) -> Result<(), String> {
     app_handle
         .emit(
@@ -1085,6 +1087,7 @@ fn emit_download_complete(
                 provider_id: provider_id.to_string(),
                 runtime_version: runtime_version.to_string(),
                 runtime_source: RuntimeSource::Managed.as_str().to_string(),
+                status,
             },
         )
         .map_err(|error| error.to_string())
@@ -1496,11 +1499,18 @@ pub async fn start_runtime_download(
                 &mut cancel_rx,
             )
             .await?;
+            {
+                let mut tasks = state_for_task.download_tasks.lock().await;
+                tasks.remove(&request_for_task);
+            }
+            let status =
+                get_status_inner(&app_for_task, &pool_for_task, &provider_for_task, false).await?;
             emit_download_complete(
                 &app_for_task,
                 &request_for_task,
                 &provider_for_task,
                 &asset.version,
+                status,
             )?;
             Ok::<(), String>(())
         }
