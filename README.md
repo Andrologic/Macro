@@ -336,7 +336,9 @@ Available endpoints (initial implementation):
 
 ## License
 
-[MIT](LICENSE)
+Macro is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+
+You may use the software for free. If you modify Macro, redistribute it, or use a modified version to provide a network service, the corresponding source code must be made available under the same license.
 
 ## Acknowledgments
 
