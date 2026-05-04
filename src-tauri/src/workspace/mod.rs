@@ -930,15 +930,7 @@ where
 
     if !normalized_actions.is_empty() {
         let resolved_project_path = resolve_project_path(workspace_path, project_path);
-        fs::create_dir_all(&resolved_project_path)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!(
-                    "Failed to create project directory {}: {}",
-                    resolved_project_path.display(),
-                    error
-                ),
-            })?;
+        ensure_project_directory(&resolved_project_path, "project_git_setup").await?;
     }
 
     let mut rollback_steps = Vec::new();
@@ -1874,6 +1866,47 @@ pub async fn update_manual_feature_merge_workflow(
         })
 }
 
+async fn ensure_project_directory(project_path: &Path, operation: &str) -> Result<()> {
+    if project_path.exists() {
+        let metadata =
+            fs::metadata(project_path)
+                .await
+                .map_err(|error| BackendError::Filesystem {
+                    message: format!(
+                        "Failed to inspect project directory {} for {}: {}",
+                        project_path.display(),
+                        operation,
+                        error
+                    ),
+                })?;
+
+        if !metadata.is_dir() {
+            return Err(BackendError::FilesystemIsFile {
+                message: format!(
+                    "Project path {} for {} is not a directory",
+                    project_path.display(),
+                    operation
+                ),
+            });
+        }
+
+        return Ok(());
+    }
+
+    fs::create_dir_all(project_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to create project directory {} for {}: {}",
+                project_path.display(),
+                operation,
+                error
+            ),
+        })?;
+
+    Ok(())
+}
+
 pub async fn create_project(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -1909,11 +1942,7 @@ pub async fn create_project(
 
     let project_path = resolve_project_path(workspace_path, &project.path);
     ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
-    fs::create_dir_all(project_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to create project directory: {}", error),
-        })?;
+    ensure_project_directory(&project_path, "create_project").await?;
 
     insert_project_into_group(
         &mut state.project_groups,
@@ -1977,13 +2006,7 @@ pub async fn import_git_repo(
 
     let project_path = resolve_project_path(workspace_path, &project.path);
     ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
-    if !project_path.exists() {
-        fs::create_dir_all(&project_path)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to create imported project directory: {}", error),
-            })?;
-    }
+    ensure_project_directory(&project_path, "import_git_repo").await?;
 
     insert_project_into_group(
         &mut state.project_groups,
@@ -3221,7 +3244,11 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
 
 fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
-        message: format!("Failed to create workspace metadata directory: {}", error),
+        message: format!(
+            "Failed to create workspace metadata directory {}: {}",
+            metadata_root.display(),
+            error
+        ),
     })?;
 
     let serialized =
@@ -3231,7 +3258,11 @@ fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()
 
     std::fs::write(workspace_state_path(metadata_root), serialized).map_err(|error| {
         BackendError::Filesystem {
-            message: format!("Failed to write workspace state: {}", error),
+            message: format!(
+                "Failed to write workspace state {}: {}",
+                workspace_state_path(metadata_root).display(),
+                error
+            ),
         }
     })?;
 
@@ -4094,7 +4125,11 @@ async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<
     fs::create_dir_all(workspace_path)
         .await
         .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to create workspace metadata directory: {}", error),
+            message: format!(
+                "Failed to create workspace metadata directory {}: {}",
+                workspace_path.display(),
+                error
+            ),
         })?;
 
     let serialized =
@@ -4105,7 +4140,11 @@ async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<
     fs::write(workspace_state_path(workspace_path), serialized)
         .await
         .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to write workspace state: {}", error),
+            message: format!(
+                "Failed to write workspace state {}: {}",
+                workspace_state_path(workspace_path).display(),
+                error
+            ),
         })?;
 
     Ok(())
@@ -4839,6 +4878,66 @@ mod tests {
             .expect("head")
             .target()
             .expect("head oid")
+    }
+
+    #[tokio::test]
+    async fn create_project_with_absolute_path_persists_metadata_under_metadata_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = temp.path().join("repos").join("web");
+
+        let project = create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Web".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create project");
+
+        assert_eq!(project.path, project_path.to_string_lossy());
+        assert!(project_path.is_dir());
+        assert!(metadata_root.join(WORKSPACE_STATE_FILE).exists());
+        assert!(!workspace_path.join(WORKSPACE_STATE_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn create_project_reports_project_path_when_target_is_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = temp.path().join("repos").join("web");
+        stdfs::create_dir_all(project_path.parent().expect("project parent"))
+            .expect("create project parent");
+        stdfs::write(&project_path, "not a directory").expect("write file target");
+
+        let result = create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Web".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemIsFile { message })
+                if message.contains(&project_path.to_string_lossy().to_string())
+                    && message.contains("create_project")
+        ));
     }
 
     #[test]

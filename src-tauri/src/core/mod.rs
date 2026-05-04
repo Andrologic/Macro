@@ -9,9 +9,9 @@ pub mod config_tests;
 #[cfg(test)]
 pub mod error_tests;
 
-pub use config::load_config;
 #[allow(unused_imports)]
 pub use config::AppConfig;
+pub use config::{finalize_desktop_workspace_path, load_config};
 pub use environment::init_process_environment;
 #[allow(unused_imports)]
 pub use error::BackendError;
