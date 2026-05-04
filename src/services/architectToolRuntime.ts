@@ -1562,14 +1562,14 @@ export const handleArchitectToolCall = async (
       existingPlan.status !== "draft" &&
       (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
     ) {
-      return "plan_update can change plan scope or GitFlow metadata only while the plan is a draft.";
+      return "plan_update can change plan scope or Git workflow metadata only while the plan is a draft.";
     }
 
     if (
       hasPersistedArchitectStrategy(existingPlan) &&
       (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
     ) {
-      return "plan_update cannot change plan scope or GitFlow metadata after strategy has been created.";
+      return "plan_update cannot change plan scope or Git workflow metadata after strategy has been created.";
     }
 
     if (

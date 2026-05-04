@@ -255,7 +255,7 @@ describe('architectPlanService', () => {
     );
   });
 
-  it('keeps typed Git Flow target branches available for develop-based projects', () => {
+  it('keeps typed Git workflow target branches available for develop-based projects', () => {
     storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
     storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
 
@@ -408,7 +408,7 @@ describe('architectPlanService', () => {
         planId: created.id,
         projectIds: ['web', 'api'],
       })
-    ).rejects.toThrow('Plan scope and GitFlow metadata are immutable after draft status.');
+    ).rejects.toThrow('Plan scope and Git workflow metadata are immutable after draft status.');
   });
 
   it('exposes delete only after a plan has been archived', () => {
@@ -575,7 +575,7 @@ describe('architectPlanService', () => {
     ]);
   });
 
-  it('normalizes typed GitFlow metadata with project-specific branch settings', async () => {
+  it('normalizes typed Git workflow metadata with project-specific branch settings', async () => {
     const deps = {
       tauri: {
         ...actualTauriIpc,

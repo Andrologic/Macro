@@ -188,7 +188,7 @@ const resolveCandidateTargetBranches = (
     try {
       resolvedBranches.push(resolveBranch(branchName));
     } catch {
-      // Ignore unexpected metadata branch folders that do not match the supported Git Flow patterns.
+      // Ignore unexpected metadata branch folders that do not match the supported Git workflow patterns.
     }
   }
 

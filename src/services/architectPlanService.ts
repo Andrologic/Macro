@@ -694,7 +694,7 @@ const assertGitFlowTargetBranch = (branchName: string): void => {
       );
     }
     throw new Error(
-      `Invalid target branch "${branchName}". Use configured base branch "${getGitFlowBaseBranch()}" or Git Flow naming: feature/*, release/*, hotfix/*, bugfix/*.`
+      `Invalid target branch "${branchName}". Use configured base branch "${getGitFlowBaseBranch()}" or Git workflow branch naming: feature/*, release/*, hotfix/*, bugfix/*.`
     );
   }
 };
@@ -4597,7 +4597,7 @@ export const updateArchitectPlan = async (input: {
         stableSerialize(normalizedGitFlowPlan) !== stableSerialize(existingGitFlowPlan));
 
     if (scopeChanged || branchMetadataChanged || gitFlowMetadataChanged) {
-      throw new Error('Plan scope and GitFlow metadata are immutable after draft status.');
+      throw new Error('Plan scope and Git workflow metadata are immutable after draft status.');
     }
   }
 

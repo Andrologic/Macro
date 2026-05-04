@@ -70,7 +70,7 @@ export const presentWorktreeError = (
     return {
       title: 'Macro could not find the base branch',
       body: 'This task needs a base branch before its worktree can be created.',
-      nextStep: 'Create the branch or update the project GitFlow settings, then retry.',
+      nextStep: 'Create the branch or update the project Git workflow settings, then retry.',
       severity: 'warning',
       technicalDetails: stringifyDetails(normalized.details) || message,
       projectId: options.projectId ?? null,
@@ -102,7 +102,7 @@ export const presentReadOnlyProjectIssue = (params: {
   nextStep:
     params.reason === 'missing_git'
       ? 'Initialize Git for this project, then enable editable work.'
-      : 'Open project settings and make sure GitFlow is ready.',
+      : 'Open project settings and make sure the Git workflow is ready.',
   severity: 'warning',
   technicalDetails: params.reason || null,
   projectId: params.projectId ?? null,

@@ -15,6 +15,12 @@ import {
 import { cn } from '../../utils/cn';
 import { ProjectGitFlowConfirmationModal } from './ProjectGitFlowConfirmationModal';
 import {
+  getProjectSetupDevelopExplanation,
+  getProjectSetupMainlineExplanation,
+  getProjectSetupPromptCancelLabel,
+  getProjectSetupPromptConfirmLabel,
+  getProjectSetupPromptDescription,
+  getProjectSetupPromptTitle,
   hasProjectSetupRisks,
 } from './projectGitSetup';
 import {
@@ -571,47 +577,10 @@ export const ProjectModal: React.FC = () => {
       {activeProjectSetupPrompt && (
         <ConfirmPromptModal
           isOpen
-          title={
-            activeProjectSetupPrompt.kind === 'init_git'
-              ? t('project.initGitTitle', 'Initialize Git?')
-              : activeProjectSetupPrompt.kind === 'initial_commit'
-                ? t('project.initialCommitTitle', 'Create the initial commit?')
-                : t('project.createDevelopTitle', 'Create develop?')
-          }
-          description={
-            activeProjectSetupPrompt.kind === 'init_git'
-              ? t(
-                  'project.initGitDescription',
-                  'This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the subproject will be added as read-only.'
-                )
-              : activeProjectSetupPrompt.kind === 'initial_commit'
-                ? t(
-                    'project.initialCommitDescription',
-                    'This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the subproject will be added as read-only.'
-                  )
-                : t(
-                    'project.createDevelopDescription',
-                    'This repository can work in mainline mode: Macro will use {{mainBranch}} as both the main branch and the development target. Create develop only if this project intentionally uses a separate integration branch.',
-                    {
-                      mainBranch: activeProjectSetupPrompt.mainBranch || 'main',
-                      branchName: activeProjectSetupPrompt.mainBranch || 'main',
-                    }
-                  )
-          }
-          confirmLabel={
-            activeProjectSetupPrompt.kind === 'create_develop'
-              ? t('project.createDevelopConfirm', 'Create develop')
-              : activeProjectSetupPrompt.kind === 'initial_commit'
-                ? t('project.createInitialCommitConfirm', 'Create commit')
-                : t('project.initGitConfirm', 'Initialize Git')
-          }
-          cancelLabel={
-            activeProjectSetupPrompt.kind === 'create_develop'
-              ? t('project.createDevelopDecline', 'Keep {{branchName}} only', {
-                  branchName: activeProjectSetupPrompt.mainBranch || 'main',
-                })
-              : t('project.keepReadOnly', 'Keep read-only')
-          }
+          title={getProjectSetupPromptTitle(t, activeProjectSetupPrompt)}
+          description={getProjectSetupPromptDescription(t, activeProjectSetupPrompt, 'project_creation')}
+          confirmLabel={getProjectSetupPromptConfirmLabel(t, activeProjectSetupPrompt)}
+          cancelLabel={getProjectSetupPromptCancelLabel(t, activeProjectSetupPrompt)}
           isSubmitting={isSubmitting}
           onCancel={() => {
             void handleDeclineProjectSetupPrompt();
@@ -628,22 +597,14 @@ export const ProjectModal: React.FC = () => {
                     {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
                   </span>
                   {' - '}
-                  {t(
-                    'project.mainlineModeExplanation',
-                    'Keep {{branchName}} as the development target. Feature work merges back into {{branchName}}, and urgent fixes can use hotfix plans.',
-                    { branchName: activeProjectSetupPrompt.mainBranch || 'main' }
-                  )}
+                  {getProjectSetupMainlineExplanation(t, activeProjectSetupPrompt)}
                 </div>
                 <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
                   <span className="font-semibold text-foreground">
                     {t('project.developModeLabel', 'Separate develop')}
                   </span>
                   {' - '}
-                  {t(
-                    'project.developModeExplanation',
-                    'Create develop from {{branchName}} for repositories that still use a classic Git Flow integration branch.',
-                    { branchName: activeProjectSetupPrompt.mainBranch || 'main' }
-                  )}
+                  {getProjectSetupDevelopExplanation(t, activeProjectSetupPrompt)}
                 </div>
               </div>
             )}

@@ -129,7 +129,7 @@ Etat a consolider :
 ### 4.5 Git, plans et metadata
 
 Etat attendu :
-- git flow stable autour des plans, branches de feature, branche de base et `@macro`
+- workflow Git stable autour des plans, branches de feature, branche de base et `@macro`
 - worktrees fiables
 - metadata auditables et synchronisables
 - conflicts metadata et merge conflicts techniques traites proprement
@@ -231,7 +231,7 @@ Objectif :
 
 Chantiers :
 - finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
-- durcir le git flow de plan
+- durcir le workflow Git de plan
 - fiabiliser les transitions de taches
 - finaliser l'UX de review et d'edition ciblee
 - stabiliser la lisibilite du multi-plan cote Implement dans la review et la finalisation

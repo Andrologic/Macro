@@ -129,7 +129,7 @@ const resolveBranchSourceRef = (
   if (remote.has(`origin/${targetBranchName}`)) return `origin/${targetBranchName}`;
 
   throw new Error(
-    `Missing target branch "${targetBranchName}". Create or fetch it before validating this plan${projectLabel ? `, or update GitFlow settings for ${projectLabel}` : ''}.`
+    `Missing target branch "${targetBranchName}". Create or fetch it before validating this plan${projectLabel ? `, or update Git workflow settings for ${projectLabel}` : ''}.`
   );
 };
 

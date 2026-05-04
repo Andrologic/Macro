@@ -69,7 +69,7 @@ La couche services frontend encapsule les acces aux sources de donnees et aux ou
 
 Elle fournit :
 - une abstraction de provider (`mock`, `ipc`, `remote`)
-- des services specialises pour les plans, le git flow architecte, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
+- des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
 
 Elle a pour role d'isoler le reste de l'interface des details du transport.
 
@@ -699,7 +699,7 @@ Les preferences utilisateur sont reparties entre :
 - persistence locale frontend
 - settings backend
 - configurations providers et modeles
-- regles de git flow et d'automatisation
+- regles de workflow Git et d'automatisation
 
 ---
 
