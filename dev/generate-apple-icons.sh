@@ -8,7 +8,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_SVG="$REPO_ROOT/src/assets/logo.svg"
+SOURCE_SVG="$REPO_ROOT/public/logo.svg"
 ICONS_DIR="$REPO_ROOT/src-tauri/icons"
 IOS_DIR="$ICONS_DIR/ios"
 SWIFT_SCRIPT="$REPO_ROOT/dev/generate-apple-icons.swift"

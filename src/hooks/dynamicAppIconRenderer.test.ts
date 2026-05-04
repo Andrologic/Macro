@@ -62,7 +62,7 @@ describe('dynamicAppIconRenderer', () => {
     );
 
     expect(svg).toContain('d="M21 12L4 4C6 9 6 15 4 20L21 12Z"');
-    expect(svg).toContain('stroke-width:2.4375');
+    expect(svg).toContain('stroke-width:3');
     expect(svg).toContain('transform="rotate(-90 12 12)"');
     expect(svg).not.toContain('#3B82F6');
     expect(svg).not.toContain('#1E40AF');
