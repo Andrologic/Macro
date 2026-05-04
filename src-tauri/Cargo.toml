@@ -1,8 +1,9 @@
 [package]
 name = "macro"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 description = "A Tauri App"
 authors = ["you"]
+license = "AGPL-3.0-or-later"
 edition = "2021"
 default-run = "macro"
 
