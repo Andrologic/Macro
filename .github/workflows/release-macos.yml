@@ -134,18 +134,15 @@ jobs:
           generateReleaseNotes: true
           args: --target aarch64-apple-darwin --bundles app,dmg
 
-      - name: Verify bundle architecture and code signing
+      - name: Verify bundle contents, architecture, and code signing
         run: |
           APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -name '*.app' -maxdepth 3 | head -n 1)"
           DMG_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -name '*.dmg' -maxdepth 3 | head -n 1)"
-          AI_RUNTIME_PATH="$(find "$APP_PATH/Contents/MacOS" -name 'macro-ai-runtime*' | head -n 1)"
 
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
-          test -n "$AI_RUNTIME_PATH"
 
-          file "$AI_RUNTIME_PATH"
-          codesign --verify --deep --strict "$APP_PATH"
+          bun ./dev/verify-macos-bundle.mjs
           spctl --assess --type execute "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
           xcrun stapler validate "$DMG_PATH"
