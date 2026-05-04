@@ -1,9 +1,10 @@
 [package]
 name = "macro"
-version = "0.1.0-rc.5"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.0-rc.6"
+description = "Local-first desktop environment for agentic software work."
+authors = ["Andrologic"]
 license = "AGPL-3.0-or-later"
+repository = "https://github.com/Andrologic/Macro"
 edition = "2021"
 default-run = "macro"
 

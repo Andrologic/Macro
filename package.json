@@ -1,10 +1,29 @@
 {
   "name": "macro",
-  "private": true,
-  "version": "0.1.0-rc.5",
+  "version": "0.1.0-rc.6",
+  "description": "Local-first desktop environment for agentic software work.",
+  "author": "Andrologic",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "packageManager": "bun@1.1.42",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Andrologic/Macro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Andrologic/Macro/issues"
+  },
+  "homepage": "https://github.com/Andrologic/Macro#readme",
+  "keywords": [
+    "agentic-development",
+    "ai",
+    "desktop",
+    "git",
+    "local-first",
+    "react",
+    "tauri",
+    "typescript"
+  ],
   "engines": {
     "bun": ">=1.1.0"
   },
@@ -75,7 +94,7 @@
     "katex": "0.16.28",
     "lexical": "0.40.0",
     "lucide-react": "^0.563.0",
-    "mermaid": "11.12.2",
+    "mermaid": "11.14.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-i18next": "^16.5.4",
@@ -94,22 +113,33 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
-    "@eslint/js": "^9.38.0",
+    "@eslint/js": "9.39.4",
     "@tauri-apps/cli": "2.10.0",
     "@types/react": "^19.2.9",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.2",
-    "autoprefixer": "^10.4.23",
-    "bun-types": "latest",
-    "eslint": "^9.38.0",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "@vitejs/plugin-react": "5.2.0",
+    "autoprefixer": "10.5.0",
+    "bun-types": "1.3.13",
+    "eslint": "9.39.4",
+    "eslint-plugin-react-hooks": "7.1.1",
     "globals": "^16.5.0",
-    "happy-dom": "^15.11.7",
-    "postcss": "^8.5.6",
+    "happy-dom": "20.9.0",
+    "postcss": "8.5.14",
     "tailwindcss": "3.4.0",
-    "typescript-eslint": "^8.46.4",
+    "typescript-eslint": "8.59.2",
     "typescript": "~5.9.3",
-    "vite": "^7.3.1"
+    "vite": "7.3.2"
+  },
+  "overrides": {
+    "brace-expansion": "1.1.13",
+    "dompurify": "3.4.2",
+    "flatted": "3.4.2",
+    "lodash-es": "4.18.1",
+    "picomatch": "4.0.4",
+    "postcss": "8.5.14",
+    "rollup": "4.60.3",
+    "uuid": "14.0.0",
+    "yaml": "2.8.4"
   },
   "trustedDependencies": [
     "@tauri-apps/cli",
