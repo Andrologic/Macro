@@ -18,6 +18,7 @@ bun-debug.log*
 node_modules
 dist
 dist-ssr
+output/
 *.local
 
 # Bun
