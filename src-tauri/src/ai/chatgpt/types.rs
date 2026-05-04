@@ -134,6 +134,15 @@ pub struct AiStreamErrorEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AiStreamTimelineEvent {
+    pub request_id: String,
+    pub provider_id: String,
+    pub provider_type: String,
+    pub phase: String,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiAuthStartedEvent {
     pub request_id: String,
     pub provider_id: String,

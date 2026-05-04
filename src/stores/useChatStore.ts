@@ -26,6 +26,7 @@ import {
   sendChatNonStreaming,
   type StreamCompletionResult,
   type StreamMessage,
+  type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
@@ -6244,6 +6245,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
               await handleAssistantStreamError(error);
             })();
           },
+          onTimeline: (event) => {
+            devLogger.info("Provider stream timeline", {
+              requestId: event.request_id,
+              providerId: event.provider_id,
+              providerType: event.provider_type,
+              phase: event.phase,
+              elapsedMs: event.elapsed_ms,
+            });
+          },
           onToolCall: (toolName, args, toolCallId) => {
             return handleToolCall(
               params.conversationId,
@@ -8881,10 +8891,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } = payload;
       let activeSessionId: string | null = null;
       let assistantMessageId: string | null = null;
+      const sendTimelineStartedAt = Date.now();
+      const emitSendTimeline = (phase: StreamTimelinePhase | string, context?: Record<string, unknown>) => {
+        devLogger.info("Provider stream timeline", {
+          requestId: activeSessionId,
+          phase,
+          elapsedMs: Date.now() - sendTimelineStartedAt,
+          ...context,
+        });
+      };
 
       try {
         assertConversationRuntimeAvailableForSend(conversationId);
         activeSessionId = createConversationSessionId();
+        emitSendTimeline("send_requested", { conversationId });
         setConversationRuntime(
           conversationId,
           {
@@ -8897,6 +8917,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           { globalLastError: null },
         );
         await ensureMessagesLoadedForConversation(conversationId);
+        emitSendTimeline("messages_ready", { conversationId });
         const previousConversationId = conversationId;
         const hasPendingArchitectConversation =
           pendingArchitectConversationDetailsById.has(conversationId);
@@ -9099,7 +9120,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerConfig: providerConfigForUse,
             internalAgentProfile,
           });
+          emitSendTimeline("compaction_done", {
+            conversationId,
+            providerId: selectedProviderId,
+            providerType: providerConfigForUse.providerType,
+          });
 
+          emitSendTimeline("provider_stream_start_requested", {
+            conversationId,
+            providerId: selectedProviderId,
+            providerType: providerConfigForUse.providerType,
+          });
           startAssistantStream({
             sessionId: activeSessionId,
             assistantMessage,
