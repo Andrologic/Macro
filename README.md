@@ -1,15 +1,21 @@
 # Macro
 
-A modern, high-performance desktop application built with React, TypeScript, Tauri, and Bun.
+Macro is a local-first desktop environment for agentic software work. It helps developers plan changes in Architect mode, execute implementation tasks with AI assistance, review generated changes, and keep Git workflows auditable.
 
 ## Features
 
-- ⚡ **Lightning Fast**: Built with Bun for optimal performance
-- 🎨 **Beautiful UI**: Modern interface with Tailwind CSS
-- 🔒 **Secure**: Rust-powered backend with Tauri
-- 🚀 **Optimized**: Code splitting and lazy loading for fast startup
-- 🌙 **Theming**: Multiple themes with instant switching
-- 💻 **Cross-Platform**: Windows, macOS, and Linux support
+- **Architect mode**: turn an intent into scoped needs, strategy, and executable plans.
+- **Implement mode**: run AI-assisted tasks, inspect diffs, resolve blockers, and commit work.
+- **Chat mode**: keep lightweight local conversations with configurable tools and providers.
+- **Git-aware workflows**: coordinate branches, worktrees, metadata, reviews, and plan finalization.
+- **Local desktop backend**: Rust/Tauri services for filesystem, Git, terminal, provider, and workspace operations.
+- **Provider flexibility**: configure linked and OpenAI-compatible providers for local development.
+
+## Safety Notice
+
+Macro is intentionally powerful. At the user's direction it can execute terminal commands, modify files, interact with Git repositories, call configured AI providers, and store provider credentials in the operating system keyring. Review tool approvals, diffs, and provider settings carefully before using Macro on sensitive repositories.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and security model notes.
 
 ## Prerequisites
 
@@ -328,11 +334,9 @@ Available endpoints (initial implementation):
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Issues and pull requests are welcome, with discussion requested before larger changes to security, architecture, Git/worktree behavior, storage, AI provider flows, or licensing.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. See [SUPPORT.md](SUPPORT.md) for supported 0.1 workflows, [CHANGELOG.md](CHANGELOG.md) for release notes, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
 ## License
 
