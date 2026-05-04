@@ -64,11 +64,11 @@
     <path
        d="M21 12L4 4C6 9 6 15 4 20L21 12Z"
        stroke="url(#blueGradient)"
-       stroke-width="1.8"
+       stroke-width="3"
        stroke-linecap="round"
        stroke-linejoin="round"
        id="path2"
-       style="fill:none;stroke-width:2.4375;stroke-dasharray:none;stroke-linejoin:round;stroke-linecap:round;paint-order:normal" />
+       style="fill:none;stroke-width:3;stroke-dasharray:none;stroke-linejoin:round;stroke-linecap:round;paint-order:normal" />
     <!-- Gill Detail -->
   </g>
 </svg>
