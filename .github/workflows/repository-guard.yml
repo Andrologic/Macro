@@ -1,0 +1,21 @@
+name: Repository Guard
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-generated-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Reject generated binaries
+        run: bun dev/check-git-binaries.mjs

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+bun dev/check-git-binaries.mjs --staged
