@@ -4,7 +4,7 @@ use super::types::{
     AiStreamDoneEvent, AiStreamErrorEvent, AiToolCall, AiToolCallFunction, ChatGptResponsesRequest,
     ResponsesContentItem, ResponsesMessageItem, DEFAULT_ORIGINATOR,
 };
-use crate::ai::AiState;
+use crate::ai::{emit_timeline, AiState, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets::ChatGptSecret;
@@ -13,6 +13,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Default, Clone)]
@@ -42,12 +43,22 @@ pub async fn stream_chat(
 
     let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
+    let task_started_at = Instant::now();
 
     let handle = tokio::spawn(async move {
         let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
         if let Err(message) = result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "chatgpt",
+                task_started_at,
+                "error",
+            );
             let _ = app_for_task.emit(
                 "ai:error",
                 AiStreamErrorEvent {
@@ -71,6 +82,15 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     request: AiChatRequest,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
+    let timeline = ProviderTimeline::new(
+        &app_handle,
+        &request.request_id,
+        &request.provider_id,
+        "chatgpt",
+        started_at,
+    );
+    timeline.emit("backend_task_started");
     let provider = repository::get_provider_config(&pool, &request.provider_id)
         .await
         .map_err(|error| error.to_string())?
@@ -78,11 +98,18 @@ async fn stream_chat_inner(
     let body = build_responses_request(&request)?;
     let client = reqwest::Client::new();
 
+    let secret_started_at = Instant::now();
     let mut secret = ensure_fresh_secret(&pool, &request.provider_id).await?;
+    if secret_started_at.elapsed().as_millis() > 50 {
+        timeline.emit("auth_ready");
+    }
+    timeline.emit("provider_request_sent");
     let mut response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
 
     if response.status() == StatusCode::UNAUTHORIZED {
         secret = force_refresh_secret(&pool, &request.provider_id, &secret).await?;
+        timeline.emit("auth_refreshed");
+        timeline.emit("provider_request_sent");
         response = send_chatgpt_request(&client, &provider, &request, &secret, &body).await?;
     }
 
@@ -96,6 +123,8 @@ async fn stream_chat_inner(
     let mut buffer = String::new();
     let mut saw_completed = false;
     let mut completion_accumulator = StreamingCompletionAccumulator::default();
+    let mut emitted_first_provider_event = false;
+    let mut emitted_first_token = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| format!("Failed to read ChatGPT stream: {}", error))?;
@@ -108,11 +137,17 @@ async fn stream_chat_inner(
         while let Some(split_index) = buffer.find("\n\n") {
             let event = buffer[..split_index].to_string();
             buffer = buffer[split_index + 2..].to_string();
+            if !emitted_first_provider_event {
+                emitted_first_provider_event = true;
+                timeline.emit("first_provider_event");
+            }
             if process_sse_event(
                 &app_handle,
-                &request.request_id,
+                &request,
                 &event,
                 &mut completion_accumulator,
+                started_at,
+                &mut emitted_first_token,
             )? {
                 saw_completed = true;
             }
@@ -120,16 +155,22 @@ async fn stream_chat_inner(
     }
 
     if !buffer.trim().is_empty() {
+        if !emitted_first_provider_event {
+            timeline.emit("first_provider_event");
+        }
         let completed = process_sse_event(
             &app_handle,
-            &request.request_id,
+            &request,
             &buffer,
             &mut completion_accumulator,
+            started_at,
+            &mut emitted_first_token,
         )?;
         saw_completed |= completed;
     }
 
     if !saw_completed {
+        timeline.emit("done");
         let provider_input_items = optional_output_items(
             normalize_provider_input_items_for_replay(&completion_accumulator.output_items)?,
         );
@@ -195,9 +236,11 @@ async fn send_chatgpt_request(
 
 fn process_sse_event(
     app_handle: &AppHandle,
-    request_id: &str,
+    request: &AiChatRequest,
     raw_event: &str,
     completion_accumulator: &mut StreamingCompletionAccumulator,
+    started_at: Instant,
+    emitted_first_token: &mut bool,
 ) -> Result<bool, String> {
     let mut payload = String::new();
     for line in raw_event.lines() {
@@ -227,11 +270,22 @@ fn process_sse_event(
     match event_type {
         "response.output_text.delta" => {
             if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                if !*emitted_first_token {
+                    *emitted_first_token = true;
+                    emit_timeline(
+                        app_handle,
+                        &request.request_id,
+                        &request.provider_id,
+                        "chatgpt",
+                        started_at,
+                        "first_token",
+                    );
+                }
                 app_handle
                     .emit(
                         "ai:stream",
                         AiStreamChunkEvent {
-                            request_id: request_id.to_string(),
+                            request_id: request.request_id.to_string(),
                             delta: delta.to_string(),
                         },
                     )
@@ -310,11 +364,19 @@ fn process_sse_event(
                 .and_then(optional_output_items);
             let response_id =
                 extract_response_id(&value).or_else(|| completion_accumulator.response_id.clone());
+            emit_timeline(
+                app_handle,
+                &request.request_id,
+                &request.provider_id,
+                "chatgpt",
+                started_at,
+                "done",
+            );
             app_handle
                 .emit(
                     "ai:done",
                     AiStreamDoneEvent {
-                        request_id: request_id.to_string(),
+                        request_id: request.request_id.to_string(),
                         output_text,
                         tool_calls,
                         response_id,

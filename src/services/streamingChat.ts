@@ -193,6 +193,28 @@ export interface StreamCompletionResult {
 
 export type StreamCompletionReason = ChatCompletionReason;
 
+export type StreamTimelinePhase =
+  | 'send_requested'
+  | 'messages_ready'
+  | 'compaction_done'
+  | 'provider_stream_start_requested'
+  | 'backend_task_started'
+  | 'provider_request_sent'
+  | 'auth_ready'
+  | 'auth_refreshed'
+  | 'first_provider_event'
+  | 'first_token'
+  | 'done'
+  | 'error';
+
+export interface StreamTimelineEvent {
+  request_id: string;
+  provider_id: string;
+  provider_type: string;
+  phase: StreamTimelinePhase | string;
+  elapsed_ms: number;
+}
+
 type ProviderRuntimeErrorKind =
   | 'reasoning_replay_required'
   | 'unsupported_reasoning'
@@ -281,6 +303,7 @@ export interface StreamingChatOptions {
   onToken: (token: string) => void;
   onComplete: (result: StreamCompletionResult) => void;
   onError: (error: Error) => void;
+  onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
   signal?: AbortSignal;
   // Tool calling options
@@ -1255,6 +1278,37 @@ const createStreamingRequestId = () => {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const emitStreamTimeline = (
+  options: Pick<
+    StreamingChatOptions,
+    'providerId' | 'providerType' | 'onTimeline'
+  >,
+  event: StreamTimelineEvent
+) => {
+  if (options.onTimeline) {
+    try {
+      options.onTimeline(event);
+    } catch (error) {
+      devLogger.warn('Provider stream timeline callback failed', {
+        error,
+        providerId: options.providerId,
+        providerType: options.providerType,
+        requestId: event.request_id,
+        phase: event.phase,
+      });
+    }
+    return;
+  }
+
+  devLogger.info('Provider stream timeline', {
+    providerId: options.providerId,
+    providerType: options.providerType,
+    requestId: event.request_id,
+    phase: event.phase,
+    elapsedMs: event.elapsed_ms,
+  });
+};
+
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
@@ -1869,6 +1923,7 @@ const streamNativeTurnViaTauri = async (params: {
   focusedProjectId?: string | null;
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
+  onTimeline?: StreamingChatOptions['onTimeline'];
   onToolTrace?: (toolTrace: ToolTrace) => void;
   onToolCall?: StreamingChatOptions['onToolCall'];
   onToolResult?: StreamingChatOptions['onToolResult'];
@@ -1919,6 +1974,16 @@ const streamNativeTurnViaTauri = async (params: {
     void (async () => {
       try {
         const unlisteners = await Promise.all([
+          listen<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            params.onTimeline?.({
+              request_id: event.payload.request_id,
+              provider_id: event.payload.provider_id,
+              provider_type: event.payload.provider_type,
+              phase: event.payload.phase,
+              elapsed_ms: event.payload.elapsed_ms,
+            });
+          }),
           listen<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
             if (event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
@@ -2190,6 +2255,7 @@ const streamChatViaNativeToolCallingProvider = async (
         focusedProjectId: options.focusedProjectId,
         copilotSendTimeoutMs: options.copilotSendTimeoutMs,
         signal: options.signal,
+        onTimeline: (event) => emitStreamTimeline(options, event),
         onDelta: (delta) => {
           streamedTurnContent += delta;
           if (!shouldBufferTurnOutput) {
@@ -2699,6 +2765,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   } = options;
   const sessionId = getStreamSessionId(options.sessionId);
   const activeResources = getOrCreateActiveStreamResources(sessionId);
+  const genericRequestId = createStreamingRequestId();
+  const genericTimelineStartedAt = Date.now();
+  const emitGenericTimeline = (phase: StreamTimelinePhase | string) =>
+    emitStreamTimeline(options, {
+      request_id: genericRequestId,
+      provider_id: providerId,
+      provider_type: providerType,
+      phase,
+      elapsed_ms: Date.now() - genericTimelineStartedAt,
+    });
 
   const allowedTools = new Set(allowedToolIds ?? []);
   const streamAccumulator = createStreamAccumulator({
@@ -2766,6 +2842,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
   const architectToolNamesUsed = new Set<string>();
   let consecutiveStreamRetryCount = 0;
+  let emittedFirstProviderEvent = false;
+  let emittedFirstToken = false;
 
   const completeGenericStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -2801,6 +2879,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   try {
     while (maxTurns === null || turnCount < maxTurns) {
       if (options.signal?.aborted) {
+        emitGenericTimeline('done');
         completeGenericStream();
         return;
       }
@@ -2815,6 +2894,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
 
         try {
+          emitGenericTimeline('provider_request_sent');
           const candidateResponse = await fetchWithTimeout(
             `${baseUrl}/chat/completions`,
             {
@@ -2833,6 +2913,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           response = candidateResponse;
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
+            emitGenericTimeline('done');
             onComplete({
               ...streamAccumulator.buildResult(),
               providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
@@ -2892,6 +2973,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (!response.body) {
         throw new Error('No response body');
       }
+      if (!emittedFirstProviderEvent) {
+        emittedFirstProviderEvent = true;
+        emitGenericTimeline('first_provider_event');
+      }
 
       // Store references for cancellation
       activeResources.stream = response.body;
@@ -2909,6 +2994,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const appendTurnChunk = (chunk: string) => {
         if (!chunk) return;
         turnContent += chunk;
+        if (!emittedFirstToken) {
+          emittedFirstToken = true;
+          emitGenericTimeline('first_token');
+        }
         if (!shouldBufferTurnOutput) {
           streamAccumulator.appendProviderDelta(chunk);
         }
@@ -3039,6 +3128,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             ...streamAccumulator.buildResult(),
             providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
           });
+          emitGenericTimeline('done');
           return;
         }
 
@@ -3414,6 +3504,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         if (interruptResolution) {
           streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);
           onComplete(streamAccumulator.buildResult());
+          emitGenericTimeline('done');
           return;
         }
 
@@ -3507,11 +3598,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (maxTurns !== null && validToolCalls.length > 0 && turnCount >= maxTurns) {
         streamAccumulator.markRunningToolTracesDone();
         completeGenericStream('tool_turn_limit');
+        emitGenericTimeline('done');
         return;
       }
     }
 
     completeGenericStream();
+    emitGenericTimeline('done');
   } catch (error) {
     // Cleanup on error
     activeResources.reader = null;
@@ -3528,10 +3621,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
     if (isLocalProvider && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('connection'))) {
       const providerName = options.providerType === 'lmstudio' ? 'LM Studio' : 'Ollama';
+      emitGenericTimeline('error');
       onError(new Error(`Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`));
       return;
     }
 
+    emitGenericTimeline('error');
     onError(err);
   } finally {
     // Always cleanup references to prevent memory leaks

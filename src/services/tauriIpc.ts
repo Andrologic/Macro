@@ -607,6 +607,14 @@ export interface AiStreamErrorEvent {
   message: string;
 }
 
+export interface AiStreamTimelineEvent {
+  request_id: string;
+  provider_id: string;
+  provider_type: string;
+  phase: string;
+  elapsed_ms: number;
+}
+
 export interface AiAuthStartedEvent {
   request_id: string;
   provider_id: string;

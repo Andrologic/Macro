@@ -2,7 +2,7 @@ use super::chatgpt::types::{
     AiChatMessageContent, AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
     AiToolCall, AiToolCallFunction,
 };
-use crate::ai::AiState;
+use crate::ai::{emit_timeline, AiState, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets;
@@ -10,7 +10,7 @@ use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, timeout};
 
@@ -36,12 +36,22 @@ pub async fn stream_chat(
 
     let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
+    let task_started_at = Instant::now();
 
     let handle = tokio::spawn(async move {
         let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
         if let Err(message) = result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "openai_compatible",
+                task_started_at,
+                "error",
+            );
             let _ = app_for_task.emit(
                 "ai:error",
                 AiStreamErrorEvent {
@@ -65,18 +75,33 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     request: AiChatRequest,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
     let provider = repository::get_provider_config(&pool, &request.provider_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    let provider_type = provider.provider_type.clone();
+    let timeline = ProviderTimeline::new(
+        &app_handle,
+        &request.request_id,
+        &request.provider_id,
+        &provider_type,
+        started_at,
+    );
+    timeline.emit("backend_task_started");
+    let secret_started_at = Instant::now();
     let api_key = secrets::get_api_key(&request.provider_id)
         .map_err(|error| format!("Failed to read provider API key: {}", error))?
         .unwrap_or_default();
+    if secret_started_at.elapsed().as_millis() > 50 {
+        timeline.emit("auth_ready");
+    }
     let body = build_chat_completions_request(&request, &provider)?;
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?;
+    timeline.emit("provider_request_sent");
     let response =
         send_chat_completions_request(&client, &provider, &request, &api_key, &body).await?;
 
@@ -89,6 +114,8 @@ async fn stream_chat_inner(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut accumulator = ChatCompletionAccumulator::default();
+    let mut emitted_first_provider_event = false;
+    let mut emitted_first_token = false;
 
     loop {
         let chunk = match timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
@@ -111,12 +138,35 @@ async fn stream_chat_inner(
         while let Some(split_index) = buffer.find("\n\n") {
             let event = buffer[..split_index].to_string();
             buffer = buffer[split_index + 2..].to_string();
-            process_sse_event(&app_handle, &request.request_id, &event, &mut accumulator)?;
+            if !emitted_first_provider_event {
+                emitted_first_provider_event = true;
+                timeline.emit("first_provider_event");
+            }
+            process_sse_event(
+                &app_handle,
+                &request,
+                &provider_type,
+                started_at,
+                &mut emitted_first_token,
+                &event,
+                &mut accumulator,
+            )?;
         }
     }
 
     if !buffer.trim().is_empty() {
-        process_sse_event(&app_handle, &request.request_id, &buffer, &mut accumulator)?;
+        if !emitted_first_provider_event {
+            timeline.emit("first_provider_event");
+        }
+        process_sse_event(
+            &app_handle,
+            &request,
+            &provider_type,
+            started_at,
+            &mut emitted_first_token,
+            &buffer,
+            &mut accumulator,
+        )?;
     }
     if accumulator.is_reasoning {
         emit_delta(
@@ -128,11 +178,12 @@ async fn stream_chat_inner(
         accumulator.is_reasoning = false;
     }
 
+    timeline.emit("done");
     app_handle
         .emit(
             "ai:done",
             AiStreamDoneEvent {
-                request_id: request.request_id,
+                request_id: request.request_id.clone(),
                 output_text: accumulator.output_text,
                 tool_calls: normalize_tool_calls(accumulator.tool_calls),
                 response_id: None,
@@ -281,7 +332,10 @@ async fn send_chat_completions_request(
 
 fn process_sse_event(
     app_handle: &AppHandle,
-    request_id: &str,
+    request: &AiChatRequest,
+    provider_type: &str,
+    started_at: Instant,
+    emitted_first_token: &mut bool,
     raw_event: &str,
     accumulator: &mut ChatCompletionAccumulator,
 ) -> Result<(), String> {
@@ -313,10 +367,10 @@ fn process_sse_event(
         if !reasoning.is_empty() {
             accumulator.reasoning_summary.push_str(reasoning);
             if !accumulator.is_reasoning {
-                emit_delta(app_handle, request_id, "<think>", accumulator)?;
+                emit_delta(app_handle, &request.request_id, "<think>", accumulator)?;
                 accumulator.is_reasoning = true;
             }
-            emit_delta(app_handle, request_id, reasoning, accumulator)?;
+            emit_delta(app_handle, &request.request_id, reasoning, accumulator)?;
         }
     }
 
@@ -331,10 +385,17 @@ fn process_sse_event(
     if let Some(content) = delta.get("content").and_then(Value::as_str) {
         if !content.is_empty() {
             if accumulator.is_reasoning {
-                emit_delta(app_handle, request_id, "</think>", accumulator)?;
+                emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
                 accumulator.is_reasoning = false;
             }
-            emit_delta(app_handle, request_id, content, accumulator)?;
+            emit_first_token_timeline(
+                app_handle,
+                request,
+                provider_type,
+                started_at,
+                emitted_first_token,
+            );
+            emit_delta(app_handle, &request.request_id, content, accumulator)?;
             emitted_content_delta = true;
         }
     }
@@ -343,15 +404,43 @@ fn process_sse_event(
         if let Some(content) = message.get("content").and_then(Value::as_str) {
             if !content.is_empty() {
                 if accumulator.is_reasoning {
-                    emit_delta(app_handle, request_id, "</think>", accumulator)?;
+                    emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
                     accumulator.is_reasoning = false;
                 }
-                emit_delta(app_handle, request_id, content, accumulator)?;
+                emit_first_token_timeline(
+                    app_handle,
+                    request,
+                    provider_type,
+                    started_at,
+                    emitted_first_token,
+                );
+                emit_delta(app_handle, &request.request_id, content, accumulator)?;
             }
         }
     }
 
     Ok(())
+}
+
+fn emit_first_token_timeline(
+    app_handle: &AppHandle,
+    request: &AiChatRequest,
+    provider_type: &str,
+    started_at: Instant,
+    emitted_first_token: &mut bool,
+) {
+    if *emitted_first_token {
+        return;
+    }
+    *emitted_first_token = true;
+    emit_timeline(
+        app_handle,
+        &request.request_id,
+        &request.provider_id,
+        provider_type,
+        started_at,
+        "first_token",
+    );
 }
 
 fn extract_sse_data(raw_event: &str) -> Option<String> {

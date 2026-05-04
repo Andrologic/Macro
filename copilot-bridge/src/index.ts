@@ -1297,8 +1297,11 @@ const classifySdkError = (error: unknown): BridgeError => {
   return new BridgeError('copilot_error', message);
 };
 
-const withClient = async <T>(callback: (client: CopilotClient) => Promise<T>): Promise<T> => {
-  const probe = await probeCli();
+const withClient = async <T>(
+  callback: (client: CopilotClient) => Promise<T>,
+  existingProbe?: CliProbe
+): Promise<T> => {
+  const probe = existingProbe ?? await probeCli();
   if (!probe.installed || !probe.versionOk) {
     throw new BridgeError(
       probe.installed ? 'cli_version_unsupported' : 'cli_missing',
@@ -2202,14 +2205,14 @@ const handleHealth = async (): Promise<void> => {
     const result = await withClient(async (client) => {
       const auth = await client.getAuthStatus();
       return mapAuthStatus(probe, auth, null);
-    });
+    }, probe);
     emitJson(result);
   } catch (error) {
     const classified = classifySdkError(error);
     let auth: Awaited<ReturnType<CopilotClient['getAuthStatus']>> | null = null;
 
     try {
-      auth = await withClient((client) => client.getAuthStatus());
+      auth = await withClient((client) => client.getAuthStatus(), probe);
     } catch {
       auth = null;
     }
@@ -2248,7 +2251,7 @@ const handleModels = async (): Promise<void> => {
     }
 
     return client.listModels();
-  });
+  }, probe);
 
   emitJson({
     models: models.map((model) => ({
@@ -2349,7 +2352,7 @@ const handleSend = async (): Promise<void> => {
       } finally {
         await session.disconnect();
       }
-    });
+    }, probe);
 
     if (!eventState.finalContent && eventState.lastError) {
       throw classifySdkError(new Error(eventState.lastError));
