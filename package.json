@@ -23,7 +23,6 @@
     "tauri:build:dmg:mac-arm64:test": "APPLE_SIGNING_IDENTITY=\"-\" NODE_ENV=production bunx tauri build --target aarch64-apple-darwin --bundles app,dmg",
     "tauri:build:debug": "bunx tauri build --debug",
     "mac:verify-bundle": "bun ./dev/verify-macos-bundle.mjs",
-    "icons:apple": "bash ./dev/generate-apple-icons.sh",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
     "clean": "rm -rf dist node_modules src-tauri/target src-tauri/binaries bun.lockb .vite",
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",

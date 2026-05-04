@@ -1,5 +1,4 @@
 import { isTauriEnvironment } from '../utils/isTauriEnvironment';
-import type { MacosDynamicAppIconThemeSpec } from '../hooks/dynamicAppIconRenderer';
 
 type WindowSize = { width: number; height: number };
 type WindowPosition = { x: number; y: number };
@@ -150,12 +149,6 @@ export async function windowSetBackgroundColor(color: string): Promise<void> {
     }
     throw error;
   }
-}
-
-export async function windowSetMacosAppIconTheme(
-  spec: MacosDynamicAppIconThemeSpec
-): Promise<void> {
-  await invokeWindow<void>('set_macos_app_icon_theme', { spec });
 }
 
 export async function windowSetTheme(theme: 'light' | 'dark' | null): Promise<void> {

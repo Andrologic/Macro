@@ -1,6 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { CopilotStatusDto } from '../services/tauriIpc';
 
 let importCounter = 0;
+
+type TauriEventHandler = (event: { payload: unknown }) => void;
+
+const tauriEventHandlers = new Map<string, TauriEventHandler[]>();
+const listenMock = mock(async (eventName: string, handler: TauriEventHandler) => {
+  const handlers = tauriEventHandlers.get(eventName) ?? [];
+  handlers.push(handler);
+  tauriEventHandlers.set(eventName, handlers);
+
+  return () => {
+    const currentHandlers = tauriEventHandlers.get(eventName) ?? [];
+    tauriEventHandlers.set(
+      eventName,
+      currentHandlers.filter((entry) => entry !== handler)
+    );
+  };
+});
+
+const emitTauriEvent = (eventName: string, payload: unknown) => {
+  for (const handler of tauriEventHandlers.get(eventName) ?? []) {
+    handler({ payload });
+  }
+};
 
 const listProviderConfigsMock = mock(async () => [
   {
@@ -48,6 +72,24 @@ const getProviderSettingsMock = mock(async () => ({
 }));
 const updateProviderSettingsMock = mock(async () => undefined);
 const listProviderModelsMock = mock(async () => []);
+const aiDownloadCopilotRuntimeMock = mock(
+  async (_params: { requestId: string; providerId?: string }) => undefined
+);
+const aiCancelCopilotRuntimeDownloadMock = mock(async () => undefined);
+const aiGetCopilotStatusMock = mock(async (): Promise<CopilotStatusDto> => ({
+  ok: false,
+  runtime_source: 'none',
+  runtime_status: 'missing',
+  runtime_version: null,
+  min_cli_version: '1.0.12',
+  auth_status: 'error',
+  auth_source: null,
+  account_label: null,
+  status_message: null,
+  error_code: 'runtime_missing',
+  error_message: 'GitHub Copilot runtime is not installed.',
+}));
+const aiSyncProviderModelsMock = mock(async () => []);
 const fetchModelsFromProviderMock = mock(async () => ({
   success: true,
   models: [],
@@ -90,13 +132,51 @@ const loadPreferenceMock = mock(
 );
 const savePreferenceMock = mock(async () => undefined);
 
+const copilotProviderConfig = {
+  id: 'copilot',
+  name: 'GitHub Copilot',
+  providerType: 'copilot',
+  baseUrl: 'copilot://cli',
+  hasStoredApiKey: false,
+  apiKeyLoaded: false,
+  isEnabled: true,
+  isLocal: false,
+  authStatus: 'login_required' as const,
+  nativeToolCalling: true,
+};
+
+const copilotProvider = {
+  id: 'copilot',
+  name: 'GitHub Copilot',
+  status: 'offline' as const,
+  baseUrl: 'copilot://cli',
+  isLocal: false,
+  isEnabled: true,
+  nativeToolCalling: true,
+};
+
+const makeCopilotStatus = (overrides: Partial<CopilotStatusDto> = {}): CopilotStatusDto => ({
+  ok: false,
+  runtime_source: 'none',
+  runtime_status: 'missing',
+  runtime_version: null,
+  min_cli_version: '1.0.12',
+  auth_status: 'error',
+  auth_source: null,
+  account_label: null,
+  status_message: null,
+  error_code: 'runtime_missing',
+  error_message: 'GitHub Copilot runtime is not installed.',
+  ...overrides,
+});
+
 const loadProviderStore = async () => {
   const actualPreferences = await import(
     `../services/preferences.ts?provider-store-preferences-test=${importCounter + 1}`
   );
 
   mock.module('@tauri-apps/api/event', () => ({
-    listen: async () => () => undefined,
+    listen: listenMock,
   }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
@@ -116,6 +196,10 @@ const loadProviderStore = async () => {
     getProviderSettings: getProviderSettingsMock,
     updateProviderSettings: updateProviderSettingsMock,
     listProviderModels: listProviderModelsMock,
+    aiDownloadCopilotRuntime: aiDownloadCopilotRuntimeMock,
+    aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
+    aiGetCopilotStatus: aiGetCopilotStatusMock,
+    aiSyncProviderModels: aiSyncProviderModelsMock,
     getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
     listConversations: mock(async () => []),
     importMessages: mock(async () => []),
@@ -156,9 +240,21 @@ describe('useProviderStore secret resolution', () => {
     getProviderSettingsMock.mockClear();
     updateProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
+    listenMock.mockClear();
+    aiDownloadCopilotRuntimeMock.mockClear();
+    aiCancelCopilotRuntimeDownloadMock.mockClear();
+    aiGetCopilotStatusMock.mockClear();
+    aiSyncProviderModelsMock.mockClear();
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async (_params: { requestId: string; providerId?: string }) => undefined
+    );
+    aiCancelCopilotRuntimeDownloadMock.mockImplementation(async () => undefined);
+    aiGetCopilotStatusMock.mockImplementation(async () => makeCopilotStatus());
+    aiSyncProviderModelsMock.mockImplementation(async () => []);
     fetchModelsFromProviderMock.mockClear();
     probeModelsEndpointMock.mockClear();
     probeProviderReachabilityMock.mockClear();
+    tauriEventHandlers.clear();
   });
 
   afterEach(() => {
@@ -574,5 +670,129 @@ describe('useProviderStore secret resolution', () => {
         .getState()
         .getAvailableReasoningEfforts('provider-openai', 'gpt-5')
     ).toEqual([]);
+  });
+
+  it('applies fresh Copilot runtime status when download completes', async () => {
+    const providerStore = await loadProviderStore();
+    const completionStatus = makeCopilotStatus({
+      ok: false,
+      runtime_source: 'managed',
+      runtime_status: 'ready',
+      runtime_version: '1.0.12',
+      auth_status: 'login_required',
+      status_message: 'Connect GitHub Copilot to finish setup.',
+      error_code: null,
+      error_message: null,
+    });
+
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async ({ requestId, providerId }: { requestId: string; providerId?: string }) => {
+        emitTauriEvent('ai:copilot-download-complete', {
+          request_id: requestId,
+          provider_id: providerId ?? 'copilot',
+          runtime_version: '1.0.12',
+          runtime_source: 'managed',
+          status: completionStatus,
+        });
+      }
+    );
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [copilotProviderConfig],
+      providers: [copilotProvider],
+      copilotStatusByProvider: {
+        copilot: makeCopilotStatus(),
+      },
+      copilotDownloadStateByProvider: {},
+      providerReachabilityById: {},
+      authErrorsByProvider: {},
+      connectionStatus: {},
+    });
+
+    await providerStore.useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(state.copilotDownloadStateByProvider.copilot).toBeUndefined();
+    expect(state.copilotStatusByProvider.copilot).toMatchObject({
+      runtime_status: 'ready',
+      auth_status: 'login_required',
+      runtime_source: 'managed',
+    });
+    expect(state.providerConfigs[0]).toMatchObject({
+      id: 'copilot',
+      authStatus: 'login_required',
+    });
+    expect(state.connectionStatus.copilot).toBe('offline');
+    expect(aiGetCopilotStatusMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).not.toHaveBeenCalled();
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+  });
+
+  it('uses completion status instead of a stale Copilot status check and syncs models when connected', async () => {
+    const providerStore = await loadProviderStore();
+    const completionStatus = makeCopilotStatus({
+      ok: true,
+      runtime_source: 'managed',
+      runtime_status: 'ready',
+      runtime_version: '1.0.12',
+      auth_status: 'connected',
+      auth_source: 'oauth',
+      account_label: 'octo@example.com',
+      status_message: 'GitHub Copilot connected.',
+      error_code: null,
+      error_message: null,
+    });
+
+    aiGetCopilotStatusMock.mockImplementation(async () =>
+      makeCopilotStatus({
+        runtime_status: 'missing',
+        auth_status: 'error',
+        error_code: 'runtime_missing',
+      })
+    );
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async ({ requestId, providerId }: { requestId: string; providerId?: string }) => {
+        emitTauriEvent('ai:copilot-download-complete', {
+          request_id: requestId,
+          provider_id: providerId ?? 'copilot',
+          runtime_version: '1.0.12',
+          runtime_source: 'managed',
+          status: completionStatus,
+        });
+      }
+    );
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [copilotProviderConfig],
+      providers: [copilotProvider],
+      copilotStatusByProvider: {
+        copilot: makeCopilotStatus(),
+      },
+      copilotDownloadStateByProvider: {},
+      providerReachabilityById: {},
+      authErrorsByProvider: {},
+      connectionStatus: {},
+      modelsByProvider: {},
+    });
+
+    await providerStore.useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(aiGetCopilotStatusMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).toHaveBeenCalledWith('copilot');
+    expect(aiSyncProviderModelsMock).toHaveBeenCalledWith('copilot');
+    expect(state.copilotDownloadStateByProvider.copilot).toBeUndefined();
+    expect(state.copilotStatusByProvider.copilot).toMatchObject({
+      runtime_status: 'ready',
+      auth_status: 'connected',
+      account_label: 'octo@example.com',
+    });
+    expect(state.providerConfigs[0]).toMatchObject({
+      id: 'copilot',
+      authStatus: 'connected',
+      authSource: 'oauth',
+      accountLabel: 'octo@example.com',
+    });
+    expect(state.connectionStatus.copilot).toBe('online');
   });
 });

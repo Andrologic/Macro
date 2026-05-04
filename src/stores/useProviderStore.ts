@@ -507,6 +507,42 @@ const getCopilotAuthError = (
   return undefined;
 };
 
+const applyCopilotStatusPatch = (
+  state: ProviderStore,
+  providerId: string,
+  status: tauriIpc.CopilotStatusDto
+): Partial<ProviderStore> => {
+  const success = isCopilotConnected(status);
+  const message = getCopilotStatusMessage(status);
+  const authError = getCopilotAuthError(status);
+
+  return {
+    copilotStatusByProvider: {
+      ...state.copilotStatusByProvider,
+      [providerId]: status,
+    },
+    ...withReachabilityRecord(state, providerId, {
+      status: success ? 'reachable' : 'unreachable',
+      lastVerifiedBy: 'linked_auth',
+      lastError: success ? undefined : message,
+    }),
+    authErrorsByProvider: {
+      ...state.authErrorsByProvider,
+      [providerId]: authError,
+    },
+    providerConfigs: state.providerConfigs.map((provider) =>
+      provider.id === providerId
+        ? applyNativeToolCallingToProviderConfig({
+            ...provider,
+            authStatus: status.auth_status as ProviderConfig['authStatus'],
+            authSource: status.auth_source ?? undefined,
+            accountLabel: status.account_label ?? undefined,
+          })
+        : provider
+    ),
+  };
+};
+
 interface ProviderStore {
   // State
   providerConfigs: ProviderConfig[];
@@ -2062,8 +2098,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       });
     };
 
+    let completedStatus: tauriIpc.CopilotStatusDto | null = null;
+
     try {
-      await new Promise<void>((resolve, reject) => {
+      completedStatus = await new Promise<tauriIpc.CopilotStatusDto | null>((resolve, reject) => {
         let settled = false;
         let unlisteners: UnlistenFn[] = [];
 
@@ -2099,7 +2137,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                 'ai:copilot-download-complete',
                 (event) => {
                   if (event.payload.request_id !== requestId) return;
-                  finish(() => resolve(), unlisteners);
+                  const status = event.payload.status ?? null;
+                  if (status) {
+                    set((state) => ({
+                      ...applyCopilotStatusPatch(state, providerId, status),
+                      copilotDownloadStateByProvider: {
+                        ...state.copilotDownloadStateByProvider,
+                        [providerId]:
+                          state.copilotDownloadStateByProvider[providerId]?.requestId === requestId
+                            ? undefined
+                            : state.copilotDownloadStateByProvider[providerId],
+                      },
+                    }));
+                  }
+                  finish(() => resolve(status), unlisteners);
                 }
               ),
               listen<tauriIpc.CopilotDownloadErrorEvent>('ai:copilot-download-error', (event) => {
@@ -2149,7 +2200,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
     }
 
-    const result = await get().testConnection(providerId);
+    const result = completedStatus
+      ? {
+          success: isCopilotConnected(completedStatus),
+        }
+      : await get().testConnection(providerId);
     if (result.success) {
       await get().loadProviderModels(providerId);
       await get().scanModelsForProvider(providerId);
@@ -2406,32 +2461,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           const status = await tauriIpc.aiGetCopilotStatus(providerId);
           const success = isCopilotConnected(status);
           const message = getCopilotStatusMessage(status);
-          const authError = getCopilotAuthError(status);
 
           set((state) => ({
-            copilotStatusByProvider: {
-              ...state.copilotStatusByProvider,
-              [providerId]: status,
-            },
-            ...withReachabilityRecord(state, providerId, {
-              status: success ? 'reachable' : 'unreachable',
-              lastVerifiedBy: 'linked_auth',
-              lastError: success ? undefined : message,
-            }),
-            authErrorsByProvider: {
-              ...state.authErrorsByProvider,
-              [providerId]: authError,
-            },
-            providerConfigs: state.providerConfigs.map((provider) =>
-              provider.id === providerId
-                ? applyNativeToolCallingToProviderConfig({
-                    ...provider,
-                    authStatus: status.auth_status as ProviderConfig['authStatus'],
-                    authSource: status.auth_source ?? undefined,
-                    accountLabel: status.account_label ?? undefined,
-                  })
-                : provider
-            ),
+            ...applyCopilotStatusPatch(state, providerId, status),
           }));
 
           return {
