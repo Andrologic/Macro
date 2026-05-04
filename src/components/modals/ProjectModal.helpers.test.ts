@@ -5,6 +5,13 @@ import type {
   ProjectGroup,
 } from '../../types';
 import {
+  getProjectSetupDevelopExplanation,
+  getProjectSetupMainlineExplanation,
+  getProjectSetupPromptDescription,
+  getProjectSetupPromptTitle,
+  type ProjectSetupPromptDetails,
+} from './projectGitSetup';
+import {
   advanceProjectSetupPrompt,
   buildDeclinedProjectSetupPayload,
   buildPendingGitFlowConfirmation,
@@ -37,6 +44,16 @@ const buildProject = (overrides: Partial<Project>): Project => ({
   },
   ...overrides,
 });
+
+const testTranslate = (
+  _key: string,
+  fallback: string,
+  options?: Record<string, string>
+): string =>
+  Object.entries(options ?? {}).reduce(
+    (text, [key, value]) => text.replaceAll(`{{${key}}}`, value),
+    fallback
+  );
 
 const buildProjectGroup = (overrides: Partial<ProjectGroup>): ProjectGroup => ({
   id: 'group-id',
@@ -132,7 +149,7 @@ describe('ProjectModal helpers', () => {
     });
   });
 
-  it('prepares branch confirmation state from detected Git Flow metadata', () => {
+  it('prepares branch confirmation state from detected Git workflow metadata', () => {
     const detection = buildDetection({
       repoDetected: true,
       branches: ['release/v1'],
@@ -206,5 +223,25 @@ describe('ProjectModal helpers', () => {
       baseBranch: 'main',
     });
     expect(getAcceptedActionsAfterDecliningPrompt(promptState, prompt)).toEqual([]);
+  });
+
+  it('centralizes Git setup prompt wording around generic Git workflows', () => {
+    const prompt: ProjectSetupPromptDetails = {
+      kind: 'create_develop',
+      projectPath: 'C:/work/app',
+      mainBranch: 'trunk',
+      resolvedRepoRootPath: 'C:/work/app',
+      repoResolution: 'selected_folder',
+      initialCommitPreviewPaths: [],
+      initialCommitPreviewCount: 0,
+      initialCommitRiskFlags: [],
+    };
+
+    expect(getProjectSetupPromptTitle(testTranslate, prompt)).toBe('Create develop?');
+    expect(getProjectSetupPromptDescription(testTranslate, prompt, 'project_creation')).toContain(
+      'separate integration branch'
+    );
+    expect(getProjectSetupMainlineExplanation(testTranslate, prompt)).toContain('trunk');
+    expect(getProjectSetupDevelopExplanation(testTranslate, prompt)).not.toMatch(/Git[- ]Flow/i);
   });
 });

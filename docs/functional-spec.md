@@ -833,7 +833,7 @@ Macro doit exposer un controle utilisateur sur au moins les dimensions suivantes
 - fournisseurs et modeles IA
 - disponibilite des outils par mode
 - niveau d'automatisation de l'implementation
-- configuration du git flow
+- configuration du workflow Git
 - preferences d'apparence et d'interaction
 - raccourcis
 - prompts et cadrage du comportement systeme

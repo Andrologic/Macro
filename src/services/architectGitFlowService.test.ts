@@ -403,7 +403,7 @@ describe('architectGitFlowService', () => {
     });
   });
 
-  it('renders and provisions repo-specific branch names when projects use different git flow templates', async () => {
+  it('renders and provisions repo-specific branch names when projects use different Git workflow templates', async () => {
     projectPaths.set('web', {
       ...projectPaths.get('web')!,
       gitFlowSettings: createGitFlowSettings(),
@@ -625,7 +625,7 @@ describe('architectGitFlowService', () => {
     ]));
   });
 
-  it('does not provision GitFlow branches for context-only repositories', async () => {
+  it('does not provision Git workflow branches for context-only repositories', async () => {
     projectPaths.set('docs', {
       id: 'docs',
       name: 'Docs',

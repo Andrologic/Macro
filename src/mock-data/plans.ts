@@ -128,7 +128,7 @@ export const mockPlanEdges: PlanEdge[] = mockPlanNodes.flatMap((node) =>
   }))
 );
 
-// Mock Predicted Branches for git flow visualization
+// Mock Predicted Branches for Git workflow visualization
 export const mockPredictedBranches: PredictedBranch[] = [
   {
     id: 'branch-main',

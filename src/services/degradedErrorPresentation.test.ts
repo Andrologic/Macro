@@ -50,7 +50,7 @@ describe('degradedErrorPresentation', () => {
     expect(presentation.nextStep).toContain('Commit, stash, or discard');
   });
 
-  it('presents GitFlow conflicts as resolvable merge blockers', () => {
+  it('presents Git workflow conflicts as resolvable merge blockers', () => {
     const presentation = presentGitFlowBlockingIssue({
       blockingKind: 'merge_conflict',
       conflictFiles: ['src/main.ts'],

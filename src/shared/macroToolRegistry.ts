@@ -974,7 +974,7 @@ export const MACRO_TOOL_REGISTRY = [
         git_flow: {
           type: "object",
           description:
-            "Optional GitFlow metadata for typed Release/Hotfix/Bugfix draft plans.",
+            "Optional Git workflow metadata for typed Release/Hotfix/Bugfix draft plans.",
         },
         target_branch: {
           type: "string",
@@ -1024,7 +1024,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "plan_update",
-    "Update safe plan metadata such as display label/title alias or description. Draft plans can also update slug, scope, and GitFlow metadata. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
+    "Update safe plan metadata such as display label/title alias or description. Draft plans can also update slug, scope, and Git workflow metadata. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
     {
       type: "object",
       properties: {
@@ -1063,7 +1063,7 @@ export const MACRO_TOOL_REGISTRY = [
         git_flow: {
           type: "object",
           description:
-            "Draft-only GitFlow metadata for typed Release/Hotfix/Bugfix plans, including per-project versions and slugs.",
+            "Draft-only Git workflow metadata for typed Release/Hotfix/Bugfix plans, including per-project versions and slugs.",
         },
         target_branch: { type: "string" },
       },

@@ -223,7 +223,7 @@ describe('ProjectModal', () => {
     expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
   });
 
-  it('opens rare Git Flow confirmation and persists confirmed branch roles', async () => {
+  it('opens rare Git workflow confirmation and persists confirmed branch roles', async () => {
     previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
       buildDetection({
         repoDetected: true,

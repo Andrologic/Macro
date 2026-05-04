@@ -156,7 +156,7 @@ export const ArchitectGitFlowView: React.FC = () => {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
         <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.architectGitFlow.title', 'Architect Git Workflow')}
+          {t('settings.architectGitFlow.title', 'Git workflow')}
         </h4>
         <p className="text-xs text-muted-foreground">
           {t(
