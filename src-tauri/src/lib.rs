@@ -22,7 +22,7 @@ pub mod workspace;
 use ai::AiState;
 use app_quit_state::AppQuitState;
 use commands::DbPool;
-use core::{init_logging, init_process_environment, load_config};
+use core::{finalize_desktop_workspace_path, init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
 #[cfg(target_os = "macos")]
@@ -272,7 +272,7 @@ pub fn run() {
     let config = load_config().expect("Failed to load configuration");
 
     tracing::info!("Starting Macro application");
-    tracing::info!("Workspace path: {:?}", config.workspace_path);
+    tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -314,13 +314,35 @@ pub fn run() {
                 }
             }
 
+            let mut config = config;
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
+            let app_data_dir = app_handle.path().app_data_dir()?;
+            finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to resolve desktop workspace path: {}",
+                    error
+                ))
+            })?;
 
             // Store workspace paths in app state
             // - WorkspaceMetadataRoot: stable root used for workspace metadata CRUD
             // - WorkspaceRoot: runtime root used by file tools/debug execution context
             let workspace_path = config.workspace_path.clone();
+            if config.workspace_path_source.is_default() && !cfg!(debug_assertions) {
+                std::fs::create_dir_all(&workspace_path).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to create default workspace directory {}: {}",
+                        workspace_path.display(),
+                        error
+                    ))
+                })?;
+            }
+            tracing::info!(
+                "Resolved workspace path: {:?} ({:?})",
+                workspace_path,
+                config.workspace_path_source
+            );
             let workspace_metadata_root =
                 WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
             let workspace_runtime_root: WorkspaceRoot =
