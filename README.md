@@ -17,33 +17,107 @@ Macro is intentionally powerful. At the user's direction it can execute terminal
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and security model notes.
 
-## Prerequisites
+## Install From Source
 
-- [Bun](https://bun.sh) >= 1.1.0
-- [Rust](https://rustup.rs/) (for Tauri)
-- [Python](https://www.python.org/) only if you need to run `bun run i18n:generate`
+Macro is a Tauri desktop app. The source package contains the React/TypeScript
+frontend, the Rust/Tauri backend, and the lockfiles needed to rebuild the app on
+your own machine.
 
-## Quick Start
+### Requirements
+
+- [Bun](https://bun.sh) >= 1.1.0. The repository currently pins `bun@1.1.42`.
+- [Rust](https://rustup.rs/) with Cargo, installed through `rustup`.
+- Tauri system dependencies for your operating system.
+- Python only if you need to run `bun run i18n:generate`.
+
+Tauri dependencies by platform:
+
+**Windows**
+
+- Microsoft Visual Studio Build Tools with the Desktop development with C++
+  workload.
+- WebView2 Runtime. It is already installed on most recent Windows systems.
+
+**macOS**
+
+- Xcode Command Line Tools: `xcode-select --install`
+- Full Xcode is only needed for signed or notarized release builds.
+
+**Ubuntu/Debian**
 
 ```bash
-# Install dependencies
+sudo apt update
+sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+```
+
+### Build And Run With Tauri
+
+From the repository root:
+
+```bash
+# 1. Install JavaScript dependencies from the lockfile.
 bun install
 
-# Run development server
-bun run dev
+# 2. Check that every version manifest is synchronized.
+bun run version:check
 
-# Build for production
-bun run build
-
-# Run Tauri development
+# 3. Run Macro as a desktop app in development mode.
 bun run tauri:dev
+```
 
-# Build Tauri app
+To compile an installable desktop build:
+
+```bash
 bun run tauri:build
+```
 
-# Build a macOS DMG
+Tauri writes desktop bundles to `src-tauri/target/release/bundle/`.
+
+You can also use the Tauri passthrough form:
+
+```bash
+bun run tauri build
+```
+
+For release-candidate versions on Windows, these commands automatically build
+the NSIS installer because MSI requires a numeric-only prerelease identifier.
+The release-candidate version stays unchanged in `package.json` and the app
+metadata.
+
+On macOS, you can build a DMG with:
+
+```bash
 bun run tauri:build:dmg
 ```
+
+The DMG is written to `src-tauri/target/release/bundle/dmg/`.
+
+### Useful Validation Commands
+
+Run these commands before publishing or sharing a source package:
+
+```bash
+bun run version:check
+bun run typecheck
+bun run lint
+bun run test
+cargo test --manifest-path src-tauri/Cargo.toml
+bun run build
+```
+
+The full local CI command runs the same checks plus dependency installation,
+binary hygiene checks, i18n audit, and bundle-size validation:
+
+```bash
+bun run ci
+```
+
+### API Keys And Local Secrets
+
+No API key is required to compile Macro. Development-only provider keys can be
+placed in `dev/ai-keys.local.json`, but that file is intentionally ignored by
+git and must not be included in source packages. Do not put real secrets in
+`public/`, `.env`, or committed source files.
 
 ## Available Scripts
 
@@ -53,8 +127,11 @@ bun run tauri:build:dmg
 | `bun run build` | Build frontend for production |
 | `bun run preview` | Preview production build |
 | `bun run tauri:dev` | Run Tauri in development mode |
-| `bun run tauri:build` | Build Tauri application |
+| `bun run tauri:build` | Build Tauri application; Windows release candidates use NSIS automatically |
+| `bun run tauri:build:nsis` | Explicitly build a Windows NSIS installer |
 | `bun run tauri:build:dmg` | Build a native macOS DMG installer |
+| `bun run tauri:build:debug` | Build a debug Tauri application bundle |
+| `bun run install:tauri` | Install Bun dependencies and compile the Rust app in release mode |
 | `bun run typecheck` | Run TypeScript type checking |
 | `bun run lint` | Run ESLint |
 | `bun run clean` | Clean build artifacts |
@@ -63,7 +140,7 @@ bun run tauri:build:dmg
 | `bun run version:sync` | Sync secondary version manifests from `package.json` |
 | `bun run version:check` | Verify version consistency across app manifests |
 | `bun run version:bump` | Bump `package.json` version and sync dependent files |
-| `bun run ci` | CI pipeline (install + typecheck + lint + i18n audit + cargo check + build) |
+| `bun run ci` | CI pipeline (install + version check + binary check + typecheck + lint + i18n audit + tests + build) |
 
 ## Versioning
 
