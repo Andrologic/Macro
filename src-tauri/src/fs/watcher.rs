@@ -7,6 +7,7 @@ use notify::{
     Config, Event, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,9 @@ pub struct FsWatcher {
     /// Workspace path being watched
     #[allow(dead_code)]
     workspace: PathBuf,
+    /// Number of paths registered with the watcher
+    #[allow(dead_code)]
+    watched_path_count: usize,
     /// Channel sender for debouncing
     #[allow(dead_code)]
     debounce_tx: mpsc::Sender<Event>,
@@ -55,10 +59,17 @@ impl FsWatcher {
             Config::default().with_poll_interval(Duration::from_millis(100)),
         )?;
 
-        // Start watching the workspace recursively
-        watcher.watch(&workspace, RecursiveMode::Recursive)?;
+        let watch_plan = build_watch_plan(&workspace);
+        for path in &watch_plan.watch_paths {
+            watcher.watch(path, RecursiveMode::NonRecursive)?;
+        }
 
-        info!("File system watcher started for: {:?}", workspace);
+        info!(
+            "File system watcher started for {:?}: watching {} directories, skipped {} ignored directories",
+            workspace,
+            watch_plan.watch_paths.len(),
+            watch_plan.ignored_dir_count
+        );
 
         // Spawn the debounce task using Tauri's async runtime
         let workspace_clone = workspace.clone();
@@ -69,6 +80,7 @@ impl FsWatcher {
         Ok(FsWatcher {
             _watcher: watcher,
             workspace,
+            watched_path_count: watch_plan.watch_paths.len(),
             debounce_tx,
             _debounce_handle: debounce_handle,
         })
@@ -81,6 +93,63 @@ impl FsWatcher {
     }
 }
 
+struct WatchPlan {
+    watch_paths: Vec<PathBuf>,
+    ignored_dir_count: usize,
+}
+
+fn build_watch_plan(workspace: &Path) -> WatchPlan {
+    let mut watch_paths = Vec::new();
+    let mut ignored_dir_count = 0;
+    collect_watch_paths(
+        workspace,
+        workspace,
+        &mut watch_paths,
+        &mut ignored_dir_count,
+    );
+    if watch_paths.is_empty() {
+        watch_paths.push(workspace.to_path_buf());
+    }
+    WatchPlan {
+        watch_paths,
+        ignored_dir_count,
+    }
+}
+
+fn collect_watch_paths(
+    current: &Path,
+    workspace: &Path,
+    watch_paths: &mut Vec<PathBuf>,
+    ignored_dir_count: &mut usize,
+) {
+    if should_ignore_path(current, workspace) {
+        *ignored_dir_count += 1;
+        return;
+    }
+
+    watch_paths.push(current.to_path_buf());
+
+    let entries = match fs::read_dir(current) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warn!("Failed to read watcher directory {:?}: {}", current, error);
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        collect_watch_paths(&path, workspace, watch_paths, ignored_dir_count);
+    }
+}
+
 /// Debounce task that collects events and emits them to the frontend
 async fn debounce_task(
     rx: Arc<Mutex<mpsc::Receiver<Event>>>,
@@ -89,6 +158,7 @@ async fn debounce_task(
 ) {
     let debounce_duration = Duration::from_millis(300);
     let mut pending_events: Vec<Event> = Vec::new();
+    let mut ignored_event_count: usize = 0;
 
     loop {
         let mut rx_guard = rx.lock().await;
@@ -99,6 +169,7 @@ async fn debounce_task(
                 let mut keep_event = false;
                 for path in &event.paths {
                     if should_ignore_path(path, &workspace) {
+                        ignored_event_count += 1;
                         continue;
                     }
                     keep_event = true;
@@ -143,6 +214,14 @@ async fn debounce_task(
 
                     pending_events.clear();
                 }
+
+                if ignored_event_count > 0 {
+                    debug!(
+                        "Ignored {} file system events from ignored paths",
+                        ignored_event_count
+                    );
+                    ignored_event_count = 0;
+                }
             }
         }
     }
@@ -176,6 +255,18 @@ fn should_ignore_path(path: &Path, workspace: &Path) -> bool {
                     | ".nuxt"
                     | "dist"
                     | "build"
+                    | "coverage"
+                    | ".turbo"
+                    | ".vite"
+                    | ".parcel-cache"
+                    | ".pytest_cache"
+                    | ".mypy_cache"
+                    | ".ruff_cache"
+                    | ".venv"
+                    | "venv"
+                    | ".codex"
+                    | ".kilo"
+                    | ".macro-worktrees"
                     | "__pycache__"
                     | ".cache"
             ) {
@@ -308,6 +399,21 @@ mod tests {
             &workspace
         ));
 
+        assert!(should_ignore_path(
+            Path::new("/workspace/.codex/worktrees/123/project/src/main.ts"),
+            &workspace
+        ));
+
+        assert!(should_ignore_path(
+            Path::new("/workspace/.kilo/plans/plan.md"),
+            &workspace
+        ));
+
+        assert!(should_ignore_path(
+            Path::new("/workspace/.vite/deps/react.js"),
+            &workspace
+        ));
+
         // Should not ignore regular files
         assert!(!should_ignore_path(
             Path::new("/workspace/src/main.rs"),
@@ -319,5 +425,35 @@ mod tests {
             Path::new("/workspace/.gitignore"),
             &workspace
         ));
+    }
+
+    #[test]
+    fn test_build_watch_plan_skips_ignored_directories_before_registration() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path();
+        std::fs::create_dir_all(workspace.join("src/nested")).expect("src");
+        std::fs::create_dir_all(workspace.join(".codex/worktrees/generated")).expect(".codex");
+        std::fs::create_dir_all(workspace.join("node_modules/pkg")).expect("node_modules");
+        std::fs::create_dir_all(workspace.join("target/debug")).expect("target");
+
+        let plan = build_watch_plan(workspace);
+        let watched: Vec<String> = plan
+            .watch_paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(workspace)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        assert!(watched.iter().any(|path| path.is_empty()));
+        assert!(watched.iter().any(|path| path == "src"));
+        assert!(watched.iter().any(|path| path == "src/nested"));
+        assert!(!watched.iter().any(|path| path.starts_with(".codex")));
+        assert!(!watched.iter().any(|path| path.starts_with("node_modules")));
+        assert!(!watched.iter().any(|path| path.starts_with("target")));
+        assert_eq!(plan.ignored_dir_count, 3);
     }
 }

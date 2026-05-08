@@ -15,7 +15,10 @@ import {
   getArchitectPlanDisplayName,
   getArchitectPlanPrimaryName,
 } from '../../services/architectPlanPresentation';
-import { getGitFlowBaseBranch } from '../../services/architectPlanService';
+import {
+  getGitFlowBaseBranch,
+  repairArchitectPlanMetadata,
+} from '../../services/architectPlanService';
 import {
   isPlanFinalizationTask,
   taskMatchesProjectId,
@@ -64,6 +67,11 @@ import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
+import {
+  getTooManyOpenFilesNotificationKey,
+  isTooManyOpenFilesMessage,
+  noteTooManyOpenFilesBackoff,
+} from '../../services/resourcePressureBackoff';
 
 interface TaskQueueProps {
   className?: string;
@@ -617,6 +625,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     mergeWorkflowRuntimeByTaskId,
     runTaskCommands,
     cancelTaskCommands,
+    refreshFromPlan,
     missingBaseBranchIssue,
     clearMissingBaseBranchIssue,
     createMissingBaseBranch,
@@ -637,6 +646,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
     runTaskCommands: state.runTaskCommands,
     cancelTaskCommands: state.cancelTaskCommands,
+    refreshFromPlan: state.refreshFromPlan,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
     clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
     createMissingBaseBranch: state.createMissingBaseBranch,
@@ -1615,6 +1625,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskErrorPresentation?.primaryAction === 'open_project_settings' ||
     taskErrorPresentation?.primaryAction === 'configure_git'
       ? t('projects.projectSettings', 'Project settings')
+      : taskErrorPresentation?.primaryAction === 'repair_metadata'
+        ? t('architect.planSelector.repairMetadata', 'Repair metadata')
       : t('common.retry', 'Retry');
   const handleTaskErrorAction = useCallback(() => {
     if (!taskErrorPresentation) return;
@@ -1658,19 +1670,29 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const description = [taskErrorPresentation.body, nextStep]
       .filter((value): value is string => Boolean(value?.trim()))
       .join('\n\n');
-    const notificationKey = `implement-task-error:${taskError}`;
     const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
     const canOpenProjectSettings =
       (taskErrorPresentation.primaryAction === 'open_project_settings' ||
         taskErrorPresentation.primaryAction === 'configure_git') &&
       Boolean(targetProjectId);
+    const canRepairMetadata =
+      taskErrorPresentation.primaryAction === 'repair_metadata' &&
+      selectedTaskForError?.task_source === 'architect' &&
+      Boolean(selectedTaskForError.plan_id);
     const canRetry =
       !canOpenProjectSettings &&
       taskErrorPresentation.primaryAction === 'retry' &&
       Boolean(selectedTaskForError);
     const tone = taskErrorPresentation.severity === 'danger' ? 'error' : 'warning';
+    const isResourcePressureError = isTooManyOpenFilesMessage(taskError);
+    if (isResourcePressureError) {
+      noteTooManyOpenFilesBackoff();
+    }
+    const notificationKey = isResourcePressureError
+      ? getTooManyOpenFilesNotificationKey()
+      : `implement-task-error:${taskError}`;
 
-    if (canOpenProjectSettings || canRetry) {
+    if (canOpenProjectSettings || canRetry || canRepairMetadata) {
       notify.actionRequired(taskErrorPresentation.title, {
         notificationKey,
         tone,
@@ -1680,7 +1702,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {
             label: taskErrorActionLabel,
             variant: 'primary',
-            onClick: handleTaskErrorAction,
+            onClick: async () => {
+              if (canRepairMetadata && selectedTaskForError) {
+                await repairArchitectPlanMetadata({
+                  branchName:
+                    selectedTaskForError.plan_storage_branch ||
+                    selectedTaskForError.plan_target_branch ||
+                    getGitFlowBaseBranch(),
+                  planId: selectedTaskForError.plan_id,
+                });
+                await refreshFromPlan();
+                return;
+              }
+              handleTaskErrorAction();
+            },
           },
         ],
       });
@@ -1710,6 +1745,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskErrorPresentation,
     handleTaskErrorAction,
     missingBaseBranchIssue?.message,
+    refreshFromPlan,
   ]);
 
   if (isWorkspaceMissing) {

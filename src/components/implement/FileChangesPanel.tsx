@@ -63,7 +63,14 @@ import {
   presentServiceError,
   presentWorktreeError,
 } from '../../services/degradedErrorPresentation';
+import {
+  getTooManyOpenFilesNotificationKey,
+  isTooManyOpenFilesBackoffActive,
+  isTooManyOpenFilesMessage,
+  noteTooManyOpenFilesBackoff,
+} from '../../services/resourcePressureBackoff';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import { canAutoRefreshFileChangesForTask } from '../../services/fileChangesRefreshPolicy';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -485,6 +492,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       .sort()
       .join('|');
   });
+  const selectedTaskHasPendingQuestionnaire = useChatStore((state) => {
+    if (!selectedTaskId) return false;
+    return state.conversations.some((conversation) => {
+      if (
+        conversation.scope_mode !== 'Implement' ||
+        conversation.task_id !== selectedTaskId
+      ) {
+        return false;
+      }
+      return state.getActiveQuestionnaire(conversation.id)?.mode === 'pending_reply';
+    });
+  });
   const selectedTaskWorktreeKey = useTaskStore((state) => {
     if (!selectedTaskId) return '';
     const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
@@ -574,6 +593,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
+  const hasResourcePressureError = isTooManyOpenFilesMessage(lastError);
+  const canAutoRefreshCurrentTask = canAutoRefreshFileChangesForTask({
+    selectedTaskId,
+    taskStatus: currentTask?.status,
+    hasPendingQuestionnaire: selectedTaskHasPendingQuestionnaire,
+    hasRepositoryScope,
+    isReadOnlyRemoteMode,
+    isPlanFinalizationTask,
+    hasActiveMergeWorkflow,
+    hasResourcePressureError,
+    isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
+  });
   const isSelectedTaskAssistantActive =
     selectedTaskAssistantRuntimeSignature.includes(':preparing:') ||
     selectedTaskAssistantRuntimeSignature.includes(':streaming:');
@@ -624,7 +655,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       resetReviewState();
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
+    if (
+      !hasRepositoryScope ||
+      !selectedTaskId ||
+      !canAutoRefreshCurrentTask ||
+      isPlanFinalizationTask ||
+      hasActiveMergeWorkflow ||
+      hasResourcePressureError ||
+      isTooManyOpenFilesBackoffActive()
+    ) {
       resetReviewState();
       return;
     }
@@ -634,6 +673,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     void loadCurrentChanges();
   }, [
     currentTask?.status,
+    canAutoRefreshCurrentTask,
+    hasResourcePressureError,
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
@@ -651,7 +692,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isReadOnlyRemoteMode) {
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
+    if (
+      !hasRepositoryScope ||
+      !selectedTaskId ||
+      !canAutoRefreshCurrentTask ||
+      isPlanFinalizationTask ||
+      hasActiveMergeWorkflow ||
+      hasResourcePressureError
+    ) {
       return;
     }
     if (isDiffModalOpen) {
@@ -663,13 +711,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     let timeoutId: number | null = null;
 
     const refreshChanges = async (silent: boolean = true) => {
-      if (disposed || refreshInFlight || isCommitting) {
+      if (disposed || refreshInFlight || isCommitting || isTooManyOpenFilesBackoffActive()) {
         return;
       }
 
       refreshInFlight = true;
       try {
         await loadCurrentChanges({ silent });
+      } catch (error) {
+        if (isTooManyOpenFilesMessage(error)) {
+          noteTooManyOpenFilesBackoff();
+        }
       } finally {
         refreshInFlight = false;
       }
@@ -719,6 +771,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, [
     hasRepositoryScope,
     hasActiveMergeWorkflow,
+    canAutoRefreshCurrentTask,
+    hasResourcePressureError,
     isCommitting,
     isDiffModalOpen,
     isPlanFinalizationTask,
@@ -728,6 +782,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskId,
     isReadOnlyRemoteMode,
   ]);
+
+  useEffect(() => {
+    if (!lastError || !isTooManyOpenFilesMessage(lastError)) {
+      return;
+    }
+
+    noteTooManyOpenFilesBackoff();
+    const presentation = presentServiceError(lastError);
+    notify.actionRequired(presentation.title, {
+      notificationKey: getTooManyOpenFilesNotificationKey(),
+      tone: 'warning',
+      description: [presentation.body, presentation.nextStep].filter(Boolean).join('\n\n'),
+      category: 'task_attention_required',
+      actions: [
+        {
+          label: t('common.retry', 'Retry'),
+          variant: 'primary',
+          onClick: () => void loadCurrentChanges(),
+        },
+      ],
+    });
+  }, [lastError, loadCurrentChanges, t]);
 
   useEffect(() => {
     if (assistantRefreshTaskIdRef.current === selectedTaskId) {
@@ -789,6 +865,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       postAssistantRefreshInFlightRef.current ||
       isReadOnlyRemoteMode ||
       !hasRepositoryScope ||
+      hasResourcePressureError ||
+      !canAutoRefreshFileChangesForTask({
+        selectedTaskId,
+        taskStatus: currentTask?.status,
+        hasPendingQuestionnaire: selectedTaskHasPendingQuestionnaire,
+        hasRepositoryScope,
+        isReadOnlyRemoteMode,
+        isPlanFinalizationTask: false,
+        hasActiveMergeWorkflow: false,
+        hasResourcePressureError,
+        isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
+      }) ||
       !currentTask ||
       !selectedTaskId
     ) {
@@ -825,6 +913,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     currentMergeWorkflowRuntime,
     currentTask,
     hasRepositoryScope,
+    hasResourcePressureError,
     isCommitting,
     isDiffModalOpen,
     isGeneratingCommitMessages,
@@ -834,6 +923,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     loadMergeWorkflowReview,
     postAssistantRefreshToken,
     selectedTaskId,
+    selectedTaskHasPendingQuestionnaire,
   ]);
 
   useEffect(() => {

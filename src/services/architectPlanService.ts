@@ -41,6 +41,10 @@ import {
   recordMacroMetadataMutation,
   type MacroMetadataMutationKind,
 } from './macroMetadataCoordinator';
+import {
+  SERVICE_ERROR_CODES,
+  createPlanMetadataMissingError,
+} from './contracts/errors';
 
 export type ArchitectPlanStatus =
   | 'draft'
@@ -187,6 +191,30 @@ export interface ArchitectPlanReplicaDivergence {
   planId: string;
   reason: 'content_diverged' | 'missing_replica';
   replicas: ArchitectPlanReplica[];
+}
+
+export type ArchitectPlanMetadataHealthStatus =
+  | 'healthy'
+  | 'missing_replica'
+  | 'diverged'
+  | 'runtime_orphan'
+  | 'missing';
+
+export interface ArchitectPlanMetadataHealth {
+  branchName: string;
+  planId: string;
+  status: ArchitectPlanMetadataHealthStatus;
+  replicas: ArchitectPlanReplica[];
+  orphanedReplicas: ArchitectPlanReplica[];
+  technicalMessage: string | null;
+}
+
+export interface ArchitectPlanMetadataRepairResult {
+  branchName: string;
+  planId: string;
+  statusBeforeRepair: ArchitectPlanMetadataHealthStatus;
+  removedOrphanedReplicas: ArchitectPlanReplica[];
+  repairedPlan: ArchitectPlanRecord | null;
 }
 
 export interface ArchitectPlanCrudCapabilities {
@@ -443,7 +471,7 @@ const planRecordFromActivationSummary = (
 };
 
 export class ArchitectPlanReplicaDivergenceError extends Error {
-  readonly code = 'ARCHITECT_PLAN_REPLICA_DIVERGENCE';
+  readonly code = SERVICE_ERROR_CODES.PLAN_REPLICA_DIVERGED;
   readonly divergence: ArchitectPlanReplicaDivergence;
 
   constructor(divergence: ArchitectPlanReplicaDivergence) {
@@ -462,7 +490,8 @@ export const isArchitectPlanReplicaDivergenceError = (
 ): value is ArchitectPlanReplicaDivergenceError =>
   value instanceof ArchitectPlanReplicaDivergenceError ||
   (value instanceof Error &&
-    (value as { code?: string }).code === 'ARCHITECT_PLAN_REPLICA_DIVERGENCE' &&
+    ((value as { code?: string }).code === SERVICE_ERROR_CODES.PLAN_REPLICA_DIVERGED ||
+      (value as { code?: string }).code === 'ARCHITECT_PLAN_REPLICA_DIVERGENCE') &&
     'divergence' in value);
 
 export type ArchitectPlanReplicaRepairStrategy = 'newest' | 'oldest';
@@ -2217,6 +2246,18 @@ const throwReplicaDivergence = (params: {
   });
 };
 
+function throwPlanMetadataMissing(
+  branchName: string,
+  planId: string,
+  reason = 'plan_metadata_missing'
+): never {
+  throw createPlanMetadataMissingError({
+    branchName: normalizeBranchName(branchName),
+    planId: sanitizeId(planId),
+    reason,
+  });
+}
+
 const architectPlanMutationQueues = new Map<string, Promise<void>>();
 
 const getArchitectPlanMutationQueueKey = (branchName: string, planId: string): string =>
@@ -2759,7 +2800,7 @@ const writePlanAtScope = async (
     }
   );
   if (!sanitizedPlanResult.plan) {
-    throw new Error(`Plan not found: ${sanitizeId(plan.id)}`);
+    throwPlanMetadataMissing(normalized, plan.id);
   }
   const normalizedPlan: ArchitectPlanRecord = {
     ...sanitizedPlanResult.plan,
@@ -4180,7 +4221,7 @@ export const commitArchitectPlanMetadata = async (input: {
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
 
     await commitMetadataScopes(
@@ -4409,7 +4450,7 @@ export const createArchitectPlan = async (input: {
     logContext: 'plan_create',
   });
   if (!planResult.plan) {
-    throw new Error(`Plan not found: ${planId}`);
+    throwPlanMetadataMissing(normalizedBranch, planId);
   }
   const plan = planResult.plan;
 
@@ -4462,7 +4503,7 @@ export const updateArchitectPlan = async (input: {
     registrySnapshot,
   }, deps);
   if (!replicaSet) {
-    throw new Error(`Plan not found: ${safeId}`);
+    throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   assertPlanReplicaSetWritable(replicaSet, 'update');
   const existing = replicaSet.canonical.plan;
@@ -4626,7 +4667,7 @@ export const updateArchitectPlan = async (input: {
     logContext: 'plan_update',
   });
   if (!candidateResult.plan) {
-    throw new Error(`Plan not found: ${safeId}`);
+    throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const candidate = candidateResult.plan;
 
@@ -4685,7 +4726,7 @@ export const updateArchitectPlan = async (input: {
     logContext: 'plan_update',
   });
   if (!nextResult.plan) {
-    throw new Error(`Plan not found: ${safeId}`);
+    throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const next = nextResult.plan;
 
@@ -4761,7 +4802,7 @@ const bindArchitectPlanConversationWithReplicaSet = async (params: {
   } = params;
   const existing = replicaSet.canonical.plan;
   if (existing.status === 'deleted') {
-    throw new Error(`Plan not found: ${safeId}`);
+    throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   if (existing.conversationId === conversationId) {
     return existing;
@@ -4777,7 +4818,7 @@ const bindArchitectPlanConversationWithReplicaSet = async (params: {
     logContext: 'plan_bind_conversation',
   });
   if (!nextResult.plan) {
-    throw new Error(`Plan not found: ${safeId}`);
+    throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const nextPlan = nextResult.plan;
   const scopes = dedupeScopes(replicaSet.expectedScopes);
@@ -4852,7 +4893,7 @@ export const bindArchitectPlanConversation = async (params: {
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     return bindArchitectPlanConversationWithReplicaSet({
       normalizedBranch,
@@ -4914,7 +4955,7 @@ export const deleteArchitectPlan = async (input: {
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     const scopes = dedupeScopes(replicaSet.expectedScopes);
 
@@ -4943,7 +4984,7 @@ export const deleteArchitectPlan = async (input: {
       logContext: 'plan_delete',
     });
     if (!deletedResult.plan) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     const deleted = deletedResult.plan;
     await Promise.all(
@@ -4986,7 +5027,7 @@ export const restoreArchitectPlan = async (
   assertGitFlowTargetBranch(normalizedBranch);
   const existing = await getArchitectPlan(normalizedBranch, planId, deps);
   if (!existing || existing.status === 'deleted') {
-    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, planId);
   }
   const restoredStatus =
     existing.status === 'archived'
@@ -5008,7 +5049,7 @@ export const archiveArchitectPlan = async (
     const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
       registrySnapshot,
     }, deps);
-    if (!replicaSet) throw new Error(`Plan not found: ${safeId}`);
+    if (!replicaSet) throwPlanMetadataMissing(normalizedBranch, safeId);
     assertPlanReplicaSetWritable(replicaSet, 'archive');
     const now = new Date().toISOString();
     const archivedRecord = applyArchitectPlanLifecycleForStatus({
@@ -5021,7 +5062,7 @@ export const archiveArchitectPlan = async (
       logContext: 'plan_archive',
     });
     if (!archivedResult.plan) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     const archived = archivedResult.plan;
     await Promise.all(
@@ -5074,7 +5115,7 @@ export const getArchitectPlanNeeds = async (
     registrySnapshot,
   }, deps);
   if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, planId);
   }
   return replicaSet.canonical.needs;
 };
@@ -5091,7 +5132,7 @@ export const getArchitectPlanChatMessages = async (
     registrySnapshot,
   }, deps);
   if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, planId);
   }
   return readPlanChatAtScope(replicaSet.canonical.scope, normalizedBranch, sanitizeId(planId));
 };
@@ -5170,7 +5211,7 @@ export const saveArchitectPlanChatMessages = async (
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     await saveArchitectPlanChatMessagesWithReplicaSet({
       normalizedBranch,
@@ -5201,7 +5242,7 @@ export const syncArchitectPlanChatFromConversation = async (params: {
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
 
@@ -5256,7 +5297,7 @@ export const saveArchitectPlanNeeds = async (
       registrySnapshot,
     }, deps);
     if (!replicaSet) {
-      throw new Error(`Plan not found: ${safeId}`);
+      throwPlanMetadataMissing(normalizedBranch, safeId);
     }
     assertPlanReplicaSetWritable(replicaSet, 'save needs');
     const normalizedNeeds = normalizeNeedsForPersistence(safeId, needs);
@@ -5311,7 +5352,7 @@ export const repairArchitectPlanReplicas = async (input: {
     registrySnapshot,
   }, deps);
   if (!replicaSet) {
-    throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, input.planId);
   }
 
   const canonicalSnapshot = pickCanonicalReplica(
@@ -5336,7 +5377,7 @@ export const repairArchitectPlanReplicas = async (input: {
     }
   );
   if (!canonicalPlan) {
-    throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, input.planId);
   }
 
   const skippedFiles = new Set(['manifest.json', 'plan.json', 'plan.md', 'needs.json', 'chat.jsonl', 'runtime.json']);
@@ -5394,9 +5435,182 @@ export const repairArchitectPlanReplicas = async (input: {
   });
   const repaired = repairedReplicaSet?.canonical.plan || null;
   if (!repaired) {
-    throw new Error(`Plan not found: ${sanitizeId(input.planId)}`);
+    throwPlanMetadataMissing(normalizedBranch, input.planId);
   }
   return repaired;
+  });
+};
+
+const listPlanRelativeFilesAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string
+): Promise<string[]> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    return [];
+  }
+
+  try {
+    const planDir = getPlanDir(branchName, planId);
+    const entries = await tauriIpc.fsListDir({
+      path: planDir,
+      recursive: true,
+      includeHidden: true,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath: scope.workspacePath,
+    });
+    return entries
+      .filter((entry) => entry.kind === 'file')
+      .map((entry) => entry.relative_path.replace(/\\/g, '/').replace(/^\/+/, ''));
+  } catch {
+    return [];
+  }
+};
+
+export const inspectArchitectPlanMetadataHealth = async (input: {
+  branchName: string;
+  planId: string;
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanMetadataHealth> => {
+  const normalizedBranch = normalizeBranchName(input.branchName);
+  const safeId = sanitizeId(input.planId);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
+    allowDivergence: true,
+    registrySnapshot,
+  }, deps);
+
+  if (replicaSet) {
+    const hasMissingReplica = replicaSet.replicas.some((replica) => replica.missing);
+    const status: ArchitectPlanMetadataHealthStatus = replicaSet.hasReplicaDivergence
+      ? 'diverged'
+      : hasMissingReplica
+        ? 'missing_replica'
+        : 'healthy';
+    return {
+      branchName: normalizedBranch,
+      planId: safeId,
+      status,
+      replicas: replicaSet.replicas,
+      orphanedReplicas: [],
+      technicalMessage:
+        status === 'healthy'
+          ? null
+          : `Plan ${safeId} metadata health is ${status}.`,
+    };
+  }
+
+  const scopes = await resolveMetadataScopes(
+    undefined,
+    { includeAllKnown: true },
+    registrySnapshot,
+    deps
+  );
+  const orphanedReplicas = (
+    await Promise.all(
+      scopes.map(async (scope) => {
+        const files = await listPlanRelativeFilesAtScope(scope, normalizedBranch, safeId);
+        if (files.length === 0 || files.includes('plan.json')) {
+          return null;
+        }
+        return toReplicaDescriptor(scope, null, true);
+      })
+    )
+  ).filter((replica): replica is ArchitectPlanReplica => replica !== null);
+
+  return {
+    branchName: normalizedBranch,
+    planId: safeId,
+    status: orphanedReplicas.length > 0 ? 'runtime_orphan' : 'missing',
+    replicas: orphanedReplicas,
+    orphanedReplicas,
+    technicalMessage:
+      orphanedReplicas.length > 0
+        ? `Plan ${safeId} has orphaned metadata files without plan.json.`
+        : `Plan ${safeId} metadata was not found.`,
+  };
+};
+
+export const repairArchitectPlanMetadata = async (input: {
+  branchName: string;
+  planId: string;
+  strategy?: ArchitectPlanReplicaRepairStrategy;
+}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanMetadataRepairResult> => {
+  const normalizedBranch = normalizeBranchName(input.branchName);
+  const safeId = sanitizeId(input.planId);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const health = await inspectArchitectPlanMetadataHealth({
+    branchName: normalizedBranch,
+    planId: safeId,
+  }, deps);
+
+  if (health.status === 'healthy') {
+    return {
+      branchName: normalizedBranch,
+      planId: safeId,
+      statusBeforeRepair: health.status,
+      removedOrphanedReplicas: [],
+      repairedPlan: await getArchitectPlan(normalizedBranch, safeId, deps),
+    };
+  }
+
+  if (health.status === 'diverged' || health.status === 'missing_replica') {
+    return {
+      branchName: normalizedBranch,
+      planId: safeId,
+      statusBeforeRepair: health.status,
+      removedOrphanedReplicas: [],
+      repairedPlan: await repairArchitectPlanReplicas({
+        branchName: normalizedBranch,
+        planId: safeId,
+        strategy: input.strategy ?? 'newest',
+      }, deps),
+    };
+  }
+
+  if (health.status !== 'runtime_orphan') {
+    throwPlanMetadataMissing(normalizedBranch, safeId);
+  }
+
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const scopes = await resolveMetadataScopes(
+      undefined,
+      { includeAllKnown: true },
+      registrySnapshot,
+      deps
+    );
+    const orphanScopeKeys = new Set(health.orphanedReplicas.map((replica) => replica.scopeKey));
+    const removedScopes = scopes.filter((scope) => orphanScopeKeys.has(scope.scopeKey));
+
+    await Promise.all(
+      removedScopes.map(async (scope) => {
+        await removePlanAtScope(scope, normalizedBranch, safeId);
+        await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
+      })
+    );
+
+    if (removedScopes.length > 0) {
+      await commitMetadataScopes(
+        dedupeScopes(removedScopes),
+        `chore(metadata): remove orphaned architect plan ${safeId}`,
+        undefined,
+        deps
+      );
+    }
+
+    invalidateArchitectPlanRuntimeCaches({
+      branchName: normalizedBranch,
+      planId: safeId,
+    });
+
+    return {
+      branchName: normalizedBranch,
+      planId: safeId,
+      statusBeforeRepair: health.status,
+      removedOrphanedReplicas: health.orphanedReplicas,
+      repairedPlan: null,
+    };
   });
 };
 
@@ -5411,7 +5625,7 @@ export const writeArchitectTaskExecution = async (params: {
     registrySnapshot,
   }, deps);
   if (!replicaSet) {
-    throw new Error(`Plan not found: ${params.planId}`);
+    throwPlanMetadataMissing(normalizedBranch, params.planId);
   }
   if (!deps.tauri.isTauriAvailable()) return;
 
@@ -5463,6 +5677,8 @@ export interface ArchitectPlanService {
   syncArchitectPlanChatFromConversation: typeof syncArchitectPlanChatFromConversation;
   saveArchitectPlanNeeds: typeof saveArchitectPlanNeeds;
   repairArchitectPlanReplicas: typeof repairArchitectPlanReplicas;
+  inspectArchitectPlanMetadataHealth: typeof inspectArchitectPlanMetadataHealth;
+  repairArchitectPlanMetadata: typeof repairArchitectPlanMetadata;
   writeArchitectTaskExecution: typeof writeArchitectTaskExecution;
 }
 
@@ -5497,6 +5713,8 @@ export const createArchitectPlanService = (
     syncArchitectPlanChatFromConversation: (params) => syncArchitectPlanChatFromConversation(params, deps),
     saveArchitectPlanNeeds: (branchName, planId, needs) => saveArchitectPlanNeeds(branchName, planId, needs, deps),
     repairArchitectPlanReplicas: (input) => repairArchitectPlanReplicas(input, deps),
+    inspectArchitectPlanMetadataHealth: (input) => inspectArchitectPlanMetadataHealth(input, deps),
+    repairArchitectPlanMetadata: (input) => repairArchitectPlanMetadata(input, deps),
     writeArchitectTaskExecution: (params) => writeArchitectTaskExecution(params, deps),
   };
 };

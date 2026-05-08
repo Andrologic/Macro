@@ -7,7 +7,7 @@ import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
   services,
 } from '../services';
-import { toServiceError } from '../services/contracts/errors';
+import { isPlanMetadataMissingError, toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { useGitStore } from './useGitStore';
@@ -4449,12 +4449,25 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     });
 
     if (!persisted) {
+      const errorMessage =
+        get().lastError ||
+        tTask('implement.errors.unknownTaskPlan', 'Cannot update task {{taskId}}.', {
+          taskId,
+        });
+      if (
+        status === 'AwaitingResponse' &&
+        optimisticTaskStatus &&
+        (isPlanMetadataMissingError(errorMessage) ||
+          errorMessage.toLowerCase().includes('cannot update plan metadata') ||
+          errorMessage.toLowerCase().includes('cannot update task'))
+      ) {
+        set({ lastError: null });
+        return;
+      }
+
       rollbackOptimisticTaskStatus(
         optimisticTaskStatus,
-        get().lastError ||
-          tTask('implement.errors.unknownTaskPlan', 'Cannot update task {{taskId}}.', {
-            taskId,
-          })
+        errorMessage
       );
     }
   },
