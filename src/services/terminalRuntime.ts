@@ -1,5 +1,7 @@
 import { Terminal, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import type { Theme } from '../types/theme';
+import { buildTerminalTheme, getTerminalThemeSignature } from './terminalTheme';
 
 const FIT_RETRY_LIMIT = 8;
 const FIT_RETRY_DELAY_MS = 24;
@@ -29,6 +31,7 @@ type RuntimeSession = {
   fitFrameId: number | null;
   fitRetryTimeoutId: number | null;
   lastTouchedAt: number;
+  themeSignature: string;
   windowResizeListener: () => void;
   visibilityChangeListener: () => void;
 };
@@ -38,12 +41,14 @@ export interface TerminalRuntimeAttachParams extends RuntimeHandlers {
   hostElement: HTMLDivElement;
   snapshot: string;
   hasLiveSession: boolean;
+  theme?: Theme | null;
 }
 
 export interface TerminalRuntimeSyncParams extends RuntimeHandlers {
   tabId: string;
   snapshot: string;
   hasLiveSession: boolean;
+  theme?: Theme | null;
 }
 
 const runtimeSessions = new Map<string, RuntimeSession>();
@@ -88,7 +93,10 @@ const getWindowsPtyOptions = (): { backend: 'conpty' } | undefined => {
   return platformHint.includes('win') ? { backend: 'conpty' } : undefined;
 };
 
-const buildTerminalOptions = (hasLiveSession: boolean): ITerminalOptions => {
+const buildTerminalOptions = (
+  hasLiveSession: boolean,
+  theme?: Theme | null
+): ITerminalOptions => {
   const terminalOptions: ITerminalOptions & { rescaleOverlappingGlyphs?: boolean } = {
     fontFamily: 'JetBrains Mono, monospace',
     fontSize: 12,
@@ -102,15 +110,20 @@ const buildTerminalOptions = (hasLiveSession: boolean): ITerminalOptions => {
     minimumContrastRatio: 4.5,
     smoothScrollDuration: 0,
     windowsPty: getWindowsPtyOptions(),
-    theme: {
-      background: '#09090b',
-      foreground: '#fafafa',
-      cursor: '#a1a1aa',
-      selectionBackground: 'rgba(99, 102, 241, 0.24)',
-    },
+    theme: buildTerminalTheme(theme),
   };
 
   return terminalOptions as ITerminalOptions;
+};
+
+const applyTerminalTheme = (session: RuntimeSession, theme?: Theme | null) => {
+  const signature = getTerminalThemeSignature(theme);
+  if (session.themeSignature === signature) {
+    return;
+  }
+
+  session.terminal.options.theme = buildTerminalTheme(theme);
+  session.themeSignature = signature;
 };
 
 const clearFitTimers = (session: RuntimeSession) => {
@@ -242,6 +255,7 @@ const updateSessionState = (session: RuntimeSession, params: TerminalRuntimeSync
   };
   session.hasLiveSession = params.hasLiveSession;
   session.terminal.options.disableStdin = !params.hasLiveSession;
+  applyTerminalTheme(session, params.theme);
   syncSnapshot(session, params.snapshot);
   session.lastTouchedAt = Date.now();
 };
@@ -276,6 +290,7 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
     fitFrameId: null,
     fitRetryTimeoutId: null,
     lastTouchedAt: Date.now(),
+    themeSignature: getTerminalThemeSignature(),
     windowResizeListener: () => {
       scheduleFit(session);
     },
@@ -389,6 +404,12 @@ export const terminalRuntime = {
     }
 
     updateSessionState(session, params);
+  },
+
+  setTheme(theme?: Theme | null) {
+    for (const session of runtimeSessions.values()) {
+      applyTerminalTheme(session, theme);
+    }
   },
 
   focusTab(tabId: string) {
