@@ -30,6 +30,8 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const reconnectTab = useTerminalStore((state) => state.reconnectTab);
   const writeInput = useTerminalStore((state) => state.writeInput);
   const resizeTab = useTerminalStore((state) => state.resizeTab);
+  const interruptTab = useTerminalStore((state) => state.interruptTab);
+  const clearTab = useTerminalStore((state) => state.clearTab);
   const closeTab = useTerminalStore((state) => state.closeTab);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
@@ -357,6 +359,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => runAction(() => clearTab(activeTab.id))}
+            disabled={!activeTab.hasLiveSession}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            title={t('terminal.clear', 'Clear terminal')}
+            aria-label={t('terminal.clear', 'Clear terminal')}
+          >
+            <Icon name="trash" size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => runAction(() => interruptTab(activeTab.id))}
+            disabled={!activeTab.hasLiveSession}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            title={t('terminal.interrupt', 'Interrupt terminal')}
+            aria-label={t('terminal.interrupt', 'Interrupt terminal')}
+          >
+            <Icon name="circle-x" size={14} />
+          </button>
           <TerminalTargetSplitButton
             variant="icon"
             icon="plus"
@@ -411,6 +433,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
               return;
             }
             void resizeTab(activeTab.id, cols, rows).catch(() => undefined);
+          }}
+          onClear={() => {
+            if (!activeTab.hasLiveSession) {
+              return;
+            }
+            void clearTab(activeTab.id).catch((error) => {
+              const message =
+                error instanceof Error ? error.message : t('common.error', 'An error occurred');
+              notify.error(message);
+            });
           }}
         />
       </div>

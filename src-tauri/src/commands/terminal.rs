@@ -22,6 +22,9 @@ const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
 const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 1_000_000;
 const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
+const DEFAULT_TERM: &str = "xterm-256color";
+const DEFAULT_COLORTERM: &str = "truecolor";
+const TERM_PROGRAM_NAME: &str = "Macro";
 
 #[derive(Clone, Default)]
 pub struct TerminalSessionStore {
@@ -375,6 +378,46 @@ fn parse_command_marker(buffer: &str, marker_prefix: &str) -> Option<(usize, usi
     Some((start, end, exit_code))
 }
 
+fn terminal_env_value_from<F>(name: &str, fallback: &str, read_env: &F) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    read_env(name)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn build_terminal_environment_from<F>(cwd: &str, read_env: F) -> Vec<(&'static str, String)>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    vec![
+        (
+            "TERM",
+            terminal_env_value_from("TERM", DEFAULT_TERM, &read_env),
+        ),
+        (
+            "COLORTERM",
+            terminal_env_value_from("COLORTERM", DEFAULT_COLORTERM, &read_env),
+        ),
+        (
+            "TERM_PROGRAM",
+            terminal_env_value_from("TERM_PROGRAM", TERM_PROGRAM_NAME, &read_env),
+        ),
+        ("PWD", cwd.to_string()),
+    ]
+}
+
+fn build_terminal_environment(cwd: &str) -> Vec<(&'static str, String)> {
+    build_terminal_environment_from(cwd, |key| std::env::var(key).ok())
+}
+
+fn apply_terminal_environment(command: &mut CommandBuilder, cwd: &str) {
+    for (name, value) in build_terminal_environment(cwd) {
+        command.env(name, value);
+    }
+}
+
 #[cfg(windows)]
 fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
     let mut command = CommandBuilder::new("powershell");
@@ -386,6 +429,7 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
         "function global:prompt { $env:MACRO_TERMINAL_PROMPT }; Set-Location -LiteralPath $env:MACRO_TERMINAL_CWD",
     );
     command.cwd(Path::new(&record.cwd));
+    apply_terminal_environment(&mut command, &record.cwd);
     command.env("MACRO_TERMINAL_CWD", &record.cwd);
     command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
     command
@@ -398,6 +442,7 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
     command.arg("--norc");
     command.arg("-i");
     command.cwd(Path::new(&record.cwd));
+    apply_terminal_environment(&mut command, &record.cwd);
     command.env("PS1", render_terminal_prompt(record));
     command.env("PROMPT_COMMAND", "");
     command
@@ -1600,4 +1645,73 @@ pub async fn terminal_kill(
     session_id: String,
 ) -> CommandResult<TerminalSessionDto> {
     kill_legacy_session_internal(terminal_store.inner().clone(), session_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn terminal_environment_supplies_pty_defaults() {
+        let env = build_terminal_environment_from("/repo/app", |_| None)
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(env.get("TERM").map(String::as_str), Some(DEFAULT_TERM));
+        assert_eq!(
+            env.get("COLORTERM").map(String::as_str),
+            Some(DEFAULT_COLORTERM)
+        );
+        assert_eq!(
+            env.get("TERM_PROGRAM").map(String::as_str),
+            Some(TERM_PROGRAM_NAME)
+        );
+        assert_eq!(env.get("PWD").map(String::as_str), Some("/repo/app"));
+    }
+
+    #[test]
+    fn terminal_environment_preserves_existing_terminal_values() {
+        let source = env_map(&[
+            ("TERM", "screen-256color"),
+            ("COLORTERM", "24bit"),
+            ("TERM_PROGRAM", "UserTerminal"),
+        ]);
+        let env = build_terminal_environment_from("/repo/app", |key| source.get(key).cloned())
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(env.get("TERM").map(String::as_str), Some("screen-256color"));
+        assert_eq!(env.get("COLORTERM").map(String::as_str), Some("24bit"));
+        assert_eq!(
+            env.get("TERM_PROGRAM").map(String::as_str),
+            Some("UserTerminal")
+        );
+        assert_eq!(env.get("PWD").map(String::as_str), Some("/repo/app"));
+    }
+
+    #[test]
+    fn terminal_environment_ignores_blank_terminal_values() {
+        let source = env_map(&[("TERM", "   "), ("COLORTERM", ""), ("TERM_PROGRAM", "\t")]);
+        let env = build_terminal_environment_from("/repo/app", |key| source.get(key).cloned())
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(env.get("TERM").map(String::as_str), Some(DEFAULT_TERM));
+        assert_eq!(
+            env.get("COLORTERM").map(String::as_str),
+            Some(DEFAULT_COLORTERM)
+        );
+        assert_eq!(
+            env.get("TERM_PROGRAM").map(String::as_str),
+            Some(TERM_PROGRAM_NAME)
+        );
+    }
 }

@@ -7,12 +7,14 @@ interface TerminalViewportProps {
   tab: TerminalTab;
   onInput: (input: string) => void;
   onResize: (cols: number, rows: number) => void;
+  onClear?: () => void;
 }
 
 export const TerminalViewport: React.FC<TerminalViewportProps> = ({
   tab,
   onInput,
   onResize,
+  onClear,
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const themeContext = useOptionalTheme();
@@ -32,6 +34,7 @@ export const TerminalViewport: React.FC<TerminalViewportProps> = ({
       theme: terminalTheme,
       onInput,
       onResize,
+      onClear,
     });
 
     return () => {
@@ -49,8 +52,9 @@ export const TerminalViewport: React.FC<TerminalViewportProps> = ({
       theme: terminalTheme,
       onInput,
       onResize,
+      onClear,
     });
-  }, [tab.id, tab.snapshot, tab.hasLiveSession, terminalTheme, onInput, onResize]);
+  }, [tab.id, tab.snapshot, tab.hasLiveSession, terminalTheme, onInput, onResize, onClear]);
 
   useEffect(() => {
     terminalRuntime.focusTab(tab.id);

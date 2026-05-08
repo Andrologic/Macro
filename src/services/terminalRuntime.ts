@@ -14,6 +14,7 @@ type WriteOperation =
 type RuntimeHandlers = {
   onInput: (input: string) => void;
   onResize: (cols: number, rows: number) => void;
+  onClear?: () => void;
 };
 
 type RuntimeSession = {
@@ -301,10 +302,13 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
 
   terminal.onData((data) => {
     if (session.hasLiveSession) {
+      if (data === '\x0c' && session.handlers.onClear) {
+        session.handlers.onClear();
+        return;
+      }
       session.handlers.onInput(data);
     }
   });
-
   window.addEventListener('resize', session.windowResizeListener);
   document.addEventListener('visibilitychange', session.visibilityChangeListener);
 
