@@ -8,6 +8,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
 import { createCombinedAbortSignal } from '../utils/abortSignals';
 import { devLogger } from '../utils/devLogger';
+import { resolveProviderCapabilities } from './providerCapabilities';
 
 export interface ProviderModel {
   id: string;
@@ -85,9 +86,6 @@ export interface ProbeProviderReachabilityOptions extends FetchModelsOptions {
 
 const isLocalProvider = (providerId: string): boolean =>
   providerId === 'lmstudio' || providerId === 'ollama';
-
-const isOpenCodeProvider = (providerId: string, baseUrl: string): boolean =>
-  providerId === 'opencode-go' || baseUrl.toLowerCase().includes('opencode.ai');
 
 const buildProviderHeaders = (params: {
   apiKey?: string;
@@ -279,7 +277,7 @@ export async function probeModelsEndpoint(
   // Log connection attempt for debugging
   if (isLocalProvider(providerId)) {
     devLogger.log(`[${providerId}] Fetching models from ${baseUrl}/models`);
-  } else if (isOpenCodeProvider(providerId, baseUrl)) {
+  } else if (resolveProviderCapabilities({ providerId, baseUrl }).providerId === 'opencode-go') {
     devLogger.log('[opencode_http_probe] Fetching OpenCode models over HTTP');
   }
 
@@ -395,7 +393,7 @@ export async function probeChatCompletionsEndpoint(
   const effectiveTimeout = getEffectiveTimeout(providerId, timeout);
   const headers = buildProviderHeaders({ apiKey, providerId });
 
-  if (isOpenCodeProvider(providerId, baseUrl)) {
+  if (resolveProviderCapabilities({ providerId, baseUrl }).providerId === 'opencode-go') {
     devLogger.log('[opencode_http_probe] Probing OpenCode chat completions over HTTP');
   }
 

@@ -8,16 +8,13 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ### Fixed
 
-- Supplied a complete PTY environment for integrated terminal shells and exposed clear/interrupt controls so commands like `clear` work without restarting the session.
-- Updated integrated terminal launches to follow the user's configured Unix shell instead of forcing `bash`, avoiding the macOS zsh migration warning on new sessions.
-- Paused automatic repository change refreshes while implementation tasks are awaiting a user response, including pending questionnaires, to avoid noisy background retries.
-- Added backoff and stable notification handling for `Too many open files` / `EMFILE` workspace errors so Macro reports one temporary resource-pressure issue instead of repeated generic task alerts.
-- Added typed resource-pressure, workspace-state, and plan-metadata error handling so missing or corrupt plan metadata is presented as a repairable state instead of generic attention alerts.
-- Added conservative plan metadata health inspection and orphan cleanup for runtime-only plan directories left behind after failed persistence.
-- Reduced filesystem watcher pressure by skipping ignored cache, build, dependency, agent workspace, and generated worktree directories before registering watchers.
-- Added notification center cleanup for legacy duplicated `Too many open files` and `Plan not found` alerts.
-- Preserved local `AwaitingResponse` task state when plan metadata persistence is temporarily unavailable, keeping the user question as the active next step.
-- Prevented transient CMD/PowerShell windows on Windows when Macro runs background provider, Git, terminal, Copilot runtime, and launcher commands.
+- Improved integrated terminal behavior by supplying a complete PTY environment, exposing clear/interrupt controls, following the user's configured Unix shell, and avoiding the macOS zsh migration warning on new sessions.
+- Prevented noisy repository refresh loops while implementation tasks are awaiting a user response, including pending questionnaires.
+- Stabilized `Too many open files` / `EMFILE` handling with refresh backoff, deduplicated notifications, typed resource-pressure errors, and watcher exclusions for cache, build, dependency, agent workspace, and generated worktree directories.
+- Added repair-oriented plan metadata handling, including typed workspace/metadata errors, conservative health inspection, orphan cleanup, and preservation of local `AwaitingResponse` state when persistence is temporarily unavailable.
+- Cleaned up legacy duplicated notification-center alerts for `Too many open files` and `Plan not found`.
+- Prevented transient CMD/PowerShell windows on Windows by routing background provider, Git, terminal, Copilot runtime, and launcher commands through explicit hidden-process wrappers while keeping user-requested external terminals visible.
+- Hardened provider diagnostics with OpenCode Go HTTP-only capability classification, Copilot runtime classification, typed keyring-unavailable handling, and stable keyring/provider operation logging.
 
 ## 0.1.0-rc.6
 

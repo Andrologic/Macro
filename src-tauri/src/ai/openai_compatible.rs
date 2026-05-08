@@ -2,6 +2,7 @@ use super::chatgpt::types::{
     AiChatMessageContent, AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
     AiToolCall, AiToolCallFunction,
 };
+use crate::ai::provider_capabilities::resolve_provider_capabilities;
 use crate::ai::{emit_timeline, AiState, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
@@ -81,6 +82,22 @@ async fn stream_chat_inner(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
     let provider_type = provider.provider_type.clone();
+    let capabilities = resolve_provider_capabilities(
+        &request.provider_id,
+        &provider_type,
+        Some(&provider.base_url),
+    );
+    if capabilities.provider_id == "opencode-go" {
+        tracing::debug!(
+            provider_id = %request.provider_id,
+            provider_type = %provider_type,
+            operation = "opencode_http_probe",
+            http_only = capabilities.http_only,
+            uses_local_runtime = capabilities.uses_local_runtime,
+            supports_model_scan = capabilities.supports_model_scan,
+            "resolved OpenCode provider capabilities"
+        );
+    }
     let timeline = ProviderTimeline::new(
         &app_handle,
         &request.request_id,

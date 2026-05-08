@@ -6,7 +6,6 @@ mod review;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
@@ -18,7 +17,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::hide_console_window;
+use crate::core::process::background_command;
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
@@ -334,9 +333,8 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
-    let mut command = Command::new("git");
+    let mut command = background_command("git");
     command.current_dir(cwd).args(args);
-    hide_console_window(&mut command);
     let output = command.output().map_err(|e| BackendError::Git {
         message: format!("Failed to run git command '{}': {}", args.join(" "), e),
     })?;

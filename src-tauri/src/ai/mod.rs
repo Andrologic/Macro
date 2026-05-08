@@ -1,6 +1,7 @@
 pub mod chatgpt;
 pub mod copilot;
 pub mod openai_compatible;
+pub mod provider_capabilities;
 pub mod reasoning_catalog;
 
 use std::collections::HashMap;

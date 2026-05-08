@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use git2::{
@@ -11,7 +10,7 @@ use git2::{
 };
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::hide_console_window;
+use crate::core::process::background_command;
 
 pub mod repo;
 mod worktree;
@@ -384,11 +383,10 @@ fn ensure_local_branch_available(repo: &Repository, branch_name: &str) -> Result
 }
 
 fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
-    let mut add_command = Command::new("git");
+    let mut add_command = background_command("git");
     add_command
         .current_dir(workdir)
         .args(["add", "--", ".gitignore"]);
-    hide_console_window(&mut add_command);
     let add_output = add_command.output().map_err(|e| BackendError::Io {
         message: e.to_string(),
         source: e,
@@ -401,11 +399,10 @@ fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
         });
     }
 
-    let mut diff_command = Command::new("git");
+    let mut diff_command = background_command("git");
     diff_command
         .current_dir(workdir)
         .args(["diff", "--cached", "--quiet", "--", ".gitignore"]);
-    hide_console_window(&mut diff_command);
     let diff_output = diff_command.output().map_err(|e| BackendError::Io {
         message: e.to_string(),
         source: e,
@@ -421,7 +418,7 @@ fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
         });
     }
 
-    let mut commit_command = Command::new("git");
+    let mut commit_command = background_command("git");
     commit_command.current_dir(workdir).args([
         "-c",
         "user.name=Macro",
@@ -433,7 +430,6 @@ fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
         "--",
         ".gitignore",
     ]);
-    hide_console_window(&mut commit_command);
     let commit_output = commit_command.output().map_err(|e| BackendError::Io {
         message: e.to_string(),
         source: e,

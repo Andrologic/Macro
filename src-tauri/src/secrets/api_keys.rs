@@ -1,5 +1,6 @@
-use super::chatgpt::delete_provider_secret;
-use super::store::{read_secret, write_secret, SecretEnvelope};
+use super::store::{
+    delete_provider_secret_entry, read_provider_secret, write_provider_secret, SecretEnvelope,
+};
 use super::SecretError;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::sync::{LazyLock, Mutex};
 static API_KEY_CACHE: LazyLock<Mutex<HashMap<String, Option<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub fn get_api_key(provider_id: &str) -> Result<Option<String>, keyring::Error> {
+pub fn get_api_key(provider_id: &str) -> Result<Option<String>, SecretError> {
     if let Some(cached) = API_KEY_CACHE
         .lock()
         .expect("api key cache lock")
@@ -18,7 +19,7 @@ pub fn get_api_key(provider_id: &str) -> Result<Option<String>, keyring::Error> 
         return Ok(cached);
     }
 
-    let Some(secret) = read_secret(provider_id)? else {
+    let Some(secret) = read_provider_secret(provider_id)? else {
         API_KEY_CACHE
             .lock()
             .expect("api key cache lock")
@@ -42,8 +43,8 @@ pub fn get_api_key(provider_id: &str) -> Result<Option<String>, keyring::Error> 
     Ok(Some(secret))
 }
 
-pub fn set_api_key(provider_id: &str, api_key: &str) -> Result<(), keyring::Error> {
-    write_secret(provider_id, api_key)?;
+pub fn set_api_key(provider_id: &str, api_key: &str) -> Result<(), SecretError> {
+    write_provider_secret(provider_id, api_key)?;
     API_KEY_CACHE
         .lock()
         .expect("api key cache lock")
@@ -51,18 +52,11 @@ pub fn set_api_key(provider_id: &str, api_key: &str) -> Result<(), keyring::Erro
     Ok(())
 }
 
-pub fn delete_api_key(provider_id: &str) -> Result<(), keyring::Error> {
-    let result = delete_provider_secret(provider_id).map_err(|error| match error {
-        SecretError::Keyring(inner) => inner,
-        SecretError::Serde(_) => keyring::Error::NoEntry,
-    });
-
-    if result.is_ok() {
-        API_KEY_CACHE
-            .lock()
-            .expect("api key cache lock")
-            .insert(provider_id.to_string(), None);
-    }
-
-    result
+pub fn delete_api_key(provider_id: &str) -> Result<(), SecretError> {
+    delete_provider_secret_entry(provider_id)?;
+    API_KEY_CACHE
+        .lock()
+        .expect("api key cache lock")
+        .insert(provider_id.to_string(), None);
+    Ok(())
 }
