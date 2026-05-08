@@ -253,6 +253,19 @@ const terminalUpdateTabMetadataMock = mock(
     } | null;
   }): Promise<TerminalTabDto> => buildUpdatedTabDto(params)
 );
+const terminalInterruptMock = mock(async (tabId: string): Promise<TerminalTabDto> =>
+  buildManualTabDto({
+    id: tabId,
+    status: 'idle',
+    last_exit_code: 130,
+  })
+);
+const terminalClearTabMock = mock(async (tabId: string): Promise<TerminalTabDto> =>
+  buildManualTabDto({
+    id: tabId,
+    snapshot: '',
+  })
+);
 const terminalCreateSessionMock = mock(
   async (params: {
     projectId: string;
@@ -316,6 +329,8 @@ const registerUseTerminalStoreMocks = async (counter: number) => {
     terminalReconnectTab: terminalReconnectTabMock,
     terminalReadTab: terminalReadTabMock,
     terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
+    terminalInterrupt: terminalInterruptMock,
+    terminalClearTab: terminalClearTabMock,
   }));
 
   mock.module('../services/preferences', () => ({
@@ -424,6 +439,8 @@ describe('useTerminalStore', () => {
     terminalReconnectTabMock.mockReset();
     terminalReadTabMock.mockReset();
     terminalUpdateTabMetadataMock.mockReset();
+    terminalInterruptMock.mockReset();
+    terminalClearTabMock.mockReset();
     loadPreferenceMock.mockReset();
     savePreferenceMock.mockReset();
     resolveProjectExecutionContextMock.mockReset();
@@ -501,6 +518,19 @@ describe('useTerminalStore', () => {
     terminalUpdateTabMetadataMock.mockImplementation(async (params) => ({
       ...buildUpdatedTabDto(params),
     }));
+    terminalInterruptMock.mockImplementation(async (tabId: string) =>
+      buildManualTabDto({
+        id: tabId,
+        status: 'idle',
+        last_exit_code: 130,
+      })
+    );
+    terminalClearTabMock.mockImplementation(async (tabId: string) =>
+      buildManualTabDto({
+        id: tabId,
+        snapshot: '',
+      })
+    );
     loadPreferenceMock.mockImplementation(async (key: string) => {
       if (key === 'terminalPanelHeight') return 320;
       if (key === 'terminalActiveTabId') return null;
@@ -809,5 +839,47 @@ describe('useTerminalStore', () => {
         branchLabel: null,
       },
     });
+  });
+
+  it('interrupts a live terminal tab through the Tauri command and updates the tab', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    await useTerminalStore.getState().createManualTab();
+    const tab = await useTerminalStore.getState().interruptTab('manual-tab-task-1-project-1');
+
+    expect(terminalInterruptMock).toHaveBeenCalledWith('manual-tab-task-1-project-1');
+    expect(tab.lastExitCode).toBe(130);
+    expect(useTerminalStore.getState().tabs['manual-tab-task-1-project-1']?.lastExitCode).toBe(130);
+  });
+
+  it('clears a terminal tab through the Tauri command and resets unread output', async () => {
+    terminalClearTabMock.mockImplementationOnce(async (tabId: string) =>
+      buildManualTabDto({
+        id: tabId,
+        snapshot: '',
+        updated_at: '2026-03-26T10:10:00.000Z',
+      })
+    );
+    const { useTerminalStore } = await loadTerminalStore();
+
+    await useTerminalStore.getState().createManualTab();
+    const tabId = 'manual-tab-task-1-project-1';
+    useTerminalStore.setState((state: ReturnType<typeof useTerminalStore.getState>) => ({
+      tabs: {
+        ...state.tabs,
+        [tabId]: {
+          ...state.tabs[tabId],
+          snapshot: 'clear me',
+          hasUnreadOutput: true,
+        },
+      },
+    }));
+
+    const tab = await useTerminalStore.getState().clearTab(tabId);
+
+    expect(terminalClearTabMock).toHaveBeenCalledWith(tabId);
+    expect(tab.snapshot).toBe('');
+    expect(useTerminalStore.getState().tabs[tabId]?.snapshot).toBe('');
+    expect(useTerminalStore.getState().tabs[tabId]?.hasUnreadOutput).toBe(false);
   });
 });

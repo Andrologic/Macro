@@ -1345,6 +1345,7 @@
       "hideArchived": "보관된 항목 숨기기",
       "loading": "계획 로드 중...",
       "loadingShort": "로드 중",
+      "repairMetadata": "Repair metadata",
       "empty": "아직 계획이 없습니다.",
       "readOnlyOnlyAction": "계획을 만들려면 최소 하나의 편집 가능한 저장소가 필요합니다.",
       "releasePlanDescription": "Release workflow 초안입니다. 채팅에서 버전과 저장소를 확인한 다음 안정화 체크리스트를 생성합니다.",
@@ -1967,6 +1968,8 @@
     "openWithPlus": "Open one with the + button.",
     "disconnected": "Disconnected",
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
+    "clear": "Clear terminal",
+    "interrupt": "Interrupt terminal",
     "reconnect": "Reconnect"
   },
   "notify": {

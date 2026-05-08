@@ -1344,6 +1344,7 @@
       "hideArchived": "Masquer les archives",
       "loading": "Chargement des plans...",
       "loadingShort": "Chargement",
+      "repairMetadata": "Réparer les métadonnées",
       "empty": "Pas encore de projets.",
       "readOnlyOnlyAction": "Au moins un dépôt éditable est nécessaire pour créer un plan.",
       "releasePlanDescription": "Brouillon de workflow release. Confirmez les versions et les dépôts dans le chat, puis générez la checklist de stabilisation.",
@@ -1966,6 +1967,8 @@
     "openWithPlus": "Open one with the + button.",
     "disconnected": "Disconnected",
     "disconnectedDescription": "Cette session de terminal n'est plus attachée à un processus actif.",
+    "clear": "Effacer le terminal",
+    "interrupt": "Interrompre le terminal",
     "reconnect": "Reconnect"
   },
   "notify": {
