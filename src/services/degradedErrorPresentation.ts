@@ -1,4 +1,12 @@
-import { toServiceError, type ServiceError } from './contracts/errors';
+import {
+  SERVICE_ERROR_CODES,
+  isPlanMetadataMissingError,
+  isResourcePressureError,
+  isWorkspaceStateUnavailableError,
+  toServiceError,
+  type ServiceError,
+} from './contracts/errors';
+import { isTooManyOpenFilesMessage } from './resourcePressureBackoff';
 import type { MacroSyncNextAction, MacroSyncReason } from './tauriIpc';
 
 export type DegradedErrorSeverity = 'info' | 'warning' | 'danger';
@@ -288,6 +296,62 @@ export const presentServiceError = (
   const normalized = toServiceError(error);
   const message = serviceErrorMessage(normalized);
   const lower = message.toLowerCase();
+
+  if (isResourcePressureError(normalized) || isTooManyOpenFilesMessage(message)) {
+    return {
+      title: 'Macro is temporarily overloaded',
+      body: 'The system has too many files open, so Macro paused automatic repository refreshes before retrying.',
+      nextStep: 'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
+
+  if (
+    normalized.code === SERVICE_ERROR_CODES.PLAN_REPLICA_DIVERGED ||
+    lower.includes('diverged metadata replicas') ||
+    lower.includes('missing metadata replicas')
+  ) {
+    return {
+      title: 'Plan metadata needs repair',
+      body: 'Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.',
+      nextStep: 'Repair the plan metadata, then retry the action.',
+      severity: 'danger',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'repair_metadata',
+    };
+  }
+
+  if (isPlanMetadataMissingError(normalized)) {
+    return {
+      title: 'Plan metadata is incomplete',
+      body: 'Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.',
+      nextStep: 'Repair the metadata references, then retry the action.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'repair_metadata',
+    };
+  }
+
+  if (isWorkspaceStateUnavailableError(normalized)) {
+    return {
+      title: 'Workspace state is temporarily unavailable',
+      body: 'Macro could not read the workspace state needed for this action.',
+      nextStep: 'Retry after the workspace finishes updating. If it persists, reopen the project.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
 
   if (lower.includes('worktree') || lower.includes('branch is still checked out') || lower.includes('base branch')) {
     return presentWorktreeError(normalized, options);

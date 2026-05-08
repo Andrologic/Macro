@@ -6,7 +6,15 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
-No unreleased changes.
+### Fixed
+
+- Paused automatic repository change refreshes while implementation tasks are awaiting a user response, including pending questionnaires, to avoid noisy background retries.
+- Added backoff and stable notification handling for `Too many open files` / `EMFILE` workspace errors so Macro reports one temporary resource-pressure issue instead of repeated generic task alerts.
+- Added typed resource-pressure, workspace-state, and plan-metadata error handling so missing or corrupt plan metadata is presented as a repairable state instead of generic attention alerts.
+- Added conservative plan metadata health inspection and orphan cleanup for runtime-only plan directories left behind after failed persistence.
+- Reduced filesystem watcher pressure by skipping ignored cache, build, dependency, agent workspace, and generated worktree directories before registering watchers.
+- Added notification center cleanup for legacy duplicated `Too many open files` and `Plan not found` alerts.
+- Preserved local `AwaitingResponse` task state when plan metadata persistence is temporarily unavailable, keeping the user question as the active next step.
 
 ## 0.1.0-rc.6
 

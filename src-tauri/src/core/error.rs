@@ -73,6 +73,9 @@ pub enum BackendError {
     #[error("File system Disk full: {message}")]
     FilesystemDiskFull { message: String },
 
+    #[error("Resource pressure: {message}")]
+    ResourcePressure { message: String },
+
     #[error("Index error: {message}")]
     #[allow(dead_code)]
     Index { message: String },
@@ -123,6 +126,7 @@ impl BackendError {
             BackendError::FilesystemFileTooLarge { .. } => "FilesystemFileTooLarge",
             BackendError::FilesystemInvalidPath { .. } => "FilesystemInvalidPath",
             BackendError::FilesystemDiskFull { .. } => "FilesystemDiskFull",
+            BackendError::ResourcePressure { .. } => "RESOURCE_PRESSURE",
             BackendError::Index { .. } => "Index",
             BackendError::AI { .. } => "AI",
             BackendError::Config { .. } => "Config",
@@ -156,6 +160,7 @@ impl BackendError {
             | BackendError::FilesystemFileTooLarge { message }
             | BackendError::FilesystemInvalidPath { message }
             | BackendError::FilesystemDiskFull { message }
+            | BackendError::ResourcePressure { message }
             | BackendError::Index { message }
             | BackendError::AI { message }
             | BackendError::Config { message }
@@ -181,6 +186,11 @@ impl Serialize for BackendError {
 
 impl From<std::io::Error> for BackendError {
     fn from(err: std::io::Error) -> Self {
+        if is_too_many_open_files_error(&err) {
+            return BackendError::ResourcePressure {
+                message: err.to_string(),
+            };
+        }
         BackendError::Io {
             message: err.to_string(),
             source: err,
@@ -214,8 +224,25 @@ impl From<config::ConfigError> for BackendError {
 
 pub type Result<T> = std::result::Result<T, BackendError>;
 
+pub fn is_too_many_open_files_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(24)
+        || err
+            .to_string()
+            .to_lowercase()
+            .contains("too many open files")
+}
+
 pub fn io_error_to_backend_error(err: std::io::Error, path: &std::path::Path) -> BackendError {
     use std::io::ErrorKind;
+
+    if is_too_many_open_files_error(&err) {
+        return BackendError::ResourcePressure {
+            message: format!(
+                "Too many open files while reading workspace path: {}",
+                path.display()
+            ),
+        };
+    }
 
     match err.kind() {
         ErrorKind::NotFound => BackendError::FilesystemNotFound {
@@ -305,6 +332,9 @@ mod tests {
         let _ = BackendError::Internal {
             message: "test".to_string(),
         };
+        let _ = BackendError::ResourcePressure {
+            message: "too many open files".to_string(),
+        };
     }
 
     #[test]
@@ -312,5 +342,12 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test");
         let backend_err: BackendError = io_err.into();
         assert!(matches!(backend_err, BackendError::Io { .. }));
+    }
+
+    #[test]
+    fn test_too_many_open_files_from_io_error() {
+        let io_err = std::io::Error::from_raw_os_error(24);
+        let backend_err: BackendError = io_err.into();
+        assert!(matches!(backend_err, BackendError::ResourcePressure { .. }));
     }
 }

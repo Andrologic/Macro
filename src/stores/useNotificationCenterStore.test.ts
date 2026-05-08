@@ -356,4 +356,46 @@ describe('useNotificationCenterStore', () => {
       },
     ]);
   });
+
+  it('coalesces legacy too-many-open-files notifications into one stable item', () => {
+    const items = notificationStore.sanitizeNotificationCenterItems([
+      createNotificationItem(1, {
+        id: 'implement-task-error:Failed to read workspace state: Too many open files (os error 24)',
+        level: 'error',
+        title: 'Something needs attention',
+        description: 'Failed to read workspace state: Too many open files (os error 24)',
+      }),
+      createNotificationItem(2, {
+        id: 'another-resource-pressure-id',
+        level: 'warning',
+        title: 'Too many open files',
+      }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: 'implement-task-error:too-many-open-files',
+      level: 'warning',
+      title: 'Macro is temporarily overloaded',
+    });
+  });
+
+  it('normalizes legacy plan-not-found generic notifications', () => {
+    const items = notificationStore.sanitizeNotificationCenterItems([
+      createNotificationItem(1, {
+        id: 'implement-task-error:Plan not found: plan-1',
+        level: 'error',
+        title: 'Something needs attention',
+        description: 'Plan not found: plan-1',
+      }),
+    ]);
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: 'architect-plan-metadata:missing',
+        level: 'warning',
+        title: 'Plan metadata is incomplete',
+      }),
+    ]);
+  });
 });

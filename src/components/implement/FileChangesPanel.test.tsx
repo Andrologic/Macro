@@ -474,6 +474,8 @@ describe('FileChangesPanel', () => {
     notifyErrorMock = mock(() => undefined);
     notifyActionRequiredMock = mock(() => undefined);
     await loadFileChangesPanelModules();
+    const resourcePressureBackoff = await import('../../services/resourcePressureBackoff');
+    resourcePressureBackoff.__testables.reset();
     stageChangesMock = mock(async () => undefined);
     unstageChangesMock = mock(async () => undefined);
     stageAllChangesMock = mock(async () => undefined);
@@ -2493,6 +2495,75 @@ describe('FileChangesPanel', () => {
     });
 
     expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not load repository changes while the task is awaiting a user response', async () => {
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        status: 'AwaitingResponse',
+      },
+    });
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('Loading repository changes');
+  });
+
+  it('does not load repository changes while a questionnaire is pending for the task', async () => {
+    seedStores(buildRepository(false));
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      conversations: [
+        {
+          id: 'conversation-1',
+          title: 'Task conversation',
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          group_id: 'group-1',
+          project_id: 'project-1',
+          last_message: '',
+          message_count: 1,
+          updated_at: '2026-04-22T10:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      getActiveQuestionnaire: (() => ({ mode: 'pending_reply' })) as never,
+    });
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('shows one resource-pressure notification and backs off automatic refreshes', async () => {
+    seedStores(buildRepository(false));
+    useFileChangesStore.setState({
+      ...useFileChangesStore.getState(),
+      lastError: 'Failed to read workspace state: Too many open files (os error 24)',
+    });
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(notifyActionRequiredMock).toHaveBeenCalledWith(
+      'Macro is temporarily overloaded',
+      expect.objectContaining({
+        notificationKey: 'implement-task-error:too-many-open-files',
+      })
+    );
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
   it('loads changes when only a focused subproject is selected', async () => {

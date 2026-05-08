@@ -861,4 +861,64 @@ describe('architectPlanService replicas', () => {
       expect(divergenceError.divergence.replicas).toHaveLength(2);
     }
   });
+
+  it('reports runtime-only plan metadata as an orphan instead of generic missing state', async () => {
+    writeWorkspaceJson('/repos/web', 'branches/develop/plans/index.json', {
+      version: 3,
+      activePlanId: 'plan-orphan',
+      plans: [],
+      reservedPlanSlugs: [],
+    });
+    writeWorkspaceJson('/repos/web', 'branches/develop/plans/plan-orphan/runtime.json', {
+      taskId: 'task-1',
+    });
+
+    const { service } = await loadArchitectPlanService();
+    const health = await service.inspectArchitectPlanMetadataHealth({
+      branchName: 'develop',
+      planId: 'plan-orphan',
+    });
+
+    expect(health.status).toBe('runtime_orphan');
+    expect(health.orphanedReplicas).toHaveLength(1);
+  });
+
+  it('repairs runtime-only orphan metadata by removing the stale plan directory and index reference', async () => {
+    writeWorkspaceJson('/repos/web', 'branches/develop/plans/index.json', {
+      version: 3,
+      activePlanId: 'plan-orphan',
+      plans: [
+        {
+          id: 'plan-orphan',
+          slug: 'plan-orphan',
+          title: 'plan-orphan',
+          description: '',
+          status: 'validated',
+          targetBranch: 'develop',
+          projectId: 'web',
+          projectIds: ['web'],
+          createdAt: '2026-03-15T00:00:00.000Z',
+          updatedAt: '2026-03-15T00:00:00.000Z',
+          nodeCount: 1,
+        },
+      ],
+      reservedPlanSlugs: ['plan-orphan'],
+    });
+    writeWorkspaceJson('/repos/web', 'branches/develop/plans/plan-orphan/runtime.json', {
+      taskId: 'task-1',
+    });
+
+    const { service } = await loadArchitectPlanService();
+    const repaired = await service.repairArchitectPlanMetadata({
+      branchName: 'develop',
+      planId: 'plan-orphan',
+    });
+
+    expect(repaired.statusBeforeRepair).toBe('runtime_orphan');
+    expect(repaired.repairedPlan).toBeNull();
+    expect(readWorkspaceFile('/repos/web', 'branches/develop/plans/plan-orphan/runtime.json')).toBeNull();
+    const index = JSON.parse(readWorkspaceFile('/repos/web', 'branches/develop/plans/index.json') || '{}');
+    expect(index.activePlanId).toBeNull();
+    expect(index.plans).toEqual([]);
+  });
 });
