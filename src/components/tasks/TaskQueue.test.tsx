@@ -315,6 +315,11 @@ describe('TaskQueue', () => {
       text: badge.textContent?.replace(/\s+/g, ' ').trim(),
     }));
 
+  const getTaskContextBadgeIcon = (key: string) => {
+    const badge = document.body.querySelector(`[data-task-context-badge="${key}"]`);
+    return Array.from(badge?.children ?? []).find((child) => child.tagName.toLowerCase() === 'svg');
+  };
+
   beforeEach(async () => {
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
@@ -607,6 +612,7 @@ describe('TaskQueue', () => {
           slug: '1710000000000',
           title: '1710000000000',
           label: 'Checkout refresh',
+          planKind: 'release',
           status: 'in_progress',
           targetBranch: 'develop',
           projectIds: ['project-1'],
@@ -626,6 +632,83 @@ describe('TaskQueue', () => {
     expect(getTaskContextBadges()).toEqual([
       { key: 'plan', text: 'Checkout refresh' },
     ]);
+    const icon = getTaskContextBadgeIcon('plan');
+    const iconClassName = icon?.getAttribute('class') ?? '';
+    expect(iconClassName).toContain('lucide-flag');
+    expect(iconClassName).not.toContain('border');
+    expect(iconClassName).not.toContain('rounded-full');
+    expect(iconClassName).not.toContain('bg-');
+  });
+
+  it('renders hotfix plan badges with the hotfix icon', async () => {
+    seedTasks([
+      makeTask('architect-hotfix', 'Pending', {
+        title: 'Architect hotfix task',
+        task_source: 'architect',
+        plan_id: 'plan-hotfix',
+        plan_title: 'Hotfix plan',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: 'plan-hotfix',
+          slug: 'plan-hotfix',
+          title: 'Hotfix plan',
+          label: 'Production patch',
+          planKind: 'hotfix',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskContextBadgeIcon('plan')?.classList.contains('lucide-zap')).toBe(true);
+  });
+
+  it('falls back to the feature icon when the plan kind is missing', async () => {
+    seedTasks([
+      makeTask('architect-feature', 'Pending', {
+        title: 'Architect feature task',
+        task_source: 'architect',
+        plan_id: 'plan-feature',
+        plan_title: 'Feature plan',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: 'plan-feature',
+          slug: 'plan-feature',
+          title: 'Feature plan',
+          label: 'Checkout refresh',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskContextBadgeIcon('plan')?.classList.contains('lucide-sparkles')).toBe(true);
   });
 
   it('renders the standalone badge without a plan badge for independent tasks', async () => {

@@ -20,6 +20,11 @@ import {
   repairArchitectPlanMetadata,
 } from '../../services/architectPlanService';
 import {
+  getArchitectPlanKind,
+  type ArchitectPlanKind,
+} from '../../services/architectPlanKinds';
+import { getPlanKindIconName } from '../../services/planKindPresentation';
+import {
   isPlanFinalizationTask,
   taskMatchesProjectId,
 } from '../../services/implementTaskCatalog';
@@ -210,6 +215,7 @@ interface TaskItemProps {
   multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
   planLabel: string;
+  planKind?: ArchitectPlanKind | null;
   isAssistantRunning: boolean;
   taskCommandRunStatus: 'running' | 'cancelling' | null;
   canRunTaskCommands: boolean;
@@ -228,6 +234,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   multiRepoPresentation,
   isSelected,
   planLabel,
+  planKind,
   isAssistantRunning,
   taskCommandRunStatus,
   canRunTaskCommands,
@@ -250,7 +257,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     contextBadges.push({
       key: 'plan',
       label: trimmedPlanLabel,
-      icon: 'layers',
+      icon: getPlanKindIconName(planKind ?? 'feature'),
     });
   }
   if (task.task_source === 'plan_finalization') {
@@ -468,7 +475,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                     taskContextBadgeToneClassName[badge.tone ?? 'default']
                   )}
                 >
-                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0" />}
+                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0 text-current" />}
                   <span className="truncate">{badge.label}</span>
                 </span>
               ))}
@@ -1100,6 +1107,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       availablePlanSummaries.map((plan) => [
         plan.id,
         getArchitectPlanPrimaryName(plan),
+      ])
+    );
+  }, [availablePlanSummaries]);
+  const planKindsById = useMemo(() => {
+    return new Map(
+      availablePlanSummaries.map((plan) => [
+        plan.id,
+        getArchitectPlanKind(plan),
       ])
     );
   }, [availablePlanSummaries]);
@@ -1920,6 +1935,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
+                        planKind={planKindsById.get(row.task.plan_id) ?? null}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}
                         taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                         canRunTaskCommands={canRunTaskCommandsForTask(row.task)}

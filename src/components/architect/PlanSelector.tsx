@@ -40,7 +40,7 @@ import {
 } from '../../services/projectWorkspaceState';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { Icon, type IconName } from '../ui/Icon';
+import { Icon } from '../ui/Icon';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { notify } from '../ui/toastService';
@@ -57,6 +57,7 @@ import {
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { toServiceError } from '../../services/contracts/errors';
+import { planKindIconName } from '../../services/planKindPresentation';
 import {
   consolidateScopedBlankPlans,
   ensureScopedBlankPlan,
@@ -128,13 +129,6 @@ const statusClassName: Record<string, string> = {
   completed: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
   archived: 'text-muted-foreground bg-muted/50 border-border/70',
   deleted: 'text-red-500 bg-red-500/10 border-red-500/20',
-};
-
-const planKindIconName: Record<ArchitectPlanKind, IconName> = {
-  feature: 'sparkles',
-  release: 'flag',
-  hotfix: 'zap',
-  bugfix: 'tool',
 };
 
 const planKindClassName: Record<ArchitectPlanKind, string> = {

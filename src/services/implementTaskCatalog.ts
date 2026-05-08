@@ -11,6 +11,10 @@ import {
   type ArchitectPlanStatus,
 } from './architectPlanService';
 import {
+  getArchitectPlanKind,
+  type ArchitectPlanKind,
+} from './architectPlanKinds';
+import {
   buildPlanFinalizationTaskId,
   buildPlanFinalizationTaskTitle,
   derivePlanFinalizationDependencyState,
@@ -34,6 +38,7 @@ export interface ImplementTaskPlanSummary {
   slug: string;
   title: string;
   label?: string;
+  planKind?: ArchitectPlanKind;
   status: ArchitectPlanStatus;
   storageBranch: string;
   targetBranch: string;
@@ -476,6 +481,7 @@ export const buildImplementTaskCatalog = (params: {
         slug: plan.slug,
         title: plan.title,
         label: plan.label,
+        planKind: getArchitectPlanKind(plan),
         status: plan.status,
         storageBranch: plan.targetBranch,
         targetBranch: getUniqueTargetBranch(getArchitectPlanTargetBranchesByProjectId(plan), plan.targetBranch) || '',
