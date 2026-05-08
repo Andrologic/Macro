@@ -13,6 +13,8 @@ static KEYRING_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 pub enum SecretError {
     #[error("Keyring error: {0}")]
     Keyring(#[from] keyring::Error),
+    #[error("System keyring is unavailable during {operation}.")]
+    StoreUnavailable { operation: &'static str },
     #[error("Secret serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 }
@@ -179,14 +181,14 @@ fn log_keyring_success(
         Some(found) => debug!(
             provider_id = %entry_id,
             operation,
-            elapsed_ms = elapsed_ms(started_at),
+            duration_ms = elapsed_ms(started_at),
             found,
             "provider keyring operation completed"
         ),
         None => debug!(
             provider_id = %entry_id,
             operation,
-            elapsed_ms = elapsed_ms(started_at),
+            duration_ms = elapsed_ms(started_at),
             "provider keyring operation completed"
         ),
     }
@@ -202,11 +204,35 @@ fn log_keyring_failure(
     warn!(
         provider_id = %entry_id,
         operation,
-        elapsed_ms = elapsed_ms(started_at),
+        duration_ms = elapsed_ms(started_at),
         error = %error,
         unavailable,
         "provider keyring operation failed"
     );
+}
+
+fn keyring_error_to_secret_error(
+    entry_id: &str,
+    operation: &'static str,
+    started_at: Instant,
+    error: keyring::Error,
+) -> SecretError {
+    if is_unavailable_error(&error) {
+        mark_unavailable_once();
+        log_keyring_failure(entry_id, operation, started_at, &error, true);
+        secret_error_for_keyring_error(operation, error)
+    } else {
+        log_keyring_failure(entry_id, operation, started_at, &error, false);
+        secret_error_for_keyring_error(operation, error)
+    }
+}
+
+fn secret_error_for_keyring_error(operation: &'static str, error: keyring::Error) -> SecretError {
+    if is_unavailable_error(&error) {
+        SecretError::StoreUnavailable { operation }
+    } else {
+        SecretError::Keyring(error)
+    }
 }
 
 fn is_unavailable_error(error: &keyring::Error) -> bool {
@@ -222,19 +248,82 @@ fn mark_unavailable_once() {
     }
 }
 
-pub(super) fn read_secret(provider_id: &str) -> Result<Option<String>, keyring::Error> {
-    let store = KeyringSecretStore;
-    store.read_entry(provider_id)
+pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
+    let operation = "provider_keyring_read";
+    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
+        return Err(SecretError::StoreUnavailable { operation });
+    }
+
+    let started_at = Instant::now();
+    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
+        keyring_error_to_secret_error(provider_id, operation, started_at, error)
+    })?;
+    match entry.get_password() {
+        Ok(password) => {
+            log_keyring_success(provider_id, operation, started_at, Some(true));
+            Ok(Some(password))
+        }
+        Err(keyring::Error::NoEntry) => {
+            log_keyring_success(provider_id, operation, started_at, Some(false));
+            Ok(None)
+        }
+        Err(error) => Err(keyring_error_to_secret_error(
+            provider_id,
+            operation,
+            started_at,
+            error,
+        )),
+    }
 }
 
-pub(super) fn write_secret(provider_id: &str, value: &str) -> Result<(), keyring::Error> {
-    let store = KeyringSecretStore;
-    store.write_entry(provider_id, value)
+pub(super) fn write_provider_secret(provider_id: &str, value: &str) -> Result<(), SecretError> {
+    let operation = "provider_keyring_write";
+    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
+        return Err(SecretError::StoreUnavailable { operation });
+    }
+
+    let started_at = Instant::now();
+    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
+        keyring_error_to_secret_error(provider_id, operation, started_at, error)
+    })?;
+    entry.set_password(value).map_err(|error| {
+        keyring_error_to_secret_error(provider_id, operation, started_at, error)
+    })?;
+    log_keyring_success(provider_id, operation, started_at, None);
+    Ok(())
 }
 
 pub(super) fn delete_secret_entry(provider_id: &str) -> Result<(), keyring::Error> {
     let store = KeyringSecretStore;
     store.delete_entry(provider_id)
+}
+
+pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), SecretError> {
+    let operation = "provider_keyring_delete";
+    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
+        return Err(SecretError::StoreUnavailable { operation });
+    }
+
+    let started_at = Instant::now();
+    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
+        keyring_error_to_secret_error(provider_id, operation, started_at, error)
+    })?;
+    match entry.delete_password() {
+        Ok(_) => {
+            log_keyring_success(provider_id, operation, started_at, Some(true));
+            Ok(())
+        }
+        Err(keyring::Error::NoEntry) => {
+            log_keyring_success(provider_id, operation, started_at, Some(false));
+            Ok(())
+        }
+        Err(error) => Err(keyring_error_to_secret_error(
+            provider_id,
+            operation,
+            started_at,
+            error,
+        )),
+    }
 }
 
 pub(super) fn chunk_secret_entry_id(provider_id: &str, index: usize) -> String {
@@ -414,7 +503,7 @@ pub(super) fn cleanup_previous_chunked_secret_best_effort<S: SecretStore>(
 
 #[cfg(test)]
 mod tests {
-    use super::is_unavailable_error;
+    use super::{is_unavailable_error, secret_error_for_keyring_error, SecretError};
 
     #[derive(Debug)]
     struct TestKeyringError(&'static str);
@@ -443,6 +532,33 @@ mod tests {
         )));
 
         assert!(is_unavailable_error(&error));
+    }
+
+    #[test]
+    fn unavailable_keyring_errors_map_to_typed_store_unavailable() {
+        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
+            "org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided",
+        )));
+
+        let mapped = secret_error_for_keyring_error("provider_keyring_read", error);
+
+        assert!(matches!(
+            mapped,
+            SecretError::StoreUnavailable {
+                operation: "provider_keyring_read"
+            }
+        ));
+    }
+
+    #[test]
+    fn generic_keyring_errors_remain_keyring_errors() {
+        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
+            "The user name or passphrase you entered is not correct.",
+        )));
+
+        let mapped = secret_error_for_keyring_error("provider_keyring_read", error);
+
+        assert!(matches!(mapped, SecretError::Keyring(_)));
     }
 }
 

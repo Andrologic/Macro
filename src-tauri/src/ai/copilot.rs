@@ -6,7 +6,7 @@ use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
-use crate::core::process::{hide_console_window, hide_tokio_console_window};
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -26,7 +26,7 @@ use std::time::Instant;
 use tar::Archive;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{watch, Mutex};
 
 #[cfg(unix)]
@@ -550,8 +550,7 @@ fn spawn_bridge(
     envs: &[(String, String)],
 ) -> Result<Child, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
-    let mut command = Command::new(bridge_path);
-    hide_tokio_console_window(&mut command);
+    let mut command = background_tokio_command(bridge_path);
     tracing::debug!(
         operation = "copilot_runtime_spawn",
         args = ?args,
@@ -779,7 +778,7 @@ fn bridge_send_error_to_status(
 }
 
 async fn run_cli_command(cli_path: &Path, args: &[&str]) -> Result<(i32, String), String> {
-    let mut command = Command::new(cli_path);
+    let mut command = background_tokio_command(cli_path);
     tracing::debug!(
         operation = "copilot_status_probe",
         cli_path = %cli_path.display(),
@@ -793,7 +792,6 @@ async fn run_cli_command(cli_path: &Path, args: &[&str]) -> Result<(i32, String)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    hide_tokio_console_window(&mut command);
     let output = command.output().await.map_err(|error| {
         format!(
             "Failed to run Copilot CLI at {}: {}",
@@ -959,9 +957,8 @@ fn system_cli_candidates() -> Vec<PathBuf> {
     } else {
         "which"
     };
-    let mut command = std::process::Command::new(resolver);
+    let mut command = background_command(resolver);
     command.arg("copilot");
-    hide_console_window(&mut command);
     tracing::debug!(
         operation = "copilot_status_probe",
         resolver,
@@ -1751,7 +1748,7 @@ async fn run_login_flow(
     request_id: String,
     runtime: ResolvedRuntime,
 ) -> Result<(), String> {
-    let mut command = Command::new(&runtime.path);
+    let mut command = background_tokio_command(&runtime.path);
     tracing::debug!(
         operation = "copilot_runtime_spawn",
         flow = "login",
@@ -1766,7 +1763,6 @@ async fn run_login_flow(
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    hide_tokio_console_window(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start GitHub Copilot login: {}", error))?;

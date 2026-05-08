@@ -2,7 +2,7 @@ pub mod architect;
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::hide_console_window;
+use crate::core::process::background_command;
 use crate::db::models::GitWorktreeRecord;
 use crate::git::repo::get_status_options;
 use crate::git::MACRO_BRANCH_NAME;
@@ -27,7 +27,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tokio::fs;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
@@ -3306,14 +3305,13 @@ fn pull_macro_branch_best_effort(
         return (false, false, None);
     }
 
-    let mut command = Command::new("git");
+    let mut command = background_command("git");
     command.current_dir(metadata_root).args([
         "pull",
         "--no-rebase",
         DEFAULT_REMOTE_NAME,
         MACRO_BRANCH_NAME,
     ]);
-    hide_console_window(&mut command);
     let output = command.output();
 
     match output {
@@ -4754,10 +4752,10 @@ fn get_git_flow_target_branch(plan: &PlanDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::process::background_command;
     use git2::{Repository, RepositoryInitOptions};
     use serde_json::json;
     use std::fs as stdfs;
-    use std::process::Command;
     use tempfile::TempDir;
 
     fn make_project(id: &str, path: &str) -> ProjectDto {
@@ -4847,14 +4845,14 @@ mod tests {
     }
 
     fn commit_all(repo_root: &Path, message: &str) -> Oid {
-        let add_status = Command::new("git")
+        let add_status = background_command("git")
             .current_dir(repo_root)
             .args(["add", "-A", "."])
             .status()
             .expect("git add");
         assert!(add_status.success());
 
-        let commit_output = Command::new("git")
+        let commit_output = background_command("git")
             .current_dir(repo_root)
             .args([
                 "-c",
