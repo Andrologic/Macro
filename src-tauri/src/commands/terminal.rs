@@ -1,4 +1,5 @@
 use crate::commands::{command_error, CommandResult, DbPool};
+use crate::core::process::hide_tokio_console_window;
 use crate::db::{models::TerminalTabRecord, repository};
 use crate::git::GitState;
 use crate::workspace;
@@ -1162,6 +1163,7 @@ fn build_shell_command_compat(command: &str, cwd: &Path) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    hide_tokio_console_window(&mut process);
     process
 }
 
@@ -1607,11 +1609,14 @@ pub async fn terminal_close_tab(
 
 async fn kill_process(pid: u32) -> CommandResult<()> {
     #[cfg(windows)]
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status()
-        .await
-        .map_err(|error| command_error(format!("Failed to kill process {}: {}", pid, error)))?;
+    let status = {
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        hide_tokio_console_window(&mut command);
+        command.status()
+    }
+    .await
+    .map_err(|error| command_error(format!("Failed to kill process {}: {}", pid, error)))?;
 
     #[cfg(not(windows))]
     let status = Command::new("kill")

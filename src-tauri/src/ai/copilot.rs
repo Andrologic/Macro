@@ -6,6 +6,7 @@ use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::ai::{
     emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
 };
+use crate::core::process::{hide_console_window, hide_tokio_console_window};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -550,6 +551,13 @@ fn spawn_bridge(
 ) -> Result<Child, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
     let mut command = Command::new(bridge_path);
+    hide_tokio_console_window(&mut command);
+    tracing::debug!(
+        operation = "copilot_runtime_spawn",
+        args = ?args,
+        hidden_console = cfg!(target_os = "windows"),
+        "starting Macro AI runtime"
+    );
     command
         .args(args)
         .stdin(Stdio::piped())
@@ -771,21 +779,28 @@ fn bridge_send_error_to_status(
 }
 
 async fn run_cli_command(cli_path: &Path, args: &[&str]) -> Result<(i32, String), String> {
-    let output = Command::new(cli_path)
+    let mut command = Command::new(cli_path);
+    tracing::debug!(
+        operation = "copilot_status_probe",
+        cli_path = %cli_path.display(),
+        args = ?args,
+        hidden_console = cfg!(target_os = "windows"),
+        "running Copilot CLI probe"
+    );
+    command
         .args(args)
         .env(COPILOT_AUTO_UPDATE_ENV.0, COPILOT_AUTO_UPDATE_ENV.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| {
-            format!(
-                "Failed to run Copilot CLI at {}: {}",
-                cli_path.display(),
-                error
-            )
-        })?;
+        .kill_on_drop(true);
+    hide_tokio_console_window(&mut command);
+    let output = command.output().await.map_err(|error| {
+        format!(
+            "Failed to run Copilot CLI at {}: {}",
+            cli_path.display(),
+            error
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -944,7 +959,16 @@ fn system_cli_candidates() -> Vec<PathBuf> {
     } else {
         "which"
     };
-    let output = std::process::Command::new(resolver).arg("copilot").output();
+    let mut command = std::process::Command::new(resolver);
+    command.arg("copilot");
+    hide_console_window(&mut command);
+    tracing::debug!(
+        operation = "copilot_status_probe",
+        resolver,
+        hidden_console = cfg!(target_os = "windows"),
+        "resolving system Copilot CLI"
+    );
+    let output = command.output();
     let Ok(output) = output else {
         return Vec::new();
     };
@@ -1727,13 +1751,23 @@ async fn run_login_flow(
     request_id: String,
     runtime: ResolvedRuntime,
 ) -> Result<(), String> {
-    let mut child = Command::new(&runtime.path)
+    let mut command = Command::new(&runtime.path);
+    tracing::debug!(
+        operation = "copilot_runtime_spawn",
+        flow = "login",
+        runtime_path = %runtime.path.display(),
+        hidden_console = cfg!(target_os = "windows"),
+        "starting Copilot login runtime"
+    );
+    command
         .arg("login")
         .env(COPILOT_AUTO_UPDATE_ENV.0, COPILOT_AUTO_UPDATE_ENV.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    hide_tokio_console_window(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start GitHub Copilot login: {}", error))?;
 

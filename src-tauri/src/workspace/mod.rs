@@ -2,6 +2,7 @@ pub mod architect;
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
+use crate::core::process::hide_console_window;
 use crate::db::models::GitWorktreeRecord;
 use crate::git::repo::get_status_options;
 use crate::git::MACRO_BRANCH_NAME;
@@ -3305,15 +3306,15 @@ fn pull_macro_branch_best_effort(
         return (false, false, None);
     }
 
-    let output = Command::new("git")
-        .current_dir(metadata_root)
-        .args([
-            "pull",
-            "--no-rebase",
-            DEFAULT_REMOTE_NAME,
-            MACRO_BRANCH_NAME,
-        ])
-        .output();
+    let mut command = Command::new("git");
+    command.current_dir(metadata_root).args([
+        "pull",
+        "--no-rebase",
+        DEFAULT_REMOTE_NAME,
+        MACRO_BRANCH_NAME,
+    ]);
+    hide_console_window(&mut command);
+    let output = command.output();
 
     match output {
         Ok(output) => {

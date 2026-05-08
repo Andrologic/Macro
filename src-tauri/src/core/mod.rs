@@ -2,6 +2,7 @@ pub mod config;
 pub mod environment;
 pub mod error;
 pub mod logging;
+pub mod process;
 pub mod tool_policy;
 
 #[cfg(test)]

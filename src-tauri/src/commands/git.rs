@@ -18,6 +18,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::error::{BackendError, Result};
+use crate::core::process::hide_console_window;
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
@@ -333,13 +334,12 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| BackendError::Git {
-            message: format!("Failed to run git command '{}': {}", args.join(" "), e),
-        })?;
+    let mut command = Command::new("git");
+    command.current_dir(cwd).args(args);
+    hide_console_window(&mut command);
+    let output = command.output().map_err(|e| BackendError::Git {
+        message: format!("Failed to run git command '{}': {}", args.join(" "), e),
+    })?;
 
     Ok(GitCommandOutput {
         success: output.status.success(),

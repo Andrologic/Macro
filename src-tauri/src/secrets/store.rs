@@ -1,6 +1,7 @@
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use tracing::{debug, warn};
 
 const SERVICE_NAME: &str = "macro";
@@ -70,15 +71,26 @@ impl SecretStore for KeyringSecretStore {
             return Ok(None);
         }
 
+        let started_at = Instant::now();
         let entry = Entry::new(SERVICE_NAME, entry_id)?;
         match entry.get_password() {
-            Ok(password) => Ok(Some(password)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
+            Ok(password) => {
+                log_keyring_success(entry_id, "provider_keyring_read", started_at, Some(true));
+                Ok(Some(password))
+            }
+            Err(keyring::Error::NoEntry) => {
+                log_keyring_success(entry_id, "provider_keyring_read", started_at, Some(false));
                 Ok(None)
             }
-            Err(error) => Err(error),
+            Err(error) if is_unavailable_error(&error) => {
+                mark_unavailable_once();
+                log_keyring_failure(entry_id, "provider_keyring_read", started_at, &error, true);
+                Ok(None)
+            }
+            Err(error) => {
+                log_keyring_failure(entry_id, "provider_keyring_read", started_at, &error, false);
+                Err(error)
+            }
         }
     }
 
@@ -87,14 +99,28 @@ impl SecretStore for KeyringSecretStore {
             return Ok(());
         }
 
+        let started_at = Instant::now();
         let entry = Entry::new(SERVICE_NAME, entry_id)?;
         match entry.set_password(value) {
-            Ok(_) => Ok(()),
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
+            Ok(_) => {
+                log_keyring_success(entry_id, "provider_keyring_write", started_at, None);
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) if is_unavailable_error(&error) => {
+                mark_unavailable_once();
+                log_keyring_failure(entry_id, "provider_keyring_write", started_at, &error, true);
+                Ok(())
+            }
+            Err(error) => {
+                log_keyring_failure(
+                    entry_id,
+                    "provider_keyring_write",
+                    started_at,
+                    &error,
+                    false,
+                );
+                Err(error)
+            }
         }
     }
 
@@ -103,17 +129,84 @@ impl SecretStore for KeyringSecretStore {
             return Ok(());
         }
 
+        let started_at = Instant::now();
         let entry = Entry::new(SERVICE_NAME, entry_id)?;
         match entry.delete_password() {
-            Ok(_) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
+            Ok(_) => {
+                log_keyring_success(entry_id, "provider_keyring_delete", started_at, Some(true));
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(keyring::Error::NoEntry) => {
+                log_keyring_success(entry_id, "provider_keyring_delete", started_at, Some(false));
+                Ok(())
+            }
+            Err(error) if is_unavailable_error(&error) => {
+                mark_unavailable_once();
+                log_keyring_failure(
+                    entry_id,
+                    "provider_keyring_delete",
+                    started_at,
+                    &error,
+                    true,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                log_keyring_failure(
+                    entry_id,
+                    "provider_keyring_delete",
+                    started_at,
+                    &error,
+                    false,
+                );
+                Err(error)
+            }
         }
     }
+}
+
+fn elapsed_ms(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis() as u64
+}
+
+fn log_keyring_success(
+    entry_id: &str,
+    operation: &'static str,
+    started_at: Instant,
+    found: Option<bool>,
+) {
+    match found {
+        Some(found) => debug!(
+            provider_id = %entry_id,
+            operation,
+            elapsed_ms = elapsed_ms(started_at),
+            found,
+            "provider keyring operation completed"
+        ),
+        None => debug!(
+            provider_id = %entry_id,
+            operation,
+            elapsed_ms = elapsed_ms(started_at),
+            "provider keyring operation completed"
+        ),
+    }
+}
+
+fn log_keyring_failure(
+    entry_id: &str,
+    operation: &'static str,
+    started_at: Instant,
+    error: &keyring::Error,
+    unavailable: bool,
+) {
+    warn!(
+        provider_id = %entry_id,
+        operation,
+        elapsed_ms = elapsed_ms(started_at),
+        error = %error,
+        unavailable,
+        "provider keyring operation failed"
+    );
 }
 
 fn is_unavailable_error(error: &keyring::Error) -> bool {
