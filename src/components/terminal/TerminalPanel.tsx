@@ -184,7 +184,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   if (!terminalScope) {
     return (
       <div
-        className={cn('h-full border-t border-border/60 bg-card/40', className)}
+        className={cn('h-full border-t border-border/60 bg-background', className)}
         data-tour-id="terminal-panel"
       >
         <div className="flex h-full items-center justify-center px-6 text-center">
@@ -227,7 +227,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
 
     return (
       <div
-        className={cn('h-full border-t border-border/60 bg-card/40', className)}
+        className={cn('h-full border-t border-border/60 bg-background', className)}
         data-tour-id="terminal-panel"
       >
         <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -274,7 +274,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
 
   return (
     <section
-      className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-card/40', className)}
+      className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-background', className)}
       data-tour-id="terminal-panel"
     >
       <header className="flex h-11 items-center justify-between gap-3 border-b border-border/60 px-3">
@@ -344,13 +344,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
           </div>
           <div
             className={cn(
-              'pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-card/95 to-transparent transition-opacity',
+              'pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background/95 to-transparent transition-opacity',
               tabStripOverflow.left ? 'opacity-100' : 'opacity-0'
             )}
           />
           <div
             className={cn(
-              'pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-card/95 to-transparent transition-opacity',
+              'pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background/95 to-transparent transition-opacity',
               tabStripOverflow.right ? 'opacity-100' : 'opacity-0'
             )}
           />
@@ -372,7 +372,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
       </header>
 
       {!activeTab.hasLiveSession && (
-        <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-card/70 px-3 py-2">
+        <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-background/95 px-3 py-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-xs font-medium text-foreground">
               <Icon name="alert-circle" size={12} />

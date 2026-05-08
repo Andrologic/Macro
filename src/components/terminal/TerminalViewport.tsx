@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import type { TerminalTab } from '../../stores/useTerminalStore';
 import terminalRuntime from '../../services/terminalRuntime';
+import { useOptionalTheme } from '../theme/ThemeProvider';
 
 interface TerminalViewportProps {
   tab: TerminalTab;
@@ -14,6 +15,8 @@ export const TerminalViewport: React.FC<TerminalViewportProps> = ({
   onResize,
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const themeContext = useOptionalTheme();
+  const terminalTheme = themeContext?.theme ?? null;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -26,6 +29,7 @@ export const TerminalViewport: React.FC<TerminalViewportProps> = ({
       hostElement: host,
       snapshot: tab.snapshot,
       hasLiveSession: tab.hasLiveSession,
+      theme: terminalTheme,
       onInput,
       onResize,
     });
@@ -42,10 +46,11 @@ export const TerminalViewport: React.FC<TerminalViewportProps> = ({
       tabId: tab.id,
       snapshot: tab.snapshot,
       hasLiveSession: tab.hasLiveSession,
+      theme: terminalTheme,
       onInput,
       onResize,
     });
-  }, [tab.id, tab.snapshot, tab.hasLiveSession, onInput, onResize]);
+  }, [tab.id, tab.snapshot, tab.hasLiveSession, terminalTheme, onInput, onResize]);
 
   useEffect(() => {
     terminalRuntime.focusTab(tab.id);

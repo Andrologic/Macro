@@ -507,23 +507,29 @@
 
   .macro-terminal-shell {
     @apply h-full w-full bg-background p-3;
+    color: rgb(var(--foreground));
     overflow: hidden;
   }
 
   .macro-terminal-host {
     @apply h-full w-full overflow-hidden rounded-md;
     background: rgb(var(--background));
+    color: rgb(var(--foreground));
   }
 
   .macro-terminal-shell .xterm {
     height: 100%;
     padding: 0;
+    background: rgb(var(--background));
+    color: rgb(var(--foreground));
   }
 
   .macro-terminal-shell .xterm-screen,
   .macro-terminal-shell .xterm-viewport {
     height: 100% !important;
     width: 100% !important;
+    background: rgb(var(--background)) !important;
+    color: rgb(var(--foreground));
   }
 
   .macro-terminal-shell .xterm-viewport {
