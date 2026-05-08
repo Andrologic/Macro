@@ -26,7 +26,7 @@ const collectTestFiles = async () => {
   for (const pattern of testGlobs) {
     const glob = new Bun.Glob(pattern);
     for await (const file of glob.scan('.')) {
-      const normalized = file.replace(/^\.\//, '');
+      const normalized = file.replace(/^\.\//, '').replaceAll('\\', '/');
       if (ignoredPrefixes.some((prefix) => normalized.startsWith(prefix))) {
         continue;
       }
