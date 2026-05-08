@@ -13,6 +13,7 @@ pub mod workspace_tools;
 
 pub use workspace_tools::WorkspaceProjectMount;
 
+use crate::core::process::hide_console_window;
 use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
@@ -769,7 +770,7 @@ pub(crate) async fn build_post_write_response(
         .map_err(|error| command_error(error.to_string()))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExternalOpenAction {
     Editor,
     Terminal,
@@ -816,6 +817,43 @@ struct ExternalLaunchCommand {
     program: String,
     args: Vec<String>,
     current_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalLaunchVisibility {
+    HiddenBackgroundLauncher,
+    VisibleTerminal,
+}
+
+fn is_visible_terminal_app_id(app_id: &str) -> bool {
+    let app_id = app_id.trim().to_ascii_lowercase();
+    matches!(
+        app_id.as_str(),
+        "windows-terminal"
+            | "powershell"
+            | "pwsh"
+            | "command-prompt"
+            | "wezterm"
+            | "ghostty"
+            | "kitty"
+            | "terminal"
+            | "gnome-terminal"
+            | "konsole"
+            | "xfce4-terminal"
+            | "tilix"
+            | "mate-terminal"
+    )
+}
+
+fn external_launch_visibility(
+    action: ExternalOpenAction,
+    app_id: &str,
+) -> ExternalLaunchVisibility {
+    if action == ExternalOpenAction::Terminal && is_visible_terminal_app_id(app_id) {
+        ExternalLaunchVisibility::VisibleTerminal
+    } else {
+        ExternalLaunchVisibility::HiddenBackgroundLauncher
+    }
 }
 
 fn external_app_option(
@@ -2239,6 +2277,7 @@ pub async fn open_external_target(
     }
 
     let launch = build_external_open_command(&canonical_path, app_id.as_str())?;
+    let visibility = external_launch_visibility(action, app_id.as_str());
 
     tokio::task::spawn_blocking(move || {
         let mut command = Command::new(&launch.program);
@@ -2246,6 +2285,9 @@ pub async fn open_external_target(
         command.stdin(Stdio::null());
         command.stdout(Stdio::null());
         command.stderr(Stdio::null());
+        if visibility == ExternalLaunchVisibility::HiddenBackgroundLauncher {
+            hide_console_window(&mut command);
+        }
 
         if let Some(current_dir) = launch.current_dir {
             command.current_dir(current_dir);
@@ -4114,8 +4156,9 @@ mod tests {
     use super::resolve_binary_path;
     use super::{
         apply_patch_hunks_to_content, binary_candidates, commit_pending_file_changes_atomically,
-        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, ParsedPatchOperation, PendingFileChange,
+        execute_workspace_tool, external_launch_visibility, parse_apply_patch,
+        resolve_requested_workspace, resolve_workspace_for_tool_path, ExternalLaunchVisibility,
+        ExternalOpenAction, ParsedPatchOperation, PendingFileChange,
     };
     use crate::git::GitState;
     use serde_json::json;
@@ -4144,6 +4187,42 @@ mod tests {
 
         #[cfg(not(target_os = "windows"))]
         assert_eq!(binary_candidates("code"), vec!["code".to_string()]);
+    }
+
+    #[test]
+    fn external_launch_visibility_keeps_explicit_terminals_visible() {
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "windows-terminal"),
+            ExternalLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "powershell"),
+            ExternalLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "command-prompt"),
+            ExternalLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "PowerShell"),
+            ExternalLaunchVisibility::VisibleTerminal
+        );
+    }
+
+    #[test]
+    fn external_launch_visibility_hides_background_launchers() {
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Editor, "vscode"),
+            ExternalLaunchVisibility::HiddenBackgroundLauncher
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Files, "explorer"),
+            ExternalLaunchVisibility::HiddenBackgroundLauncher
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Editor, "command-prompt"),
+            ExternalLaunchVisibility::HiddenBackgroundLauncher
+        );
     }
 
     #[cfg(target_os = "windows")]

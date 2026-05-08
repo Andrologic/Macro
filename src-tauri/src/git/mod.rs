@@ -11,6 +11,7 @@ use git2::{
 };
 
 use crate::core::error::{BackendError, Result};
+use crate::core::process::hide_console_window;
 
 pub mod repo;
 mod worktree;
@@ -383,14 +384,15 @@ fn ensure_local_branch_available(repo: &Repository, branch_name: &str) -> Result
 }
 
 fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
-    let add_output = Command::new("git")
+    let mut add_command = Command::new("git");
+    add_command
         .current_dir(workdir)
-        .args(["add", "--", ".gitignore"])
-        .output()
-        .map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+        .args(["add", "--", ".gitignore"]);
+    hide_console_window(&mut add_command);
+    let add_output = add_command.output().map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
     if !add_output.status.success() {
         return Err(BackendError::Git {
             message: String::from_utf8_lossy(&add_output.stderr)
@@ -399,14 +401,15 @@ fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
         });
     }
 
-    let diff_output = Command::new("git")
+    let mut diff_command = Command::new("git");
+    diff_command
         .current_dir(workdir)
-        .args(["diff", "--cached", "--quiet", "--", ".gitignore"])
-        .output()
-        .map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+        .args(["diff", "--cached", "--quiet", "--", ".gitignore"]);
+    hide_console_window(&mut diff_command);
+    let diff_output = diff_command.output().map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
     if diff_output.status.code() == Some(0) {
         return Ok(());
     }
@@ -418,24 +421,23 @@ fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
         });
     }
 
-    let commit_output = Command::new("git")
-        .current_dir(workdir)
-        .args([
-            "-c",
-            "user.name=Macro",
-            "-c",
-            "user.email=macro@local",
-            "commit",
-            "-m",
-            TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE,
-            "--",
-            ".gitignore",
-        ])
-        .output()
-        .map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+    let mut commit_command = Command::new("git");
+    commit_command.current_dir(workdir).args([
+        "-c",
+        "user.name=Macro",
+        "-c",
+        "user.email=macro@local",
+        "commit",
+        "-m",
+        TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE,
+        "--",
+        ".gitignore",
+    ]);
+    hide_console_window(&mut commit_command);
+    let commit_output = commit_command.output().map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
 
     if !commit_output.status.success() {
         return Err(BackendError::Git {

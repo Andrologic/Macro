@@ -17,6 +17,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 - Reduced filesystem watcher pressure by skipping ignored cache, build, dependency, agent workspace, and generated worktree directories before registering watchers.
 - Added notification center cleanup for legacy duplicated `Too many open files` and `Plan not found` alerts.
 - Preserved local `AwaitingResponse` task state when plan metadata persistence is temporarily unavailable, keeping the user question as the active next step.
+- Prevented transient CMD/PowerShell windows on Windows when Macro runs background provider, Git, terminal, Copilot runtime, and launcher commands.
 
 ## 0.1.0-rc.6
 
