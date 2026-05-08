@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
+#[cfg(unix)]
+use std::{fs, os::unix::fs::PermissionsExt};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -25,6 +27,8 @@ const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
 const TERM_PROGRAM_NAME: &str = "Macro";
+#[cfg(not(windows))]
+const DEFAULT_UNIX_SHELL_FALLBACKS: [&str; 3] = ["/bin/zsh", "/bin/bash", "/bin/sh"];
 
 #[derive(Clone, Default)]
 pub struct TerminalSessionStore {
@@ -107,6 +111,30 @@ struct LiveTerminalRuntime {
 struct PendingCommand {
     marker_prefix: String,
     completion_tx: Option<oneshot::Sender<i32>>,
+}
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnixShellKind {
+    Bash,
+    Zsh,
+    Fish,
+    Posix,
+    Other,
+}
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnixShellSpec {
+    path: String,
+    kind: UnixShellKind,
+}
+
+#[cfg(not(windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnixShellLaunchConfig {
+    args: Vec<String>,
+    env: Vec<(&'static str, String)>,
 }
 
 struct LegacyTerminalSessionRecord {
@@ -387,11 +415,15 @@ where
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn build_terminal_environment_from<F>(cwd: &str, read_env: F) -> Vec<(&'static str, String)>
+fn build_terminal_environment_from<F>(
+    cwd: &str,
+    shell: Option<&str>,
+    read_env: F,
+) -> Vec<(&'static str, String)>
 where
     F: Fn(&str) -> Option<String>,
 {
-    vec![
+    let mut env = vec![
         (
             "TERM",
             terminal_env_value_from("TERM", DEFAULT_TERM, &read_env),
@@ -405,15 +437,215 @@ where
             terminal_env_value_from("TERM_PROGRAM", TERM_PROGRAM_NAME, &read_env),
         ),
         ("PWD", cwd.to_string()),
-    ]
+    ];
+
+    if let Some(shell) = shell.filter(|value| !value.trim().is_empty()) {
+        env.push(("SHELL", shell.to_string()));
+    }
+
+    env
 }
 
-fn build_terminal_environment(cwd: &str) -> Vec<(&'static str, String)> {
-    build_terminal_environment_from(cwd, |key| std::env::var(key).ok())
+fn build_terminal_environment(cwd: &str, shell: Option<&str>) -> Vec<(&'static str, String)> {
+    build_terminal_environment_from(cwd, shell, |key| std::env::var(key).ok())
 }
 
-fn apply_terminal_environment(command: &mut CommandBuilder, cwd: &str) {
-    for (name, value) in build_terminal_environment(cwd) {
+fn apply_terminal_environment(command: &mut CommandBuilder, cwd: &str, shell: Option<&str>) {
+    for (name, value) in build_terminal_environment(cwd, shell) {
+        command.env(name, value);
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_basename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+}
+
+#[cfg(not(windows))]
+fn classify_unix_shell(path: &str) -> UnixShellKind {
+    match shell_basename(path).as_str() {
+        "bash" => UnixShellKind::Bash,
+        "zsh" => UnixShellKind::Zsh,
+        "fish" => UnixShellKind::Fish,
+        "sh" | "dash" | "ksh" | "mksh" => UnixShellKind::Posix,
+        _ => UnixShellKind::Other,
+    }
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(windows))]
+fn is_valid_shell_path_with<F>(path: &str, is_executable: &F) -> bool
+where
+    F: Fn(&Path) -> bool + ?Sized,
+{
+    let shell_path = Path::new(path.trim());
+    shell_path.is_absolute() && is_executable(shell_path)
+}
+
+#[cfg(not(windows))]
+fn parse_passwd_shell(passwd_contents: &str, username: &str) -> Option<String> {
+    if username.trim().is_empty() {
+        return None;
+    }
+
+    passwd_contents.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let user = fields.next()?;
+        if user != username {
+            return None;
+        }
+        fields.nth(5).map(str::trim).and_then(|shell| {
+            if shell.is_empty() {
+                None
+            } else {
+                Some(shell.to_string())
+            }
+        })
+    })
+}
+
+#[cfg(not(windows))]
+fn unix_shell_spec(path: &str) -> UnixShellSpec {
+    UnixShellSpec {
+        path: path.to_string(),
+        kind: classify_unix_shell(path),
+    }
+}
+
+#[cfg(not(windows))]
+fn first_valid_shell<'a, I>(candidates: I, is_executable: &dyn Fn(&Path) -> bool) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    candidates
+        .into_iter()
+        .find(|candidate| is_valid_shell_path_with(candidate, &is_executable))
+        .map(str::to_string)
+}
+
+#[cfg(not(windows))]
+fn resolve_unix_shell_from<F, P>(
+    read_env: F,
+    read_passwd: P,
+    is_executable: &dyn Fn(&Path) -> bool,
+) -> UnixShellSpec
+where
+    F: Fn(&str) -> Option<String>,
+    P: Fn() -> Option<String>,
+{
+    let env_shell = read_env("SHELL").unwrap_or_default();
+    if let Some(path) = first_valid_shell([env_shell.as_str()], is_executable) {
+        return unix_shell_spec(&path);
+    }
+
+    let username = read_env("USER")
+        .or_else(|| read_env("LOGNAME"))
+        .unwrap_or_default();
+    let passwd_shell = read_passwd().and_then(|contents| parse_passwd_shell(&contents, &username));
+    if let Some(path) = first_valid_shell(passwd_shell.as_deref(), is_executable) {
+        return unix_shell_spec(&path);
+    }
+
+    if let Some(path) = first_valid_shell(DEFAULT_UNIX_SHELL_FALLBACKS, is_executable) {
+        return unix_shell_spec(&path);
+    }
+
+    unix_shell_spec("sh")
+}
+
+#[cfg(not(windows))]
+fn resolve_unix_shell() -> UnixShellSpec {
+    resolve_unix_shell_from(
+        |key| std::env::var(key).ok(),
+        || fs::read_to_string("/etc/passwd").ok(),
+        &is_executable_file,
+    )
+}
+
+#[cfg(not(windows))]
+fn fish_double_quote_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '$' => escaped.push_str("\\$"),
+            '`' => escaped.push_str("\\`"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+#[cfg(not(windows))]
+fn shell_args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_string()).collect()
+}
+
+#[cfg(not(windows))]
+fn shell_env(entries: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+    entries
+        .iter()
+        .map(|(name, value)| (*name, (*value).to_string()))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn build_unix_shell_launch_config(shell: &UnixShellSpec, prompt: &str) -> UnixShellLaunchConfig {
+    match shell.kind {
+        UnixShellKind::Bash => UnixShellLaunchConfig {
+            args: shell_args(&["--noprofile", "--norc", "-i"]),
+            env: shell_env(&[
+                ("PS1", prompt),
+                ("PROMPT_COMMAND", ""),
+                ("BASH_SILENCE_DEPRECATION_WARNING", "1"),
+            ]),
+        },
+        UnixShellKind::Zsh => UnixShellLaunchConfig {
+            args: shell_args(&["-f", "-i"]),
+            env: shell_env(&[("PS1", prompt), ("PROMPT", prompt)]),
+        },
+        UnixShellKind::Fish => UnixShellLaunchConfig {
+            args: vec![
+                "-i".to_string(),
+                "-C".to_string(),
+                format!(
+                    "function fish_prompt; printf \"%s\" \"{}\"; end",
+                    fish_double_quote_escape(prompt)
+                ),
+            ],
+            env: Vec::new(),
+        },
+        UnixShellKind::Posix | UnixShellKind::Other => UnixShellLaunchConfig {
+            args: shell_args(&["-i"]),
+            env: shell_env(&[("PS1", prompt)]),
+        },
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_unix_shell_args_and_prompt(
+    command: &mut CommandBuilder,
+    shell: &UnixShellSpec,
+    prompt: &str,
+) {
+    let launch_config = build_unix_shell_launch_config(shell, prompt);
+    for arg in launch_config.args {
+        command.arg(arg);
+    }
+    for (name, value) in launch_config.env {
         command.env(name, value);
     }
 }
@@ -429,7 +661,7 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
         "function global:prompt { $env:MACRO_TERMINAL_PROMPT }; Set-Location -LiteralPath $env:MACRO_TERMINAL_CWD",
     );
     command.cwd(Path::new(&record.cwd));
-    apply_terminal_environment(&mut command, &record.cwd);
+    apply_terminal_environment(&mut command, &record.cwd, None);
     command.env("MACRO_TERMINAL_CWD", &record.cwd);
     command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
     command
@@ -437,14 +669,11 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
 
 #[cfg(not(windows))]
 fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
-    let mut command = CommandBuilder::new("bash");
-    command.arg("--noprofile");
-    command.arg("--norc");
-    command.arg("-i");
+    let shell = resolve_unix_shell();
+    let mut command = CommandBuilder::new(&shell.path);
     command.cwd(Path::new(&record.cwd));
-    apply_terminal_environment(&mut command, &record.cwd);
-    command.env("PS1", render_terminal_prompt(record));
-    command.env("PROMPT_COMMAND", "");
+    apply_terminal_environment(&mut command, &record.cwd, Some(&shell.path));
+    apply_unix_shell_args_and_prompt(&mut command, &shell, &render_terminal_prompt(record));
     command
 }
 
@@ -1661,7 +1890,7 @@ mod tests {
 
     #[test]
     fn terminal_environment_supplies_pty_defaults() {
-        let env = build_terminal_environment_from("/repo/app", |_| None)
+        let env = build_terminal_environment_from("/repo/app", Some("/bin/zsh"), |_| None)
             .into_iter()
             .collect::<HashMap<_, _>>();
 
@@ -1675,6 +1904,7 @@ mod tests {
             Some(TERM_PROGRAM_NAME)
         );
         assert_eq!(env.get("PWD").map(String::as_str), Some("/repo/app"));
+        assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/zsh"));
     }
 
     #[test]
@@ -1684,9 +1914,11 @@ mod tests {
             ("COLORTERM", "24bit"),
             ("TERM_PROGRAM", "UserTerminal"),
         ]);
-        let env = build_terminal_environment_from("/repo/app", |key| source.get(key).cloned())
-            .into_iter()
-            .collect::<HashMap<_, _>>();
+        let env = build_terminal_environment_from("/repo/app", Some("/bin/bash"), |key| {
+            source.get(key).cloned()
+        })
+        .into_iter()
+        .collect::<HashMap<_, _>>();
 
         assert_eq!(env.get("TERM").map(String::as_str), Some("screen-256color"));
         assert_eq!(env.get("COLORTERM").map(String::as_str), Some("24bit"));
@@ -1695,14 +1927,16 @@ mod tests {
             Some("UserTerminal")
         );
         assert_eq!(env.get("PWD").map(String::as_str), Some("/repo/app"));
+        assert_eq!(env.get("SHELL").map(String::as_str), Some("/bin/bash"));
     }
 
     #[test]
     fn terminal_environment_ignores_blank_terminal_values() {
         let source = env_map(&[("TERM", "   "), ("COLORTERM", ""), ("TERM_PROGRAM", "\t")]);
-        let env = build_terminal_environment_from("/repo/app", |key| source.get(key).cloned())
-            .into_iter()
-            .collect::<HashMap<_, _>>();
+        let env =
+            build_terminal_environment_from("/repo/app", None, |key| source.get(key).cloned())
+                .into_iter()
+                .collect::<HashMap<_, _>>();
 
         assert_eq!(env.get("TERM").map(String::as_str), Some(DEFAULT_TERM));
         assert_eq!(
@@ -1713,5 +1947,140 @@ mod tests {
             env.get("TERM_PROGRAM").map(String::as_str),
             Some(TERM_PROGRAM_NAME)
         );
+        assert_eq!(env.get("SHELL"), None);
+    }
+
+    #[test]
+    fn resolves_shell_from_absolute_executable_shell_env() {
+        let source = env_map(&[("SHELL", "/bin/zsh")]);
+        let shell = resolve_unix_shell_from(|key| source.get(key).cloned(), || None, &|path| {
+            path == Path::new("/bin/zsh")
+        });
+
+        assert_eq!(
+            shell,
+            UnixShellSpec {
+                path: "/bin/zsh".to_string(),
+                kind: UnixShellKind::Zsh,
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_fish_shell_from_shell_env() {
+        let source = env_map(&[("SHELL", "/opt/homebrew/bin/fish")]);
+        let shell = resolve_unix_shell_from(|key| source.get(key).cloned(), || None, &|path| {
+            path == Path::new("/opt/homebrew/bin/fish")
+        });
+
+        assert_eq!(
+            shell,
+            UnixShellSpec {
+                path: "/opt/homebrew/bin/fish".to_string(),
+                kind: UnixShellKind::Fish,
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_shell_from_passwd_when_shell_env_is_invalid() {
+        let source = env_map(&[("SHELL", "zsh"), ("USER", "oscar")]);
+        let shell = resolve_unix_shell_from(
+            |key| source.get(key).cloned(),
+            || {
+                Some("root:x:0:0:root:/root:/bin/bash\noscar:x:501:20:Oscar:/Users/oscar:/bin/bash\n".to_string())
+            },
+            &|path| path == Path::new("/bin/bash"),
+        );
+
+        assert_eq!(
+            shell,
+            UnixShellSpec {
+                path: "/bin/bash".to_string(),
+                kind: UnixShellKind::Bash,
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_shell_from_fallbacks_when_user_shell_is_unavailable() {
+        let source = env_map(&[("SHELL", "/missing/zsh"), ("USER", "oscar")]);
+        let shell = resolve_unix_shell_from(
+            |key| source.get(key).cloned(),
+            || Some("oscar:x:501:20:Oscar:/Users/oscar:/missing/bash\n".to_string()),
+            &|path| path == Path::new("/bin/sh"),
+        );
+
+        assert_eq!(
+            shell,
+            UnixShellSpec {
+                path: "/bin/sh".to_string(),
+                kind: UnixShellKind::Posix,
+            }
+        );
+    }
+
+    #[test]
+    fn fish_prompt_command_escapes_prompt_for_double_quotes() {
+        assert_eq!(
+            fish_double_quote_escape(r#"api "$HOME" \ ` > "#),
+            r#"api \"\$HOME\" \\ \` > "#
+        );
+    }
+
+    #[test]
+    fn bash_launch_config_keeps_isolated_interactive_args_and_silences_macos_warning() {
+        let config = build_unix_shell_launch_config(
+            &UnixShellSpec {
+                path: "/bin/bash".to_string(),
+                kind: UnixShellKind::Bash,
+            },
+            "api > ",
+        );
+
+        assert_eq!(config.args, ["--noprofile", "--norc", "-i"]);
+        let env = config.env.into_iter().collect::<HashMap<_, _>>();
+        assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
+        assert_eq!(env.get("PROMPT_COMMAND").map(String::as_str), Some(""));
+        assert_eq!(
+            env.get("BASH_SILENCE_DEPRECATION_WARNING")
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn zsh_launch_config_uses_fast_interactive_mode_with_macro_prompt() {
+        let config = build_unix_shell_launch_config(
+            &UnixShellSpec {
+                path: "/bin/zsh".to_string(),
+                kind: UnixShellKind::Zsh,
+            },
+            "api > ",
+        );
+
+        assert_eq!(config.args, ["-f", "-i"]);
+        let env = config.env.into_iter().collect::<HashMap<_, _>>();
+        assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
+        assert_eq!(env.get("PROMPT").map(String::as_str), Some("api > "));
+    }
+
+    #[test]
+    fn fish_launch_config_sets_prompt_with_init_command() {
+        let config = build_unix_shell_launch_config(
+            &UnixShellSpec {
+                path: "/opt/homebrew/bin/fish".to_string(),
+                kind: UnixShellKind::Fish,
+            },
+            r#"api "$HOME" > "#,
+        );
+
+        assert_eq!(config.args[0], "-i");
+        assert_eq!(config.args[1], "-C");
+        assert_eq!(
+            config.args[2],
+            r#"function fish_prompt; printf "%s" "api \"\$HOME\" > "; end"#
+        );
+        assert!(config.env.is_empty());
     }
 }

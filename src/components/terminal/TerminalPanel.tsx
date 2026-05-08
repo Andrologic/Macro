@@ -291,7 +291,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                 <div
                   key={tab.id}
                   className={cn(
-                    'group inline-flex h-8 min-w-0 max-w-[280px] shrink-0 items-center gap-1 overflow-hidden rounded-md border pr-1 text-xs transition-colors',
+                    'group inline-flex h-8 min-w-0 max-w-[280px] shrink-0 items-center overflow-hidden rounded-md border text-xs transition-colors',
                     isActive
                       ? 'border-primary/30 bg-primary/10 text-foreground'
                       : 'border-transparent bg-transparent text-muted-foreground hover:border-border hover:bg-accent/50 hover:text-foreground'
@@ -301,7 +301,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                     type="button"
                     onClick={() => activateTab(tab.id)}
                     title={tab.title}
-                    className="inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-3"
+                    className="inline-flex min-w-0 max-w-[248px] items-center gap-2 overflow-hidden py-0 pl-3 pr-2"
                   >
                     <span
                       className={cn(
@@ -313,14 +313,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                             : 'bg-muted-foreground/60'
                       )}
                     />
-                    <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        'h-2 w-2 shrink-0 rounded-full transition-opacity',
-                        tab.hasUnreadOutput && !isActive ? 'bg-primary opacity-100' : 'opacity-0'
-                      )}
-                    />
+                    <span className="min-w-0 truncate text-left">{tab.title}</span>
+                    {tab.hasUnreadOutput && !isActive && (
+                      <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-primary" />
+                    )}
                   </button>
                   <button
                     type="button"
@@ -331,10 +327,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                       })
                     }
                     className={cn(
-                      'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm p-0.5 text-muted-foreground transition-all hover:bg-accent hover:text-foreground',
+                      'inline-flex h-5 shrink-0 items-center justify-center overflow-hidden rounded-sm p-0 text-muted-foreground transition-all hover:bg-accent hover:text-foreground',
                       isActive
-                        ? 'opacity-100'
-                        : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100'
+                        ? 'mr-1 w-5 opacity-100'
+                        : 'w-0 opacity-0 group-hover:pointer-events-auto group-hover:mr-1 group-hover:w-5 group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:mr-1 focus-visible:w-5 focus-visible:opacity-100'
                     )}
                     title={t('common.close', 'Close')}
                   >
