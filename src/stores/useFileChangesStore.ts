@@ -38,6 +38,11 @@ import {
   validateConventionalCommitMessage,
 } from '../services/conventionalCommit';
 import type { SmartCommitModelConfig } from '../services/smartCommitModelConfig';
+import {
+  buildDefaultCommitMessage,
+  getReadyCommitRepositories,
+  isRepositoryReadyToCommit,
+} from '../services/smartCommitDrafts';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -407,12 +412,7 @@ const normalizeBranchName = (value?: string | null): string => {
   return trimmed || 'work';
 };
 
-const toDefaultCommitMessage = (title?: string | null): string => {
-  const trimmed = title?.trim();
-  if (!trimmed) return 'chore: update task changes';
-  const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
-  return `chore: ${normalized}`;
-};
+const toDefaultCommitMessage = buildDefaultCommitMessage;
 
 const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => {
   const pendingChanges = changes.filter((change) => change.hasPendingVisibleChange);
@@ -2205,12 +2205,7 @@ export const createFileChangesStore = (
   commitAllReadyTaskRepositories: async (options = {}) => {
     const task = ensureReviewTask(deps);
 
-    const targetRepositories = get().repositories
-      .filter((repository) =>
-        repository.commitState === 'idle' &&
-        repository.stats.validatedStagedFileCount > 0 &&
-        repository.stagedPaths.length > 0
-      );
+    const targetRepositories = getReadyCommitRepositories(get().repositories);
     const targetRepositoryIds = targetRepositories.map((repository) => repository.id);
 
     if (targetRepositoryIds.length === 0) {
@@ -2261,12 +2256,7 @@ export const createFileChangesStore = (
 
     for (const repositoryId of targetRepositoryIds) {
       const repository = get().getRepository(repositoryId);
-      if (
-        !repository ||
-        repository.commitState !== 'idle' ||
-        repository.stats.validatedStagedFileCount === 0 ||
-        repository.stagedPaths.length === 0
-      ) {
+      if (!repository || !isRepositoryReadyToCommit(repository)) {
         continue;
       }
 

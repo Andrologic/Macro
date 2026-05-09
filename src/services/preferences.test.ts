@@ -104,6 +104,42 @@ describe('preferences legacy cleanup', () => {
 
     expect(prompt).toContain('When the user asks for an action plan');
     expect(prompt).toContain('Prefer 3-5 short sections or bullets');
-    expect(prompt).toContain('16. Do not create a "Finalize plan" strategy node yourself');
+    expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
+  });
+
+  it('notifies same-window subscribers once for an immediate preference save', async () => {
+    const { PREF_KEYS, savePreference, subscribePreference } = await loadPreferencesModule();
+    const listener = mock((_value: unknown) => undefined);
+    const unsubscribe = subscribePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, listener);
+
+    await savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, { mode: 'conversation' });
+
+    unsubscribe();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({ mode: 'conversation' }, PREF_KEYS.SMART_COMMIT_MODEL_CONFIG);
+  });
+
+  it('does not emit a second same-window notification when a debounced save flushes to the store', async () => {
+    const {
+      PREF_KEYS,
+      savePreferenceDebounced,
+      subscribePreference,
+    } = await loadPreferencesModule();
+    const listener = mock((_value: unknown) => undefined);
+    const unsubscribe = subscribePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, listener);
+
+    savePreferenceDebounced(
+      PREF_KEYS.SMART_COMMIT_MODEL_CONFIG,
+      { mode: 'conversation' },
+      1
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    unsubscribe();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(storeSetMock).toHaveBeenCalledWith(
+      PREF_KEYS.SMART_COMMIT_MODEL_CONFIG,
+      { mode: 'conversation' }
+    );
   });
 });

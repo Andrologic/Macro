@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
@@ -22,7 +22,16 @@ import {
   savePreference,
   savePreferenceDebounced,
 } from '../../../../services/preferences';
-import type { SmartCommitModelConfig } from '../../../../services/smartCommitModelConfig';
+import {
+  normalizeSmartCommitModelConfig,
+  smartCommitModelConfigsEqual,
+  type SmartCommitModelConfig,
+} from '../../../../services/smartCommitModelConfig';
+import {
+  loadSmartCommitModelConfig,
+  saveSmartCommitModelConfig,
+  subscribeSmartCommitModelConfig,
+} from '../../../../services/smartCommitModelPreference';
 import type { ReasoningEffort } from '../../../../types';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -110,14 +119,20 @@ export const ModelsSettings: React.FC = () => {
 
   const providers = providerConfigs;
   const enabledCommitProviders = providers.filter((provider) => providerHasCredentials(provider));
-  const dedicatedCommitProviderId = smartCommitModelConfig?.mode === 'dedicated'
-    ? smartCommitModelConfig.providerId
+  const normalizedSmartCommitModelConfig = normalizeSmartCommitModelConfig(smartCommitModelConfig, {
+    providerConfigs: enabledCommitProviders,
+    modelsByProvider,
+    getAvailableReasoningEfforts,
+  });
+  const activeSmartCommitModelConfig = normalizedSmartCommitModelConfig ?? smartCommitModelConfig;
+  const dedicatedCommitProviderId = activeSmartCommitModelConfig?.mode === 'dedicated'
+    ? activeSmartCommitModelConfig.providerId
     : enabledCommitProviders[0]?.id ?? '';
   const dedicatedCommitModels = dedicatedCommitProviderId
     ? (modelsByProvider[dedicatedCommitProviderId] || []).filter((model) => model.isEnabled !== false)
     : [];
-  const dedicatedCommitModelId = smartCommitModelConfig?.mode === 'dedicated'
-    ? smartCommitModelConfig.modelId
+  const dedicatedCommitModelId = activeSmartCommitModelConfig?.mode === 'dedicated'
+    ? activeSmartCommitModelConfig.modelId
     : dedicatedCommitModels[0]?.id ?? '';
   const dedicatedCommitReasoningEfforts = getAvailableReasoningEfforts(
     dedicatedCommitProviderId || null,
@@ -129,7 +144,7 @@ export const ModelsSettings: React.FC = () => {
   useEffect(() => {
     let disposed = false;
     void Promise.all([
-      loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG),
+      loadSmartCommitModelConfig(),
       loadPreference<string>(PREF_KEYS.SMART_COMMIT_PROMPT),
     ])
       .then(([modelConfig, prompt]) => {
@@ -143,10 +158,25 @@ export const ModelsSettings: React.FC = () => {
     };
   }, []);
 
-  const saveSmartCommitModelConfig = (config: SmartCommitModelConfig) => {
+  useEffect(() => {
+    const unsubscribe = subscribeSmartCommitModelConfig((config) => {
+      setSmartCommitModelConfig(config);
+    });
+    return unsubscribe;
+  }, []);
+
+  const saveCommitModelConfig = useCallback((config: SmartCommitModelConfig) => {
     setSmartCommitModelConfig(config);
-    void savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, config);
-  };
+    void saveSmartCommitModelConfig(config);
+  }, []);
+
+  useEffect(() => {
+    if (!smartCommitModelConfig || !normalizedSmartCommitModelConfig) return;
+    if (smartCommitModelConfigsEqual(smartCommitModelConfig, normalizedSmartCommitModelConfig)) {
+      return;
+    }
+    saveCommitModelConfig(normalizedSmartCommitModelConfig);
+  }, [normalizedSmartCommitModelConfig, saveCommitModelConfig, smartCommitModelConfig]);
 
   const saveSmartCommitPrompt = (prompt: string) => {
     const nextPrompt = prompt.trim() || DEFAULT_SMART_COMMIT_PROMPT;
@@ -226,7 +256,11 @@ export const ModelsSettings: React.FC = () => {
 
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
-      <section className="rounded-xl border border-border bg-card px-4 py-4">
+      <section
+        id="commit-message-model-settings"
+        data-settings-section="commit-messages"
+        className="rounded-xl border border-border bg-card px-4 py-4"
+      >
         <div className="flex flex-col gap-4">
           <div>
             <h3 className="text-sm font-semibold text-foreground">
@@ -245,11 +279,11 @@ export const ModelsSettings: React.FC = () => {
               type="button"
               className={cn(
                 'rounded-md px-3 py-2 text-sm transition-colors',
-                smartCommitModelConfig?.mode !== 'dedicated'
+                activeSmartCommitModelConfig?.mode !== 'dedicated'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               )}
-              onClick={() => saveSmartCommitModelConfig({ mode: 'conversation' })}
+              onClick={() => saveCommitModelConfig({ mode: 'conversation' })}
             >
               {t('models.commitUseConversationModel', 'Use conversation model')}
             </button>
@@ -257,19 +291,19 @@ export const ModelsSettings: React.FC = () => {
               type="button"
               className={cn(
                 'rounded-md px-3 py-2 text-sm transition-colors',
-                smartCommitModelConfig?.mode === 'dedicated'
+                activeSmartCommitModelConfig?.mode === 'dedicated'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-foreground'
               )}
               disabled={!dedicatedCommitProviderId || !dedicatedCommitModelId}
               onClick={() => {
                 if (!dedicatedCommitProviderId || !dedicatedCommitModelId) return;
-                saveSmartCommitModelConfig({
+                saveCommitModelConfig({
                   mode: 'dedicated',
                   providerId: dedicatedCommitProviderId,
                   modelId: dedicatedCommitModelId,
-                  reasoningEffort: smartCommitModelConfig?.mode === 'dedicated'
-                    ? smartCommitModelConfig.reasoningEffort
+                  reasoningEffort: activeSmartCommitModelConfig?.mode === 'dedicated'
+                    ? activeSmartCommitModelConfig.reasoningEffort
                     : null,
                 });
               }}
@@ -278,7 +312,7 @@ export const ModelsSettings: React.FC = () => {
             </button>
           </div>
 
-          {smartCommitModelConfig?.mode === 'dedicated' && (
+          {activeSmartCommitModelConfig?.mode === 'dedicated' && (
             <div className="grid gap-3 md:grid-cols-3">
               <label className="space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -292,7 +326,7 @@ export const ModelsSettings: React.FC = () => {
                     const firstModel = (modelsByProvider[providerId] || [])
                       .find((model) => model.isEnabled !== false);
                     if (!providerId || !firstModel) return;
-                    saveSmartCommitModelConfig({
+                    saveCommitModelConfig({
                       mode: 'dedicated',
                       providerId,
                       modelId: firstModel.id,
@@ -316,7 +350,7 @@ export const ModelsSettings: React.FC = () => {
                   value={dedicatedCommitModelId}
                   onChange={(event) => {
                     if (!dedicatedCommitProviderId || !event.target.value) return;
-                    saveSmartCommitModelConfig({
+                    saveCommitModelConfig({
                       mode: 'dedicated',
                       providerId: dedicatedCommitProviderId,
                       modelId: event.target.value,
@@ -337,10 +371,10 @@ export const ModelsSettings: React.FC = () => {
                 </span>
                 <select
                   className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                  value={smartCommitModelConfig.reasoningEffort ?? ''}
+                  value={activeSmartCommitModelConfig.reasoningEffort ?? ''}
                   onChange={(event) => {
                     if (!dedicatedCommitProviderId || !dedicatedCommitModelId) return;
-                    saveSmartCommitModelConfig({
+                    saveCommitModelConfig({
                       mode: 'dedicated',
                       providerId: dedicatedCommitProviderId,
                       modelId: dedicatedCommitModelId,
