@@ -84,15 +84,7 @@ export const toBranchWorktreeKey = (projectId: string, branchName: string): stri
   return `branch-${normalizedProjectId(projectId)}-${normalized || 'work'}-${stableHash(`${projectId}:${branchName}`)}`;
 };
 
-export const toPlanIntegrationWorktreeKey = (projectId: string, branchName: string): string => {
-  const normalized = normalizeBranchName(branchName)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '')
-    .slice(0, 32);
-  return `integration-${normalizedProjectId(projectId)}-${normalized || 'plan'}-${stableHash(`${projectId}:${branchName}`)}`;
-};
+export { toPlanIntegrationWorktreeKey } from './planIntegrationWorktreeService';
 
 export const mapNodeStatusToTaskStatus = (status: PlanNodeStatus): TaskStatus => {
   if (status === 'completed') return 'Completed';

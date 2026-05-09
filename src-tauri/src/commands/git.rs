@@ -3991,7 +3991,7 @@ pub async fn git_branch_worktree_inspect(
 
         let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
         Ok(GitBranchWorktreeInspectionDto {
-            worktree_key: inspection.task_id,
+            worktree_key: inspection.worktree_key,
             worktree_path: inspection.worktree_path.to_string_lossy().into_owned(),
             branch_name: inspection.branch_name,
             status: match inspection.status {
@@ -4041,7 +4041,7 @@ pub async fn git_branch_worktree_create(
             &fallback_branches,
         )?;
         Ok(GitBranchWorktreeEnsureDto {
-            worktree_key: ensured.task_id,
+            worktree_key: ensured.worktree_key,
             worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
             branch_name: ensured.branch_name,
             status: match ensured.status {
@@ -4083,7 +4083,7 @@ pub async fn git_branch_worktree_remove(
             force.unwrap_or(false),
         )?;
         Ok(GitBranchWorktreeRemoveDto {
-            worktree_key: removed.task_id,
+            worktree_key: removed.worktree_key,
             worktree_path: removed.worktree_path.to_string_lossy().into_owned(),
             removed_path: removed.removed_path,
             pruned_registration: removed.pruned_registration,

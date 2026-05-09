@@ -74,6 +74,46 @@ pub struct TaskWorktreeRemoveResult {
     pub already_absent: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct BranchWorktreeInspection {
+    pub worktree_key: String,
+    pub worktree_name: String,
+    pub worktree_path: PathBuf,
+    pub registered_path: Option<PathBuf>,
+    pub branch_name: Option<String>,
+    pub status: TaskWorktreeStatus,
+    pub is_dirty: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchWorktreeEnsureResult {
+    pub worktree_key: String,
+    pub worktree_path: PathBuf,
+    pub branch_name: String,
+    pub status: TaskWorktreeEnsureStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchWorktreeRemoveResult {
+    pub worktree_key: String,
+    pub worktree_path: PathBuf,
+    pub removed_path: bool,
+    pub pruned_registration: bool,
+    pub already_absent: bool,
+}
+
+fn branch_inspection_from_task(value: TaskWorktreeInspection) -> BranchWorktreeInspection {
+    BranchWorktreeInspection {
+        worktree_key: value.task_id,
+        worktree_name: value.worktree_name,
+        worktree_path: value.worktree_path,
+        registered_path: value.registered_path,
+        branch_name: value.branch_name,
+        status: value.status,
+        is_dirty: value.is_dirty,
+    }
+}
+
 fn task_worktree_name(task_id: &str) -> String {
     format!("task{}", task_id)
 }
@@ -141,6 +181,14 @@ fn current_branch_name(repo: &Repository) -> Option<String> {
 fn is_dirty(repo: &Repository) -> Result<bool> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     Ok(!statuses.is_empty())
+}
+
+fn has_merge_conflicts(repo: &Repository) -> Result<bool> {
+    repo.index()
+        .map(|index| index.has_conflicts())
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to inspect repository index: {}", e),
+        })
 }
 
 fn checkout_existing_local_branch(repo: &Repository, branch_name: &str) -> Result<()> {
@@ -215,7 +263,7 @@ fn checkout_first_stable_fallback(
 
     Err(BackendError::GitRepositoryNotClean {
         message: format!(
-            "Cannot create a worktree for '{}' because that branch is checked out in the primary repository. Checkout a clean stable branch first, or fetch/create one of: {}",
+            "Cannot create a worktree for '{}' because that branch is checked out in the repository root and no stable fallback branch could be checked out. Fetch, create, or configure baseBranch/mainBranch, then retry. Tried: {}",
             branch_name,
             if attempted.is_empty() {
                 "the project base or main branch".to_string()
@@ -388,10 +436,19 @@ fn release_branch_from_primary_workdir(
         return Ok(());
     }
 
+    if has_merge_conflicts(repo)? {
+        return Err(BackendError::GitRepositoryNotClean {
+            message: format!(
+                "Cannot create a worktree for '{}' because that branch is checked out in the repository root and the root has merge conflicts. Resolve or abort the merge in the root repository, then retry.",
+                branch_name
+            ),
+        });
+    }
+
     if is_dirty(repo)? {
         return Err(BackendError::GitRepositoryNotClean {
             message: format!(
-                "Cannot create a task worktree for '{}' because that branch is still checked out in the primary repository and has uncommitted changes",
+                "Cannot create a worktree for '{}' because that branch is checked out in the repository root and the root has uncommitted changes. Commit or stash those changes, then retry.",
                 branch_name
             ),
         });
@@ -663,7 +720,7 @@ impl GitState {
         repo: &Repository,
         worktree_key: &str,
         branch_name: &str,
-    ) -> Result<TaskWorktreeInspection> {
+    ) -> Result<BranchWorktreeInspection> {
         let worktree_name = branch_worktree_name(worktree_key);
         let expected_path = branch_worktree_path(repo, worktree_key)?;
 
@@ -678,14 +735,15 @@ impl GitState {
         };
 
         if let Some(path) = registered_path.clone() {
-            return inspect_registered_worktree(worktree_key, worktree_name, path);
+            return inspect_registered_worktree(worktree_key, worktree_name, path)
+                .map(branch_inspection_from_task);
         }
 
         if expected_path.exists() {
             match probe_repo_path(&expected_path) {
                 RepoProbe::Ready(worktree_repo) => {
-                    return Ok(TaskWorktreeInspection {
-                        task_id: worktree_key.to_string(),
+                    return Ok(BranchWorktreeInspection {
+                        worktree_key: worktree_key.to_string(),
                         worktree_name,
                         worktree_path: expected_path.clone(),
                         registered_path: None,
@@ -696,8 +754,8 @@ impl GitState {
                 }
                 RepoProbe::Missing => {}
                 RepoProbe::Invalid => {
-                    return Ok(TaskWorktreeInspection {
-                        task_id: worktree_key.to_string(),
+                    return Ok(BranchWorktreeInspection {
+                        worktree_key: worktree_key.to_string(),
                         worktree_name,
                         worktree_path: expected_path,
                         registered_path: None,
@@ -708,8 +766,8 @@ impl GitState {
                 }
             }
 
-            return Ok(TaskWorktreeInspection {
-                task_id: worktree_key.to_string(),
+            return Ok(BranchWorktreeInspection {
+                worktree_key: worktree_key.to_string(),
                 worktree_name,
                 worktree_path: expected_path,
                 registered_path: None,
@@ -722,11 +780,11 @@ impl GitState {
         if let Some(branch_worktree) =
             find_ready_worktree_for_branch(repo, worktree_key, branch_name, &worktree_name)?
         {
-            return Ok(branch_worktree);
+            return Ok(branch_inspection_from_task(branch_worktree));
         }
 
-        Ok(TaskWorktreeInspection {
-            task_id: worktree_key.to_string(),
+        Ok(BranchWorktreeInspection {
+            worktree_key: worktree_key.to_string(),
             worktree_name,
             worktree_path: expected_path,
             registered_path: None,
@@ -744,7 +802,7 @@ impl GitState {
         branch_name: &str,
         from_ref: Option<&str>,
         fallback_branches: &[String],
-    ) -> Result<TaskWorktreeEnsureResult> {
+    ) -> Result<BranchWorktreeEnsureResult> {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
@@ -760,8 +818,8 @@ impl GitState {
                     workdir,
                     fallback_branches.first().map(String::as_str),
                 )?;
-                return Ok(TaskWorktreeEnsureResult {
-                    task_id: worktree_key.to_string(),
+                return Ok(BranchWorktreeEnsureResult {
+                    worktree_key: worktree_key.to_string(),
                     worktree_path: inspection.worktree_path,
                     branch_name: branch_name.to_string(),
                     status: if inspection.worktree_name == expected_worktree_name {
@@ -799,8 +857,8 @@ impl GitState {
                     workdir,
                     fallback_branches.first().map(String::as_str),
                 )?;
-                return Ok(TaskWorktreeEnsureResult {
-                    task_id: worktree_key.to_string(),
+                return Ok(BranchWorktreeEnsureResult {
+                    worktree_key: worktree_key.to_string(),
                     worktree_path: inspection.worktree_path,
                     branch_name: branch_name.to_string(),
                     status: TaskWorktreeEnsureStatus::Repaired,
@@ -815,23 +873,24 @@ impl GitState {
         })?;
 
         if repo.find_branch(branch_name, BranchType::Local).is_err() {
-            let branch_commit =
-                if let Some(from_ref) = from_ref.map(str::trim).filter(|value| !value.is_empty()) {
-                    repo.revparse_single(from_ref)
+            let branch_commit = if let Some(from_ref) =
+                from_ref.map(str::trim).filter(|value| !value.is_empty())
+            {
+                repo.revparse_single(from_ref)
                         .and_then(|object| object.peel_to_commit())
                         .map_err(|_| BackendError::Git {
                             message: format!(
-                                "Cannot create branch '{}' from reference '{}'",
+                                "Cannot create plan integration branch '{}' from reference '{}'. Fetch the source branch or configure a valid baseBranch/mainBranch, then retry.",
                                 branch_name, from_ref
                             ),
                         })?
-                } else {
-                    repo.head()
-                        .and_then(|head| head.peel_to_commit())
-                        .map_err(|_| BackendError::Git {
-                            message: "Cannot create branch without an initial commit".to_string(),
-                        })?
-                };
+            } else {
+                repo.head()
+                    .and_then(|head| head.peel_to_commit())
+                    .map_err(|_| BackendError::Git {
+                        message: "Cannot create branch without an initial commit".to_string(),
+                    })?
+            };
             repo.branch(branch_name, &branch_commit, false)?;
         }
 
@@ -870,8 +929,8 @@ impl GitState {
         let created_branch_name =
             current_branch_name(&created_repo).unwrap_or_else(|| branch_name.to_string());
 
-        Ok(TaskWorktreeEnsureResult {
-            task_id: worktree_key.to_string(),
+        Ok(BranchWorktreeEnsureResult {
+            worktree_key: worktree_key.to_string(),
             worktree_path,
             branch_name: created_branch_name,
             status: if repaired {
@@ -889,7 +948,7 @@ impl GitState {
         worktree_key: &str,
         branch_name: &str,
         force: bool,
-    ) -> Result<TaskWorktreeRemoveResult> {
+    ) -> Result<BranchWorktreeRemoveResult> {
         let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
         if !force && inspection.is_dirty.unwrap_or(false) {
             return Err(BackendError::GitRepositoryNotClean {
@@ -908,8 +967,8 @@ impl GitState {
 
         let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
 
-        Ok(TaskWorktreeRemoveResult {
-            task_id: worktree_key.to_string(),
+        Ok(BranchWorktreeRemoveResult {
+            worktree_key: worktree_key.to_string(),
             worktree_path: inspection.worktree_path,
             removed_path,
             pruned_registration,

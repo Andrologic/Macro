@@ -15,6 +15,7 @@ use crate::core::process::background_command;
 pub mod repo;
 mod worktree;
 pub use worktree::{
+    BranchWorktreeEnsureResult, BranchWorktreeInspection, BranchWorktreeRemoveResult,
     TaskWorktreeEnsureResult, TaskWorktreeEnsureStatus, TaskWorktreeInspection,
     TaskWorktreeRemoveResult, TaskWorktreeStatus,
 };

@@ -51,6 +51,16 @@ import {
   PREF_KEYS,
   subscribePreference,
 } from '../../services/preferences';
+import {
+  buildChatTranscriptItems,
+  getTranscriptMessageIndexById,
+  type ChatTranscriptItem,
+  type ChatTranscriptMessageItem,
+} from './transcriptItems';
+import {
+  CompactionBoundaryRow,
+  CompactionProgressNotice,
+} from './CompactionTranscriptUi';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -135,12 +145,16 @@ const AssistantCompletionNotice: React.FC<{
   );
 };
 
-interface RenderedMessageItem {
+interface RenderedTranscriptItem {
   index: number;
   key: React.Key;
   size: number;
   start: number;
-  item: ChatMessage;
+  item: ChatTranscriptItem;
+}
+
+interface RenderedMessageItem extends Omit<RenderedTranscriptItem, 'item'> {
+  item: ChatTranscriptMessageItem;
 }
 
 interface ChatMessageRowProps {
@@ -246,8 +260,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   needsByTitle,
 }) => {
   const { t } = useTranslation();
-  const message = virtualMessage.item;
-  const messageIndex = virtualMessage.index;
+  const message = virtualMessage.item.message;
   const visibleImages = isEditing ? editingImages : messageImages;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
@@ -263,7 +276,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   return (
     <div
       ref={measureElement}
-      data-index={messageIndex}
+      data-index={virtualMessage.index}
       data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}
       className={cn(
@@ -658,6 +671,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
   const [showManualCompaction, setShowManualCompaction] = useState(false);
   const [isManualCompacting, setIsManualCompacting] = useState(false);
+  const [showCompactionProgressNotice, setShowCompactionProgressNotice] = useState(false);
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -681,7 +695,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ? conversationCompactionStatusById[selectedConversationId]
     : undefined;
   const compactionStatusLabel =
-    activeCompactionStatus?.phase === 'compacting'
+    (activeCompactionStatus?.phase === 'compacting' ||
+      activeCompactionStatus?.phase === 'overflow_recovery')
       ? t('chat.compactionStatusCompacting', 'Compaction en cours')
       : activeCompactionStatus?.phase === 'compacted'
         ? t('chat.compactionStatusCompacted', 'Contexte compacté')
@@ -695,9 +710,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? 'border-destructive/40 bg-destructive/10 text-destructive'
       : activeCompactionStatus?.phase === 'degraded'
         ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-        : activeCompactionStatus?.phase === 'compacting'
+        : activeCompactionStatus?.phase === 'compacting' ||
+            activeCompactionStatus?.phase === 'overflow_recovery'
           ? 'border-primary/30 bg-primary/10 text-primary'
           : 'border-border/70 bg-card/60 text-muted-foreground';
+  const isCompactionProgressActive =
+    activeCompactionStatus?.phase === 'compacting' ||
+    activeCompactionStatus?.phase === 'overflow_recovery' ||
+    selectedConversationRuntime.phase === 'overflow_recovery';
+  const transcriptItems = useMemo(
+    () =>
+      buildChatTranscriptItems(currentMessages, {
+        upToMessageId: activeCompactionStatus?.upToMessageId,
+        updatedAt: activeCompactionStatus?.updatedAt,
+      }),
+    [
+      activeCompactionStatus?.upToMessageId,
+      activeCompactionStatus?.updatedAt,
+      currentMessages,
+    ]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -717,6 +749,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isCompactionProgressActive) {
+      setShowCompactionProgressNotice(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setShowCompactionProgressNotice(true);
+    }, 400);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isCompactionProgressActive]);
 
   const handleManualCompaction = useCallback(async () => {
     if (!selectedConversationId || isManualCompacting) {
@@ -1041,7 +1088,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   // Scroll magnetism: auto-scroll during streaming, animated separator
   const { scrollContainerRef, separatorState } = useScrollMagnet(
     isStreaming,
-    [currentMessages],
+    [transcriptItems],
   );
   const disableVirtualizerScrollAdjustment = useCallback(() => false, []);
   const {
@@ -1049,9 +1096,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     totalSize: virtualMessageTotalSize,
     measureElement: measureMessageElement,
     scrollToIndex: scrollToMessageIndex,
-  } = useVirtualMessages(currentMessages, {
+  } = useVirtualMessages(transcriptItems, {
     parentRef: scrollContainerRef,
-    getItemKey: (message) => message.id,
+    getItemKey: (item) => item.key,
     estimateSize: 220,
     overscan: isStreaming ? 10 : 6,
     dynamicHeight: true,
@@ -1062,26 +1109,53 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : undefined,
   });
   const messageIndexById = useMemo(
-    () => new Map(currentMessages.map((message, index) => [message.id, index])),
-    [currentMessages]
+    () => {
+      const indexed = new Map<string, number>();
+      for (const message of currentMessages) {
+        const transcriptIndex = getTranscriptMessageIndexById(
+          transcriptItems,
+          message.id,
+        );
+        if (transcriptIndex !== null) {
+          indexed.set(message.id, transcriptIndex);
+        }
+      }
+      return indexed;
+    },
+    [currentMessages, transcriptItems]
   );
   const renderedMessageItems = useMemo(
-    () =>
-      virtualMessageItems.length > 0
-        ? virtualMessageItems
-        : currentMessages.map((message, index) => ({
-            index,
-            key: message.id,
-            size: 220,
-            start: index * 244,
-            item: message,
-          })),
-    [currentMessages, virtualMessageItems]
+    () => {
+      if (virtualMessageItems.length > 0) {
+        return virtualMessageItems;
+      }
+
+      let start = 0;
+      return transcriptItems.map((item, index) => {
+        const size = item.kind === 'compaction_boundary' ? 48 : 220;
+        const renderedItem = {
+          index,
+          key: item.key,
+          size,
+          start,
+          item,
+        };
+        start += size + 24;
+        return renderedItem;
+      });
+    },
+    [transcriptItems, virtualMessageItems]
   );
   const renderedMessageTotalSize =
     virtualMessageItems.length > 0
       ? virtualMessageTotalSize
-      : Math.max(0, currentMessages.length * 244 - 24);
+      : Math.max(
+          0,
+          renderedMessageItems.reduce(
+            (total, item) => Math.max(total, item.start + item.size),
+            0,
+          )
+        );
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
@@ -1607,12 +1681,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     activeCompactionStatus?.phase === 'too_large' ||
                     activeCompactionStatus?.phase === 'degraded'
                       ? 'triangle-alert'
-                      : activeCompactionStatus?.phase === 'compacting'
+                      : activeCompactionStatus?.phase === 'compacting' ||
+                          activeCompactionStatus?.phase === 'overflow_recovery'
                         ? 'loader'
                         : 'check-circle'
                   }
                   size={12}
-                  className={activeCompactionStatus?.phase === 'compacting' ? 'animate-spin' : undefined}
+                  className={
+                    activeCompactionStatus?.phase === 'compacting' ||
+                    activeCompactionStatus?.phase === 'overflow_recovery'
+                      ? 'animate-spin'
+                      : undefined
+                  }
                 />
                 {compactionStatusLabel}
               </span>
@@ -1678,14 +1758,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             />
           ) : selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
-              {renderedMessageItems.map((virtualMessage) => {
-                const message = virtualMessage.item;
+              {renderedMessageItems.map((virtualItem) => {
+                if (virtualItem.item.kind === 'compaction_boundary') {
+                  return (
+                    <CompactionBoundaryRow
+                      key={virtualItem.key}
+                      virtualItem={virtualItem}
+                      measureElement={measureMessageElement}
+                    />
+                  );
+                }
+
+                const virtualMessage = virtualItem as RenderedMessageItem;
+                const message = virtualMessage.item.message;
                 const isEditing = editingMessageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
 
                 return (
                   <MemoizedChatMessageRow
-                    key={message.id}
+                    key={virtualMessage.key}
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
                     streamingAssistantMessageId={activeAssistantMessageId}
@@ -1756,6 +1847,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {showCompactionProgressNotice && <CompactionProgressNotice />}
+
             {!activeQuestionnaire && !activePendingToolApproval && composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
