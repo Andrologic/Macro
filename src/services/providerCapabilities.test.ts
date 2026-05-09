@@ -6,7 +6,7 @@ describe('resolveProviderCapabilities', () => {
     expect(resolveProviderCapabilities({ providerId: 'opencode-go' })).toMatchObject({
       providerId: 'opencode-go',
       httpOnly: true,
-      usesKeyring: true,
+      usesLocalSecretStore: true,
       usesLocalRuntime: false,
       supportsModelScan: true,
     });

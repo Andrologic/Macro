@@ -700,7 +700,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         continue;
       }
 
-      // Avoid keychain reads on boot for API-key and ChatGPT providers.
+      // Avoid secret reveals on boot for API-key and ChatGPT providers.
       if (!provider.isLocal) {
         continue;
       }

@@ -3,7 +3,7 @@ pub struct ProviderCapabilityProfile {
     pub provider_id: &'static str,
     pub provider_type: &'static str,
     pub http_only: bool,
-    pub uses_keyring: bool,
+    pub uses_local_secret_store: bool,
     pub uses_local_runtime: bool,
     pub supports_model_scan: bool,
 }
@@ -12,7 +12,7 @@ const OPENAI_COMPATIBLE_DEFAULT: ProviderCapabilityProfile = ProviderCapabilityP
     provider_id: "custom",
     provider_type: "openai",
     http_only: true,
-    uses_keyring: true,
+    uses_local_secret_store: true,
     uses_local_runtime: false,
     supports_model_scan: true,
 };
@@ -31,7 +31,7 @@ pub fn resolve_provider_capabilities(
             provider_id: "opencode-go",
             provider_type: "openai",
             http_only: true,
-            uses_keyring: true,
+            uses_local_secret_store: true,
             uses_local_runtime: false,
             supports_model_scan: true,
         };
@@ -42,7 +42,7 @@ pub fn resolve_provider_capabilities(
             provider_id: "copilot",
             provider_type: "copilot",
             http_only: false,
-            uses_keyring: false,
+            uses_local_secret_store: false,
             uses_local_runtime: true,
             supports_model_scan: true,
         },
@@ -50,7 +50,7 @@ pub fn resolve_provider_capabilities(
             provider_id: "chatgpt",
             provider_type: "chatgpt",
             http_only: false,
-            uses_keyring: true,
+            uses_local_secret_store: true,
             uses_local_runtime: false,
             supports_model_scan: true,
         },
@@ -69,7 +69,7 @@ mod tests {
 
         assert!(capabilities.http_only);
         assert!(!capabilities.uses_local_runtime);
-        assert!(capabilities.uses_keyring);
+        assert!(capabilities.uses_local_secret_store);
         assert_eq!(capabilities.provider_id, "opencode-go");
     }
 
@@ -79,6 +79,6 @@ mod tests {
 
         assert!(!capabilities.http_only);
         assert!(capabilities.uses_local_runtime);
-        assert!(!capabilities.uses_keyring);
+        assert!(!capabilities.uses_local_secret_store);
     }
 }

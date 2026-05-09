@@ -1,13 +1,14 @@
-use super::store::{
-    delete_provider_secret_entry, read_provider_secret, write_provider_secret, SecretEnvelope,
-};
+use super::store::{delete_provider_secret_entry, read_provider_secret, write_provider_secret};
 use super::SecretError;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 static API_KEY_CACHE: LazyLock<Mutex<HashMap<String, Option<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(super) fn clear_cache() {
+    API_KEY_CACHE.lock().expect("api key cache lock").clear();
+}
 
 pub fn get_api_key(provider_id: &str) -> Result<Option<String>, SecretError> {
     if let Some(cached) = API_KEY_CACHE
@@ -26,14 +27,6 @@ pub fn get_api_key(provider_id: &str) -> Result<Option<String>, SecretError> {
             .insert(provider_id.to_string(), None);
         return Ok(None);
     };
-
-    if serde_json::from_str::<SecretEnvelope<Value>>(&secret).is_ok() {
-        API_KEY_CACHE
-            .lock()
-            .expect("api key cache lock")
-            .insert(provider_id.to_string(), None);
-        return Ok(None);
-    }
 
     API_KEY_CACHE
         .lock()

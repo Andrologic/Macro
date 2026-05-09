@@ -11,7 +11,7 @@ The maintainers prioritize issues related to:
 - configuring AI providers and local provider keys;
 - core Architect, Implement, and Chat workflows;
 - local Git, worktree, review, and commit flows;
-- keychain-backed provider secret storage;
+- local provider secret storage;
 - signed and notarized macOS Apple Silicon release artifacts.
 
 ## Best-Effort Areas

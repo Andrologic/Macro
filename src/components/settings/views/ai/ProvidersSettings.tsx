@@ -732,7 +732,7 @@ export const ProvidersSettings: React.FC = () => {
                         editingProvider.hasStoredApiKey &&
                         !editingProvider.apiKeyLoaded &&
                         !editingProvider.apiKeyTouched
-                          ? t('providers.form.apiKeyStoredPlaceholder', 'Stored in Keychain')
+                          ? t('providers.form.apiKeyStoredPlaceholder', 'Stored locally by Macro')
                           : t('providers.form.apiKeyPlaceholder', 'sk-...')
                       }
                       className="pr-10 font-mono"
@@ -766,7 +766,7 @@ export const ProvidersSettings: React.FC = () => {
                     editingProvider.hasStoredApiKey &&
                     !editingProvider.apiKeyTouched && (
                       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span>{t('providers.form.apiKeyStoredHint', 'This key is stored in the system keychain.')}</span>
+                        <span>{t('providers.form.apiKeyStoredHint', 'This key is stored locally by Macro.')}</span>
                         <Button variant="ghost" size="sm" onClick={handleReplaceApiKey}>
                           {t('providers.form.replaceApiKey', 'Replace')}
                         </Button>

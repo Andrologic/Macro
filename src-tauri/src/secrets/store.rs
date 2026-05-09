@@ -1,20 +1,23 @@
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
-use tracing::{debug, warn};
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
-const SERVICE_NAME: &str = "macro";
-pub(super) const SECRET_CHUNK_SIZE_BYTES: usize = 2400;
-pub(super) const WINDOWS_CREDENTIAL_BLOB_LIMIT_BYTES: usize = 2560;
-static KEYRING_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+const SECRET_FILE_NAME: &str = "provider-secrets.json";
+const SECRET_FILE_VERSION: u8 = 1;
+
+static SECRET_STORE_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
+static STORE_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
-    #[error("Keyring error: {0}")]
-    Keyring(#[from] keyring::Error),
-    #[error("System keyring is unavailable during {operation}.")]
-    StoreUnavailable { operation: &'static str },
+    #[error("Secret store has not been initialized.")]
+    StoreUnavailable,
+    #[error("Secret storage error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("Secret serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 }
@@ -47,522 +50,294 @@ pub(super) struct SecretEnvelope<T> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct ChunkedSecretPayload {
-    pub(super) parts: usize,
-    pub(super) generation: Option<String>,
+pub(super) struct ProviderSecretsFile {
+    pub(super) version: u8,
+    #[serde(default)]
+    pub(super) api_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(super) chatgpt_sessions: BTreeMap<String, ChatGptSecret>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SecretStorageProfile {
-    Utf8Bytes,
-    WindowsCredentialBlob,
+#[derive(Debug, Deserialize)]
+struct RawProviderSecretsFile {
+    #[serde(default, rename = "version")]
+    _version: u8,
+    #[serde(default)]
+    api_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    chatgpt_sessions: BTreeMap<String, serde_json::Value>,
 }
 
-pub(super) trait SecretStore {
-    fn read_entry(&self, entry_id: &str) -> Result<Option<String>, keyring::Error>;
-    fn write_entry(&self, entry_id: &str, value: &str) -> Result<(), keyring::Error>;
-    fn delete_entry(&self, entry_id: &str) -> Result<(), keyring::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct KeyringSecretStore;
-
-impl SecretStore for KeyringSecretStore {
-    fn read_entry(&self, entry_id: &str) -> Result<Option<String>, keyring::Error> {
-        if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-
-        let started_at = Instant::now();
-        let entry = Entry::new(SERVICE_NAME, entry_id)?;
-        match entry.get_password() {
-            Ok(password) => {
-                log_keyring_success(entry_id, "provider_keyring_read", started_at, Some(true));
-                Ok(Some(password))
-            }
-            Err(keyring::Error::NoEntry) => {
-                log_keyring_success(entry_id, "provider_keyring_read", started_at, Some(false));
-                Ok(None)
-            }
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
-                log_keyring_failure(entry_id, "provider_keyring_read", started_at, &error, true);
-                Ok(None)
-            }
-            Err(error) => {
-                log_keyring_failure(entry_id, "provider_keyring_read", started_at, &error, false);
-                Err(error)
-            }
-        }
-    }
-
-    fn write_entry(&self, entry_id: &str, value: &str) -> Result<(), keyring::Error> {
-        if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
-        let started_at = Instant::now();
-        let entry = Entry::new(SERVICE_NAME, entry_id)?;
-        match entry.set_password(value) {
-            Ok(_) => {
-                log_keyring_success(entry_id, "provider_keyring_write", started_at, None);
-                Ok(())
-            }
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
-                log_keyring_failure(entry_id, "provider_keyring_write", started_at, &error, true);
-                Ok(())
-            }
-            Err(error) => {
-                log_keyring_failure(
-                    entry_id,
-                    "provider_keyring_write",
-                    started_at,
-                    &error,
-                    false,
-                );
-                Err(error)
-            }
-        }
-    }
-
-    fn delete_entry(&self, entry_id: &str) -> Result<(), keyring::Error> {
-        if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
-        let started_at = Instant::now();
-        let entry = Entry::new(SERVICE_NAME, entry_id)?;
-        match entry.delete_password() {
-            Ok(_) => {
-                log_keyring_success(entry_id, "provider_keyring_delete", started_at, Some(true));
-                Ok(())
-            }
-            Err(keyring::Error::NoEntry) => {
-                log_keyring_success(entry_id, "provider_keyring_delete", started_at, Some(false));
-                Ok(())
-            }
-            Err(error) if is_unavailable_error(&error) => {
-                mark_unavailable_once();
-                log_keyring_failure(
-                    entry_id,
-                    "provider_keyring_delete",
-                    started_at,
-                    &error,
-                    true,
-                );
-                Ok(())
-            }
-            Err(error) => {
-                log_keyring_failure(
-                    entry_id,
-                    "provider_keyring_delete",
-                    started_at,
-                    &error,
-                    false,
-                );
-                Err(error)
-            }
+impl Default for ProviderSecretsFile {
+    fn default() -> Self {
+        Self {
+            version: SECRET_FILE_VERSION,
+            api_keys: BTreeMap::new(),
+            chatgpt_sessions: BTreeMap::new(),
         }
     }
 }
 
-fn elapsed_ms(started_at: Instant) -> u64 {
-    started_at.elapsed().as_millis() as u64
+#[derive(Debug, Clone)]
+pub(super) struct LocalSecretStore {
+    path: PathBuf,
 }
 
-fn log_keyring_success(
-    entry_id: &str,
-    operation: &'static str,
-    started_at: Instant,
-    found: Option<bool>,
-) {
-    match found {
-        Some(found) => debug!(
-            provider_id = %entry_id,
-            operation,
-            duration_ms = elapsed_ms(started_at),
-            found,
-            "provider keyring operation completed"
-        ),
-        None => debug!(
-            provider_id = %entry_id,
-            operation,
-            duration_ms = elapsed_ms(started_at),
-            "provider keyring operation completed"
-        ),
-    }
-}
-
-fn log_keyring_failure(
-    entry_id: &str,
-    operation: &'static str,
-    started_at: Instant,
-    error: &keyring::Error,
-    unavailable: bool,
-) {
-    warn!(
-        provider_id = %entry_id,
-        operation,
-        duration_ms = elapsed_ms(started_at),
-        error = %error,
-        unavailable,
-        "provider keyring operation failed"
-    );
-}
-
-fn keyring_error_to_secret_error(
-    entry_id: &str,
-    operation: &'static str,
-    started_at: Instant,
-    error: keyring::Error,
-) -> SecretError {
-    if is_unavailable_error(&error) {
-        mark_unavailable_once();
-        log_keyring_failure(entry_id, operation, started_at, &error, true);
-        secret_error_for_keyring_error(operation, error)
-    } else {
-        log_keyring_failure(entry_id, operation, started_at, &error, false);
-        secret_error_for_keyring_error(operation, error)
-    }
-}
-
-fn secret_error_for_keyring_error(operation: &'static str, error: keyring::Error) -> SecretError {
-    if is_unavailable_error(&error) {
-        SecretError::StoreUnavailable { operation }
-    } else {
-        SecretError::Keyring(error)
-    }
-}
-
-fn is_unavailable_error(error: &keyring::Error) -> bool {
-    let message = error.to_string().to_lowercase();
-    message.contains("serviceunknown")
-        || message.contains("not activatable")
-        || message.contains("secret service")
-}
-
-fn mark_unavailable_once() {
-    if !KEYRING_UNAVAILABLE.swap(true, Ordering::Relaxed) {
-        warn!("Keyring unavailable, secret persistence disabled for this session");
-    }
-}
-
-pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
-    let operation = "provider_keyring_read";
-    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-        return Err(SecretError::StoreUnavailable { operation });
+impl LocalSecretStore {
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self { path }
     }
 
-    let started_at = Instant::now();
-    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
-        keyring_error_to_secret_error(provider_id, operation, started_at, error)
-    })?;
-    match entry.get_password() {
-        Ok(password) => {
-            log_keyring_success(provider_id, operation, started_at, Some(true));
-            Ok(Some(password))
+    pub(super) fn read_file(&self) -> Result<ProviderSecretsFile, SecretError> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(contents) => {
+                if contents.trim().is_empty() {
+                    return Ok(ProviderSecretsFile::default());
+                }
+                match parse_provider_secrets_file(&contents) {
+                    Ok(data) => Ok(data),
+                    Err(error) => {
+                        self.quarantine_corrupt_file(&error)?;
+                        let data = ProviderSecretsFile::default();
+                        self.write_file(&data)?;
+                        Ok(data)
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ProviderSecretsFile::default())
+            }
+            Err(error) => Err(error.into()),
         }
-        Err(keyring::Error::NoEntry) => {
-            log_keyring_success(provider_id, operation, started_at, Some(false));
-            Ok(None)
+    }
+
+    pub(super) fn write_file(&self, data: &ProviderSecretsFile) -> Result<(), SecretError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        Err(error) => Err(keyring_error_to_secret_error(
-            provider_id,
-            operation,
-            started_at,
-            error,
-        )),
+
+        let mut persisted = data.clone();
+        persisted.version = SECRET_FILE_VERSION;
+        let serialized = serde_json::to_string_pretty(&persisted)?;
+        let tmp_path = self.path.with_file_name(format!(
+            "{}.tmp-{}",
+            SECRET_FILE_NAME,
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        write_private_file(&tmp_path, serialized.as_bytes())?;
+        set_private_file_permissions(&tmp_path)?;
+        std::fs::rename(&tmp_path, &self.path)?;
+        set_private_file_permissions(&self.path)?;
+        sync_parent_directory(&self.path)?;
+        Ok(())
+    }
+
+    pub(super) fn update_file(
+        &self,
+        update: impl FnOnce(&mut ProviderSecretsFile),
+    ) -> Result<(), SecretError> {
+        let mut data = self.read_file()?;
+        update(&mut data);
+        self.write_file(&data)
+    }
+
+    fn quarantine_corrupt_file(&self, error: &serde_json::Error) -> Result<(), SecretError> {
+        let quarantined_path = self.path.with_file_name(format!(
+            "{}.corrupt-{}-{}",
+            SECRET_FILE_NAME,
+            unix_timestamp_millis(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::rename(&self.path, &quarantined_path)?;
+        warn!(
+            path = %self.path.display(),
+            quarantined_path = %quarantined_path.display(),
+            error = %error,
+            "quarantined corrupt provider secret store"
+        );
+        Ok(())
     }
 }
 
-pub(super) fn write_provider_secret(provider_id: &str, value: &str) -> Result<(), SecretError> {
-    let operation = "provider_keyring_write";
-    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-        return Err(SecretError::StoreUnavailable { operation });
-    }
+fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, serde_json::Error> {
+    let raw = serde_json::from_str::<RawProviderSecretsFile>(contents)?;
+    let mut chatgpt_sessions = BTreeMap::new();
 
-    let started_at = Instant::now();
-    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
-        keyring_error_to_secret_error(provider_id, operation, started_at, error)
-    })?;
-    entry.set_password(value).map_err(|error| {
-        keyring_error_to_secret_error(provider_id, operation, started_at, error)
-    })?;
-    log_keyring_success(provider_id, operation, started_at, None);
-    Ok(())
-}
-
-pub(super) fn delete_secret_entry(provider_id: &str) -> Result<(), keyring::Error> {
-    let store = KeyringSecretStore;
-    store.delete_entry(provider_id)
-}
-
-pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), SecretError> {
-    let operation = "provider_keyring_delete";
-    if KEYRING_UNAVAILABLE.load(Ordering::Relaxed) {
-        return Err(SecretError::StoreUnavailable { operation });
-    }
-
-    let started_at = Instant::now();
-    let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|error| {
-        keyring_error_to_secret_error(provider_id, operation, started_at, error)
-    })?;
-    match entry.delete_password() {
-        Ok(_) => {
-            log_keyring_success(provider_id, operation, started_at, Some(true));
-            Ok(())
-        }
-        Err(keyring::Error::NoEntry) => {
-            log_keyring_success(provider_id, operation, started_at, Some(false));
-            Ok(())
-        }
-        Err(error) => Err(keyring_error_to_secret_error(
-            provider_id,
-            operation,
-            started_at,
-            error,
-        )),
-    }
-}
-
-pub(super) fn chunk_secret_entry_id(provider_id: &str, index: usize) -> String {
-    format!("{provider_id}::chunk::{index}")
-}
-
-pub(super) fn generated_chunk_secret_entry_id(
-    provider_id: &str,
-    generation: &str,
-    index: usize,
-) -> String {
-    format!("{provider_id}::chunk::{generation}::{index}")
-}
-
-pub(super) fn active_storage_profile() -> SecretStorageProfile {
-    if cfg!(target_os = "windows") {
-        SecretStorageProfile::WindowsCredentialBlob
-    } else {
-        SecretStorageProfile::Utf8Bytes
-    }
-}
-
-pub(super) fn storage_limit_bytes(profile: SecretStorageProfile) -> usize {
-    match profile {
-        SecretStorageProfile::Utf8Bytes => SECRET_CHUNK_SIZE_BYTES,
-        SecretStorageProfile::WindowsCredentialBlob => WINDOWS_CREDENTIAL_BLOB_LIMIT_BYTES,
-    }
-}
-
-pub(super) fn storage_size_bytes(value: &str, profile: SecretStorageProfile) -> usize {
-    match profile {
-        SecretStorageProfile::Utf8Bytes => value.len(),
-        SecretStorageProfile::WindowsCredentialBlob => value.encode_utf16().count() * 2,
-    }
-}
-
-fn char_storage_size_bytes(ch: char, profile: SecretStorageProfile) -> usize {
-    match profile {
-        SecretStorageProfile::Utf8Bytes => ch.len_utf8(),
-        SecretStorageProfile::WindowsCredentialBlob => ch.len_utf16() * 2,
-    }
-}
-
-pub(super) fn split_by_storage_limit(value: &str, profile: SecretStorageProfile) -> Vec<String> {
-    let max_bytes = storage_limit_bytes(profile);
-    let mut chunks = Vec::new();
-    let mut start = 0usize;
-    let mut current_bytes = 0usize;
-
-    for (index, ch) in value.char_indices() {
-        let char_len = char_storage_size_bytes(ch, profile);
-        if current_bytes + char_len > max_bytes && index > start {
-            chunks.push(value[start..index].to_string());
-            start = index;
-            current_bytes = 0;
-        }
-        current_bytes += char_len;
-    }
-
-    if start < value.len() {
-        chunks.push(value[start..].to_string());
-    }
-
-    if chunks.is_empty() {
-        chunks.push(String::new());
-    }
-
-    chunks
-}
-
-pub(super) fn parse_chunked_manifest(secret: &str) -> Option<SecretEnvelope<ChunkedSecretPayload>> {
-    let manifest = serde_json::from_str::<SecretEnvelope<ChunkedSecretPayload>>(secret).ok()?;
-    if manifest.kind.ends_with("_chunked") {
-        Some(manifest)
-    } else {
-        None
-    }
-}
-
-pub(super) fn read_chunked_secret<S: SecretStore>(
-    store: &S,
-    provider_id: &str,
-    payload: &ChunkedSecretPayload,
-) -> Result<Option<String>, SecretError> {
-    let mut combined = String::new();
-
-    for index in 0..payload.parts {
-        let entry_id = match payload.generation.as_deref() {
-            Some(generation) => generated_chunk_secret_entry_id(provider_id, generation, index),
-            None => chunk_secret_entry_id(provider_id, index),
-        };
-        let Some(chunk) = store.read_entry(&entry_id)? else {
-            return Ok(None);
-        };
-        combined.push_str(&chunk);
-    }
-
-    Ok(Some(combined))
-}
-
-pub(super) fn delete_chunked_secret<S: SecretStore>(
-    store: &S,
-    provider_id: &str,
-    payload: &ChunkedSecretPayload,
-) -> Result<(), SecretError> {
-    for index in 0..payload.parts {
-        let entry_id = match payload.generation.as_deref() {
-            Some(generation) => generated_chunk_secret_entry_id(provider_id, generation, index),
-            None => chunk_secret_entry_id(provider_id, index),
-        };
-        store.delete_entry(&entry_id)?;
-    }
-
-    Ok(())
-}
-
-pub(super) fn delete_legacy_chunked_secret_best_effort<S: SecretStore>(
-    store: &S,
-    provider_id: &str,
-) -> Result<(), SecretError> {
-    for index in 0.. {
-        let entry_id = chunk_secret_entry_id(provider_id, index);
-        let Some(_) = store.read_entry(&entry_id)? else {
-            break;
-        };
-        store.delete_entry(&entry_id)?;
-    }
-
-    Ok(())
-}
-
-pub(super) fn cleanup_chunk_entries_best_effort<S: SecretStore>(
-    store: &S,
-    provider_id: &str,
-    entry_ids: &[String],
-    phase: &str,
-) {
-    for entry_id in entry_ids {
-        if let Err(error) = store.delete_entry(entry_id) {
+    for (provider_id, value) in raw.chatgpt_sessions {
+        if let Some(secret) = parse_chatgpt_secret_value(&value) {
+            chatgpt_sessions.insert(provider_id, secret);
+        } else {
             warn!(
                 provider_id = %provider_id,
-                phase,
-                entry_id = %entry_id,
-                error = %error,
-                "failed to delete ChatGPT secret chunk during cleanup"
+                "ignored unrecognized ChatGPT secret entry in local provider secret store"
             );
         }
     }
+
+    Ok(ProviderSecretsFile {
+        version: SECRET_FILE_VERSION,
+        api_keys: raw.api_keys,
+        chatgpt_sessions,
+    })
 }
 
-pub(super) fn cleanup_previous_chunked_secret_best_effort<S: SecretStore>(
-    store: &S,
-    provider_id: &str,
-    previous_manifest: Option<&ChunkedSecretPayload>,
-) {
-    let Some(previous_manifest) = previous_manifest else {
-        return;
+fn parse_chatgpt_secret_value(value: &serde_json::Value) -> Option<ChatGptSecret> {
+    if let Ok(secret) = serde_json::from_value::<ChatGptSecret>(value.clone()) {
+        return Some(secret);
+    }
+
+    if let Some(serialized) = value.as_str() {
+        return parse_chatgpt_secret(serialized).ok().flatten();
+    }
+
+    serde_json::to_string(value)
+        .ok()
+        .and_then(|serialized| parse_chatgpt_secret(&serialized).ok().flatten())
+}
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), std::io::Error> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
     };
-
-    debug!(
-        provider_id = %provider_id,
-        phase = "cleanup_old_chunks",
-        previous_parts = previous_manifest.parts,
-        previous_generation = previous_manifest.generation.as_deref().unwrap_or("legacy"),
-        "cleaning up previous ChatGPT secret chunks"
-    );
-
-    if let Err(error) = delete_chunked_secret(store, provider_id, previous_manifest) {
-        warn!(
-            provider_id = %provider_id,
-            phase = "cleanup_old_chunks",
-            error = %error,
-            "failed to delete previous ChatGPT secret chunks"
-        );
-    }
+    std::fs::File::open(parent)?.sync_all()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{is_unavailable_error, secret_error_for_keyring_error, SecretError};
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
 
-    #[derive(Debug)]
-    struct TestKeyringError(&'static str);
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
 
-    impl std::fmt::Display for TestKeyringError {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str(self.0)
-        }
-    }
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions)
+}
 
-    impl std::error::Error for TestKeyringError {}
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
 
-    #[test]
-    fn generic_platform_failure_is_not_treated_as_session_unavailable() {
-        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
-            "The user name or passphrase you entered is not correct.",
-        )));
+pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
+    std::fs::create_dir_all(app_data_dir)?;
+    let path = app_data_dir.join(SECRET_FILE_NAME);
+    *SECRET_STORE_PATH.lock().expect("secret store path lock") = Some(path.clone());
+    let store = LocalSecretStore::new(path);
+    let _guard = STORE_MUTEX.lock().expect("secret store lock");
+    let data = store.read_file()?;
+    store.write_file(&data)?;
+    Ok(())
+}
 
-        assert!(!is_unavailable_error(&error));
-    }
+pub(super) fn default_store() -> Result<LocalSecretStore, SecretError> {
+    SECRET_STORE_PATH
+        .lock()
+        .expect("secret store path lock")
+        .as_ref()
+        .cloned()
+        .map(LocalSecretStore::new)
+        .ok_or(SecretError::StoreUnavailable)
+}
 
-    #[test]
-    fn missing_secret_service_is_treated_as_session_unavailable() {
-        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
-            "org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided",
-        )));
+pub(super) fn with_store_lock<T>(
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let store = default_store()?;
+    let _guard = STORE_MUTEX.lock().expect("secret store lock");
+    operation(&store)
+}
 
-        assert!(is_unavailable_error(&error));
-    }
+pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
+    with_store_lock(|store| Ok(store.read_file()?.api_keys.get(provider_id).cloned()))
+}
 
-    #[test]
-    fn unavailable_keyring_errors_map_to_typed_store_unavailable() {
-        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
-            "org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided",
-        )));
+pub(super) fn write_provider_secret(provider_id: &str, value: &str) -> Result<(), SecretError> {
+    with_store_lock(|store| {
+        store.update_file(|data| {
+            data.api_keys
+                .insert(provider_id.to_string(), value.to_string());
+        })
+    })
+}
 
-        let mapped = secret_error_for_keyring_error("provider_keyring_read", error);
+pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), SecretError> {
+    with_store_lock(|store| {
+        store.update_file(|data| {
+            data.api_keys.remove(provider_id);
+        })
+    })
+}
 
-        assert!(matches!(
-            mapped,
-            SecretError::StoreUnavailable {
-                operation: "provider_keyring_read"
-            }
-        ));
-    }
+pub(super) fn read_chatgpt_secret(provider_id: &str) -> Result<Option<ChatGptSecret>, SecretError> {
+    with_store_lock(|store| {
+        Ok(store
+            .read_file()?
+            .chatgpt_sessions
+            .get(provider_id)
+            .cloned())
+    })
+}
 
-    #[test]
-    fn generic_keyring_errors_remain_keyring_errors() {
-        let error = keyring::Error::PlatformFailure(Box::new(TestKeyringError(
-            "The user name or passphrase you entered is not correct.",
-        )));
+pub(super) fn write_chatgpt_secret(
+    provider_id: &str,
+    secret: &ChatGptSecret,
+) -> Result<(), SecretError> {
+    with_store_lock(|store| {
+        store.update_file(|data| {
+            data.chatgpt_sessions
+                .insert(provider_id.to_string(), secret.clone());
+        })
+    })
+}
 
-        let mapped = secret_error_for_keyring_error("provider_keyring_read", error);
-
-        assert!(matches!(mapped, SecretError::Keyring(_)));
-    }
+pub(super) fn delete_chatgpt_secret(provider_id: &str) -> Result<(), SecretError> {
+    with_store_lock(|store| {
+        store.update_file(|data| {
+            data.chatgpt_sessions.remove(provider_id);
+        })
+    })
 }
 
 pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSecret>, SecretError> {
+    if let Ok(secret) = serde_json::from_str::<ChatGptSecret>(serialized) {
+        return Ok(Some(secret));
+    }
+
     if let Ok(envelope) = serde_json::from_str::<SecretEnvelope<ChatGptSecret>>(serialized) {
         if envelope.version == 2 && envelope.kind == "chatgpt_session" {
             return Ok(Some(envelope.payload));
@@ -582,4 +357,9 @@ pub(super) fn parse_chatgpt_secret(serialized: &str) -> Result<Option<ChatGptSec
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+pub(super) fn test_store(path: PathBuf) -> LocalSecretStore {
+    LocalSecretStore::new(path)
 }
