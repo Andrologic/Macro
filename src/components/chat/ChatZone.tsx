@@ -40,6 +40,8 @@ import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { NeedReferenceChip } from '../architect/NeedReferenceChip';
+import { getPlanNodeTodoState } from '../../services/planNodeTodos';
+import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -650,6 +652,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
+  const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
+  const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
   const currentMessages = useMemo(
     () =>
       selectedConversationId
@@ -740,6 +744,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const selectedTaskTodoState = useMemo(
+    () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
+    [selectedTask]
+  );
+  const selectedTaskTodos =
+    selectedTaskTodoState?.kind === 'stored' ? selectedTaskTodoState.todos : [];
+  const canShowImplementTaskTodoDropdown =
+    mode === 'Implement' &&
+    selectedTask?.task_source === 'architect' &&
+    selectedTaskTodos.length > 0;
   const implementTaskIdForSend =
     mode === 'Implement'
       ? selectedTask?.id ?? currentConversation?.task_id ?? null
@@ -888,6 +902,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTask?.title,
     t,
   ]);
+
+  useEffect(() => {
+    setIsTaskTodoDropdownOpen(false);
+  }, [selectedTask?.id, canShowImplementTaskTodoDropdown]);
+
+  useEffect(() => {
+    if (!isTaskTodoDropdownOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const root = taskTodoDropdownRef.current;
+      if (root && event.target instanceof Node && !root.contains(event.target)) {
+        setIsTaskTodoDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsTaskTodoDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isTaskTodoDropdownOpen]);
 
   const architectEmptyHint = useMemo(() => {
     if (mode !== 'Architect' || !activePlanContext) {
@@ -1446,9 +1489,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           data-tour-id="mode-context-header"
         >
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-              <Icon name={modeHeader.icon} size={10} className="text-primary" />
-            </div>
+            {canShowImplementTaskTodoDropdown ? (
+              <ImplementTaskTodoDropdown
+                taskTitle={modeHeader.title}
+                todos={selectedTaskTodos}
+                isOpen={isTaskTodoDropdownOpen}
+                onToggle={() => setIsTaskTodoDropdownOpen((current) => !current)}
+                rootRef={taskTodoDropdownRef}
+              />
+            ) : (
+              <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                <Icon name={modeHeader.icon} size={10} className="text-primary" />
+              </div>
+            )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
               {modeHeader.subtitle && (

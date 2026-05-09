@@ -157,7 +157,7 @@ type TaskState = {
     id: string;
     title: string;
     draft?: boolean;
-    task_source?: 'architect' | 'standalone';
+    task_source?: 'architect' | 'standalone' | 'plan_finalization';
     is_blocked?: boolean;
     status?: string;
     execution_targets?: Array<{ projectId: string }>;
@@ -168,6 +168,12 @@ type TaskState = {
     dependencies?: string[];
     estimated_changes?: Array<{ operation: string; path: string }>;
     description?: string;
+    todos?: Array<{
+      id: string;
+      title: string;
+      description?: string;
+      status: 'pending' | 'in-progress' | 'done';
+    }>;
   }>;
   getTaskById: (taskId: string) => TaskState['tasks'][number] | null;
   startTask: ReturnType<typeof mock>;
@@ -873,6 +879,238 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
+  });
+
+  it('shows a read-only task todo dropdown in the Implement header', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'InProgress',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+          todos: [
+            { id: 'todo-api', title: 'Wire checkout API', status: 'done' },
+            {
+              id: 'todo-tests',
+              title: 'Update tests',
+              description: 'Cover the checkout happy path.',
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const toggle = requireContainer().querySelector(
+      '[data-testid="implement-task-todos-toggle"]'
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute('aria-label')).toBe('Show task checklist');
+    expect(toggle?.querySelector('[data-icon="list-todo"]')).not.toBeNull();
+    expect(toggle?.querySelector('[data-icon="chevron-down"]')).toBeNull();
+    expect(requireContainer().textContent).toContain('Implement checkout');
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
+
+    await act(async () => {
+      toggle?.click();
+    });
+
+    const dropdown = requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]');
+    expect(dropdown).not.toBeNull();
+    expect(dropdown?.getAttribute('role')).toBe('dialog');
+    expect(dropdown?.className).toContain('max-h-');
+    expect(
+      dropdown?.querySelector('[data-testid="implement-task-todos-list"]')?.className
+    ).toContain('overflow-y-auto');
+    expect(dropdown?.textContent).toContain('1/2');
+    expect(dropdown?.textContent).toContain('Wire checkout API');
+    expect(dropdown?.textContent).toContain('Update tests');
+    expect(dropdown?.textContent).not.toContain('Cover the checkout happy path.');
+    expect(dropdown?.querySelectorAll('[data-implement-task-todo]')).toHaveLength(2);
+
+    await act(async () => {
+      toggle?.click();
+    });
+
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
+  });
+
+  it('closes the task todo dropdown on Escape and outside click', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'InProgress',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+          todos: [{ id: 'todo-api', title: 'Wire checkout API', status: 'pending' }],
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const toggle = requireContainer().querySelector(
+      '[data-testid="implement-task-todos-toggle"]'
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).not.toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
+
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).not.toBeNull();
+
+    await act(async () => {
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    });
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
+  });
+
+  it('hides the Implement header todo dropdown for tasks without stored todos', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Legacy checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'InProgress',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Legacy checkout');
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
+  });
+
+  it('hides the Implement header todo dropdown for standalone and finalization tasks', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'standalone-task',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'standalone-task',
+          title: 'Standalone feature',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'InProgress',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'manual',
+          branch_name: 'feature/manual',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Manual work.',
+          todos: [{ id: 'todo-hidden', title: 'Hidden todo', status: 'pending' }],
+        },
+        {
+          id: 'plan-finalization:plan-1',
+          title: 'Finalize plan',
+          draft: false,
+          task_source: 'plan_finalization',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'develop',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Merge the plan.',
+          todos: [{ id: 'todo-hidden-final', title: 'Hidden final todo', status: 'pending' }],
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
+
+    await act(async () => {
+      appState = { ...appState, selectedTaskId: 'plan-finalization:plan-1' };
+      useAppStore.emit();
+    });
+
+    expect(requireContainer().textContent).toContain('Finalize plan');
+    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
   });
 
   it('uses the bottom composer as the only kickoff input for planned tasks with an empty conversation', async () => {
