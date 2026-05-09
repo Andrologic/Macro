@@ -2454,6 +2454,30 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Retry');
   });
 
+  it('renders a calm locked state when the selected task is dependency-blocked', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'awaiting_worktree',
+      loadMessage: 'Unlock this task to see its changes here.',
+      taskOverrides: {
+        status: 'Blocked',
+        is_blocked: true,
+        blocked_by: ['Prepare checkout model'],
+        blocked_by_task_ids: ['task-0'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Task blocked');
+    expect(document.body.textContent).toContain('Blocked by: Prepare checkout model');
+    expect(document.body.textContent).toContain('Complete the prerequisite tasks');
+    expect(document.body.textContent).not.toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).not.toContain('Retry');
+  });
+
   it('renders a plain empty state for a manual feature draft without a prompt', async () => {
     seedStores(buildRepository(false), {
       loadState: 'awaiting_worktree',
