@@ -5,6 +5,8 @@ pub mod core;
 mod db;
 mod dev_overrides;
 #[cfg(target_os = "macos")]
+mod macos_traffic_lights;
+#[cfg(target_os = "macos")]
 mod macos_window_menu;
 mod secrets;
 
@@ -23,8 +25,6 @@ use commands::DbPool;
 use core::{finalize_desktop_workspace_path, init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
@@ -49,41 +49,6 @@ struct WindowSizePayload {
 struct WindowPositionPayload {
     x: i32,
     y: i32,
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
-    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
-        return;
-    };
-    let Some(miniaturize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
-        return;
-    };
-    let zoom = window.standardWindowButton(NSWindowButton::ZoomButton);
-
-    let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
-        return;
-    };
-
-    let close_rect = NSView::frame(&close);
-    let title_bar_frame_height = close_rect.size.height + y;
-    let mut title_bar_rect = NSView::frame(&title_bar_container_view);
-    title_bar_rect.size.height = title_bar_frame_height;
-    title_bar_rect.origin.y = window.frame().size.height - title_bar_frame_height;
-    title_bar_container_view.setFrame(title_bar_rect);
-
-    let space_between = NSView::frame(&miniaturize).origin.x - close_rect.origin.x;
-
-    let mut window_buttons = vec![close, miniaturize];
-    if let Some(zoom) = zoom {
-        window_buttons.push(zoom);
-    }
-
-    for (index, button) in window_buttons.into_iter().enumerate() {
-        let mut rect = NSView::frame(&button);
-        rect.origin.x = x + (index as f64 * space_between);
-        button.setFrameOrigin(rect.origin);
-    }
 }
 
 // Command to show the main window explicitly from frontend
@@ -197,20 +162,7 @@ async fn window_set_traffic_light_position(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-
-        window
-            .with_webview(move |webview| {
-                let result = unsafe {
-                    let ns_window: &NSWindow = &*webview.ns_window().cast();
-                    inset_traffic_lights(ns_window, x, y);
-                    Ok::<(), String>(())
-                };
-                let _ = sender.send(result);
-            })
-            .map_err(|error| error.to_string())?;
-
-        receiver.await.map_err(|error| error.to_string())?
+        macos_traffic_lights::set_traffic_light_position(window, x, y).await
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -261,6 +213,7 @@ pub fn run() {
                     window.set_decorations(true)?;
                     window.set_title_bar_style(TitleBarStyle::Overlay)?;
                     window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+                    macos_traffic_lights::install_fullscreen_recovery(&window)?;
                 }
 
                 let app_handle = app.handle().clone();
