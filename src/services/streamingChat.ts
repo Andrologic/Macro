@@ -13,6 +13,12 @@ import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
 import type { InternalAgentProfile } from './internalAgentProfile';
 import {
+  applyReasoningToChatCompletionsRequest,
+  resolveChatCompletionProviderProtocolProfile,
+  shouldRequestProviderReasoning,
+  type ChatCompletionProviderProtocolProfile,
+} from './providerProtocolProfiles';
+import {
   isMacroToolCopilotBuiltInOverride,
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
@@ -264,14 +270,7 @@ interface ChatCompletionProviderMessageItem {
   reasoning_details?: unknown[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
-}
-
-interface ChatCompletionProviderCapabilities {
-  replayReasoningContent: boolean;
-  replayReasoningDetails: boolean;
-  toolCallIdPolicy: 'none' | 'claude' | 'mistral';
-  insertAssistantAfterToolBeforeUser: boolean;
-  injectNoopToolWhenHistoryHasTools: boolean;
+  tool_name?: string;
 }
 
 export interface ToolResultResolution {
@@ -357,6 +356,9 @@ const isReasoningUnsupportedError = (message: string): boolean => {
     normalized.includes('unsupported parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning_effort') ||
+    normalized.includes('unsupported parameter: thinking') ||
+    normalized.includes('unknown parameter: thinking') ||
+    normalized.includes('does not support thinking') ||
     normalized.includes('does not support reasoning')
   );
 };
@@ -410,30 +412,6 @@ const disableReasoningForSession = (providerId: string, modelId: string) => {
   }
 };
 
-const applyReasoningToChatCompletionsRequest = (
-  requestBody: Record<string, unknown>,
-  providerType: string,
-  reasoningEffort?: ReasoningEffort | null
-) => {
-  delete requestBody.reasoning_effort;
-  delete requestBody.reasoning;
-  delete requestBody.include_reasoning;
-
-  if (!reasoningEffort) {
-    return;
-  }
-
-  if (providerType === 'openrouter') {
-    requestBody.reasoning = { effort: reasoningEffort };
-    requestBody.include_reasoning = true;
-    return;
-  }
-
-  if (providerType === 'openai' || providerType === 'ollama' || providerType === 'lmstudio') {
-    requestBody.reasoning_effort = reasoningEffort;
-  }
-};
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -452,41 +430,14 @@ const stripThinkingBlocksForModel = (content: string): string =>
     .replace(/<\/think>/gi, '')
     .trim();
 
-const resolveChatCompletionProviderCapabilities = (params: {
+const resolveChatCompletionProviderProfile = (params: {
   providerType: string;
   providerId?: string;
   baseUrl?: string;
   modelId: string;
   forceReasoningContentReplay?: boolean;
-}): ChatCompletionProviderCapabilities => {
-  const providerType = params.providerType.trim().toLowerCase();
-  const providerId = params.providerId?.trim().toLowerCase() || '';
-  const baseUrl = params.baseUrl?.trim().toLowerCase() || '';
-  const modelId = params.modelId.trim().toLowerCase();
-  const providerFingerprint = `${providerId} ${providerType} ${baseUrl} ${modelId}`;
-  const isOpenRouter = providerType === 'openrouter';
-  const isDeepSeekFamily =
-    providerType.includes('deepseek') ||
-    /(^|[/:_-])deepseek([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])deepseek-/i.test(modelId);
-  const isClaudeFamily =
-    providerType.includes('anthropic') ||
-    /(^|[/:_-])anthropic([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])claude([/:_-]|$)/i.test(modelId);
-  const isMistralFamily =
-    providerType.includes('mistral') ||
-    /(^|[/:_-])mistral([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])devstral([/:_-]|$)/i.test(modelId);
-  const isLiteLlmProxy = providerFingerprint.includes('litellm');
-
-  return {
-    replayReasoningContent: Boolean(params.forceReasoningContentReplay) || isDeepSeekFamily,
-    replayReasoningDetails: isOpenRouter,
-    toolCallIdPolicy: isMistralFamily ? 'mistral' : isClaudeFamily ? 'claude' : 'none',
-    insertAssistantAfterToolBeforeUser: isMistralFamily,
-    injectNoopToolWhenHistoryHasTools: isLiteLlmProxy,
-  };
-};
+}): ChatCompletionProviderProtocolProfile =>
+  resolveChatCompletionProviderProtocolProfile(params);
 
 const isChatCompletionProviderMessageItem = (
   item: unknown
@@ -510,7 +461,7 @@ const getChatCompletionProviderItems = (
 
 const normalizeToolCallIdForProvider = (
   id: string,
-  policy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+  policy: ChatCompletionProviderProtocolProfile['toolCallIdPolicy'] = 'none'
 ): string => {
   if (policy === 'claude') {
     const normalized = id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -526,7 +477,7 @@ const normalizeToolCallIdForProvider = (
 
 const cloneToolCalls = (
   toolCalls?: ToolCall[] | null,
-  toolCallIdPolicy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+  toolCallIdPolicy: ChatCompletionProviderProtocolProfile['toolCallIdPolicy'] = 'none'
 ): ToolCall[] | undefined => {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
     return undefined;
@@ -553,44 +504,85 @@ const normalizeMessageContentForChatCompletions = (
   return stripThinkingBlocksForModel(content);
 };
 
+const providerItemHasToolHistory = (item: ChatCompletionProviderMessageItem): boolean =>
+  item.role === 'tool' || (Array.isArray(item.tool_calls) && item.tool_calls.length > 0);
+
+const streamMessageHasToolHistory = (message: StreamMessage): boolean => {
+  if (
+    message.role === 'tool' ||
+    (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+  ) {
+    return true;
+  }
+
+  return getChatCompletionProviderItems(message.provider_input_items).some(
+    providerItemHasToolHistory
+  );
+};
+
+const shouldReplayProviderReasoningContent = (
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
+): boolean =>
+  profile.reasoningReplay === 'reasoning_content_all' ||
+  (profile.reasoningReplay === 'reasoning_content_tool_chain' && hasToolHistory);
+
+const applyProviderReasoningReplayToMessage = (
+  message: Record<string, unknown>,
+  item: ChatCompletionProviderMessageItem,
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
+) => {
+  const reasoningContent = item.reasoning_content?.trim();
+  if (shouldReplayProviderReasoningContent(profile, hasToolHistory) && reasoningContent) {
+    message.reasoning_content = item.reasoning_content;
+    return;
+  }
+
+  if (profile.reasoningReplay !== 'reasoning_details') {
+    return;
+  }
+
+  if (Array.isArray(item.reasoning_details) && item.reasoning_details.length > 0) {
+    message.reasoning_details = deepCloneJsonValue(item.reasoning_details);
+  } else if (reasoningContent) {
+    message.reasoning = item.reasoning_content;
+  }
+};
+
 const serializeProviderItemForChatCompletions = (
   item: ChatCompletionProviderMessageItem,
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
 ): Record<string, unknown> | null => {
   if (item.role === 'tool') {
     if (!item.tool_call_id) {
       return null;
     }
 
-    return {
+    const message: Record<string, unknown> = {
       role: 'tool',
       content: item.content,
       tool_call_id: normalizeToolCallIdForProvider(
         item.tool_call_id,
-        capabilities.toolCallIdPolicy
+        profile.toolCallIdPolicy
       ),
     };
+    if (profile.toolMessageName && item.tool_name?.trim()) {
+      message.name = item.tool_name;
+    }
+    return message;
   }
 
   const message: Record<string, unknown> = {
     role: 'assistant',
     content: normalizeMessageContentForChatCompletions('assistant', item.content),
   };
-  const toolCalls = cloneToolCalls(item.tool_calls, capabilities.toolCallIdPolicy);
+  const toolCalls = cloneToolCalls(item.tool_calls, profile.toolCallIdPolicy);
   if (toolCalls) {
     message.tool_calls = toolCalls;
   }
-  const reasoningContent = item.reasoning_content?.trim();
-  if (capabilities.replayReasoningContent && reasoningContent) {
-    message.reasoning_content = item.reasoning_content;
-  }
-  if (
-    capabilities.replayReasoningDetails &&
-    Array.isArray(item.reasoning_details) &&
-    item.reasoning_details.length > 0
-  ) {
-    message.reasoning_details = deepCloneJsonValue(item.reasoning_details);
-  }
+  applyProviderReasoningReplayToMessage(message, item, profile, hasToolHistory);
   return message;
 };
 
@@ -673,23 +665,30 @@ const insertAssistantAfterToolBeforeUserForChatCompletions = (
 
 const normalizeChatCompletionMessageSequence = (
   messages: Array<Record<string, unknown>>,
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile
 ): Array<Record<string, unknown>> => {
   const withToolResults = finalizeDanglingToolCallsForChatCompletions(messages);
-  return capabilities.insertAssistantAfterToolBeforeUser
+  return profile.insertAssistantAfterToolBeforeUser
     ? insertAssistantAfterToolBeforeUserForChatCompletions(withToolResults)
     : withToolResults;
 };
 
 const buildChatCompletionMessages = (
   messages: StreamMessage[],
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile
 ): Array<Record<string, unknown>> => {
+  const hasToolHistory = messages.some(streamMessageHasToolHistory);
   const serializedMessages = messages.flatMap((message) => {
     const providerItems = getChatCompletionProviderItems(message.provider_input_items);
     if (providerItems.length > 0) {
       return providerItems
-        .map((item) => serializeProviderItemForChatCompletions(item, capabilities))
+        .map((item) =>
+          serializeProviderItemForChatCompletions(
+            item,
+            profile,
+            hasToolHistory
+          )
+        )
         .filter((item): item is Record<string, unknown> => Boolean(item));
     }
 
@@ -697,19 +696,19 @@ const buildChatCompletionMessages = (
       role: message.role,
       content: normalizeMessageContentForChatCompletions(message.role, message.content),
     };
-    const toolCalls = cloneToolCalls(message.tool_calls, capabilities.toolCallIdPolicy);
+    const toolCalls = cloneToolCalls(message.tool_calls, profile.toolCallIdPolicy);
     if (toolCalls) {
       serialized.tool_calls = toolCalls;
     }
     if (message.tool_call_id) {
       serialized.tool_call_id = normalizeToolCallIdForProvider(
         message.tool_call_id,
-        capabilities.toolCallIdPolicy
+        profile.toolCallIdPolicy
       );
     }
     return [serialized];
   });
-  return normalizeChatCompletionMessageSequence(serializedMessages, capabilities);
+  return normalizeChatCompletionMessageSequence(serializedMessages, profile);
 };
 
 const buildAssistantChatCompletionProviderItem = (params: {
@@ -746,12 +745,14 @@ const buildAssistantChatCompletionProviderItem = (params: {
 
 const buildToolChatCompletionProviderItem = (
   toolCallId: string,
-  content: string
+  content: string,
+  toolName?: string
 ): ChatCompletionProviderMessageItem => ({
   type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE,
   role: 'tool',
   content,
   tool_call_id: toolCallId,
+  ...(toolName?.trim() ? { tool_name: toolName } : {}),
 });
 
 const hasReplayableReasoningContent = (messages: StreamMessage[]): boolean =>
@@ -878,7 +879,11 @@ const extractProviderErrorMessage = async (response: Response): Promise<Provider
     }
   }
 
-  return classifyProviderError(errorMessage, response.status, parseRetryAfterMs(response.headers));
+  return classifyProviderError(
+    errorMessage,
+    response.status,
+    parseRetryAfterMs(response.headers)
+  );
 };
 
 const getRetryDelayMs = (attempt: number, retryAfterMs?: number): number => {
@@ -1866,7 +1871,7 @@ const chatCompletionMessagesHaveToolHistory = (
 const applyToolsToChatCompletionsRequest = (
   requestBody: Record<string, unknown>,
   tools: unknown[],
-  capabilities: ChatCompletionProviderCapabilities,
+  profile: ChatCompletionProviderProtocolProfile,
   messages: Array<Record<string, unknown>>
 ) => {
   delete requestBody.tools;
@@ -1881,7 +1886,7 @@ const applyToolsToChatCompletionsRequest = (
   }
 
   if (
-    capabilities.injectNoopToolWhenHistoryHasTools &&
+    profile.injectNoopToolWhenHistoryHasTools &&
     chatCompletionMessagesHaveToolHistory(messages)
   ) {
     requestBody.tools = [NOOP_COMPAT_TOOL];
@@ -1920,9 +1925,11 @@ export const __testables = {
   normalizeChatCompletionMessageSequence,
   normalizeToolCallIdForProvider,
   normalizeToolCallResolution,
-  resolveChatCompletionProviderCapabilities,
+  resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
+  resolveChatCompletionProviderProfile,
   shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
+  shouldRequestProviderReasoning,
   stripThinkingBlocksForModel,
   summarizeProviderTextPresence,
 };
@@ -2832,8 +2839,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     return streamChatViaCopilotProvider(options);
   }
 
+  const protocolProfile = resolveChatCompletionProviderProfile({
+    providerType: options.providerType,
+    providerId: options.providerId,
+    baseUrl: options.baseUrl,
+    modelId: options.modelId,
+  });
+
   if (
     shouldUseNativeStreamingProvider(options.providerType) &&
+    !protocolProfile.requiresGenericStreaming &&
     tauriIpc.isTauriAvailable() &&
     (!options.apiKey?.trim() ||
       options.providerType === 'ollama' ||
@@ -2916,24 +2931,31 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let currentMessages: StreamMessage[] = [...messages];
   const assistantTranscriptItems: unknown[] = [];
   let forceReasoningContentReplay = false;
-  const getChatCompletionCapabilities = () =>
-    resolveChatCompletionProviderCapabilities({
+  const getChatCompletionProfile = () =>
+    resolveChatCompletionProviderProfile({
       providerType,
       providerId,
       baseUrl,
       modelId,
       forceReasoningContentReplay,
     });
+  const initialProfile = getChatCompletionProfile();
 
   // Build request body with optional tools
   const requestBody: Record<string, unknown> = {
     model: modelId,
-    messages: buildChatCompletionMessages(currentMessages, getChatCompletionCapabilities()),
+    messages: buildChatCompletionMessages(currentMessages, initialProfile),
     stream: true,
   };
   let currentReasoningEffort = reasoningEffort;
+  let providerReasoningEnabled = true;
   let didRetryWithoutReasoning = false;
-  applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
+  applyReasoningToChatCompletionsRequest(
+    requestBody,
+    initialProfile,
+    currentReasoningEffort,
+    { enabled: providerReasoningEnabled }
+  );
 
   const tools = collectAllowedTools({
     allowedTools,
@@ -2995,11 +3017,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let response: Response | null = null;
       let requestAttempt = 0;
       while (!response) {
-        const capabilities = getChatCompletionCapabilities();
-        const requestMessages = buildChatCompletionMessages(currentMessages, capabilities);
+        const profile = getChatCompletionProfile();
+        const requestMessages = buildChatCompletionMessages(currentMessages, profile);
         requestBody.messages = requestMessages;
-        applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-        applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
+        applyReasoningToChatCompletionsRequest(
+          requestBody,
+          profile,
+          currentReasoningEffort,
+          { enabled: providerReasoningEnabled }
+        );
+        applyToolsToChatCompletionsRequest(requestBody, tools, profile, requestMessages);
 
         try {
           emitGenericTimeline('provider_request_sent');
@@ -3039,11 +3066,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               });
 
           if (
-            currentReasoningEffort &&
+            shouldRequestProviderReasoning(profile, currentReasoningEffort, {
+              enabled: providerReasoningEnabled,
+            }) &&
             !didRetryWithoutReasoning &&
             runtimeError.kind === 'unsupported_reasoning'
           ) {
             didRetryWithoutReasoning = true;
+            providerReasoningEnabled = false;
             currentReasoningEffort = null;
             disableReasoningForSession(providerId, modelId);
             continue;
@@ -3671,9 +3701,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
           currentMessages.push(
             ...toolResults.map((result) => {
+              const toolName =
+                result.tool_name ??
+                validToolCalls.find((toolCall) => toolCall.id === result.tool_call_id)?.function
+                  .name;
               const providerInputItem = buildToolChatCompletionProviderItem(
                 result.tool_call_id,
-                result.content
+                result.content,
+                toolName
               );
               assistantTranscriptItems.push(deepCloneJsonValue(providerInputItem));
               return {
@@ -3830,25 +3865,31 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
   try {
     let currentReasoningEffort = reasoningEffort;
+    let providerReasoningEnabled = true;
     let didRetryWithoutReasoning = false;
     let requestAttempt = 0;
     let response: Response | null = null;
 
     while (!response) {
-      const capabilities = resolveChatCompletionProviderCapabilities({
+      const profile = resolveChatCompletionProviderProfile({
         providerType,
         providerId,
         baseUrl,
         modelId,
       });
-      const requestMessages = buildChatCompletionMessages(messages, capabilities);
+      const requestMessages = buildChatCompletionMessages(messages, profile);
       const requestBody: Record<string, unknown> = {
         model: modelId,
         messages: requestMessages,
         stream: false,
       };
-      applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-      applyToolsToChatCompletionsRequest(requestBody, [], capabilities, requestMessages);
+      applyReasoningToChatCompletionsRequest(
+        requestBody,
+        profile,
+        currentReasoningEffort,
+        { enabled: providerReasoningEnabled }
+      );
+      applyToolsToChatCompletionsRequest(requestBody, [], profile, requestMessages);
 
       const candidateResponse = await fetchWithTimeout(
         `${baseUrl}/chat/completions`,
@@ -3868,11 +3909,14 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
       const runtimeError = await extractProviderErrorMessage(candidateResponse);
       if (
-        currentReasoningEffort &&
+        shouldRequestProviderReasoning(profile, currentReasoningEffort, {
+          enabled: providerReasoningEnabled,
+        }) &&
         !didRetryWithoutReasoning &&
         runtimeError.kind === 'unsupported_reasoning'
       ) {
         didRetryWithoutReasoning = true;
+        providerReasoningEnabled = false;
         currentReasoningEffort = null;
         disableReasoningForSession(providerId, modelId);
         continue;

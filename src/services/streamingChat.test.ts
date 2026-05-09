@@ -531,19 +531,64 @@ describe('streamingChat tool rendering helpers', () => {
     const { __testables } = await loadStreamingChat();
 
     const openAiBody: Record<string, unknown> = {};
-    __testables.applyReasoningToChatCompletionsRequest(openAiBody, 'openai', 'medium');
+    __testables.applyReasoningToChatCompletionsRequest(
+      openAiBody,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'gpt-5',
+      }),
+      'medium'
+    );
     expect(openAiBody.reasoning_effort).toBe('medium');
 
     const openRouterBody: Record<string, unknown> = {};
-    __testables.applyReasoningToChatCompletionsRequest(openRouterBody, 'openrouter', 'high');
+    __testables.applyReasoningToChatCompletionsRequest(
+      openRouterBody,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openrouter',
+        modelId: 'openai/gpt-5',
+      }),
+      'high'
+    );
     expect(openRouterBody.reasoning).toEqual({ effort: 'high' });
     expect(openRouterBody.include_reasoning).toBe(true);
+  });
+
+  it('uses Kimi preserved-thinking parameters without OpenAI reasoning_effort', async () => {
+    const { __testables } = await loadStreamingChat();
+    const kimiBody: Record<string, unknown> = {};
+    const kimiProfile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+    });
+
+    __testables.applyReasoningToChatCompletionsRequest(
+      kimiBody,
+      kimiProfile,
+      'high'
+    );
+
+    expect(kimiBody.thinking).toEqual({ type: 'enabled', keep: 'all' });
+    expect(kimiBody.reasoning_effort).toBeUndefined();
+    expect(kimiBody.reasoning).toBeUndefined();
+    expect(__testables.shouldRequestProviderReasoning(kimiProfile, null)).toBe(true);
+
+    __testables.applyReasoningToChatCompletionsRequest(kimiBody, kimiProfile, 'high', {
+      enabled: false,
+    });
+    expect(kimiBody.thinking).toBeUndefined();
+    expect(__testables.shouldRequestProviderReasoning(kimiProfile, 'high', {
+      enabled: false,
+    })).toBe(false);
   });
 
   it('detects unsupported reasoning parameter errors', async () => {
     const { __testables } = await loadStreamingChat();
     expect(__testables.isReasoningUnsupportedError('Unknown parameter: reasoning_effort')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
+    expect(__testables.isReasoningUnsupportedError('Unknown parameter: thinking')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
   });
 
@@ -582,7 +627,6 @@ describe('streamingChat tool rendering helpers', () => {
       expect.objectContaining({
         role: 'assistant',
         content: 'Final answer',
-        reasoning_content: 'native thoughts',
         reasoning_details: reasoningDetails,
         tool_calls: [
           expect.objectContaining({
@@ -592,6 +636,7 @@ describe('streamingChat tool rendering helpers', () => {
         ],
       })
     );
+    expect(messages[0]?.reasoning_content).toBeUndefined();
     expect(messages[1]).toEqual({
       role: 'tool',
       content: 'Tool execution aborted',
@@ -753,6 +798,285 @@ describe('streamingChat tool rendering helpers', () => {
       toolHistoryMessages
     );
     expect(defaultBody.tools).toBeUndefined();
+  });
+
+  it('serializes Kimi reasoning_content and tool names for OpenCode Go Kimi only', async () => {
+    const { __testables } = await loadStreamingChat();
+    const assistantItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: '<think>Need context.</think>',
+      apiContent: '',
+      reasoningContent: 'Need context.',
+      reasoningDetails: [],
+      toolCalls: [
+        {
+          id: 'call_read',
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"README.md"}' },
+        },
+      ],
+    });
+    const toolItem = __testables.buildToolChatCompletionProviderItem(
+      'call_read',
+      'FILE: README.md\n\n# Macro',
+      'read'
+    );
+
+    const kimiMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: assistantItem ? [assistantItem] : undefined,
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          provider_input_items: [toolItem],
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'kimi-k2.6',
+      })
+    );
+
+    expect(kimiMessages[0]).toEqual(
+      expect.objectContaining({
+        role: 'assistant',
+        content: '',
+        reasoning_content: 'Need context.',
+      })
+    );
+    expect(kimiMessages[1]).toEqual({
+      role: 'tool',
+      content: 'FILE: README.md\n\n# Macro',
+      tool_call_id: 'call_read',
+      name: 'read',
+    });
+
+    const glmMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: assistantItem ? [assistantItem] : undefined,
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          provider_input_items: [toolItem],
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'glm-5',
+      })
+    );
+
+    expect(glmMessages[0]?.reasoning_content).toBeUndefined();
+    expect(glmMessages[1]).not.toHaveProperty('name');
+  });
+
+  it('replays DeepSeek reasoning_content only when the history has tool calls', async () => {
+    const { __testables } = await loadStreamingChat();
+    const providerItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: '<think>Need context.</think>',
+      apiContent: '',
+      reasoningContent: 'Need context.',
+      reasoningDetails: [],
+      toolCalls: [],
+    });
+    const capabilities = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+    });
+
+    const plainMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: providerItem ? [providerItem] : undefined,
+        },
+      ],
+      capabilities
+    );
+    expect(plainMessages[0]?.reasoning_content).toBeUndefined();
+
+    const toolMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: providerItem ? [providerItem] : undefined,
+        },
+        { role: 'tool', content: 'FILE: README.md', tool_call_id: 'call_read' },
+      ],
+      capabilities
+    );
+    expect(toolMessages[0]?.reasoning_content).toBe('Need context.');
+  });
+
+  it('sends OpenCode Go Kimi preserved-thinking payloads across tool calls', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }): Promise<unknown> => {
+      requestCount += 1;
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestCount === 1) {
+        expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+        expect(body.reasoning_effort).toBeUndefined();
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"reasoning_content":"Need file context.","tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      const assistantMessage = (body.messages as Array<Record<string, unknown>>).find(
+        (message) => message.role === 'assistant'
+      );
+      const toolMessage = (body.messages as Array<Record<string, unknown>>).find(
+        (message) => message.role === 'tool'
+      );
+      expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(assistantMessage).toEqual(
+        expect.objectContaining({
+          content: '',
+          reasoning_content: 'Need file context.',
+        })
+      );
+      expect(toolMessage).toEqual(
+        expect.objectContaining({
+          tool_call_id: 'call_read',
+          name: 'read',
+        })
+      );
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const invokeImpl = mock(async () => {
+      throw new Error('Kimi preserved-thinking profiles must use the generic HTTP path.');
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock, {
+      forceTauriAvailable: true,
+      invokeImpl,
+    });
+
+    await streamChat({
+      providerId: 'opencode-go',
+      providerType: 'openai',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+      reasoningEffort: 'high',
+      messages: [{ role: 'user', content: 'Inspect README.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => 'FILE: README.md\n\n# Macro',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(invokeImpl).not.toHaveBeenCalled();
+    expect(requestBodies).toHaveLength(2);
+  });
+
+  it('retries Kimi-compatible providers without thinking when the gateway rejects it', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }): Promise<unknown> => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestBodies.length === 1) {
+        expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: {
+                message: 'Unknown parameter: thinking',
+              },
+            }),
+          json: async () => ({}),
+        };
+      }
+
+      expect(body.thinking).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'opencode-go',
+      providerType: 'openai',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies).toHaveLength(2);
   });
 
   it('classifies context overflow as non-retryable', async () => {
