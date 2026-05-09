@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 export const ModelDropdown: React.FC = () => {
   const { t } = useTranslation();
@@ -56,7 +57,11 @@ export const ModelDropdown: React.FC = () => {
         )}
       >
         {isLoadingModels ? (
-          <Icon name="loader" size={12} className="animate-spin text-muted-foreground" />
+          <SpinnerIcon
+            size={12}
+            className="text-muted-foreground"
+            label={t('chat.loadingModels', 'Loading models')}
+          />
         ) : (
           <span className="text-xs text-muted-foreground truncate max-w-[140px]">
             {selectedModel?.name ?? t('chat.selectModel', 'Select a model')}

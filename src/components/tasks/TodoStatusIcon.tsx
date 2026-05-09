@@ -2,6 +2,7 @@ import React from 'react';
 import type { PlanNodeTodo } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 interface TodoStatusIconProps {
   status: PlanNodeTodo['status'];
@@ -56,11 +57,7 @@ export const TodoStatusIcon: React.FC<TodoStatusIconProps> = ({
         )}
         data-todo-status-icon="in-progress"
       >
-        <Icon
-          name="loader"
-          size={metrics.progressIcon}
-          className="origin-center animate-spin"
-        />
+        <SpinnerIcon size={metrics.progressIcon} />
       </span>
     );
   }
@@ -78,4 +75,3 @@ export const TodoStatusIcon: React.FC<TodoStatusIconProps> = ({
     </span>
   );
 };
-

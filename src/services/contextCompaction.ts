@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  CompactionPass,
   ContextCompactionKind,
   ContextFootprint,
   ContextFootprintReason,
@@ -23,7 +24,7 @@ const FORCED_PROVIDER_ITEM_TARGET_CHARS = 1200;
 const ULTRA_PROVIDER_ITEM_TARGET_CHARS = 520;
 
 type CompactionMode = ContextCompactionKind | 'after_compaction';
-export type CompactionPass = 'normal' | 'forced' | 'ultra';
+export type { CompactionPass } from '../types';
 export type ContextCompactionDecision = 'send' | 'retry_after_compaction' | 'hard_stop';
 
 interface PreparedCompactionPassResult {
@@ -102,6 +103,42 @@ export interface ProviderCompactionAdapter {
     params: MaybeCompactConversationParams
   ): Promise<MaybeCompactConversationResult>;
 }
+
+export const buildContextTooLargeErrorMessage = (
+  footprint?: ContextFootprint
+): string => {
+  const base =
+    'The conversation is still too large for the selected model after aggressive compaction. Macro kept the latest message; switch to a larger-context model or continue from the compacted summary.';
+  if (!footprint) {
+    return base;
+  }
+
+  const formatTokens = (value?: number): string =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? `${Math.round(value).toLocaleString()} tokens`
+      : 'unknown';
+  const contributors = [
+    ['messages', footprint.visibleMessageTokens],
+    ['provider history', footprint.providerInputTokens],
+    ['system', footprint.systemTokens],
+    ['tools', footprint.toolSchemaTokens],
+    ['summary', footprint.summaryTokens],
+    ['latest request', footprint.latestUserContextTokens],
+  ]
+    .filter((entry): entry is [string, number] =>
+      typeof entry[1] === 'number' && entry[1] > 0
+    )
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, value]) => `${label}: ${formatTokens(value)}`)
+    .join(', ');
+
+  return `${base} Estimated payload: ${formatTokens(
+    footprint.totalEstimatedTokens
+  )} / ${formatTokens(footprint.modelContextWindowTokens)}. Largest parts: ${
+    contributors || 'unknown'
+  }.`;
+};
 
 const DEFAULT_THRESHOLDS: CompactionThresholds = {
   backgroundRatio: 0.6,

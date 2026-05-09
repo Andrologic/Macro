@@ -15,6 +15,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { getServiceRuntimeCapabilities } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
@@ -121,11 +122,11 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
           isBusy && 'cursor-wait opacity-60'
         )}
       >
-        <Icon
-          name={isBusy ? 'loader' : iconName}
-          size={14}
-          className={cn('text-muted-foreground', isBusy && 'animate-spin')}
-        />
+        {isBusy ? (
+          <SpinnerIcon size={14} className="text-muted-foreground" />
+        ) : (
+          <Icon name={iconName} size={14} className="text-muted-foreground" />
+        )}
       </button>
     );
   };

@@ -29,8 +29,7 @@ import {
   type TaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 import {
-  getPlanNodeTodosForDisplay,
-  summarizePlanNodeTodoProgress,
+  resolvePlanNodeTodoPresentation,
 } from '../../services/planNodeTodos';
 import {
   buildPlanFinalizationTaskId,
@@ -412,14 +411,14 @@ const buildBranchCards = (params: {
           return a.title.localeCompare(b.title);
         });
       const todos = filteredTasks.flatMap<BranchTodoView>((task) =>
-        getPlanNodeTodosForDisplay(task).map((todo) => ({
+        resolvePlanNodeTodoPresentation(task).todos.map((todo) => ({
           ...todo,
           id: `${task.id}:${todo.id}`,
           taskId: task.id,
           taskTitle: task.title,
         }))
       );
-      const progress = summarizePlanNodeTodoProgress(todos);
+      const progress = resolvePlanNodeTodoPresentation(todos).progress;
       const singleTask = allTasks.length === 1 ? allTasks[0] : null;
 
       return {

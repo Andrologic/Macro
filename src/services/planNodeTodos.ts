@@ -174,3 +174,29 @@ export const summarizePlanNodeTodoProgress = (
   done: todos.filter((todo) => todo.status === 'done').length,
   total: todos.length,
 });
+
+export interface PlanNodeTodoPresentation {
+  todos: PlanNodeTodo[];
+  progress: { done: number; total: number };
+  openCount: number;
+  completedCount: number;
+  hasActiveTodo: boolean;
+}
+
+export const resolvePlanNodeTodoPresentation = (
+  nodeOrTodos:
+    | PlanNodeTodo[]
+    | Pick<PlanNode, 'todos'>,
+): PlanNodeTodoPresentation => {
+  const todos = Array.isArray(nodeOrTodos)
+    ? normalizePlanNodeTodos(nodeOrTodos)
+    : getPlanNodeTodoState(nodeOrTodos).todos;
+  const progress = summarizePlanNodeTodoProgress(todos);
+  return {
+    todos,
+    progress,
+    openCount: todos.length - progress.done,
+    completedCount: progress.done,
+    hasActiveTodo: todos.some((todo) => todo.status === 'in-progress'),
+  };
+};

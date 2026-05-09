@@ -10,6 +10,7 @@ import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
@@ -1657,11 +1658,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 title={t('chat.compactNow', 'Compacter maintenant')}
                 aria-label={t('chat.compactNow', 'Compacter maintenant')}
               >
-                <Icon
-                  name={isManualCompacting ? 'loader' : 'archive'}
-                  size={14}
-                  className={isManualCompacting ? 'mx-auto animate-spin' : 'mx-auto'}
-                />
+                {isManualCompacting ? (
+                  <SpinnerIcon size={14} className="mx-auto" />
+                ) : (
+                  <Icon name="archive" size={14} className="mx-auto" />
+                )}
               </button>
             )}
             {headerActions}
@@ -1681,7 +1682,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
                 <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
-                  <Icon name="loader" size={24} className="text-muted-foreground animate-spin" />
+                  <SpinnerIcon size={24} className="text-muted-foreground" />
                 </div>
                 <div>
                   <p className="text-muted-foreground text-sm">
@@ -2081,7 +2082,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   )}
                 >
                   {isBusySending ? (
-                    <Icon name="loader" size={14} className="animate-spin" />
+                    <SpinnerIcon size={14} />
                   ) : (
                     <Icon name="arrow-up" size={14} />
                   )}

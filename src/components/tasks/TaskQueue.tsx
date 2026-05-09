@@ -62,6 +62,7 @@ import {
   resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
@@ -501,11 +502,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 : t('implement.cancelTaskCommands', 'Cancel run')
             }
           >
-            <Icon
-              name={taskCommandRunStatus === 'cancelling' ? 'loader' : 'x'}
-              size={13}
-              className={taskCommandRunStatus === 'cancelling' ? 'animate-spin' : undefined}
-            />
+            {taskCommandRunStatus === 'cancelling' ? (
+              <SpinnerIcon size={13} />
+            ) : (
+              <Icon name="x" size={13} />
+            )}
           </button>
         ) : showRunTaskCommands ? (
           <button
@@ -1840,7 +1841,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           >
-            <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
+            {pendingTaskId ? <SpinnerIcon size={12} /> : <Icon name="plus" size={12} />}
           </button>
         </div>
       </div>

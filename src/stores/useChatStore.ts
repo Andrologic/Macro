@@ -103,7 +103,7 @@ import {
   isPlanFinalizationTaskSource,
 } from "../services/planFinalization";
 import {
-  summarizePlanNodeTodoProgress,
+  resolvePlanNodeTodoPresentation,
 } from "../services/planNodeTodos";
 import {
   applyTaskTodoOperations,
@@ -154,6 +154,7 @@ import {
   validateQuestionToolArgs,
 } from "../services/chatQuestionnaires";
 import {
+  buildContextTooLargeErrorMessage,
   buildCompactedMessagesForRequest,
   invalidateCompactionFromMessage,
   resolveModelContextWindowTokens,
@@ -2972,40 +2973,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const buildContextTooLargeErrorMessage = (footprint?: ContextFootprint): string => {
-    const base =
-      "The conversation is still too large for the selected model after aggressive compaction. Macro kept the latest message; switch to a larger-context model or continue from the compacted summary.";
-    if (!footprint) {
-      return base;
-    }
-
-    const formatTokens = (value?: number) =>
-      typeof value === "number" && Number.isFinite(value)
-        ? `${Math.round(value).toLocaleString()} tokens`
-        : "unknown";
-    const contributors = [
-      ["messages", footprint.visibleMessageTokens],
-      ["provider history", footprint.providerInputTokens],
-      ["system", footprint.systemTokens],
-      ["tools", footprint.toolSchemaTokens],
-      ["summary", footprint.summaryTokens],
-      ["latest request", footprint.latestUserContextTokens],
-    ]
-      .filter((entry): entry is [string, number] =>
-        typeof entry[1] === "number" && entry[1] > 0,
-      )
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([label, value]) => `${label}: ${formatTokens(value)}`)
-      .join(", ");
-
-    return `${base} Estimated payload: ${formatTokens(
-      footprint.totalEstimatedTokens,
-    )} / ${formatTokens(footprint.modelContextWindowTokens)}. Largest parts: ${
-      contributors || "unknown"
-    }.`;
-  };
-
   const parseCompactionJson = <T,>(
     value: string | null | undefined,
     fallback: T,
@@ -4507,9 +4474,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (appMode === "Implement" && implementContextTaskId) {
       const task = useTaskStore.getState().getTaskById(implementContextTaskId);
       if (task && task.task_source === "architect") {
-        const taskTodos = Array.isArray(task.todos) ? task.todos : [];
+        const taskTodoPresentation = resolvePlanNodeTodoPresentation(task);
+        const taskTodos = taskTodoPresentation.todos;
         if (taskTodos.length > 0) {
-          const progress = summarizePlanNodeTodoProgress(taskTodos);
+          const { progress } = taskTodoPresentation;
           systemInstructions.push(
             `[Task Todos] task_id="${task.id}", progress="${progress.done}/${progress.total}". Use task_todo_get to refresh this checklist and task_todo_update to mark progress. Open todos block task completion. todos=${JSON.stringify(taskTodos)}.`,
           );
