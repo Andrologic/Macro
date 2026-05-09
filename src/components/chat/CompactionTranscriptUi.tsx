@@ -17,18 +17,20 @@ export const CompactionBoundaryRow: React.FC<{
   return (
     <div
       ref={measureElement}
+      data-chat-compaction-boundary="true"
       data-index={virtualItem.index}
-      className="absolute left-0 top-0 w-full py-3"
+      className="absolute left-0 top-0 w-full py-5"
       style={{ transform: `translateY(${virtualItem.start}px)` }}
       role="separator"
-      aria-label={t('chat.compactionBoundary', 'Contexte compacté')}
+      aria-label={t('chat.compactionBoundary', 'Contexte automatiquement compacté')}
     >
-      <div className="flex items-center gap-3 text-[11px] font-medium text-muted-foreground/80">
-        <span className="h-px flex-1 bg-border/50" aria-hidden="true" />
-        <span className="bg-background px-2">
-          {t('chat.compactionBoundary', 'Contexte compacté')}
+      <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground">
+        <span className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-border" aria-hidden="true" />
+        <span className="inline-flex shrink-0 items-center gap-2 bg-background px-3">
+          <Icon name="archive" size={13} className="text-muted-foreground/70" />
+          {t('chat.compactionBoundary', 'Contexte automatiquement compacté')}
         </span>
-        <span className="h-px flex-1 bg-border/50" aria-hidden="true" />
+        <span className="h-px flex-1 bg-gradient-to-l from-transparent via-border to-border" aria-hidden="true" />
       </div>
     </div>
   );
