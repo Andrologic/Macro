@@ -17,9 +17,19 @@ const SOURCE_PASSAGE_VERSION = 1;
 const EMERGENCY_TOOL_CONTEXT_CHARS = 1200;
 const MAX_DIGEST_ITEMS = 18;
 const MAX_DIGEST_EVIDENCE_CHARS = 220;
+const MAX_SUMMARY_CHARS = 9000;
+const NORMAL_PROVIDER_ITEM_TARGET_CHARS = 2400;
+const FORCED_PROVIDER_ITEM_TARGET_CHARS = 1200;
+const ULTRA_PROVIDER_ITEM_TARGET_CHARS = 520;
 
 type CompactionMode = ContextCompactionKind | 'after_compaction';
+export type CompactionPass = 'normal' | 'forced' | 'ultra';
 export type ContextCompactionDecision = 'send' | 'retry_after_compaction' | 'hard_stop';
+
+interface PreparedCompactionPassResult {
+  messages: StreamMessage[];
+  prunedMessageIds: string[];
+}
 
 interface CompactionThresholds {
   backgroundRatio: number;
@@ -255,13 +265,160 @@ const truncateMiddle = (value: string, maxChars: number): string => {
   return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const deepCloneJsonValue = <T,>(value: T): T => {
+  if (!isRecord(value) && !Array.isArray(value)) return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const streamContentToText = (content: StreamMessageContent): string => {
+  if (typeof content === 'string') return content;
+  return content
+    .map((part) => {
+      if (part.type === 'text') return part.text || '';
+      if (part.type === 'image_url') return '[image attachment]';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+};
+
+const getProviderItemText = (item: Record<string, unknown>): string => {
+  const visibleContent =
+    typeof item.visible_content === 'string' ? item.visible_content : '';
+  const content = item.content;
+  if (visibleContent.trim()) return visibleContent;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .flatMap((part) => {
+        if (!isRecord(part)) return [];
+        if (typeof part.text === 'string') return [part.text];
+        if (typeof part.image_url === 'string') return ['[image attachment]'];
+        return [];
+      })
+      .join('\n');
+  }
+  return '';
+};
+
+const getProviderCompactionTargetChars = (pass: CompactionPass): number => {
+  if (pass === 'ultra') return ULTRA_PROVIDER_ITEM_TARGET_CHARS;
+  if (pass === 'forced') return FORCED_PROVIDER_ITEM_TARGET_CHARS;
+  return NORMAL_PROVIDER_ITEM_TARGET_CHARS;
+};
+
+const isAggressiveCompactionPass = (pass: CompactionPass): boolean =>
+  pass === 'forced' || pass === 'ultra';
+
+const resolveInitialCompactionPass = (
+  mode: ContextCompactionKind,
+  forcePrune?: boolean
+): CompactionPass =>
+  mode === 'overflow_recovery' || forcePrune ? 'forced' : 'normal';
+
+const mergeMessageIds = (...idGroups: string[][]): string[] =>
+  Array.from(new Set(idGroups.flat()));
+
+const summarizeProviderToolCalls = (toolCalls: unknown): string => {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+  return toolCalls
+    .flatMap((toolCall) => {
+      if (!isRecord(toolCall)) return [];
+      const fn = isRecord(toolCall.function) ? toolCall.function : null;
+      const name = typeof fn?.name === 'string' ? fn.name : 'tool';
+      const args = typeof fn?.arguments === 'string' ? fn.arguments : '';
+      return [`${name}(${truncateMiddle(normalizeWhitespace(args), 160)})`];
+    })
+    .slice(0, 6)
+    .join(', ');
+};
+
+const compactProviderInputItem = (
+  item: unknown,
+  pass: CompactionPass,
+  fallbackContent: StreamMessageContent
+): unknown | null => {
+  if (!isRecord(item)) return item;
+
+  const targetChars = getProviderCompactionTargetChars(pass);
+  if (item.type === 'chat_completion_message') {
+    const role = item.role === 'tool' ? 'tool' : 'assistant';
+    const sourceText =
+      getProviderItemText(item) ||
+      (typeof item.reasoning_content === 'string'
+        ? item.reasoning_content
+        : '') ||
+      streamContentToText(fallbackContent);
+    const toolCallSummary = summarizeProviderToolCalls(item.tool_calls);
+    const compactedText = truncateMiddle(
+      normalizeWhitespace(
+        [sourceText, toolCallSummary ? `Tool calls preserved as fact: ${toolCallSummary}` : '']
+          .filter(Boolean)
+          .join('\n')
+      ),
+      targetChars
+    );
+
+    if (role === 'tool') {
+      if (typeof item.tool_call_id !== 'string' || !item.tool_call_id.trim()) {
+        return null;
+      }
+      return {
+        type: 'chat_completion_message',
+        role: 'tool',
+        content: compactedText,
+        tool_call_id: item.tool_call_id,
+        ...(typeof item.tool_name === 'string' && item.tool_name.trim()
+          ? { tool_name: item.tool_name }
+          : {}),
+      };
+    }
+
+    return {
+      type: 'chat_completion_message',
+      role: 'assistant',
+      content: compactedText,
+      visible_content: compactedText,
+    };
+  }
+
+  if (item.type === 'message') {
+    const role = item.role === 'assistant' ? 'assistant' : 'user';
+    const sourceText = getProviderItemText(item) || streamContentToText(fallbackContent);
+    return {
+      type: 'message',
+      role,
+      content: [
+        {
+          type: role === 'user' ? 'input_text' : 'output_text',
+          text: truncateMiddle(normalizeWhitespace(sourceText), targetChars),
+        },
+      ],
+    };
+  }
+
+  const serialized = JSON.stringify(item);
+  if (serialized.length <= targetChars) return deepCloneJsonValue(item);
+  return {
+    type: 'compacted_provider_item',
+    excerpt: truncateMiddle(normalizeWhitespace(serialized), targetChars),
+    hash: simpleHash(serialized),
+  };
+};
+
 const getMessageContentForFingerprint = (message: ChatMessage): string =>
   `${message.role}:${message.content}\n${message.hidden_context || ''}`;
 
 const findMessageIndexById = (messages: ChatMessage[], messageId: string): number =>
   messages.findIndex((message) => message.id === messageId);
 
-const getCompactionBoundaryIndex = (orderedMessages: ChatMessage[]): number => {
+const getCompactionBoundaryIndex = (
+  orderedMessages: ChatMessage[],
+  retainedUserTurns = 2
+): number => {
   const userIndexes = orderedMessages.reduce<number[]>((indexes, message, index) => {
     if (message.role === 'user') {
       indexes.push(index);
@@ -269,11 +426,12 @@ const getCompactionBoundaryIndex = (orderedMessages: ChatMessage[]): number => {
     return indexes;
   }, []);
 
-  if (userIndexes.length < 3) {
+  const retainedTurns = Math.max(1, Math.trunc(retainedUserTurns));
+  if (userIndexes.length <= retainedTurns) {
     return -1;
   }
 
-  let candidateIndex = userIndexes[userIndexes.length - 2]! - 1;
+  let candidateIndex = userIndexes[userIndexes.length - retainedTurns]! - 1;
   while (candidateIndex >= 0 && orderedMessages[candidateIndex]?.role !== 'assistant') {
     candidateIndex -= 1;
   }
@@ -451,7 +609,7 @@ export const pruneToolContextBlocks = (
         const attrs = parseToolContextAttributes(rawAttrs || '');
         const toolName = attrs.tool || 'tool';
         const body = (rawBody || '').trim();
-        if (!body || isProtectedToolContext(toolName)) {
+        if (!body || (isProtectedToolContext(toolName) && !options.force)) {
           return match;
         }
         if (!options.force && estimateTokensForText(body) < minBodyTokens) {
@@ -480,6 +638,98 @@ export const pruneToolContextBlocks = (
   return {
     messages,
     prunedMessageIds: Array.from(prunedMessageIds),
+  };
+};
+
+export const compactProviderInputItemsForContext = (
+  preparedMessages: StreamMessage[],
+  orderedMessages: ChatMessage[],
+  pass: CompactionPass
+): { messages: StreamMessage[]; compactedMessageIds: string[] } => {
+  const recentTurnStartIndex = getRecentUserTurnStartIndex(orderedMessages);
+  const latestUserMessage = [...orderedMessages]
+    .reverse()
+    .find((message) => message.role === 'user');
+  const compactedMessageIds = new Set<string>();
+
+  const messages = preparedMessages.map((message, index) => {
+    const orderedMessage = orderedMessages[index];
+    if (!orderedMessage || !Array.isArray(message.provider_input_items)) {
+      return message;
+    }
+    if (latestUserMessage && orderedMessage.id === latestUserMessage.id) {
+      return message;
+    }
+
+    const shouldCompact =
+      pass === 'ultra' ||
+      pass === 'forced' ||
+      index < recentTurnStartIndex ||
+      estimateTokensForProviderInputItems(message.provider_input_items) >
+        estimateTokensForStreamContent(message.content) + 200;
+
+    if (!shouldCompact) {
+      return message;
+    }
+
+    const compactedItems = message.provider_input_items
+      .map((item) => compactProviderInputItem(item, pass, message.content))
+      .filter((item): item is unknown => item !== null);
+    const before = estimateTokensForProviderInputItems(message.provider_input_items);
+    const after = estimateTokensForProviderInputItems(compactedItems);
+    if (compactedItems.length === 0 || after >= before) {
+      compactedMessageIds.add(orderedMessage.id);
+      return {
+        ...message,
+        provider_input_items: undefined,
+      };
+    }
+
+    compactedMessageIds.add(orderedMessage.id);
+    return {
+      ...message,
+      provider_input_items: compactedItems,
+    };
+  });
+
+  return {
+    messages,
+    compactedMessageIds: Array.from(compactedMessageIds),
+  };
+};
+
+const runPreparedCompactionPass = (params: {
+  preparedMessages: StreamMessage[];
+  orderedMessages: ChatMessage[];
+  pass: CompactionPass;
+  shouldPrune: boolean;
+  forcePrune?: boolean;
+  mode: ContextCompactionKind;
+}): PreparedCompactionPassResult => {
+  const pruned =
+    params.shouldPrune
+      ? pruneToolContextBlocks(params.preparedMessages, params.orderedMessages, {
+          force:
+            params.forcePrune ||
+            isAggressiveCompactionPass(params.pass) ||
+            params.mode === 'overflow_recovery',
+        })
+      : { messages: params.preparedMessages, prunedMessageIds: [] };
+  const providerCompacted =
+    params.shouldPrune
+      ? compactProviderInputItemsForContext(
+          pruned.messages,
+          params.orderedMessages,
+          params.pass
+        )
+      : { messages: pruned.messages, compactedMessageIds: [] };
+
+  return {
+    messages: providerCompacted.messages,
+    prunedMessageIds: mergeMessageIds(
+      pruned.prunedMessageIds,
+      providerCompacted.compactedMessageIds
+    ),
   };
 };
 
@@ -607,7 +857,7 @@ const buildCompactionSystemMessage = (
   return [
     '[COMPACTED CONVERSATION STATE]',
     'Use this compacted state as authoritative prior context for older turns.',
-    state.summaryText.trim(),
+    truncateMiddle(state.summaryText.trim(), MAX_SUMMARY_CHARS),
     digestBlock ? `Tool digest:\n${digestBlock}` : '',
     usedRefs ? `Used source passages kept:\n${usedRefs}` : '',
     interestingRefs ? `Interesting source passages kept:\n${interestingRefs}` : '',
@@ -623,15 +873,46 @@ const trimToolContextBlocks = (value: string): string =>
     return `<tool_context ${attrs}>\n${trimmedBody}\n</tool_context>`;
   });
 
-const applyEmergencyMessageCompaction = (messages: StreamMessage[]): StreamMessage[] =>
-  messages.map((message) => {
-    if (typeof message.content !== 'string') return message;
-    if (!message.content.includes('<tool_context')) return message;
-    return {
-      ...message,
-      content: trimToolContextBlocks(message.content),
-    };
+const applyEmergencyMessageCompaction = (
+  messages: StreamMessage[],
+  pass: CompactionPass = 'forced',
+  options: { preserveLatestUser?: boolean } = { preserveLatestUser: true }
+): StreamMessage[] => {
+  const latestUserIndex =
+    options.preserveLatestUser === false
+      ? -1
+      : messages.reduce(
+          (latestIndex, candidate, candidateIndex) =>
+            candidate.role === 'user' ? candidateIndex : latestIndex,
+          -1
+        );
+
+  return messages.map((message, index) => {
+    if (index === latestUserIndex) {
+      return message;
+    }
+
+    let nextMessage = message;
+    if (typeof nextMessage.content === 'string' && nextMessage.content.includes('<tool_context')) {
+      nextMessage = {
+        ...nextMessage,
+        content: trimToolContextBlocks(nextMessage.content),
+      };
+    }
+
+    if (Array.isArray(nextMessage.provider_input_items)) {
+      const compactedItems = nextMessage.provider_input_items
+        .map((item) => compactProviderInputItem(item, pass, nextMessage.content))
+        .filter((item): item is unknown => item !== null);
+      nextMessage = {
+        ...nextMessage,
+        provider_input_items: compactedItems.length > 0 ? compactedItems : undefined,
+      };
+    }
+
+    return nextMessage;
   });
+};
 
 const validateCompactionState = (
   state: ConversationCompactionState | null | undefined,
@@ -689,6 +970,9 @@ const buildMessagesWithCompactionState = (
 
 export const resolveModelContextWindowTokens = (params: {
   providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+  modelId?: string | null;
   modelContextWindowTokens?: number | null;
 }): number => {
   if (
@@ -699,7 +983,19 @@ export const resolveModelContextWindowTokens = (params: {
     return Math.trunc(params.modelContextWindowTokens);
   }
 
-  switch ((params.providerType || '').trim().toLowerCase()) {
+  const providerType = (params.providerType || '').trim().toLowerCase();
+  const providerId = (params.providerId || '').trim().toLowerCase();
+  const baseUrl = (params.baseUrl || '').trim().toLowerCase();
+  const modelId = (params.modelId || '').trim().toLowerCase();
+  const isOpenCodeGo =
+    providerId === 'opencode-go' ||
+    baseUrl.includes('opencode.ai/zen/go') ||
+    baseUrl.includes('opencode.ai/zen/v1');
+  if (isOpenCodeGo && (modelId.includes('kimi') || modelId.includes('k2'))) {
+    return 128_000;
+  }
+
+  switch (providerType) {
     case 'chatgpt':
     case 'copilot':
       return 128_000;
@@ -728,6 +1024,15 @@ export const estimateConversationFootprint = (
     JSON.stringify(params.toolDefinitions || [])
   );
   const imagePlaceholderTokens = countImagePlaceholderTokens(params.preparedMessages);
+  const visibleMessageTokens = params.preparedMessages.reduce(
+    (total, message) => total + estimateTokensForStreamContent(message.content),
+    0
+  );
+  const providerInputTokens = params.preparedMessages.reduce(
+    (total, message) =>
+      total + estimateTokensForProviderInputItems(message.provider_input_items),
+    0
+  );
   const totalPreparedTokens = params.preparedMessages.reduce(
     (total, message) => total + estimateTokensForStreamMessage(message),
     0
@@ -756,6 +1061,20 @@ export const estimateConversationFootprint = (
       typeof message.hidden_context === 'string' &&
       message.hidden_context.includes('<tool_context')
   ).length;
+  const summaryTokens = params.preparedMessages
+    .filter(
+      (message) =>
+        message.role === 'system' &&
+        typeof message.content === 'string' &&
+        message.content.includes('[COMPACTED CONVERSATION STATE]')
+    )
+    .reduce((total, message) => total + estimateTokensForStreamContent(message.content), 0);
+  const latestPreparedUserMessage = [...params.preparedMessages]
+    .reverse()
+    .find((message) => message.role === 'user');
+  const latestUserContextTokens = latestPreparedUserMessage
+    ? estimateTokensForStreamMessage(latestPreparedUserMessage)
+    : 0;
   const totalEstimatedTokens =
     totalPreparedTokens + systemTokens + toolSchemaTokens;
   const messageTokens = Math.max(totalPreparedTokens - hiddenContextTokens, 0);
@@ -784,11 +1103,15 @@ export const estimateConversationFootprint = (
   return {
     totalEstimatedTokens,
     messageTokens,
+    visibleMessageTokens,
+    providerInputTokens,
     hiddenContextTokens,
     systemTokens,
     toolSchemaTokens,
     imagePlaceholderTokens,
     citationTokens,
+    summaryTokens,
+    latestUserContextTokens,
     modelContextWindowTokens: params.modelContextWindowTokens,
     reservedTokens: budget.reservedTokens,
     usableContextTokens: budget.usableContextTokens,
@@ -815,9 +1138,14 @@ const buildCompactionState = async (params: {
   prunedToolContextMessageIds?: string[];
   footprintBefore?: ContextFootprint;
   compactionKind: ContextCompactionKind;
+  compactionPass?: CompactionPass;
+  retainedUserTurns?: number;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ConversationCompactionState | null> => {
-  const boundaryIndex = getCompactionBoundaryIndex(params.orderedMessages);
+  const boundaryIndex = getCompactionBoundaryIndex(
+    params.orderedMessages,
+    params.retainedUserTurns
+  );
   if (boundaryIndex < 0) return null;
 
   const boundaryMessage = params.orderedMessages[boundaryIndex];
@@ -868,11 +1196,12 @@ const buildCompactionState = async (params: {
     interestingSourcePassages,
   }))
     .trim();
+  const boundedSummary = truncateMiddle(summary, MAX_SUMMARY_CHARS);
 
   const provisionalState: ConversationCompactionState = {
     conversationId: compactableMessages[0]?.conversation_id || '',
     upToMessageId: boundaryMessage.id,
-    summaryText: summary,
+    summaryText: boundedSummary,
     toolDigest,
     usedSourcePassageIds: usedSourcePassages.map((citation) => citation.id),
     interestingSourcePassageIds: interestingSourcePassages.map(
@@ -901,6 +1230,7 @@ const buildCompactionState = async (params: {
     footprintBefore: params.footprintBefore,
     degradedReason: null,
     compactionKind: params.compactionKind,
+    compactionPass: params.compactionPass ?? 'normal',
   };
 
   provisionalState.fingerprint = computeCompactionFingerprint(
@@ -927,38 +1257,42 @@ export const invalidateCompactionFromMessage = (
 export const maybeCompactConversation = async (
   params: MaybeCompactConversationParams
 ): Promise<MaybeCompactConversationResult> => {
-  const footprintBefore = estimateConversationFootprint({
-    systemMessage: params.systemMessage,
-    preparedMessages: params.preparedMessages,
-    orderedMessages: params.orderedMessages,
-    citations: params.citations,
-    toolDefinitions: params.toolDefinitions,
-    modelContextWindowTokens: params.modelContextWindowTokens,
-    mode: params.mode,
-    budgetPolicy: params.budgetPolicy,
-  });
-  const shouldPrune =
-    params.budgetPolicy?.prune !== false &&
-    (params.budgetPolicy?.auto !== false ||
-      params.mode === 'manual' ||
-      params.mode === 'overflow_recovery' ||
-      Boolean(params.forcePrune));
-  const pruned = shouldPrune
-    ? pruneToolContextBlocks(params.preparedMessages, params.orderedMessages, {
-        force: params.forcePrune,
-      })
-    : { messages: params.preparedMessages, prunedMessageIds: [] };
-  const preparedMessages = pruned.messages;
-  const footprintAfterPruning = estimateConversationFootprint({
+  const estimateFootprint = (
+    preparedMessages: StreamMessage[],
+    mode: CompactionMode
+  ): ContextFootprint => estimateConversationFootprint({
     systemMessage: params.systemMessage,
     preparedMessages,
     orderedMessages: params.orderedMessages,
     citations: params.citations,
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
-    mode: params.mode,
+    mode,
     budgetPolicy: params.budgetPolicy,
   });
+
+  const footprintBefore = estimateFootprint(params.preparedMessages, params.mode);
+  const shouldPrune =
+    params.budgetPolicy?.prune !== false &&
+    (params.budgetPolicy?.auto !== false ||
+      params.mode === 'manual' ||
+      params.mode === 'overflow_recovery' ||
+      Boolean(params.forcePrune));
+
+  const runPass = (pass: CompactionPass): PreparedCompactionPassResult =>
+    runPreparedCompactionPass({
+      preparedMessages: params.preparedMessages,
+      orderedMessages: params.orderedMessages,
+      pass,
+      shouldPrune,
+      forcePrune: params.forcePrune,
+      mode: params.mode,
+    });
+
+  let compactionPass = resolveInitialCompactionPass(params.mode, params.forcePrune);
+  let pruned = runPass(compactionPass);
+  let preparedMessages = pruned.messages;
+  const footprintAfterPruning = estimateFootprint(preparedMessages, params.mode);
 
   const validCurrentState = validateCompactionState(
     params.currentCompactionState,
@@ -977,16 +1311,7 @@ export const maybeCompactConversation = async (
     activeState
   );
 
-  let footprintAfter = estimateConversationFootprint({
-    systemMessage: params.systemMessage,
-    preparedMessages: messages.slice(1),
-    orderedMessages: params.orderedMessages,
-    citations: params.citations,
-    toolDefinitions: params.toolDefinitions,
-    modelContextWindowTokens: params.modelContextWindowTokens,
-    mode: 'after_compaction',
-    budgetPolicy: params.budgetPolicy,
-  });
+  let footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
 
   const compactionAllowed =
     params.budgetPolicy?.auto !== false ||
@@ -1029,6 +1354,7 @@ export const maybeCompactConversation = async (
       prunedToolContextMessageIds: pruned.prunedMessageIds,
       footprintBefore,
       compactionKind: params.mode,
+      compactionPass,
       generateSummary: params.generateSummary,
     });
 
@@ -1044,16 +1370,7 @@ export const maybeCompactConversation = async (
         params.citations,
         nextState
       );
-      footprintAfter = estimateConversationFootprint({
-        systemMessage: params.systemMessage,
-        preparedMessages: messages.slice(1),
-        orderedMessages: params.orderedMessages,
-        citations: params.citations,
-        toolDefinitions: params.toolDefinitions,
-        modelContextWindowTokens: params.modelContextWindowTokens,
-        mode: 'after_compaction',
-        budgetPolicy: params.budgetPolicy,
-      });
+      footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
       activeState = {
         ...nextState,
         estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
@@ -1066,25 +1383,59 @@ export const maybeCompactConversation = async (
   let degraded = false;
   if (footprintAfter.threshold === 'degraded') {
     degraded = true;
-    messages = applyEmergencyMessageCompaction(messages);
-    footprintAfter = estimateConversationFootprint({
-      systemMessage: params.systemMessage,
-      preparedMessages: messages.slice(1),
+    messages = applyEmergencyMessageCompaction(messages, compactionPass);
+    footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
+  }
+
+  if (footprintAfter.isHardStop && compactionAllowed) {
+    compactionPass = 'ultra';
+    pruned = runPass(compactionPass);
+    preparedMessages = pruned.messages;
+
+    const ultraState = await buildCompactionState({
       orderedMessages: params.orderedMessages,
       citations: params.citations,
+      systemMessage: params.systemMessage,
+      preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
-      mode: 'after_compaction',
       budgetPolicy: params.budgetPolicy,
+      currentCompactionState: null,
+      prunedToolContextMessageIds: pruned.prunedMessageIds,
+      footprintBefore,
+      compactionKind: params.mode,
+      compactionPass,
+      retainedUserTurns: 1,
+      generateSummary: params.generateSummary,
     });
+
+    activeState = ultraState;
+    usedExistingCompaction = false;
+    messages = buildMessagesWithCompactionState(
+      params.systemMessage,
+      preparedMessages,
+      params.orderedMessages,
+      params.citations,
+      activeState
+    );
+    degraded = true;
+    messages = applyEmergencyMessageCompaction(messages, compactionPass);
+    footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
+
+    if (activeState) {
+      activeState = {
+        ...activeState,
+        estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
+        footprintAfter,
+        updatedAt: new Date().toISOString(),
+      };
+    }
   }
 
   if (activeState) {
-    const prunedToolContextMessageIds = Array.from(
-      new Set([
-        ...(activeState.prunedToolContextMessageIds ?? []),
-        ...pruned.prunedMessageIds,
-      ])
+    const prunedToolContextMessageIds = mergeMessageIds(
+      activeState.prunedToolContextMessageIds ?? [],
+      pruned.prunedMessageIds
     );
     activeState = {
       ...activeState,
@@ -1096,6 +1447,7 @@ export const maybeCompactConversation = async (
       footprintAfter,
       degradedReason: degraded ? footprintAfter.reason : null,
       compactionKind: params.mode,
+      compactionPass,
       updatedAt: new Date().toISOString(),
     };
   }

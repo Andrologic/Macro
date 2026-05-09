@@ -2,12 +2,15 @@ import { describe, expect, it } from 'bun:test';
 
 import type { ChatMessage } from '../types';
 import type { Citation } from '../stores/useCitationsStore';
+import type { StreamMessage } from './streamingChat';
 import {
   buildCompactedMessagesForRequest,
+  compactProviderInputItemsForContext,
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
   parseHiddenToolContext,
   pruneToolContextBlocks,
+  resolveModelContextWindowTokens,
 } from './contextCompaction';
 
 const makeMessage = (
@@ -25,7 +28,7 @@ const makeMessage = (
   ...options,
 });
 
-const makePreparedMessages = (messages: ChatMessage[]) =>
+const makePreparedMessages = (messages: ChatMessage[]): StreamMessage[] =>
   messages.map((message) => ({
     role: message.role,
     content:
@@ -103,7 +106,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.threshold).toBe('blocking');
   });
 
-  it('prunes old large tool contexts while preserving recent and protected tool output', () => {
+  it('prunes old large tool contexts while preserving recent and protected tool output during normal pruning', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),
       makeMessage('a1', 'assistant', 'Old result.', {
@@ -121,12 +124,96 @@ describe('buildCompactedMessagesForRequest', () => {
     const result = pruneToolContextBlocks(
       makePreparedMessages(orderedMessages),
       orderedMessages,
-      { force: true },
+      { force: false },
     );
 
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
     expect(String(result.messages[3]?.content)).toContain('need detail');
+  });
+
+  it('limits protected tool output during forced pruning', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect plan state.'),
+      makeMessage('a1', 'assistant', 'Protected result.', {
+        hidden_context:
+          `<tool_context tool="need_get" detail="need-1">\n${'need detail\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Continue.'),
+      makeMessage('a2', 'assistant', 'Recent answer.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true },
+    );
+
+    expect(result.prunedMessageIds).toEqual(['a1']);
+    expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+  });
+
+  it('compacts provider input items instead of relying on visible content trimming', () => {
+    const hugeReasoning = `Need context.\n${'native reasoning payload\n'.repeat(1200)}`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the parser.'),
+      makeMessage('a1', 'assistant', 'Older answer.'),
+      makeMessage('u2', 'user', 'Inspect runtime output.'),
+      makeMessage('a2', 'assistant', 'Runtime output summarized.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[3] = {
+      ...preparedMessages[3]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Runtime output summarized.',
+          visible_content: 'Runtime output summarized.',
+          reasoning_content: hugeReasoning,
+          reasoning_details: [{ trace: hugeReasoning }],
+          tool_calls: [
+            {
+              id: 'call_read',
+              type: 'function',
+              function: { name: 'read', arguments: '{"path":"src/runtime.ts"}' },
+            },
+          ],
+        },
+      ],
+    };
+
+    const before = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 8000,
+      mode: 'blocking',
+    });
+    const compacted = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const after = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: compacted.messages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 8000,
+      mode: 'blocking',
+    });
+
+    expect(after.providerInputTokens ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      before.providerInputTokens ?? 0,
+    );
+    expect(JSON.stringify(compacted.messages)).not.toContain('native reasoning payload');
+    expect(JSON.stringify(compacted.messages)).not.toContain('tool_calls');
   });
 
   it('keeps the last two user turns raw and injects a compacted system message', async () => {
@@ -161,8 +248,9 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations,
       toolDefinitions,
-      modelContextWindowTokens: 120,
+      modelContextWindowTokens: 1000,
       mode: 'blocking',
+      forceCompaction: true,
       generateSummary: async () =>
         'Current objective: propose the fix.\n\nSummary:\nOlder parser investigation is compacted.',
     });
@@ -201,7 +289,7 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations: [],
       toolDefinitions,
-      modelContextWindowTokens: 200,
+      modelContextWindowTokens: 6000,
       mode: 'blocking',
       forcePrune: false,
       generateSummary: async () => 'Current objective: summarize the debug results.',
@@ -230,7 +318,7 @@ describe('buildCompactedMessagesForRequest', () => {
         hidden_context:
           `<tool_context tool="terminal_run" detail="recent">\n${'recent\n'.repeat(3000)}\n</tool_context>`,
       }),
-      makeMessage('u3', 'user', 'Now answer.'),
+      makeMessage('u3', 'user', 'Now answer with the required payload:\n'.repeat(500)),
     ];
 
     const result = await buildCompactedMessagesForRequest({
@@ -248,6 +336,111 @@ describe('buildCompactedMessagesForRequest', () => {
 
     expect(result.decision).toBe('hard_stop');
     expect(result.footprintAfter.isHardStop).toBe(true);
+  });
+
+  it('uses an ultra pass before hard stopping when recent provider history is too large', async () => {
+    const hugeReasoning = `Trace.\n${'provider trace payload\n'.repeat(3000)}`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect old files.'),
+      makeMessage('a1', 'assistant', 'Older inspection.'),
+      makeMessage('u2', 'user', 'Inspect recent provider history.'),
+      makeMessage('a2', 'assistant', 'Recent provider result.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[3] = {
+      ...preparedMessages[3]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Recent provider result.',
+          visible_content: 'Recent provider result.',
+          reasoning_content: hugeReasoning,
+        },
+      ],
+    };
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 80,
+      mode: 'blocking',
+      budgetPolicy: { prune: false, reservedTokens: 0 },
+      generateSummary: async () => 'Current objective: answer from the compacted trace.',
+    });
+
+    expect(result.decision).toBe('send');
+    expect(result.compactionState?.upToMessageId).toBe('a2');
+    expect(result.compactionState?.compactionPass).toBe('ultra');
+    expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
+  });
+
+  it('keeps the latest user provider input items intact during aggressive compaction', async () => {
+    const latestProviderItems = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Now answer with this exact attachment.' },
+          { type: 'input_image', image_url: 'data:image/png;base64,abc123' },
+        ],
+      },
+    ];
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect old files.'),
+      makeMessage('a1', 'assistant', 'Older inspection.'),
+      makeMessage('u2', 'user', 'Inspect recent provider history.'),
+      makeMessage('a2', 'assistant', 'Recent provider result.'),
+      makeMessage('u3', 'user', 'Now answer with this exact attachment.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[3] = {
+      ...preparedMessages[3]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Recent provider result.',
+          reasoning_content: 'provider trace payload\n'.repeat(3000),
+        },
+      ],
+    };
+    preparedMessages[4] = {
+      ...preparedMessages[4]!,
+      provider_input_items: latestProviderItems,
+    };
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 90,
+      mode: 'blocking',
+      budgetPolicy: { prune: false, reservedTokens: 0 },
+      generateSummary: async () => 'Current objective: answer from compacted context.',
+    });
+    const latestUserMessage = [...result.messages]
+      .reverse()
+      .find((message) => message.role === 'user');
+
+    expect(latestUserMessage?.provider_input_items).toEqual(latestProviderItems);
+  });
+
+  it('uses a larger fallback window for OpenCode Go Kimi when model metadata is missing', () => {
+    expect(
+      resolveModelContextWindowTokens({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'kimi-k2.6',
+      }),
+    ).toBe(128_000);
   });
 });
 

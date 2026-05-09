@@ -2963,8 +2963,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ).find((model) => model.id === modelId);
     return resolveModelContextWindowTokens({
       providerType,
+      providerId,
+      baseUrl: providerState.providerConfigs.find(
+        (provider) => provider.id === providerId,
+      )?.baseUrl,
+      modelId,
       modelContextWindowTokens: selectedModel?.contextWindowTokens,
     });
+  };
+
+  const buildContextTooLargeErrorMessage = (footprint?: ContextFootprint): string => {
+    const base =
+      "The conversation is still too large for the selected model after aggressive compaction. Macro kept the latest message; switch to a larger-context model or continue from the compacted summary.";
+    if (!footprint) {
+      return base;
+    }
+
+    const formatTokens = (value?: number) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? `${Math.round(value).toLocaleString()} tokens`
+        : "unknown";
+    const contributors = [
+      ["messages", footprint.visibleMessageTokens],
+      ["provider history", footprint.providerInputTokens],
+      ["system", footprint.systemTokens],
+      ["tools", footprint.toolSchemaTokens],
+      ["summary", footprint.summaryTokens],
+      ["latest request", footprint.latestUserContextTokens],
+    ]
+      .filter((entry): entry is [string, number] =>
+        typeof entry[1] === "number" && entry[1] > 0,
+      )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label, value]) => `${label}: ${formatTokens(value)}`)
+      .join(", ");
+
+    return `${base} Estimated payload: ${formatTokens(
+      footprint.totalEstimatedTokens,
+    )} / ${formatTokens(footprint.modelContextWindowTokens)}. Largest parts: ${
+      contributors || "unknown"
+    }.`;
   };
 
   const parseCompactionJson = <T,>(
@@ -5853,7 +5892,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         footprintAfter: compactedRequest.footprintAfter,
       });
       throw buildSendError(
-        "The conversation is still too large for the selected model after compaction. Macro kept the latest message; switch to a larger-context model or manually continue from the compacted summary.",
+        buildContextTooLargeErrorMessage(compactedRequest.footprintAfter),
       );
     }
     const fileToolContext = useCitationsStore

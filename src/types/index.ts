@@ -461,11 +461,15 @@ export type ContextFootprintReason =
 export interface ContextFootprint {
   totalEstimatedTokens: number;
   messageTokens: number;
+  visibleMessageTokens?: number;
+  providerInputTokens?: number;
   hiddenContextTokens: number;
   systemTokens: number;
   toolSchemaTokens: number;
   imagePlaceholderTokens: number;
   citationTokens: number;
+  summaryTokens?: number;
+  latestUserContextTokens?: number;
   modelContextWindowTokens: number;
   reservedTokens: number;
   usableContextTokens: number;
@@ -521,6 +525,7 @@ export interface ConversationCompactionState {
   footprintAfter?: ContextFootprint;
   degradedReason?: ContextFootprintReason | null;
   compactionKind?: ContextCompactionKind;
+  compactionPass?: 'normal' | 'forced' | 'ultra';
 }
 
 export interface ChatGptProviderTurnState {

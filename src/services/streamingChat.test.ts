@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { ChatMessage } from '../types';
+import { buildCompactedMessagesForRequest } from './contextCompaction';
 import type { StreamCompletionResult } from './streamingChat';
 
 let streamingChatImportCounter = 0;
@@ -879,6 +881,106 @@ describe('streamingChat tool rendering helpers', () => {
 
     expect(glmMessages[0]?.reasoning_content).toBeUndefined();
     expect(glmMessages[1]).not.toHaveProperty('name');
+  });
+
+  it('compacts provider_input_items before final Chat Completions serialization', async () => {
+    const { __testables } = await loadStreamingChat();
+    const hugeReasoning = `Need context.\n${'provider trace payload\n'.repeat(1200)}`;
+    const assistantProviderItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: 'I inspected the runtime trace.',
+      apiContent: 'I inspected the runtime trace.',
+      reasoningContent: hugeReasoning,
+      reasoningDetails: [{ trace: hugeReasoning }],
+      toolCalls: [
+        {
+          id: 'call_read',
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"src/runtime.ts"}' },
+        },
+      ],
+    });
+    const orderedMessages: ChatMessage[] = [
+      {
+        id: 'u1',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Inspect the runtime.',
+        timestamp: '2026-04-05T00:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'assistant',
+        content: 'Older answer.',
+        timestamp: '2026-04-05T00:00:01.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Inspect the latest trace.',
+        timestamp: '2026-04-05T00:00:02.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'assistant',
+        content: 'I inspected the runtime trace.',
+        timestamp: '2026-04-05T00:00:03.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Now answer.',
+        timestamp: '2026-04-05T00:00:04.000Z',
+      },
+    ];
+    const preparedMessages = orderedMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      ...(message.id === 'a2' && assistantProviderItem
+        ? { provider_input_items: [assistantProviderItem] }
+        : {}),
+    }));
+    const profile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+    });
+    const rawPayload = __testables.buildChatCompletionMessages(
+      preparedMessages,
+      profile,
+    );
+
+    const compacted = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 8000,
+      mode: 'overflow_recovery',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => 'Current objective: answer from the runtime trace.',
+    });
+    const compactedPayload = __testables.buildChatCompletionMessages(
+      compacted.messages,
+      profile,
+    );
+
+    expect(JSON.stringify(rawPayload)).toContain('provider trace payload');
+    expect(JSON.stringify(compactedPayload)).not.toContain('provider trace payload');
+    expect(JSON.stringify(compactedPayload).length).toBeLessThan(
+      JSON.stringify(rawPayload).length,
+    );
   });
 
   it('replays DeepSeek reasoning_content only when the history has tool calls', async () => {
