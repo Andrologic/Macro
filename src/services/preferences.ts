@@ -89,6 +89,34 @@ export const PREF_KEYS = {
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
+export type PreferenceChangeListener<T = unknown> = (value: T, key: PrefKey) => void;
+
+const preferenceListeners = new Map<PrefKey, Set<PreferenceChangeListener>>();
+
+const emitPreferenceChange = <T>(key: PrefKey, value: T) => {
+  const listeners = preferenceListeners.get(key);
+  if (!listeners) return;
+
+  for (const listener of listeners) {
+    listener(value, key);
+  }
+};
+
+export function subscribePreference<T>(
+  key: PrefKey,
+  listener: PreferenceChangeListener<T>
+): () => void {
+  const listeners = preferenceListeners.get(key) ?? new Set<PreferenceChangeListener>();
+  listeners.add(listener as PreferenceChangeListener);
+  preferenceListeners.set(key, listeners);
+
+  return () => {
+    listeners.delete(listener as PreferenceChangeListener);
+    if (listeners.size === 0) {
+      preferenceListeners.delete(key);
+    }
+  };
+}
 
 const DEFAULT_MODE_PROMPTS = {
   [PREF_KEYS.PROMPT_ARCHITECT]:
@@ -392,7 +420,12 @@ const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
 export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   // Always mirror to localStorage synchronously for crash/close resilience
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+  emitPreferenceChange(key, value);
 
+  await persistPreferenceToStore(key, value);
+}
+
+const persistPreferenceToStore = async <T>(key: PrefKey, value: T): Promise<void> => {
   try {
     const store = await getStore();
     if (store) {
@@ -402,7 +435,7 @@ export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   } catch (error) {
     console.error(`Failed to save preference ${key}:`, error);
   }
-}
+};
 
 export function savePreferenceDebounced<T>(
   key: PrefKey,
@@ -410,6 +443,7 @@ export function savePreferenceDebounced<T>(
   delayMs: number = 180
 ): void {
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+  emitPreferenceChange(key, value);
 
   const existingTimer = debouncedSaveTimers.get(key);
   if (existingTimer) {
@@ -418,7 +452,7 @@ export function savePreferenceDebounced<T>(
 
   const timer = setTimeout(() => {
     debouncedSaveTimers.delete(key);
-    void savePreference(key, value);
+    void persistPreferenceToStore(key, value);
   }, delayMs);
 
   debouncedSaveTimers.set(key, timer);

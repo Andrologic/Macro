@@ -784,12 +784,14 @@ describe('FileChangesPanel', () => {
     });
 
     expect(document.body.textContent).toContain('Couldn’t generate commit messages');
-    expect(document.body.textContent).toContain('Retry');
+    expect(document.body.textContent).toContain('Retry generation');
+    expect(document.body.textContent).toContain('Write manually');
+    expect(document.body.textContent).toContain('Commit model settings');
     expect(document.body.textContent).toContain('Cancel');
     expect(notifyErrorMock).not.toHaveBeenCalled();
 
     const retryButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.trim() === 'Retry');
+      .find((button) => button.textContent?.includes('Retry generation'));
     expect(retryButton).toBeDefined();
 
     await act(async () => {
@@ -798,6 +800,199 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens manual commit message editing after commit message generation fails', async () => {
+    const repository = buildRepository(true);
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
+      const error = new Error('missing API key');
+      error.name = 'SmartCommitMessageGenerationError';
+      throw error;
+    });
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    const writeManuallyButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Write manually'));
+    expect(writeManuallyButton).toBeDefined();
+
+    await act(async () => {
+      writeManuallyButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Write commit messages');
+    expect(document.body.textContent).toContain('Write a Conventional Commit message for each repository, then commit.');
+
+    const subjectInput = Array.from(document.body.querySelectorAll('input'))
+      .find((input) => input.value === 'review actions');
+    expect(subjectInput).toBeDefined();
+
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => ({
+      taskId: 'task-1',
+      taskCompleted: false,
+      taskStatus: 'InProgress',
+      commits: [],
+      repositories: [],
+    }));
+
+    const manualCommitButton = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent?.trim() === 'Commit')
+      .at(-1);
+
+    await act(async () => {
+      manualCommitButton?.click();
+      await flushRender();
+    });
+
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenLastCalledWith({
+      messagesByRepositoryId: {
+        'repo-1': 'feat: review actions',
+      },
+    });
+  });
+
+  it('opens the commit model settings from the generation failure modal', async () => {
+    const repository = buildRepository(true);
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
+      const error = new Error('model unavailable');
+      error.name = 'SmartCommitMessageGenerationError';
+      throw error;
+    });
+    seedStores(repository);
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    const settingsButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Commit model settings'));
+    expect(settingsButton).toBeDefined();
+
+    await act(async () => {
+      settingsButton?.click();
+      await flushRender();
+    });
+
+    expect(useAppStore.getState().settingsOpen).toBe(true);
+    expect(useAppStore.getState().activeSettingsTab).toBe('models');
+    expect(document.body.textContent).not.toContain('Couldn’t generate commit messages');
+  });
+
+  it('uses the latest saved commit model config when retrying after generation fails', async () => {
+    const repository = buildRepository(true);
+    window.localStorage.setItem(
+      'macro_smartCommitModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningEffort: null,
+      })
+    );
+    commitAllReadyTaskRepositoriesMock = mock(async () => {
+      const error = new Error('model unavailable');
+      error.name = 'SmartCommitMessageGenerationError';
+      throw error;
+    });
+    seedStores(repository);
+    useProviderStore.setState({
+      ...useProviderStore.getState(),
+      providerConfigs: [
+        {
+          id: 'provider-a',
+          name: 'Provider A',
+          providerType: 'openai',
+          baseUrl: 'https://a.example.test/v1',
+          hasStoredApiKey: true,
+          isEnabled: true,
+          isLocal: false,
+        },
+        {
+          id: 'provider-b',
+          name: 'Provider B',
+          providerType: 'openai',
+          baseUrl: 'https://b.example.test/v1',
+          hasStoredApiKey: true,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-a': [{ id: 'model-a', name: 'Model A', provider_id: 'provider-a', isEnabled: true }],
+        'provider-b': [{ id: 'model-b', name: 'Model B', provider_id: 'provider-b', isEnabled: true }],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+
+    await act(async () => {
+      commitButton?.click();
+      await flushRender();
+    });
+
+    const preferences = await import('../../services/preferences');
+    await act(async () => {
+      await preferences.savePreference(preferences.PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, {
+        mode: 'dedicated',
+        providerId: 'provider-b',
+        modelId: 'model-b',
+        reasoningEffort: null,
+      });
+      await flushRender();
+    });
+
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => ({
+      taskId: 'task-1',
+      taskCompleted: false,
+      taskStatus: 'InProgress',
+      commits: [],
+      repositories: [],
+    }));
+
+    const retryButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Retry generation'));
+
+    await act(async () => {
+      retryButton?.click();
+      await flushRender();
+    });
+
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenLastCalledWith({
+      modelConfig: {
+        mode: 'dedicated',
+        providerId: 'provider-b',
+        modelId: 'model-b',
+        reasoningEffort: null,
+      },
+    });
   });
 
   it('shows structured commit message editing when generated fields are invalid', async () => {

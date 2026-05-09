@@ -9,6 +9,13 @@ import {
 } from '../services/providerApi';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from '../services/reasoningCatalog';
+import {
+  isLinkedProviderType,
+  providerHasAuthSession,
+  providerHasUsableCredentials,
+} from '../services/providerCredentials';
+
+export { isLinkedProviderType, providerHasAuthSession };
 
 const {
   isTauriAvailable: ipcIsTauriAvailable,
@@ -63,11 +70,7 @@ const sortModelsByName = (models: AIModel[]): AIModel[] =>
     (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
   );
 
-const LINKED_PROVIDER_TYPES = new Set(['chatgpt', 'copilot']);
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
-
-export const isLinkedProviderType = (providerType?: string | null): boolean =>
-  !!providerType && LINKED_PROVIDER_TYPES.has(providerType);
 
 const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
   !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
@@ -154,31 +157,12 @@ const resolveSelectedReasoningEffort = (params: {
   );
 };
 
-export const providerHasAuthSession = (
-  provider: Pick<ProviderConfig, 'providerType' | 'authStatus'>
-): boolean => {
-  if (provider.providerType === 'chatgpt') {
-    return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
-  }
-
-  if (provider.providerType === 'copilot') {
-    return provider.authStatus === 'connected';
-  }
-
-  return false;
-};
-
 export const providerHasCredentials = (
   provider: Pick<
     ProviderConfig,
     'isEnabled' | 'isLocal' | 'apiKey' | 'hasStoredApiKey' | 'providerType' | 'authStatus'
   >
-): boolean => {
-  const hasApiKey =
-    !isLinkedProviderType(provider.providerType) &&
-    (provider.hasStoredApiKey || !!provider.apiKey?.trim());
-  return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
-};
+): boolean => providerHasUsableCredentials(provider);
 
 const mergeLocalProviderConfig = async (
   providerConfigs: ProviderConfig[]

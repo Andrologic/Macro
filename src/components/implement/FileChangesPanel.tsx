@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -32,30 +32,31 @@ import {
   resolveMergeWorkflowViewState,
 } from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
+import { isSmartCommitMessageGenerationError } from '../../services/smartCommitMessageGenerator';
 import {
-  isSmartCommitMessageGenerationError,
-  type GeneratedCommitMessages,
-} from '../../services/smartCommitMessageGenerator';
-import {
-  PREF_KEYS,
-  loadPreference,
-  savePreference,
-} from '../../services/preferences';
-import {
-  ALLOWED_COMMIT_TYPES,
   formatConventionalCommitMessage,
   validateConventionalCommitFields,
   type ConventionalCommitFields,
-  type ConventionalCommitType,
 } from '../../services/conventionalCommit';
-import type { SmartCommitModelConfig } from '../../services/smartCommitModelConfig';
+import {
+  normalizeSmartCommitModelConfig,
+  type SmartCommitModelConfig,
+} from '../../services/smartCommitModelConfig';
+import {
+  loadSmartCommitModelConfig,
+  saveSmartCommitModelConfig,
+  subscribeSmartCommitModelConfig,
+} from '../../services/smartCommitModelPreference';
+import {
+  buildEditableCommitMessages,
+  buildManualCommitMessageDrafts,
+} from '../../services/smartCommitDrafts';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { Textarea } from '../ui/Textarea';
 import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
@@ -75,12 +76,15 @@ import {
 } from '../../services/resourcePressureBackoff';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { canAutoRefreshFileChangesForTask } from '../../services/fileChangesRefreshPolicy';
+import { CommitMessageEditorModal } from './CommitMessageEditorModal';
+import { CommitMessageGenerationFailureModal } from './CommitMessageGenerationFailureModal';
 
 interface FileChangesPanelProps {
   className?: string;
 }
 
 interface CommitMessageEditState {
+  mode: 'review_generated' | 'manual_fallback';
   fieldsByRepositoryId: Record<string, ConventionalCommitFields>;
   error: string | null;
 }
@@ -103,6 +107,7 @@ const interpolateFallbackPlaceholders = (
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
 const POST_ASSISTANT_REFRESH_DELAY_MS = 400;
+const NO_REASONING_EFFORTS = (_providerId?: string | null, _modelId?: string | null): ReasoningEffort[] => [];
 
 const STATUS_COLORS = {
   added: 'text-primary',
@@ -152,28 +157,6 @@ const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
   }
   return raw;
 };
-
-const buildEditableCommitMessages = (
-  generatedMessages: GeneratedCommitMessages,
-  repositories: ReviewRepositoryState[]
-): Record<string, ConventionalCommitFields> => Object.fromEntries(
-  repositories
-    .filter((repository) =>
-      repository.commitState === 'idle' &&
-      repository.stats.validatedStagedFileCount > 0 &&
-      repository.stagedPaths.length > 0
-    )
-    .map((repository) => {
-      const generated = generatedMessages.repositories.find((entry) => entry.repositoryId === repository.id);
-      return [repository.id, {
-        type: generated?.type ?? 'chore',
-        scope: null,
-        breaking: generated?.breaking ?? false,
-        subject: generated?.subject?.trim() || 'update task changes',
-        body: generated?.body?.trim() || null,
-      }];
-    })
-);
 
 interface FolderTreeItemProps {
   repositoryId: string;
@@ -471,6 +454,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskId,
     projectGroups,
     getProjectById,
+    openSettings,
   } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
@@ -521,7 +505,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const providerStore = useProviderStore();
   const providerConfigs = providerStore.providerConfigs;
   const modelsByProvider = providerStore.modelsByProvider;
-  const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? (() => []);
+  const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? NO_REASONING_EFFORTS;
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
     repositoryId: string;
@@ -582,6 +566,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     () => providerConfigs.filter((provider) => providerHasCredentials(provider)),
     [providerConfigs]
   );
+  const normalizeCommitModelConfig = useCallback((
+    config: SmartCommitModelConfig | null | undefined
+  ): SmartCommitModelConfig | null =>
+    normalizeSmartCommitModelConfig(config, {
+      providerConfigs: enabledCommitProviders,
+      modelsByProvider,
+      getAvailableReasoningEfforts,
+    }), [enabledCommitProviders, getAvailableReasoningEfforts, modelsByProvider]);
   const dedicatedCommitModels = useMemo(
     () => dedicatedCommitProviderId
       ? (modelsByProvider[dedicatedCommitProviderId] || []).filter((model) => model.isEnabled !== false)
@@ -615,23 +607,41 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   useEffect(() => {
     let disposed = false;
-    void loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG)
+    void loadSmartCommitModelConfig()
       .then((value) => {
         if (!disposed) {
-          setSmartCommitModelConfig(value);
-          if (value?.mode === 'dedicated') {
+          const normalized = normalizeCommitModelConfig(value);
+          setSmartCommitModelConfig(normalized);
+          if (normalized?.mode === 'dedicated') {
             setCommitModelChoiceMode('dedicated');
-            setDedicatedCommitProviderId(value.providerId);
-            setDedicatedCommitModelId(value.modelId);
-            setDedicatedCommitReasoningEffort(value.reasoningEffort ?? null);
+            setDedicatedCommitProviderId(normalized.providerId);
+            setDedicatedCommitModelId(normalized.modelId);
+            setDedicatedCommitReasoningEffort(normalized.reasoningEffort ?? null);
           }
         }
       });
 
+    const unsubscribe = subscribeSmartCommitModelConfig(
+      (value) => {
+        if (disposed) return;
+        const normalized = normalizeCommitModelConfig(value);
+        setSmartCommitModelConfig(normalized);
+        if (normalized?.mode === 'dedicated') {
+          setCommitModelChoiceMode('dedicated');
+          setDedicatedCommitProviderId(normalized.providerId);
+          setDedicatedCommitModelId(normalized.modelId);
+          setDedicatedCommitReasoningEffort(normalized.reasoningEffort ?? null);
+        } else if (normalized?.mode === 'conversation') {
+          setCommitModelChoiceMode('conversation');
+        }
+      }
+    );
+
     return () => {
       disposed = true;
+      unsubscribe();
     };
-  }, []);
+  }, [normalizeCommitModelConfig]);
 
   useEffect(() => {
     if (commitModelChoiceMode !== 'dedicated') return;
@@ -1036,6 +1046,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       if (isSmartCommitMessageGenerationError(error)) {
         if (error.generatedMessages) {
           setCommitMessageEditState({
+            mode: 'review_generated',
             fieldsByRepositoryId: buildEditableCommitMessages(error.generatedMessages, repositories),
             error: messageText || t(
               'implement.commitMessageValidationFailed',
@@ -1060,30 +1071,50 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleCommit = async () => {
-    if (smartCommitModelConfig === undefined) {
-      const persisted = await loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG);
-      setSmartCommitModelConfig(persisted);
-      if (persisted === null) {
-        setIsCommitModelChoiceOpen(true);
-        return;
-      }
-      await runCommit({ modelConfig: persisted });
-      return;
+    const persisted = await loadSmartCommitModelConfig();
+    const sourceConfig = smartCommitModelConfig === undefined ? persisted : persisted ?? smartCommitModelConfig;
+    const normalizedConfig = normalizeCommitModelConfig(sourceConfig);
+
+    setSmartCommitModelConfig(normalizedConfig);
+    if (normalizedConfig?.mode === 'dedicated') {
+      setCommitModelChoiceMode('dedicated');
+      setDedicatedCommitProviderId(normalizedConfig.providerId);
+      setDedicatedCommitModelId(normalizedConfig.modelId);
+      setDedicatedCommitReasoningEffort(normalizedConfig.reasoningEffort ?? null);
+    } else if (normalizedConfig?.mode === 'conversation') {
+      setCommitModelChoiceMode('conversation');
     }
 
-    if (smartCommitModelConfig === null) {
+    if (normalizedConfig === null) {
       setIsCommitModelChoiceOpen(true);
       return;
     }
 
-    await runCommit({ modelConfig: smartCommitModelConfig });
+    await runCommit({ modelConfig: normalizedConfig });
+  };
+
+  const handleWriteCommitMessagesManually = () => {
+    setCommitMessageGenerationError(null);
+    setCommitMessageEditState({
+      mode: 'manual_fallback',
+      fieldsByRepositoryId: buildManualCommitMessageDrafts(repositories, {
+        taskTitle: currentTask?.title,
+      }),
+      error: null,
+    });
+  };
+
+  const handleOpenCommitModelSettings = () => {
+    setCommitMessageGenerationError(null);
+    openSettings('models');
   };
 
   const saveAndUseCommitModelConfig = async (config: SmartCommitModelConfig) => {
-    await savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, config);
-    setSmartCommitModelConfig(config);
+    const normalizedConfig = normalizeCommitModelConfig(config) ?? config;
+    await saveSmartCommitModelConfig(normalizedConfig);
+    setSmartCommitModelConfig(normalizedConfig);
     setIsCommitModelChoiceOpen(false);
-    await runCommit({ modelConfig: config });
+    await runCommit({ modelConfig: normalizedConfig });
   };
 
   const handleCommitEditedMessages = async () => {
@@ -1164,6 +1195,31 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, [commitMessageEditState]);
   const hasInvalidEditedCommitMessage = Object.values(commitMessageValidationByRepositoryId)
     .some((validation) => !validation.ok);
+  const commitMessageEditorRepositories = useMemo(() => (
+    repositories.map((repository) => ({
+      id: repository.id,
+      label: getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name),
+    }))
+  ), [getProjectById, repositories]);
+
+  const updateEditedCommitMessageFields = useCallback((
+    repositoryId: string,
+    patch: Partial<ConventionalCommitFields>
+  ) => {
+    setCommitMessageEditState((current) => current
+      ? {
+          ...current,
+          fieldsByRepositoryId: {
+            ...current.fieldsByRepositoryId,
+            [repositoryId]: {
+              ...current.fieldsByRepositoryId[repositoryId],
+              ...patch,
+            },
+          },
+        }
+      : current
+    );
+  }, []);
 
   const handleOpenCommit = () => {
     if (isReadOnlyRemoteMode) {
@@ -1802,153 +1858,39 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       )}
 
       {commitMessageEditState && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <h3 className="text-sm font-semibold text-foreground">
-                {t('implement.commitMessageEditTitle', 'Review commit messages')}
-              </h3>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {t(
-                  'implement.commitMessageEditDescription',
-                  'The generated message did not pass Conventional Commits validation. Edit it before committing.'
-                )}
-              </p>
-              {commitMessageEditState.error && (
-                <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {commitMessageEditState.error}
-                </p>
-              )}
-              <div className="mt-4 space-y-4">
-                {Object.entries(commitMessageEditState.fieldsByRepositoryId).map(([repositoryId, fields]) => {
-                  const repository = repositories.find((entry) => entry.id === repositoryId);
-                  const validation = commitMessageValidationByRepositoryId[repositoryId];
-                  const updateFields = (patch: Partial<ConventionalCommitFields>) => {
-                    setCommitMessageEditState((current) => current
-                      ? {
-                          ...current,
-                          fieldsByRepositoryId: {
-                            ...current.fieldsByRepositoryId,
-                            [repositoryId]: {
-                              ...current.fieldsByRepositoryId[repositoryId],
-                              ...patch,
-                            },
-                          },
-                        }
-                      : current
-                    );
-                  };
-                  return (
-                    <div key={repositoryId} className="space-y-2 rounded-lg border border-border bg-muted/10 p-3">
-                      <div className="text-xs font-medium text-muted-foreground">
-                        {repository ? getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name) : repositoryId}
-                      </div>
-                      <div className="grid gap-2 md:grid-cols-[120px]">
-                        <label className="space-y-1">
-                          <span className="text-[11px] font-medium text-muted-foreground">
-                            {t('implement.commitMessageTypeLabel', 'Type')}
-                          </span>
-                          <select
-                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                            value={fields.type}
-                            onChange={(event) => updateFields({ type: event.target.value as ConventionalCommitType })}
-                          >
-                            {ALLOWED_COMMIT_TYPES.map((type) => (
-                              <option key={type} value={type}>{type}</option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                      <label className="block space-y-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          {t('implement.commitMessageSubjectLabel', 'Subject')}
-                        </span>
-                        <input
-                          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                          value={fields.subject}
-                          onChange={(event) => updateFields({ subject: event.target.value })}
-                        />
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          {t('implement.commitMessageBodyLabel', 'Body')}
-                        </span>
-                        <Textarea
-                          rows={4}
-                          value={fields.body ?? ''}
-                          error={!!validation && !validation.ok}
-                          placeholder={t('implement.commitMessageBodyPlaceholder', 'Optional details')}
-                          onChange={(event) => updateFields({ body: event.target.value || null })}
-                        />
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(fields.breaking)}
-                          onChange={(event) => updateFields({ breaking: event.target.checked })}
-                        />
-                        {t('implement.commitMessageBreakingLabel', 'Breaking change')}
-                      </label>
-                      {validation && !validation.ok && (
-                        <span className="text-xs text-destructive">{validation.message}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setCommitMessageEditState(null)}
-                disabled={isCommitting}
-              >
-                {t('common.cancel', 'Cancel')}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  setCommitMessageEditState(null);
-                  void handleCommit();
-                }}
-                disabled={isCommitting || isGeneratingCommitMessages}
-              >
-                {t('implement.retryGeneration', 'Retry generation')}
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => void handleCommitEditedMessages()}
-                disabled={isCommitting || hasInvalidEditedCommitMessage}
-              >
-                {t('implement.commitChangesGeneric', 'Commit')}
-              </Button>
-            </div>
-          </div>
-        </div>
+        <CommitMessageEditorModal
+          t={translate}
+          mode={commitMessageEditState.mode}
+          error={commitMessageEditState.error}
+          fieldsByRepositoryId={commitMessageEditState.fieldsByRepositoryId}
+          repositories={commitMessageEditorRepositories}
+          validationsByRepositoryId={commitMessageValidationByRepositoryId}
+          isCommitting={isCommitting}
+          isGeneratingCommitMessages={isGeneratingCommitMessages}
+          hasInvalidMessage={hasInvalidEditedCommitMessage}
+          onCancel={() => setCommitMessageEditState(null)}
+          onRetryGeneration={() => {
+            setCommitMessageEditState(null);
+            void handleCommit();
+          }}
+          onCommit={() => void handleCommitEditedMessages()}
+          onUpdateFields={updateEditedCommitMessageFields}
+        />
       )}
 
       {commitMessageGenerationError && (
-        <ConfirmPromptModal
-          isOpen={true}
-          title={t('implement.commitMessageGenerationTitle', 'Couldn’t generate commit messages')}
-          description={t(
-            'implement.commitMessageGenerationDescription',
-            'Macro could not prepare the commit messages. You can retry generation or cancel without creating commits.'
-          )}
-          confirmLabel={t('common.retry', 'Retry')}
-          cancelLabel={t('common.cancel', 'Cancel')}
-          isSubmitting={isGeneratingCommitMessages}
-          onCancel={() => setCommitMessageGenerationError(null)}
-          onConfirm={() => {
+        <CommitMessageGenerationFailureModal
+          t={translate}
+          error={commitMessageGenerationError}
+          isGeneratingCommitMessages={isGeneratingCommitMessages}
+          onRetryGeneration={() => {
             setCommitMessageGenerationError(null);
             void handleCommit();
           }}
-        >
-          <p className="text-xs text-muted-foreground">{commitMessageGenerationError}</p>
-        </ConfirmPromptModal>
+          onWriteManually={handleWriteCommitMessagesManually}
+          onOpenCommitModelSettings={handleOpenCommitModelSettings}
+          onCancel={() => setCommitMessageGenerationError(null)}
+        />
       )}
     </aside>
   );
