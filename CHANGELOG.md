@@ -10,36 +10,34 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ### Added
 
-- Added task-level Architect checklists: generated strategies can now attach concrete todos to each plan task, and Implement agents can read and update the current task checklist through dedicated todo tools.
-- Added a compact read-only Implement header dropdown for viewing the current task checklist without taking permanent screen space.
-- Added visible synthetic plan finalization: Architect graphs and Implement queues now show the final plan merge task after the terminal plan leaves, while Macro keeps it out of persisted plan nodes.
-- Added one-branch-per-task plan normalization so each Architect task gets its own working branch and completed work converges through the plan integration branch before dependents start.
+- Added task-level Architect checklists so generated plans can carry concrete todos into Implement mode.
+- Added a compact Implement header dropdown for viewing the current task checklist without taking over the workspace.
+- Added visible plan-finalization status in Architect graphs and Implement queues.
+- Added conversation compaction boundaries and clearer loading state for long-running chats.
 
 ### Changed
 
-- Reworked the Architect Branches view into a task progress view that shows readable task titles, todo progress, and checklist items when todos exist, while legacy tasks without generated todos remain compact.
-- Clarified dependency-blocked Implement tasks with a locked conversation state and a calm Changes panel state instead of presenting them as workspace preparation failures.
-- Updated task plan badges to use monochrome plan-kind icons for feature, release, hotfix, and bugfix tasks.
-- Updated Architect prompts and tool schemas so sequential work is represented by task dependencies and task todos, not by reusing a branch for multiple tasks.
-- Improved plan compatibility handling so older plans without `todos` remain completable, and adding a todo initializes a real persisted checklist without schema migration.
-- Switched Tauri and TypeScript build scripts to use project-local CLIs so builds do not depend on a globally healthy Node/Tauri installation.
+- Reworked Architect task planning around one branch per task, task dependencies, and checklist progress.
+- Refactored branch worktree handling and smart commit/draft flows for more reliable production use.
+- Switched provider secrets from the macOS Keychain/system keyring to Macro's private local app data file to avoid repeated macOS password prompts.
+- Switched Tauri and TypeScript build scripts to project-local CLIs so builds are less sensitive to global toolchain issues.
+- Improved provider send latency with shared timeline instrumentation across ChatGPT, Copilot, OpenAI-compatible, and streaming IPC paths.
+- Updated task badges, blocked-task states, and tool activity rendering to be calmer and easier to scan.
 
 ### Fixed
 
-- Stabilized feature slug collision handling and predicted branch status normalization for one-branch-per-task plans.
-- Hardened task completion and finalization guards so open task todos block Architect task completion, while legacy plans without generated todos do not.
 - Fixed commit message generation paths used by Implement task flows.
-- Matched the integrated terminal to the active app theme, including live theme changes without recreating terminal sessions.
-- Improved integrated terminal behavior by supplying a complete PTY environment, exposing clear/interrupt controls, following the user's configured Unix shell, and avoiding the macOS zsh migration warning on new sessions.
-- Reduced provider send latency by sharing timeline instrumentation across ChatGPT, Copilot, OpenAI-compatible, and streaming IPC paths.
-- Prevented noisy repository refresh loops while implementation tasks are awaiting a user response, including pending questionnaires.
-- Stabilized `Too many open files` / `EMFILE` handling with refresh backoff, deduplicated notifications, typed resource-pressure errors, and watcher exclusions for cache, build, dependency, agent workspace, and generated worktree directories.
-- Added repair-oriented plan metadata handling, including typed workspace/metadata errors, conservative health inspection, orphan cleanup, and preservation of local `AwaitingResponse` state when persistence is temporarily unavailable.
-- Cleaned up legacy duplicated notification-center alerts for `Too many open files` and `Plan not found`.
-- Prevented transient CMD/PowerShell windows on Windows by routing background provider, Git, terminal, Copilot runtime, and launcher commands through explicit hidden-process wrappers while keeping user-requested external terminals visible.
-- Hardened provider diagnostics with OpenCode Go HTTP-only capability classification, Copilot runtime classification, typed keyring-unavailable handling, and stable keyring/provider operation logging.
-- Made tool activity status rendering realistic by marking each tool `running` and `done` independently, preserving completed statuses during mixed activity, and labeling sequential versus parallel tool batches.
-- Stabilized native macOS traffic light positioning after fullscreen transitions by moving recovery into the AppKit layer and avoiding React-driven fullscreen polling.
+- Hardened task completion and plan finalization guards around open todos and legacy plans.
+- Stabilized metadata repair, orphan cleanup, repository refresh backoff, and `Too many open files` / `EMFILE` handling.
+- Improved integrated terminal behavior: complete PTY environment, clear/interrupt controls, user shell detection, live theme matching, and no macOS zsh migration warning.
+- Prevented transient CMD/PowerShell windows on Windows background operations while keeping user-requested terminals visible.
+- Hardened provider diagnostics for OpenCode Go and Copilot runtime classification.
+- Stabilized native macOS traffic light positioning after fullscreen transitions.
+
+### Security
+
+- Provider API keys and ChatGPT sessions are now stored in a private local Macro data file with atomic writes and private Unix permissions.
+- Existing OS-backed provider secrets are not imported automatically; users may need to reconnect providers or re-enter API keys once.
 
 ## 0.1.0-rc.6
 
