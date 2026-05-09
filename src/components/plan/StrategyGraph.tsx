@@ -42,6 +42,7 @@ import {
 import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
+import { TodoStatusIcon } from '../tasks/TodoStatusIcon';
 import { Skeleton } from '../shared/Skeleton';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { cn } from '../../utils/cn';
@@ -1665,12 +1666,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                       {branch.todos.map((todo, todoIndex) => {
                         const task = branch.tasks.find((candidate) => candidate.id === todo.taskId) || null;
                         const frozenTask = task ? frozenNodeById.get(task.id) || null : null;
-                        const todoTone =
-                          todo.status === 'done'
-                            ? 'bg-emerald-500 text-white'
-                            : todo.status === 'in-progress'
-                              ? 'bg-amber-500/20 text-amber-500'
-                              : 'bg-muted text-muted-foreground';
                         return (
                           <div key={todo.id} className="px-3 py-2" data-branch-task={todo.taskId} data-branch-todo={todo.id}>
                             <div className="flex items-center justify-between gap-2">
@@ -1717,18 +1712,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                                 {task?.estimatedTime && (
                                   <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
                                 )}
-                                <div className={cn(
-                                  'w-4 h-4 rounded-full flex items-center justify-center',
-                                  todoTone
-                                )}>
-                                  {todo.status === 'done' ? (
-                                    <Icon name="check" size={9} />
-                                  ) : todo.status === 'in-progress' ? (
-                                    <Icon name="loader" size={9} />
-                                  ) : (
-                                    <Icon name="circle" size={7} />
-                                  )}
-                                </div>
+                                <TodoStatusIcon status={todo.status} />
                               </div>
                             </div>
                           </div>

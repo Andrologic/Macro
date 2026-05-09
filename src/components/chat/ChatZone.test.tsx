@@ -996,7 +996,7 @@ describe('ChatZone', () => {
               id: 'todo-tests',
               title: 'Update tests',
               description: 'Cover the checkout happy path.',
-              status: 'pending',
+              status: 'in-progress',
             },
           ],
         },
@@ -1033,6 +1033,8 @@ describe('ChatZone', () => {
     expect(dropdown?.textContent).toContain('Update tests');
     expect(dropdown?.textContent).not.toContain('Cover the checkout happy path.');
     expect(dropdown?.querySelectorAll('[data-implement-task-todo]')).toHaveLength(2);
+    expect(dropdown?.querySelector('[data-todo-status-icon="done"]')).not.toBeNull();
+    expect(dropdown?.querySelector('[data-todo-status-icon="in-progress"] .animate-spin')).not.toBeNull();
 
     await act(async () => {
       toggle?.click();

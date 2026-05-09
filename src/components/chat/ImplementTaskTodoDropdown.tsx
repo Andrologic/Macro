@@ -4,33 +4,10 @@ import type { PlanNodeTodo } from '../../types';
 import { summarizePlanNodeTodoProgress } from '../../services/planNodeTodos';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { TodoStatusIcon } from '../tasks/TodoStatusIcon';
 
 const POPOVER_OFFSET_CLASS = 'mt-[1.875rem]';
 const POPOVER_SIZE_CLASS = 'max-h-[min(26rem,calc(100vh-6rem))] w-[min(28rem,calc(100vw-2rem))]';
-
-const TaskTodoStatusIcon: React.FC<{ status: PlanNodeTodo['status'] }> = ({ status }) => {
-  if (status === 'done') {
-    return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
-        <Icon name="check" size={9} />
-      </span>
-    );
-  }
-
-  if (status === 'in-progress') {
-    return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-500">
-        <Icon name="loader" size={9} />
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-      <Icon name="circle" size={7} />
-    </span>
-  );
-};
 
 interface ImplementTaskTodoDropdownProps {
   taskTitle: string;
@@ -116,7 +93,7 @@ export const ImplementTaskTodoDropdown: React.FC<ImplementTaskTodoDropdownProps>
                 className="flex min-w-0 items-start gap-2 rounded-md px-1.5 py-1.5"
                 data-implement-task-todo={todo.id}
               >
-                <TaskTodoStatusIcon status={todo.status} />
+                <TodoStatusIcon status={todo.status} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs text-foreground">{todo.title}</div>
                 </div>
