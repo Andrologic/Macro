@@ -84,7 +84,9 @@ const objectTool = (
 
 const planNodeTodoSchema = (description?: string): JsonSchema => ({
   type: "array",
-  ...(description ? { description } : {}),
+  description:
+    description ||
+    "Task-local implementation checklist. Choose the natural number of todos for the task; do not pad to a fixed count.",
   items: {
     type: "object",
     properties: {
@@ -865,7 +867,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist, choosing the natural count for each task rather than a fixed number. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -956,7 +958,7 @@ export const MACRO_TOOL_REGISTRY = [
                 description: "Titles of nodes this one depends on.",
               },
               todos: planNodeTodoSchema(
-                "Concrete implementation checklist for this node. Each item should be small enough for the Implement agent to complete and mark done.",
+                "Concrete implementation checklist for this node. Choose the natural number of todos for the task: small tasks may need 1-2, larger tasks may need more. Do not pad every task to the same count.",
               ),
             },
             required: ["title", "type"],
@@ -1199,7 +1201,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, and keep per-node todos current. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, and keep per-node todos current with a natural, task-specific count. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {

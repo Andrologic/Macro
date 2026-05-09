@@ -1683,9 +1683,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                                   {branch.tasks.length > 1 && (
                                     <div className="text-[10px] text-muted-foreground truncate">{todo.taskTitle}</div>
                                   )}
-                                  {todo.description && (
-                                    <div className="text-[10px] text-muted-foreground truncate">{todo.description}</div>
-                                  )}
                                 </div>
                                 {frozenTask && (
                                   <span

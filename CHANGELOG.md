@@ -6,8 +6,23 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+### Added
+
+- Added task-level Architect checklists: generated strategies can now attach concrete todos to each plan task, and Implement agents can read and update the current task checklist through dedicated todo tools.
+- Added a compact read-only Implement header dropdown for viewing the current task checklist without taking permanent screen space.
+- Added visible synthetic plan finalization: Architect graphs and Implement queues now show the final plan merge task after the terminal plan leaves, while Macro keeps it out of persisted plan nodes.
+- Added one-branch-per-task plan normalization so each Architect task gets its own working branch and completed work converges through the plan integration branch before dependents start.
+
+### Changed
+
+- Reworked the Architect Branches view into a task progress view that shows readable task titles, todo progress, and checklist items when todos exist, while legacy tasks without generated todos remain compact.
+- Updated Architect prompts and tool schemas so sequential work is represented by task dependencies and task todos, not by reusing a branch for multiple tasks.
+- Improved plan compatibility handling so older plans without `todos` remain completable, and adding a todo initializes a real persisted checklist without schema migration.
+
 ### Fixed
 
+- Stabilized feature slug collision handling and predicted branch status normalization for one-branch-per-task plans.
+- Hardened task completion and finalization guards so open task todos block Architect task completion, while legacy plans without generated todos do not.
 - Improved integrated terminal behavior by supplying a complete PTY environment, exposing clear/interrupt controls, following the user's configured Unix shell, and avoiding the macOS zsh migration warning on new sessions.
 - Prevented noisy repository refresh loops while implementation tasks are awaiting a user response, including pending questionnaires.
 - Stabilized `Too many open files` / `EMFILE` handling with refresh backoff, deduplicated notifications, typed resource-pressure errors, and watcher exclusions for cache, build, dependency, agent workspace, and generated worktree directories.

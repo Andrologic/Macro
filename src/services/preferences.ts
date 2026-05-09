@@ -144,7 +144,7 @@ export type PromptBackedInternalAgentProfile =
 const PROMPT_DEFAULTS = {
   ...DEFAULT_MODE_PROMPTS,
   [PREF_KEYS.PROMPT_ARCHITECT]:
-    `${DEFAULT_MODE_PROMPTS[PREF_KEYS.PROMPT_ARCHITECT]}\n16. Each executable strategy node must include concrete todos for its implementation checklist. Todos are task-local, use pending, in-progress, or done, and should describe the ordered work the Implement agent must perform on that task branch.\n17. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.`,
+    `${DEFAULT_MODE_PROMPTS[PREF_KEYS.PROMPT_ARCHITECT]}\n16. Each executable strategy node must include concrete todos for its implementation checklist. Todos are task-local, use pending, in-progress, or done, and should describe the ordered work the Implement agent must perform on that task branch. Choose the natural number of todos for each task; small tasks may need 1-2, larger tasks may need more, and you must not pad every task to the same count.\n17. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.`,
   ...DEFAULT_INTERNAL_PROFILE_PROMPTS,
 } as const satisfies Record<PromptPreferenceKey, string>;
 

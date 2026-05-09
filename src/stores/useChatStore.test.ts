@@ -7989,6 +7989,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       taskId: 'task-1',
     });
 
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(String(streamOptions.messages[0]?.content)).toContain('[Task Todos]');
+    expect(String(streamOptions.messages[0]?.content)).toContain('Update branch checklist');
+    expect(String(streamOptions.messages[0]?.content)).toContain('progress="1/2"');
+
     const onToolCall = getLatestArchitectToolHandler();
     const readResult = await onToolCall('task_todo_get', {});
     expect(String(readResult)).toContain('Update branch checklist');
@@ -8074,6 +8083,17 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       content: 'Lis la checklist.',
       taskId: 'task-1',
     });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'has no generated task checklist available'
+    );
+    expect(String(streamOptions.messages[0]?.content)).not.toContain('implicit:task-1');
+    expect(String(streamOptions.messages[0]?.content)).not.toContain('Legacy checkout","description"');
 
     const onToolCall = getLatestArchitectToolHandler();
     const readResult = await onToolCall('task_todo_get', {});

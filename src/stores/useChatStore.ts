@@ -12,7 +12,6 @@ import {
   Conversation,
   ConversationCompactionState,
   PendingToolApproval,
-  PlanNodeTodo,
   ReasoningEffort,
   ToolRiskLevel,
   ToolTrace,
@@ -4249,30 +4248,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    if (appMode === "Implement" && executionContext.taskId) {
-      const task = useTaskStore.getState().getTaskById(executionContext.taskId);
+    const implementContextTaskId =
+      executionContext.taskId ||
+      get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ||
+      appState.selectedTaskId ||
+      null;
+    if (appMode === "Implement" && implementContextTaskId) {
+      const task = useTaskStore.getState().getTaskById(implementContextTaskId);
       if (task && task.task_source === "architect") {
         const taskTodos = Array.isArray(task.todos) ? task.todos : [];
-        const todos: PlanNodeTodo[] =
-          taskTodos.length > 0
-            ? taskTodos
-            : [
-                {
-                  id: `implicit:${task.id}`,
-                  title: task.title,
-                  ...(task.description ? { description: task.description } : {}),
-                  status:
-                    task.status === "Completed"
-                      ? "done"
-                      : task.status === "InProgress"
-                        ? "in-progress"
-                        : "pending",
-                },
-              ];
-        const progress = summarizePlanNodeTodoProgress(todos);
-        systemInstructions.push(
-          `[Task Todos] task_id="${task.id}", progress="${progress.done}/${progress.total}". Use task_todo_get to refresh this checklist and task_todo_update to mark progress. Open todos block task completion. todos=${JSON.stringify(todos)}.`,
-        );
+        if (taskTodos.length > 0) {
+          const progress = summarizePlanNodeTodoProgress(taskTodos);
+          systemInstructions.push(
+            `[Task Todos] task_id="${task.id}", progress="${progress.done}/${progress.total}". Use task_todo_get to refresh this checklist and task_todo_update to mark progress. Open todos block task completion. todos=${JSON.stringify(taskTodos)}.`,
+          );
+        } else {
+          systemInstructions.push(
+            `[Task Todos] task_id="${task.id}". This Architect task has no generated task checklist available. Do not invent implicit todos; use task_todo_get if you need to confirm whether the plan predates task checklists, and task_todo_update add only when a real checklist item should be created.`,
+          );
+        }
       }
     }
 
