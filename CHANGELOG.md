@@ -15,6 +15,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 - Cleaned up legacy duplicated notification-center alerts for `Too many open files` and `Plan not found`.
 - Prevented transient CMD/PowerShell windows on Windows by routing background provider, Git, terminal, Copilot runtime, and launcher commands through explicit hidden-process wrappers while keeping user-requested external terminals visible.
 - Hardened provider diagnostics with OpenCode Go HTTP-only capability classification, Copilot runtime classification, typed keyring-unavailable handling, and stable keyring/provider operation logging.
+- Made tool activity status rendering realistic by marking each tool `running` and `done` independently, preserving completed statuses during mixed activity, and labeling sequential versus parallel tool batches.
 
 ## 0.1.0-rc.6
 
