@@ -19,8 +19,13 @@ import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
   toBranchWorktreeKey,
-  toPlanIntegrationWorktreeKey,
 } from './implementTaskDerivation';
+import {
+  buildPlanIntegrationWorktreePath,
+  ensurePlanIntegrationWorktree,
+  resolveStableFallbackBranchesForProject,
+  toPlanIntegrationWorktreeKey,
+} from './planIntegrationWorktreeService';
 import {
   renderGitFlowBranchName,
 } from './architectGitNaming';
@@ -116,28 +121,6 @@ const resolvePlanProjectBackmergeBranchName = (
       baseBranch: settings?.baseBranch || 'main',
       mainBranch: settings?.mainBranch || 'main',
     });
-};
-
-const resolveProjectStableFallbackBranches = (params: {
-  projectId: string;
-  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
-  getGitFlowBaseBranch: () => string;
-  extraBranches?: Array<string | null | undefined>;
-}): string[] => {
-  const settings = params.getProjectById(params.projectId)?.gitFlowSettings;
-  return Array.from(
-    new Set(
-      [
-        settings?.baseBranch,
-        settings?.mainBranch,
-        params.getGitFlowBaseBranch(),
-        'main',
-        ...(params.extraBranches || []),
-      ]
-        .map((branch) => branch?.trim() || '')
-        .filter(Boolean)
-    )
-  );
 };
 
 const resolveBranchSourceRef = (
@@ -478,17 +461,6 @@ const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
 
 const buildTaskWorktreePath = (repoPath: string, worktreeKey: string): string =>
   joinRepoPath(repoPath, '.macro', 'worktrees', `task${worktreeKey}`);
-
-const sanitizeWorktreeKey = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '')
-    .slice(0, 48) || 'branch';
-
-const buildPlanIntegrationWorktreePath = (repoPath: string, worktreeKey: string): string =>
-  joinRepoPath(repoPath, '.macro', 'worktrees', `integration-${sanitizeWorktreeKey(worktreeKey)}`);
 
 const isMissingGitTargetError = (error: unknown): boolean => {
   const message = toServiceError(error).message.toLowerCase();
@@ -986,7 +958,7 @@ export const createArchitectGitFlowService = (
           target.repoPath,
           new Set(candidates),
           branches,
-          resolveProjectStableFallbackBranches({
+          resolveStableFallbackBranchesForProject({
             projectId: target.projectId,
             getProjectById: deps.getAppState().getProjectById,
             getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
@@ -1075,7 +1047,7 @@ export const createArchitectGitFlowService = (
           target.repoPath,
           new Set(branchCandidates),
           branches,
-          resolveProjectStableFallbackBranches({
+          resolveStableFallbackBranchesForProject({
             projectId: target.projectId,
             getProjectById: deps.getAppState().getProjectById,
             getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
@@ -1485,28 +1457,6 @@ export const createArchitectGitFlowService = (
     };
   };
 
-  const ensurePlanIntegrationWorktreeWithDeps = async (params: {
-    repoPath: string;
-    projectId: string;
-    planBranchName: string;
-    fromRef?: string | null;
-  }): Promise<tauriIpc.GitBranchWorktreeEnsureDto> => {
-    const fallbackBranches = resolveProjectStableFallbackBranches({
-      projectId: params.projectId,
-      getProjectById: deps.getAppState().getProjectById,
-      getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
-      extraBranches: [params.fromRef],
-    });
-
-    return deps.tauri.gitBranchWorktreeCreate({
-      repoPath: params.repoPath,
-      worktreeKey: toPlanIntegrationWorktreeKey(params.projectId, params.planBranchName),
-      branchName: params.planBranchName,
-      fromRef: params.fromRef || fallbackBranches[0] || null,
-      fallbackBranches,
-    });
-  };
-
   const mergeFeatureBranchIntoPlanBranchWithDeps = async (params: {
     projectId: string;
     branchName: string;
@@ -1518,10 +1468,13 @@ export const createArchitectGitFlowService = (
       throw new Error(`Unable to resolve repository path for project ${params.projectId}.`);
     }
 
-    const integrationWorktree = await ensurePlanIntegrationWorktreeWithDeps({
-      repoPath: repository.repoPath,
+    const integrationWorktree = await ensurePlanIntegrationWorktree({
+      tauri: deps.tauri,
+      repositoryRootPath: repository.repoPath,
       projectId: params.projectId,
       planBranchName: params.planBranchName,
+      getProjectById: deps.getAppState().getProjectById,
+      getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
     });
 
     return deps.tauri.gitMerge({

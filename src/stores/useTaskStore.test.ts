@@ -223,8 +223,9 @@ const invokeDeferredResolver = (resolver: (() => void) | null) => {
 };
 
 const flushPromises = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
 };
 
 const blockedRepository = {
@@ -482,6 +483,8 @@ describe('useTaskStore merge workflow review loading', () => {
       id: 'project-1::/repos/web',
       projectId: 'project-1',
       repoPath: '/repos/web',
+      repositoryRootPath: '/repos/web',
+      integrationWorktreePath: null,
       sourceBranchName: 'feature/review-actions',
       targetBranchName: 'plan/review-actions',
       progressState: 'pending',
@@ -579,8 +582,10 @@ describe('useTaskStore merge workflow review loading', () => {
 
     const firstLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
     await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const secondLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
 
+    expect(gitBranchWorktreeCreateMock).toHaveBeenCalledTimes(1);
     expect(gitStatusMock).toHaveBeenCalledTimes(1);
     expect(gitDiffMock).toHaveBeenCalledTimes(1);
 
@@ -614,7 +619,9 @@ describe('useTaskStore merge workflow review loading', () => {
       .getState()
       .loadMergeWorkflowReview('task-1', { force: true });
     await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(gitBranchWorktreeCreateMock).toHaveBeenCalledTimes(2);
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
     expect(gitDiffMock).toHaveBeenCalledTimes(2);
 

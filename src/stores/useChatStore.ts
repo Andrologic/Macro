@@ -861,12 +861,14 @@ type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
 export type ConversationCompactionPhase =
   | "idle"
   | "compacting"
+  | "overflow_recovery"
   | "compacted"
   | "degraded"
   | "too_large";
 
 export interface ConversationCompactionStatus {
   phase: ConversationCompactionPhase;
+  upToMessageId?: string;
   summaryText?: string;
   updatedAt?: string;
   reason?: ContextFootprintReason | null;
@@ -2990,6 +2992,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     return {
       phase,
+      upToMessageId: state.upToMessageId,
       summaryText: state.summaryText,
       updatedAt: state.updatedAt,
       reason: state.degradedReason ?? null,
@@ -3059,7 +3062,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
   ): Promise<ConversationCompactionState | null> => {
     if (conversationCompactionStateCache.has(conversationId)) {
-      return conversationCompactionStateCache.get(conversationId) ?? null;
+      const cachedState =
+        conversationCompactionStateCache.get(conversationId) ?? null;
+      setConversationCompactionStatus(
+        conversationId,
+        cachedState ? resolveCompactionStatusFromState(cachedState) : null,
+      );
+      return cachedState;
     }
 
     if (!tauriIpc.isTauriAvailable()) {
@@ -6518,7 +6527,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       tokenBatcher.dispose();
       setConversationCompactionStatus(params.conversationId, {
-        phase: "compacting",
+        phase: "overflow_recovery",
         updatedAt: new Date().toISOString(),
         kind: "overflow_recovery",
         recoveredFromOverflow: true,
@@ -6552,7 +6561,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           forcePrune: true,
         });
 
+        const currentStatus =
+          get().conversationCompactionStatusById[params.conversationId];
         setConversationCompactionStatus(params.conversationId, {
+          ...currentStatus,
           phase: "compacted",
           updatedAt: new Date().toISOString(),
           kind: "overflow_recovery",
@@ -8713,6 +8725,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       set({ restoreStatus: "resolving", lastError: null });
       await ensureMessagesLoadedForConversation(conversationId);
+      await getConversationCompactionState(conversationId);
       await runAiSelectionRestore({
         mode,
         conversationId,
@@ -8885,6 +8898,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
           );
           await ensureMessagesLoadedForConversation(conversationId);
+          await getConversationCompactionState(conversationId);
           await runAiSelectionRestore({
             mode,
             conversationId,

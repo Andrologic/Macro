@@ -1,11 +1,20 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ProjectGitFlowSettings } from '../types';
-import { toBranchWorktreeKey, toPlanIntegrationWorktreeKey } from './implementTaskDerivation';
+import { toBranchWorktreeKey } from './implementTaskDerivation';
+import {
+  buildPlanIntegrationWorktreePath,
+  toPlanIntegrationWorktreeKey,
+} from './planIntegrationWorktreeService';
 import {
   createArchitectGitFlowService,
   isPlanFinalizationBlockedError,
   type PlanFinalizationBlockedError,
 } from './architectGitFlowService';
+import type {
+  GitBranchWorktreeEnsureDto,
+  GitBranchWorktreeInspectionDto,
+  GitBranchWorktreeRemoveDto,
+} from './tauriIpc';
 
 const projectPaths = new Map<string, {
   id: string;
@@ -147,26 +156,33 @@ const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: st
   prunedRegistration: true,
   alreadyAbsent: false,
 }));
-const gitBranchWorktreeInspectMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
-  worktreeKey: params.worktreeKey,
-  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-  branchName: params.branchName,
-  status: 'ready' as const,
-  isDirty: false,
-}));
-const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
-  worktreeKey: params.worktreeKey,
-  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-  branchName: params.branchName,
-  status: 'reused' as const,
-}));
-const gitBranchWorktreeRemoveMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
-  worktreeKey: params.worktreeKey,
-  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-  removedPath: true,
-  prunedRegistration: true,
-  alreadyAbsent: false,
-}));
+const gitBranchWorktreeInspectMock = mock(
+  async (params: {
+    repoPath: string;
+    worktreeKey: string;
+    branchName: string;
+  }): Promise<GitBranchWorktreeInspectionDto> =>
+    buildBranchWorktreeInspection({
+      ...params,
+      branchName: params.branchName,
+    }),
+);
+const gitBranchWorktreeCreateMock = mock(
+  async (params: {
+    repoPath: string;
+    worktreeKey: string;
+    branchName: string;
+  }): Promise<GitBranchWorktreeEnsureDto> =>
+    buildBranchWorktreeEnsure(params),
+);
+const gitBranchWorktreeRemoveMock = mock(
+  async (params: {
+    repoPath: string;
+    worktreeKey: string;
+    branchName: string;
+  }): Promise<GitBranchWorktreeRemoveDto> =>
+    buildBranchWorktreeRemove(params),
+);
 const gitAddMock = mock(async (_params: { repoPath: string; paths: string[] }) => undefined);
 const gitCommitMock = mock(async (_params: { repoPath: string; message: string }) => 'commit-hash');
 const fsWriteFileMock = mock(async (_params: { path: string; content: string }) => ({
@@ -275,7 +291,44 @@ const getExpectedWorktreePath = (projectId: string, repoPath: string, branchName
   `${repoPath}/.macro/worktrees/task${toBranchWorktreeKey(projectId, branchName)}`;
 
 const getExpectedIntegrationWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
-  `${repoPath}/.macro/worktrees/integration-${toPlanIntegrationWorktreeKey(projectId, branchName)}`;
+  buildPlanIntegrationWorktreePath(repoPath, toPlanIntegrationWorktreeKey(projectId, branchName));
+
+const buildBranchWorktreeInspection = (params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName?: string | null;
+  status?: GitBranchWorktreeInspectionDto['status'];
+  isDirty?: boolean | null;
+}): GitBranchWorktreeInspectionDto => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: buildPlanIntegrationWorktreePath(params.repoPath, params.worktreeKey),
+  branchName: params.branchName ?? null,
+  status: params.status ?? 'ready',
+  isDirty: params.isDirty ?? false,
+});
+
+const buildBranchWorktreeEnsure = (params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+  status?: GitBranchWorktreeEnsureDto['status'];
+}): GitBranchWorktreeEnsureDto => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: buildPlanIntegrationWorktreePath(params.repoPath, params.worktreeKey),
+  branchName: params.branchName,
+  status: params.status ?? 'reused',
+});
+
+const buildBranchWorktreeRemove = (params: {
+  repoPath: string;
+  worktreeKey: string;
+}): GitBranchWorktreeRemoveDto => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: buildPlanIntegrationWorktreePath(params.repoPath, params.worktreeKey),
+  removedPath: true,
+  prunedRegistration: true,
+  alreadyAbsent: false,
+});
 
 const getProjectGroups = () => [
   {
@@ -390,26 +443,21 @@ describe('architectGitFlowService', () => {
       prunedRegistration: true,
       alreadyAbsent: false,
     }));
-    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
-      worktreeKey: params.worktreeKey,
-      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-      branchName: params.branchName,
-      status: 'ready' as const,
-      isDirty: false,
-    }));
-    gitBranchWorktreeCreateMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
-      worktreeKey: params.worktreeKey,
-      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-      branchName: params.branchName,
-      status: 'reused' as const,
-    }));
-    gitBranchWorktreeRemoveMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
-      worktreeKey: params.worktreeKey,
-      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-      removedPath: true,
-      prunedRegistration: true,
-      alreadyAbsent: false,
-    }));
+    gitBranchWorktreeInspectMock.mockImplementation(
+      async (params: { repoPath: string; worktreeKey: string; branchName: string }) =>
+        buildBranchWorktreeInspection({
+          ...params,
+          branchName: params.branchName,
+        }),
+    );
+    gitBranchWorktreeCreateMock.mockImplementation(
+      async (params: { repoPath: string; worktreeKey: string; branchName: string }) =>
+        buildBranchWorktreeEnsure(params),
+    );
+    gitBranchWorktreeRemoveMock.mockImplementation(
+      async (params: { repoPath: string; worktreeKey: string; branchName: string }) =>
+        buildBranchWorktreeRemove(params),
+    );
     gitAddMock.mockReset();
     gitCommitMock.mockReset();
     fsWriteFileMock.mockReset();
@@ -1165,13 +1213,15 @@ describe('architectGitFlowService', () => {
     worktreeStatusByPath.set(getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'), null);
     worktreeStatusByPath.set(getExpectedWorktreePath('api', '/repos/api', 'feature/checkout/checkout-api'), null);
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
-    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string }) => ({
-      worktreeKey: params.worktreeKey,
-      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-      branchName: null,
-      status: 'absent' as const,
-      isDirty: null,
-    }));
+    gitBranchWorktreeInspectMock.mockImplementation(
+      async (params: { repoPath: string; worktreeKey: string }) =>
+        buildBranchWorktreeInspection({
+          ...params,
+          branchName: null,
+          status: 'absent',
+          isDirty: null,
+        }),
+    );
 
     const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
 
@@ -1209,13 +1259,15 @@ describe('architectGitFlowService', () => {
       predictedBranches: [],
     };
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
-    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string }) => ({
-      worktreeKey: params.worktreeKey,
-      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
-      branchName: null,
-      status: 'absent' as const,
-      isDirty: null,
-    }));
+    gitBranchWorktreeInspectMock.mockImplementation(
+      async (params: { repoPath: string; worktreeKey: string }) =>
+        buildBranchWorktreeInspection({
+          ...params,
+          branchName: null,
+          status: 'absent',
+          isDirty: null,
+        }),
+    );
 
     const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
 

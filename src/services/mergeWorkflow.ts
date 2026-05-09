@@ -53,8 +53,8 @@ export interface MergeWorkflowRepositoryResult {
   id: string;
   projectId: string;
   repoPath: string;
-  repositoryRootPath?: string;
-  integrationWorktreePath?: string | null;
+  repositoryRootPath: string;
+  integrationWorktreePath: string | null;
   sourceBranchName: string;
   targetBranchName: string;
   progressState: 'pending' | 'merged' | 'blocked' | 'no_changes';

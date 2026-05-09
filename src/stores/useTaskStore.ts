@@ -22,8 +22,11 @@ import {
   deriveImplementTasksFromStrategy,
   mapTaskStatusToNodeStatus,
   toBranchWorktreeKey,
-  toPlanIntegrationWorktreeKey,
 } from '../services/implementTaskDerivation';
+import {
+  ensurePlanIntegrationWorktree,
+  resolveStableFallbackBranchesForProject,
+} from '../services/planIntegrationWorktreeService';
 import {
   cleanupPlanBranches,
   mergeFeatureBranchIntoPlanBranch,
@@ -199,26 +202,6 @@ const getTaskIntegrationBranch = (
     return null;
   }
   return resolveStandaloneTargetBranchName(task, target);
-};
-
-const resolveStableFallbackBranchesForProject = (
-  projectId: string,
-  extraBranches: Array<string | null | undefined> = []
-): string[] => {
-  const settings = useAppStore.getState().getProjectById(projectId)?.gitFlowSettings;
-  return Array.from(
-    new Set(
-      [
-        settings?.baseBranch,
-        settings?.mainBranch,
-        getGitFlowBaseBranch(),
-        'main',
-        ...extraBranches,
-      ]
-        .map((branch) => branch?.trim() || '')
-        .filter(Boolean)
-    )
-  );
 };
 
 const getPreferredExecutionTarget = (
@@ -923,11 +906,16 @@ const ensureTargetWorktreePath = async (
           fallbackToGlobalBaseBranch: false,
         })
       : null;
-  const fallbackBranches = resolveStableFallbackBranchesForProject(target.projectId, [
-    target.targetBranchName,
-    preferredCommitBranch,
-    target.planBranchName,
-  ]);
+  const fallbackBranches = resolveStableFallbackBranchesForProject({
+    projectId: target.projectId,
+    getProjectById: useAppStore.getState().getProjectById,
+    getGitFlowBaseBranch,
+    extraBranches: [
+      target.targetBranchName,
+      preferredCommitBranch,
+      target.planBranchName,
+    ],
+  });
   const ensured = await useGitStore
     .getState()
     .createWorktree(
@@ -1719,15 +1707,14 @@ const ensurePlanIntegrationWorktreePathForTarget = async (
     return null;
   }
 
-  const fallbackBranches = resolveStableFallbackBranchesForProject(target.projectId, [
-    target.targetBranchName,
-  ]);
-  const ensured = await tauriIpc.gitBranchWorktreeCreate({
-    repoPath: target.repoPath,
-    worktreeKey: toPlanIntegrationWorktreeKey(target.projectId, planBranchName),
-    branchName: planBranchName,
-    fromRef: target.targetBranchName || fallbackBranches[0] || null,
-    fallbackBranches,
+  const ensured = await ensurePlanIntegrationWorktree({
+    tauri: tauriIpc,
+    repositoryRootPath: target.repoPath,
+    projectId: target.projectId,
+    planBranchName,
+    getProjectById: useAppStore.getState().getProjectById,
+    getGitFlowBaseBranch,
+    fromRef: target.targetBranchName,
   });
 
   return ensured.worktreePath;
@@ -3893,7 +3880,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await persistRuntime(currentRuntime);
           repositories.push({
             projectId: repository.projectId,
-            repoPath: repository.repositoryRootPath || repository.repoPath,
+            repoPath: repository.repositoryRootPath,
             branchName: repository.sourceBranchName,
             planBranchName: repository.targetBranchName,
           });
@@ -3913,7 +3900,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                   projectId: repository.projectId,
                   branchName: repository.sourceBranchName,
                   planBranchName: repository.targetBranchName,
-                  repoPath: repository.repositoryRootPath || repository.repoPath,
+                  repoPath: repository.repositoryRootPath,
                 });
           if (mergeOutput) {
             mergedRepositoryCount += 1;
@@ -3937,7 +3924,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
           repositories.push({
             projectId: repository.projectId,
-            repoPath: repository.repositoryRootPath || repository.repoPath,
+            repoPath: repository.repositoryRootPath,
             branchName: repository.sourceBranchName,
             planBranchName: repository.targetBranchName,
             mergeOutput,

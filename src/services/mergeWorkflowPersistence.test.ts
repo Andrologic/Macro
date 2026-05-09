@@ -14,6 +14,8 @@ const buildRuntime = (
     id: 'project-1::/repos/web',
     projectId: 'project-1',
     repoPath: '/repos/web',
+    repositoryRootPath: '/repos/web',
+    integrationWorktreePath: null,
     sourceBranchName: 'feature/task',
     targetBranchName: 'main',
     progressState: 'pending' as const,
@@ -67,6 +69,8 @@ const buildSession = (
       id: 'project-1::/repos/web',
       projectId: 'project-1',
       repoPath: '/repos/web',
+      repositoryRootPath: '/repos/web',
+      integrationWorktreePath: null,
       sourceBranchName: 'feature/task',
       targetBranchName: 'main',
       state,
@@ -128,6 +132,8 @@ describe('buildMergeWorkflowRuntimeFromPersistedSession', () => {
     expect(runtime.phase).toBe('ready');
     expect(runtime.blockedRepositories).toEqual([]);
     expect(runtime.repositories[0]).toMatchObject({
+      repositoryRootPath: '/repos/web',
+      integrationWorktreePath: null,
       progressState: 'pending',
       mergeInProgress: true,
       blockingKind: null,

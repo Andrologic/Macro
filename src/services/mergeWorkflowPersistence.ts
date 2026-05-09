@@ -16,8 +16,8 @@ export interface PersistedMergeWorkflowRepositoryState {
   id: string;
   projectId: string;
   repoPath: string;
-  repositoryRootPath?: string;
-  integrationWorktreePath?: string | null;
+  repositoryRootPath: string;
+  integrationWorktreePath: string | null;
   sourceBranchName: string;
   targetBranchName: string;
   state: 'pending' | 'merged' | 'blocked' | 'no_changes';
@@ -114,6 +114,7 @@ export const toPersistedMergeWorkflowSession = (params: {
 const toRuntimeRepository = (
   repository: PersistedMergeWorkflowRepositoryState,
 ): MergeWorkflowRepositoryResult => {
+  const repositoryRootPath = repository.repositoryRootPath || repository.repoPath;
   const conflictFiles = [...repository.conflictFiles];
   const dirtyFiles = [...(repository.dirtyFiles || [])];
   const isDirty = repository.blockingKind === 'repository_dirty';
@@ -143,7 +144,7 @@ const toRuntimeRepository = (
     id: repository.id,
     projectId: repository.projectId,
     repoPath: repository.repoPath,
-    repositoryRootPath: repository.repositoryRootPath,
+    repositoryRootPath,
     integrationWorktreePath: repository.integrationWorktreePath ?? null,
     sourceBranchName: repository.sourceBranchName,
     targetBranchName: repository.targetBranchName,
