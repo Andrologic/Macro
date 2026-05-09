@@ -660,11 +660,11 @@ fn authorize_url_contains_pkce_and_state() {
 #[test]
 fn persist_secret_errors_map_to_secret_persist_failed() {
     let error = auth_flow_error_from_persist(PersistChatGptSessionError::Secret(
-        "Keyring write failed".to_string(),
+        "Secret write failed".to_string(),
     ));
 
     assert_eq!(error.code, "secret_persist_failed");
-    assert_eq!(error.message, "Keyring write failed");
+    assert_eq!(error.message, "Secret write failed");
 }
 
 #[tokio::test]

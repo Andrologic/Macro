@@ -262,7 +262,7 @@ describe('useProviderStore secret resolution', () => {
     mock.restore();
   });
 
-  it('loads provider configs without touching the keychain', async () => {
+  it('loads provider configs without revealing stored secrets', async () => {
     const providerStore = await loadProviderStore();
 
     providerStore.useProviderStore.setState({

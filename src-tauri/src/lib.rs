@@ -230,6 +230,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
             let app_data_dir = app_handle.path().app_data_dir()?;
+            secrets::init(&app_data_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize provider secret storage: {}",
+                    error
+                ))
+            })?;
             finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
                 std::io::Error::other(format!(
                     "Failed to resolve desktop workspace path: {}",

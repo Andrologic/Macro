@@ -10,7 +10,7 @@ Open an issue or discussion before working on changes that affect:
 - architecture across React, Tauri, Rust, stores, or services;
 - Git/worktree/metadata workflows;
 - AI provider behavior, model routing, or prompt/tool execution;
-- persistence, migrations, keyring storage, or local files;
+- persistence, migrations, provider secret storage, or local files;
 - licensing, bundled runtimes, or third-party notices.
 
 Small bug fixes, docs improvements, tests, and narrowly scoped UI fixes can usually go straight to a pull request.

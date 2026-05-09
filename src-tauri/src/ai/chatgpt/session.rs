@@ -14,9 +14,12 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use tracing::{debug, error, info, warn};
 
-pub async fn migrate_provider_secret(pool: &SqlitePool, provider_id: &str) -> Result<(), String> {
+pub async fn sync_local_provider_secret_metadata(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> Result<(), String> {
     let Some(secret) =
-        secrets::migrate_legacy_chatgpt_secret(provider_id).map_err(|error| error.to_string())?
+        secrets::get_chatgpt_secret(provider_id).map_err(|error| error.to_string())?
     else {
         return Ok(());
     };
@@ -43,7 +46,7 @@ pub(super) async fn ensure_fresh_secret(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
-    migrate_provider_secret(pool, provider_id).await?;
+    sync_local_provider_secret_metadata(pool, provider_id).await?;
 
     let secret = secrets::get_chatgpt_secret(provider_id)
         .map_err(|error| error.to_string())?

@@ -1,6 +1,6 @@
 # Security Policy
 
-Macro is a local-first, agentic development tool. It can read and write files, run terminal commands, operate on Git repositories, call configured AI providers, store provider credentials in the system keyring, and expose a localhost tool host protected by a bearer token.
+Macro is a local-first, agentic development tool. It can read and write files, run terminal commands, operate on Git repositories, call configured AI providers, store provider credentials in a private local Macro data file, and expose a localhost tool host protected by a bearer token.
 
 Please treat security reports with care and do not open public issues for vulnerabilities.
 
@@ -40,7 +40,7 @@ Macro is designed for trusted local development workspaces. Its core workflows i
 - file access is scoped by workspace policy in normal tool flows, with explicit exceptions for configured or user-selected paths;
 - terminal and Git operations can change local repositories and working trees;
 - AI providers may receive prompts, selected source context, tool traces, and user-provided content;
-- provider API keys and linked-provider sessions are stored through the OS keyring when available;
+- provider API keys and linked-provider sessions are stored in a private local Macro data file, with no automatic import from older OS-backed secret storage;
 - the local tool host binds to `127.0.0.1` and requires a bearer token, but local processes on the same machine are part of the relevant threat model.
 
 Reports are especially useful when they show a way to bypass user intent, workspace boundaries, approval policy, secret handling, or localhost authentication.

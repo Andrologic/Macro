@@ -2845,8 +2845,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
       }
-      // Generic native streaming reads keys from the desktop keyring. If the
-      // current provider relies on an in-memory key, keep the legacy TS path.
+      // Generic native streaming reads keys from Macro's local secret store. If
+      // the current provider relies on an in-memory key, keep the legacy TS path.
     }
   }
 

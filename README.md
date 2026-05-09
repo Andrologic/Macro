@@ -13,7 +13,7 @@ Macro is a local-first desktop environment for agentic software work. It helps d
 
 ## Safety Notice
 
-Macro is intentionally powerful. At the user's direction it can execute terminal commands, modify files, interact with Git repositories, call configured AI providers, and store provider credentials in the operating system keyring. Review tool approvals, diffs, and provider settings carefully before using Macro on sensitive repositories.
+Macro is intentionally powerful. At the user's direction it can execute terminal commands, modify files, interact with Git repositories, call configured AI providers, and store provider credentials in a private local Macro data file. Macro does not import older OS-stored provider secrets automatically, so users may need to reconnect providers once after storage changes. Review tool approvals, diffs, and provider settings carefully before using Macro on sensitive repositories.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and security model notes.
 
@@ -276,7 +276,7 @@ Remote transport contract:
 
 ### Local AI Provider Config for Tauri Dev
 
-Recommended for day-to-day macOS development: to avoid repeated keychain prompts and re-entering provider API keys on every `bun run tauri:dev` restart, create a local provider config file:
+Recommended for day-to-day development: to preload provider definitions and avoid re-entering provider API keys on every `bun run tauri:dev` restart, create a local provider config file:
 
 ```bash
 cp dev/ai-keys.local.example.json dev/ai-keys.local.json
@@ -382,7 +382,7 @@ The desktop app compiles an auxiliary AI runtime sidecar into `src-tauri/binarie
 4. Trigger [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
 5. Wait for the workflow to build, sign, notarize, staple, and validate the Apple Silicon `.app` and `.dmg`.
 6. Download the release artifact on a clean Apple Silicon Mac and smoke test:
-   app launch from Finder, terminal commands, Git access, AI runtime startup, keychain access, and notifications.
+   app launch from Finder, terminal commands, Git access, AI runtime startup, provider secret storage, and notifications.
 
 ### Headless Kernel (No GUI)
 

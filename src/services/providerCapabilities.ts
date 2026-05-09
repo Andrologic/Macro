@@ -2,7 +2,7 @@ export interface ProviderCapabilityProfile {
   providerId: string;
   providerType?: string;
   httpOnly: boolean;
-  usesKeyring: boolean;
+  usesLocalSecretStore: boolean;
   usesLocalRuntime: boolean;
   supportsModelScan: boolean;
 }
@@ -10,7 +10,7 @@ export interface ProviderCapabilityProfile {
 const DEFAULT_OPENAI_COMPATIBLE_CAPABILITIES: ProviderCapabilityProfile = {
   providerId: 'custom',
   httpOnly: true,
-  usesKeyring: true,
+  usesLocalSecretStore: true,
   usesLocalRuntime: false,
   supportsModelScan: true,
 };
@@ -20,7 +20,7 @@ const BUILT_IN_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilityProfile> 
     providerId: 'opencode-go',
     providerType: 'openai',
     httpOnly: true,
-    usesKeyring: true,
+    usesLocalSecretStore: true,
     usesLocalRuntime: false,
     supportsModelScan: true,
   },
@@ -28,7 +28,7 @@ const BUILT_IN_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilityProfile> 
     providerId: 'copilot',
     providerType: 'copilot',
     httpOnly: false,
-    usesKeyring: false,
+    usesLocalSecretStore: false,
     usesLocalRuntime: true,
     supportsModelScan: true,
   },
@@ -36,7 +36,7 @@ const BUILT_IN_PROVIDER_CAPABILITIES: Record<string, ProviderCapabilityProfile> 
     providerId: 'chatgpt',
     providerType: 'chatgpt',
     httpOnly: false,
-    usesKeyring: true,
+    usesLocalSecretStore: true,
     usesLocalRuntime: false,
     supportsModelScan: true,
   },

@@ -3751,9 +3751,115 @@ pub async fn db_list_provider_configs(
             .map_err(CommandError::from)?;
     }
 
-    repository::list_provider_configs(&pool)
+    let mut configs = repository::list_provider_configs(&pool)
         .await
-        .map_err(CommandError::from)
+        .map_err(CommandError::from)?;
+
+    for config in configs.iter_mut() {
+        reconcile_provider_secret_metadata(&pool, config).await?;
+    }
+
+    Ok(configs)
+}
+
+async fn reconcile_provider_secret_metadata(
+    pool: &SqlitePool,
+    config: &mut ProviderConfig,
+) -> CommandResult<()> {
+    if config.provider_type == "chatgpt" {
+        let has_secret = secrets::get_chatgpt_secret(&config.id)
+            .map_err(|error| CommandError {
+                message: format!(
+                    "Failed to access local ChatGPT session for {}: {}",
+                    config.id, error
+                ),
+            })?
+            .is_some();
+        let linked = matches!(
+            config.auth_status.as_deref(),
+            Some("authenticated" | "refreshing" | "expired")
+        );
+
+        if linked && !has_secret {
+            repository::update_provider_auth_metadata(
+                pool,
+                &config.id,
+                &ProviderAuthMetadata {
+                    auth_status: Some("unauthenticated".to_string()),
+                    auth_source: None,
+                    plan_type: None,
+                    account_label: None,
+                    token_expires_at: None,
+                },
+            )
+            .await
+            .map_err(CommandError::from)?;
+            config.auth_status = Some("unauthenticated".to_string());
+            config.auth_source = None;
+            config.plan_type = None;
+            config.account_label = None;
+            config.token_expires_at = None;
+        }
+        return Ok(());
+    }
+
+    if config.provider_type != "copilot" && !config.is_local && config.has_stored_api_key {
+        let has_key = secrets::get_api_key(&config.id)
+            .map_err(|error| CommandError {
+                message: format!(
+                    "Failed to access local provider API key for {}: {}",
+                    config.id, error
+                ),
+            })?
+            .is_some();
+        if !has_key {
+            repository::set_provider_has_stored_api_key(pool, &config.id, false)
+                .await
+                .map_err(CommandError::from)?;
+            config.has_stored_api_key = false;
+        }
+    }
+
+    Ok(())
+}
+
+async fn apply_provider_api_key_change(
+    pool: &SqlitePool,
+    provider_id: &str,
+    api_key: Option<&str>,
+) -> CommandResult<Option<bool>> {
+    let Some(api_key) = api_key else {
+        return Ok(None);
+    };
+
+    if api_key.trim().is_empty() {
+        secrets::delete_api_key(provider_id).map_err(|error| CommandError {
+            message: format!(
+                "Failed to delete the local provider secret for {}: {}",
+                provider_id, error
+            ),
+        })?;
+        repository::set_provider_has_stored_api_key(pool, provider_id, false)
+            .await
+            .map_err(CommandError::from)?;
+        return Ok(Some(false));
+    }
+
+    if let Err(error) = secrets::set_api_key(provider_id, api_key) {
+        repository::set_provider_has_stored_api_key(pool, provider_id, false)
+            .await
+            .map_err(CommandError::from)?;
+        return Err(CommandError {
+            message: format!(
+                "Failed to store the local provider secret for {}: {}",
+                provider_id, error
+            ),
+        });
+    }
+    repository::set_provider_has_stored_api_key(pool, provider_id, true)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(Some(true))
 }
 
 #[tauri::command]
@@ -3785,7 +3891,10 @@ pub async fn db_reveal_provider_api_key(
     }
 
     let api_key = secrets::get_api_key(&id).map_err(|error| CommandError {
-        message: format!("Failed to access the keychain for {}: {}", id, error),
+        message: format!(
+            "Failed to access the local provider secret for {}: {}",
+            id, error
+        ),
     })?;
 
     repository::set_provider_has_stored_api_key(&pool, &id, api_key.is_some())
@@ -3832,21 +3941,7 @@ pub async fn db_update_provider_config(
     .await
     .map_err(CommandError::from)?;
 
-    if let Some(key) = api_key_for_store {
-        if key.trim().is_empty() {
-            secrets::delete_api_key(&provider_id).ok();
-            repository::set_provider_has_stored_api_key(&pool, &provider_id, false)
-                .await
-                .map_err(CommandError::from)?;
-        } else {
-            secrets::set_api_key(&provider_id, &key).map_err(|e| CommandError {
-                message: e.to_string(),
-            })?;
-            repository::set_provider_has_stored_api_key(&pool, &provider_id, true)
-                .await
-                .map_err(CommandError::from)?;
-        }
-    }
+    apply_provider_api_key_change(&pool, &provider_id, api_key_for_store.as_deref()).await?;
 
     Ok(())
 }
@@ -3862,22 +3957,16 @@ pub async fn db_create_provider_config(
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
 
-    let created = repository::create_provider_config(
-        &pool,
-        &name,
-        &provider_type,
-        &base_url,
-        api_key.as_deref(),
-        is_local,
-    )
-    .await
-    .map_err(CommandError::from)?;
+    let mut created =
+        repository::create_provider_config(&pool, &name, &provider_type, &base_url, None, is_local)
+            .await
+            .map_err(CommandError::from)?;
 
     if let Some(key) = api_key {
-        if !key.trim().is_empty() {
-            secrets::set_api_key(&created.id, &key).map_err(|e| CommandError {
-                message: e.to_string(),
-            })?;
+        if let Some(has_stored_api_key) =
+            apply_provider_api_key_change(&pool, &created.id, Some(&key)).await?
+        {
+            created.has_stored_api_key = has_stored_api_key;
         }
     }
 
@@ -3888,7 +3977,18 @@ pub async fn db_create_provider_config(
 pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
-    secrets::delete_api_key(&id).ok();
+    secrets::delete_api_key(&id).map_err(|error| CommandError {
+        message: format!(
+            "Failed to delete the local provider API key for {}: {}",
+            id, error
+        ),
+    })?;
+    secrets::delete_provider_secret(&id).map_err(|error| CommandError {
+        message: format!(
+            "Failed to delete the local linked-provider session for {}: {}",
+            id, error
+        ),
+    })?;
     repository::delete_provider_config(&pool, &id)
         .await
         .map_err(Into::into)
@@ -4131,23 +4231,218 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::resolve_binary_path;
     use super::{
-        apply_patch_hunks_to_content, binary_candidates, commit_pending_file_changes_atomically,
-        execute_workspace_tool, external_launch_visibility, parse_apply_patch,
-        resolve_requested_workspace, resolve_workspace_for_tool_path, ExternalOpenAction,
-        ParsedPatchOperation, PendingFileChange,
+        apply_patch_hunks_to_content, apply_provider_api_key_change, binary_candidates,
+        commit_pending_file_changes_atomically, execute_workspace_tool, external_launch_visibility,
+        parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, ExternalOpenAction, ParsedPatchOperation,
+        PendingFileChange,
     };
     use crate::core::process::ProcessLaunchVisibility;
+    use crate::db::{models::ProviderAuthMetadata, repository};
     use crate::git::GitState;
+    use crate::secrets;
     use serde_json::json;
     #[cfg(target_os = "windows")]
     use std::env;
     use std::fs;
-    #[cfg(target_os = "windows")]
     use std::sync::Mutex;
     use tempfile::TempDir;
 
     #[cfg(target_os = "windows")]
     static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    async fn test_provider_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("db pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE provider_configs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                has_stored_api_key INTEGER NOT NULL DEFAULT 0,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_local INTEGER NOT NULL DEFAULT 0,
+                auth_status TEXT,
+                auth_source TEXT,
+                plan_type TEXT,
+                account_label TEXT,
+                token_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("provider config schema");
+        pool
+    }
+
+    #[tokio::test]
+    async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let pool = test_provider_pool().await;
+
+        let mut api_provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(api_provider.has_stored_api_key);
+
+        reconcile_provider_secret_metadata(&pool, &mut api_provider)
+            .await
+            .expect("reconcile api key provider");
+
+        assert!(!api_provider.has_stored_api_key);
+        let stored_api_provider = repository::get_provider_config(&pool, &api_provider.id)
+            .await
+            .expect("get provider")
+            .expect("provider exists");
+        assert!(!stored_api_provider.has_stored_api_key);
+
+        let mut chatgpt_provider = repository::create_provider_config(
+            &pool,
+            "ChatGPT",
+            "chatgpt",
+            "https://chatgpt.com/backend-api",
+            None,
+            false,
+        )
+        .await
+        .expect("create ChatGPT provider");
+        repository::update_provider_auth_metadata(
+            &pool,
+            &chatgpt_provider.id,
+            &ProviderAuthMetadata {
+                auth_status: Some("authenticated".to_string()),
+                auth_source: Some("oauth".to_string()),
+                plan_type: Some("plus".to_string()),
+                account_label: Some("user@example.com".to_string()),
+                token_expires_at: Some("2026-05-09T12:00:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("mark ChatGPT authenticated");
+        chatgpt_provider = repository::get_provider_config(&pool, &chatgpt_provider.id)
+            .await
+            .expect("get ChatGPT provider")
+            .expect("ChatGPT provider exists");
+
+        reconcile_provider_secret_metadata(&pool, &mut chatgpt_provider)
+            .await
+            .expect("reconcile ChatGPT provider");
+
+        assert_eq!(
+            chatgpt_provider.auth_status.as_deref(),
+            Some("unauthenticated")
+        );
+        assert!(chatgpt_provider.auth_source.is_none());
+        assert!(chatgpt_provider.plan_type.is_none());
+        assert!(chatgpt_provider.account_label.is_none());
+        assert!(chatgpt_provider.token_expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_api_key_change_updates_secret_store_before_database_flag() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let pool = test_provider_pool().await;
+        let provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(provider.has_stored_api_key);
+
+        let stored = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"))
+            .await
+            .expect("store key");
+
+        assert_eq!(stored, Some(true));
+        assert_eq!(
+            secrets::get_api_key(&provider.id)
+                .expect("get stored key")
+                .as_deref(),
+            Some("test-api-key")
+        );
+        let after_store = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider")
+            .expect("provider exists");
+        assert!(after_store.has_stored_api_key);
+
+        let cleared = apply_provider_api_key_change(&pool, &provider.id, Some(""))
+            .await
+            .expect("clear key");
+
+        assert_eq!(cleared, Some(false));
+        assert!(secrets::get_api_key(&provider.id)
+            .expect("get cleared key")
+            .is_none());
+        let after_clear = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider after clear")
+            .expect("provider exists");
+        assert!(!after_clear.has_stored_api_key);
+    }
+
+    #[tokio::test]
+    async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let secret_file = temp_dir.path().join("provider-secrets.json");
+        std::fs::remove_file(&secret_file).expect("remove initialized store");
+        std::fs::create_dir(&secret_file).expect("replace store file with directory");
+        let pool = test_provider_pool().await;
+        let provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(provider.has_stored_api_key);
+
+        let result = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key")).await;
+
+        assert!(result.is_err());
+        let after_failure = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider after failed write")
+            .expect("provider exists");
+        assert!(!after_failure.has_stored_api_key);
+    }
 
     #[test]
     fn binary_candidates_expands_windows_script_extensions() {
