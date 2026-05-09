@@ -22,6 +22,7 @@ import {
   deriveImplementTasksFromStrategy,
   mapTaskStatusToNodeStatus,
   toBranchWorktreeKey,
+  toPlanIntegrationWorktreeKey,
 } from '../services/implementTaskDerivation';
 import {
   cleanupPlanBranches,
@@ -198,6 +199,26 @@ const getTaskIntegrationBranch = (
     return null;
   }
   return resolveStandaloneTargetBranchName(task, target);
+};
+
+const resolveStableFallbackBranchesForProject = (
+  projectId: string,
+  extraBranches: Array<string | null | undefined> = []
+): string[] => {
+  const settings = useAppStore.getState().getProjectById(projectId)?.gitFlowSettings;
+  return Array.from(
+    new Set(
+      [
+        settings?.baseBranch,
+        settings?.mainBranch,
+        getGitFlowBaseBranch(),
+        'main',
+        ...extraBranches,
+      ]
+        .map((branch) => branch?.trim() || '')
+        .filter(Boolean)
+    )
+  );
 };
 
 const getPreferredExecutionTarget = (
@@ -902,6 +923,11 @@ const ensureTargetWorktreePath = async (
           fallbackToGlobalBaseBranch: false,
         })
       : null;
+  const fallbackBranches = resolveStableFallbackBranchesForProject(target.projectId, [
+    target.targetBranchName,
+    preferredCommitBranch,
+    target.planBranchName,
+  ]);
   const ensured = await useGitStore
     .getState()
     .createWorktree(
@@ -909,7 +935,8 @@ const ensureTargetWorktreePath = async (
       target.worktreeKey,
       target.branchName,
       fromRef,
-      preferredCommitBranch
+      preferredCommitBranch,
+      fallbackBranches
     );
   if (!ensured?.worktreePath) {
     const createError = useGitStore.getState().lastError?.trim();
@@ -1683,6 +1710,29 @@ const syncIntegrationBranchIfConfigured = async (
   });
 };
 
+const ensurePlanIntegrationWorktreePathForTarget = async (
+  task: CatalogedImplementTask,
+  target: MergeWorkflowExecutionTarget,
+  planBranchName: string
+): Promise<string | null> => {
+  if (task.task_source !== 'architect') {
+    return null;
+  }
+
+  const fallbackBranches = resolveStableFallbackBranchesForProject(target.projectId, [
+    target.targetBranchName,
+  ]);
+  const ensured = await tauriIpc.gitBranchWorktreeCreate({
+    repoPath: target.repoPath,
+    worktreeKey: toPlanIntegrationWorktreeKey(target.projectId, planBranchName),
+    branchName: planBranchName,
+    fromRef: target.targetBranchName || fallbackBranches[0] || null,
+    fallbackBranches,
+  });
+
+  return ensured.worktreePath;
+};
+
 type MergeWorkflowExecutionTarget = TaskExecutionTarget & {
   repoPath: string;
   worktreePath?: string;
@@ -1708,7 +1758,15 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       );
     }
 
-    let status = await tauriIpc.gitStatus(target.repoPath);
+    const repositoryRootPath = target.repoPath;
+    const integrationWorktreePath = await ensurePlanIntegrationWorktreePathForTarget(
+      params.task,
+      target,
+      integrationBranchName
+    );
+    const operationRepoPath = integrationWorktreePath || repositoryRootPath;
+
+    let status = await tauriIpc.gitStatus(operationRepoPath);
     const hasRepoConflicts = Boolean(
       (status.conflicted_files?.length || 0) + (status.conflictedFiles?.length || 0)
     );
@@ -1724,11 +1782,11 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       status.is_clean
     ) {
       await tauriIpc.gitCheckout({
-        repoPath: target.repoPath,
+        repoPath: operationRepoPath,
         branchOrCommit: integrationBranchName,
         create: false,
       });
-      status = await tauriIpc.gitStatus(target.repoPath);
+      status = await tauriIpc.gitStatus(operationRepoPath);
     }
 
     if (
@@ -1740,12 +1798,12 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       !hasRepoConflicts &&
       !mergeInProgress
     ) {
-      await syncIntegrationBranchIfConfigured(target.repoPath, integrationBranchName);
-      status = await tauriIpc.gitStatus(target.repoPath);
+      await syncIntegrationBranchIfConfigured(operationRepoPath, integrationBranchName);
+      status = await tauriIpc.gitStatus(operationRepoPath);
     }
 
     const diff = await tauriIpc.gitDiff({
-      repoPath: target.repoPath,
+      repoPath: operationRepoPath,
       base: integrationBranchName,
       head: target.branchName,
       contextLines: 3,
@@ -1753,7 +1811,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
 
     const mergeCheck = status.is_clean
       ? await tauriIpc.gitMergeCheck({
-          repoPath: target.repoPath,
+          repoPath: operationRepoPath,
           branchName: target.branchName,
           intoBranch: integrationBranchName,
         })
@@ -1764,7 +1822,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
           ahead: 0,
           behind: 0,
         };
-    const branches = await tauriIpc.gitBranchList(target.repoPath).catch(() => null);
+    const branches = await tauriIpc.gitBranchList(repositoryRootPath).catch(() => null);
     const isSourcePublished = branches
       ? isMergeWorkflowSourcePublished(branches, target.branchName)
       : true;
@@ -1775,7 +1833,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
         isSourcePublished,
       })
         ? await tauriIpc.gitRebaseCheck({
-            repoPath: target.repoPath,
+            repoPath: operationRepoPath,
             branchName: target.branchName,
             ontoBranch: integrationBranchName,
           }).catch(() => null)
@@ -1787,15 +1845,17 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
       rebaseCheck,
     });
     const blocking = buildMergeWorkflowRepositoryBlockingState({
-      repositoryPath: target.repoPath,
+      repositoryPath: operationRepoPath,
       status,
       mergeCheck,
     });
 
     repositories.push({
-      id: `${target.projectId}::${target.repoPath}`,
+      id: `${target.projectId}::${operationRepoPath}`,
       projectId: target.projectId,
-      repoPath: target.repoPath,
+      repoPath: operationRepoPath,
+      repositoryRootPath,
+      integrationWorktreePath,
       sourceBranchName: target.branchName,
       targetBranchName: integrationBranchName,
       progressState: strategy.mergeStrategy === 'no_source_changes' ? 'no_changes' : 'pending',
@@ -3833,7 +3893,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await persistRuntime(currentRuntime);
           repositories.push({
             projectId: repository.projectId,
-            repoPath: repository.repoPath,
+            repoPath: repository.repositoryRootPath || repository.repoPath,
             branchName: repository.sourceBranchName,
             planBranchName: repository.targetBranchName,
           });
@@ -3853,7 +3913,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                   projectId: repository.projectId,
                   branchName: repository.sourceBranchName,
                   planBranchName: repository.targetBranchName,
-                  repoPath: repository.repoPath,
+                  repoPath: repository.repositoryRootPath || repository.repoPath,
                 });
           if (mergeOutput) {
             mergedRepositoryCount += 1;
@@ -3877,7 +3937,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
           repositories.push({
             projectId: repository.projectId,
-            repoPath: repository.repoPath,
+            repoPath: repository.repositoryRootPath || repository.repoPath,
             branchName: repository.sourceBranchName,
             planBranchName: repository.targetBranchName,
             mergeOutput,

@@ -412,6 +412,32 @@ describe('Footer', () => {
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@6');
   });
 
+  it('renders the global project label with enough line height for descenders', async () => {
+    appState.projectGroups = [
+      {
+        id: 'group-1',
+        name: 'andrologic.ai',
+        projects: GROUP_ONE_PROJECTS,
+      },
+    ];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    const projectLabel = Array.from(container.querySelectorAll('span'))
+      .find((element) =>
+        element.textContent === 'andrologic.ai' &&
+        element.classList.contains('truncate')
+      );
+    expect(projectLabel).toBeDefined();
+    expect(projectLabel?.classList.contains('leading-4')).toBe(true);
+    expect(projectLabel?.classList.contains('leading-none')).toBe(false);
+  });
+
   it('targets footer git actions to the selected local scope and aggregates all projects when reset', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');

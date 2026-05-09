@@ -1456,7 +1456,9 @@ pub async fn get_conversation_compaction_state(
         SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json,
                used_source_passage_ids_json, interesting_source_passage_ids_json,
                estimated_tokens_before, estimated_tokens_after, fingerprint,
-               version, created_at, updated_at
+               version, pruned_tool_context_message_ids_json, reserved_tokens,
+               footprint_before_json, footprint_after_json, degraded_reason,
+               compaction_kind, created_at, updated_at
         FROM conversation_compactions
         WHERE conversation_id = ?
         "#,
@@ -1476,6 +1478,30 @@ pub async fn get_conversation_compaction_state(
         estimated_tokens_after: row.get("estimated_tokens_after"),
         fingerprint: row.get("fingerprint"),
         version: row.get("version"),
+        pruned_tool_context_message_ids_json: row
+            .try_get::<Option<String>, _>("pruned_tool_context_message_ids_json")
+            .ok()
+            .flatten(),
+        reserved_tokens: row
+            .try_get::<Option<i32>, _>("reserved_tokens")
+            .ok()
+            .flatten(),
+        footprint_before_json: row
+            .try_get::<Option<String>, _>("footprint_before_json")
+            .ok()
+            .flatten(),
+        footprint_after_json: row
+            .try_get::<Option<String>, _>("footprint_after_json")
+            .ok()
+            .flatten(),
+        degraded_reason: row
+            .try_get::<Option<String>, _>("degraded_reason")
+            .ok()
+            .flatten(),
+        compaction_kind: row
+            .try_get::<Option<String>, _>("compaction_kind")
+            .ok()
+            .flatten(),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }))
@@ -1494,9 +1520,11 @@ pub async fn upsert_conversation_compaction_state(
             conversation_id, up_to_message_id, summary_text, tool_digest_json,
             used_source_passage_ids_json, interesting_source_passage_ids_json,
             estimated_tokens_before, estimated_tokens_after, fingerprint,
-            version, created_at, updated_at
+            version, pruned_tool_context_message_ids_json, reserved_tokens,
+            footprint_before_json, footprint_after_json, degraded_reason,
+            compaction_kind, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             up_to_message_id = excluded.up_to_message_id,
             summary_text = excluded.summary_text,
@@ -1507,6 +1535,12 @@ pub async fn upsert_conversation_compaction_state(
             estimated_tokens_after = excluded.estimated_tokens_after,
             fingerprint = excluded.fingerprint,
             version = excluded.version,
+            pruned_tool_context_message_ids_json = excluded.pruned_tool_context_message_ids_json,
+            reserved_tokens = excluded.reserved_tokens,
+            footprint_before_json = excluded.footprint_before_json,
+            footprint_after_json = excluded.footprint_after_json,
+            degraded_reason = excluded.degraded_reason,
+            compaction_kind = excluded.compaction_kind,
             updated_at = excluded.updated_at
         "#,
     )
@@ -1520,6 +1554,17 @@ pub async fn upsert_conversation_compaction_state(
     .bind(input.estimated_tokens_after)
     .bind(&input.fingerprint)
     .bind(input.version)
+    .bind(
+        input
+            .pruned_tool_context_message_ids_json
+            .as_deref()
+            .unwrap_or("[]"),
+    )
+    .bind(input.reserved_tokens)
+    .bind(&input.footprint_before_json)
+    .bind(&input.footprint_after_json)
+    .bind(&input.degraded_reason)
+    .bind(&input.compaction_kind)
     .bind(&now)
     .bind(&now)
     .execute(pool)

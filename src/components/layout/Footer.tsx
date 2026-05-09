@@ -460,7 +460,7 @@ export const Footer: React.FC = () => {
           <div className="flex min-w-0 items-center overflow-hidden">
             <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || undefined}>
               <Icon name="layers" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
-              <span className="truncate leading-none text-foreground">{selectedGlobalProject?.name || t('project.noGroup', 'No global project')}</span>
+              <span className="truncate leading-4 text-foreground">{selectedGlobalProject?.name || t('project.noGroup', 'No global project')}</span>
             </span>
             <Button
               size="sm"

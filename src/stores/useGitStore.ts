@@ -30,7 +30,8 @@ interface GitStore {
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) => Promise<GitWorktreeEnsureResult | null>;
   removeWorktree: (projectId: string, taskId: string) => Promise<GitWorktreeRemoveResult | null>;
 }
@@ -78,7 +79,8 @@ export const useGitStore = create<GitStore>((set) => ({
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) => {
     set({ isLoading: true, lastError: null });
     try {
@@ -87,7 +89,8 @@ export const useGitStore = create<GitStore>((set) => ({
         taskId,
         branchName,
         fromRef,
-        preferredCommitBranch
+        preferredCommitBranch,
+        fallbackBranches
       );
       set({ isLoading: false });
       return result;

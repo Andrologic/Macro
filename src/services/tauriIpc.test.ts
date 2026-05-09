@@ -606,6 +606,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       branchName: "feature/checkout",
       fromRef: "integration-ready",
       preferredCommitBranch: "integration-ready",
+      fallbackBranches: ["develop", "main"],
     });
 
     expect(invokeCalls).toEqual([
@@ -617,6 +618,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           branchName: "feature/checkout",
           fromRef: "integration-ready",
           preferredCommitBranch: "integration-ready",
+          fallbackBranches: ["develop", "main"],
         },
       },
     ]);

@@ -19,6 +19,7 @@ import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
   toBranchWorktreeKey,
+  toPlanIntegrationWorktreeKey,
 } from './implementTaskDerivation';
 import {
   renderGitFlowBranchName,
@@ -115,6 +116,28 @@ const resolvePlanProjectBackmergeBranchName = (
       baseBranch: settings?.baseBranch || 'main',
       mainBranch: settings?.mainBranch || 'main',
     });
+};
+
+const resolveProjectStableFallbackBranches = (params: {
+  projectId: string;
+  getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
+  getGitFlowBaseBranch: () => string;
+  extraBranches?: Array<string | null | undefined>;
+}): string[] => {
+  const settings = params.getProjectById(params.projectId)?.gitFlowSettings;
+  return Array.from(
+    new Set(
+      [
+        settings?.baseBranch,
+        settings?.mainBranch,
+        params.getGitFlowBaseBranch(),
+        'main',
+        ...(params.extraBranches || []),
+      ]
+        .map((branch) => branch?.trim() || '')
+        .filter(Boolean)
+    )
+  );
 };
 
 const resolveBranchSourceRef = (
@@ -343,6 +366,7 @@ interface CleanupPlanRepositoryTarget extends ResolvedProjectRepository {
   planBranchName: string;
   featureBranchNames: string[];
   worktrees: CleanupPlanWorktreeTarget[];
+  integrationWorktree: CleanupPlanWorktreeTarget;
 }
 
 interface ArchitectGitFlowProjectRef {
@@ -400,6 +424,9 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitBranchCreate'
   | 'gitWorktreeInspect'
   | 'gitWorktreeRemove'
+  | 'gitBranchWorktreeInspect'
+  | 'gitBranchWorktreeCreate'
+  | 'gitBranchWorktreeRemove'
   | 'gitPull'
   | 'gitRebaseCheck'
 > & {
@@ -451,6 +478,17 @@ const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
 
 const buildTaskWorktreePath = (repoPath: string, worktreeKey: string): string =>
   joinRepoPath(repoPath, '.macro', 'worktrees', `task${worktreeKey}`);
+
+const sanitizeWorktreeKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 48) || 'branch';
+
+const buildPlanIntegrationWorktreePath = (repoPath: string, worktreeKey: string): string =>
+  joinRepoPath(repoPath, '.macro', 'worktrees', `integration-${sanitizeWorktreeKey(worktreeKey)}`);
 
 const isMissingGitTargetError = (error: unknown): boolean => {
   const message = toServiceError(error).message.toLowerCase();
@@ -840,7 +878,7 @@ export const createArchitectGitFlowService = (
     repoPath: string,
     branchesToDelete: Set<string>,
     branches: ArchitectGitFlowGitBranches,
-    preferredFallbackBranch?: string
+    fallbackBranches: string[] = []
   ): Promise<string | null> => {
     const status = await deps.tauri.gitStatus(repoPath);
     const current = status.branch;
@@ -853,7 +891,7 @@ export const createArchitectGitFlowService = (
     const localNames = (branches.local || []).map((branch) => branch.name);
     const localSet = new Set(localNames);
     const fallbackCandidates = [
-      preferredFallbackBranch || '',
+      ...fallbackBranches,
       deps.getGitFlowBaseBranch(),
       'main',
       'develop',
@@ -877,13 +915,13 @@ export const createArchitectGitFlowService = (
     repoPath: string,
     branchesToDelete: Set<string>,
     branches: ArchitectGitFlowGitBranches,
-    preferredFallbackBranch?: string
+    fallbackBranches: string[] = []
   ): Promise<void> => {
     const fallback = await resolveSafeCheckoutBeforeDeletionWithDeps(
       repoPath,
       branchesToDelete,
       branches,
-      preferredFallbackBranch
+      fallbackBranches
     );
     if (!fallback) {
       return;
@@ -921,12 +959,18 @@ export const createArchitectGitFlowService = (
         branchName,
         worktreePath: buildTaskWorktreePath(repository.repoPath, toBranchWorktreeKey(repository.projectId, branchName)),
       }));
+      const integrationWorktreeKey = toPlanIntegrationWorktreeKey(repository.projectId, planBranchName);
 
       return {
         ...repository,
         planBranchName,
         featureBranchNames,
         worktrees,
+        integrationWorktree: {
+          worktreeKey: integrationWorktreeKey,
+          branchName: planBranchName,
+          worktreePath: buildPlanIntegrationWorktreePath(repository.repoPath, integrationWorktreeKey),
+        },
       };
     });
   };
@@ -942,7 +986,11 @@ export const createArchitectGitFlowService = (
           target.repoPath,
           new Set(candidates),
           branches,
-          deps.getAppState().getProjectById(target.projectId)?.gitFlowSettings?.baseBranch
+          resolveProjectStableFallbackBranches({
+            projectId: target.projectId,
+            getProjectById: deps.getAppState().getProjectById,
+            getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
+          })
         );
       }
 
@@ -962,6 +1010,23 @@ export const createArchitectGitFlowService = (
           if (isMissingGitTargetError(error)) {
             continue;
           }
+          throw error;
+        }
+      }
+
+      try {
+        const inspection = await deps.tauri.gitBranchWorktreeInspect({
+          repoPath: target.repoPath,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          branchName: target.integrationWorktree.branchName,
+        });
+        if (inspection.status !== 'absent' && inspection.isDirty) {
+          throw new Error(
+            `Cannot clean up worktree ${inspection.worktreePath} because it has uncommitted changes.`
+          );
+        }
+      } catch (error) {
+        if (!isMissingGitTargetError(error)) {
           throw error;
         }
       }
@@ -1010,7 +1075,11 @@ export const createArchitectGitFlowService = (
           target.repoPath,
           new Set(branchCandidates),
           branches,
-          deps.getAppState().getProjectById(target.projectId)?.gitFlowSettings?.baseBranch
+          resolveProjectStableFallbackBranches({
+            projectId: target.projectId,
+            getProjectById: deps.getAppState().getProjectById,
+            getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
+          })
         );
       }
 
@@ -1045,6 +1114,36 @@ export const createArchitectGitFlowService = (
           }
           cleanupError = cleanupError || toServiceError(error).message;
           retainedWorktrees.push(worktree);
+        }
+      }
+
+      try {
+        const inspection = await deps.tauri.gitBranchWorktreeInspect({
+          repoPath: target.repoPath,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          branchName: target.integrationWorktree.branchName,
+        });
+        if (inspection.status !== 'absent') {
+          const removed = await deps.tauri.gitBranchWorktreeRemove({
+            repoPath: target.repoPath,
+            worktreeKey: target.integrationWorktree.worktreeKey,
+            branchName: target.integrationWorktree.branchName,
+          });
+          if (!removed.alreadyAbsent) {
+            deletedWorktrees.push({
+              ...target.integrationWorktree,
+              worktreePath: removed.worktreePath,
+            });
+          }
+        }
+      } catch (error) {
+        if (isMissingGitTargetError(error)) {
+          // Nothing to clean up.
+        } else if (!allowRetained) {
+          throw error;
+        } else {
+          cleanupError = cleanupError || toServiceError(error).message;
+          retainedWorktrees.push(target.integrationWorktree);
         }
       }
 
@@ -1386,6 +1485,28 @@ export const createArchitectGitFlowService = (
     };
   };
 
+  const ensurePlanIntegrationWorktreeWithDeps = async (params: {
+    repoPath: string;
+    projectId: string;
+    planBranchName: string;
+    fromRef?: string | null;
+  }): Promise<tauriIpc.GitBranchWorktreeEnsureDto> => {
+    const fallbackBranches = resolveProjectStableFallbackBranches({
+      projectId: params.projectId,
+      getProjectById: deps.getAppState().getProjectById,
+      getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
+      extraBranches: [params.fromRef],
+    });
+
+    return deps.tauri.gitBranchWorktreeCreate({
+      repoPath: params.repoPath,
+      worktreeKey: toPlanIntegrationWorktreeKey(params.projectId, params.planBranchName),
+      branchName: params.planBranchName,
+      fromRef: params.fromRef || fallbackBranches[0] || null,
+      fallbackBranches,
+    });
+  };
+
   const mergeFeatureBranchIntoPlanBranchWithDeps = async (params: {
     projectId: string;
     branchName: string;
@@ -1397,8 +1518,14 @@ export const createArchitectGitFlowService = (
       throw new Error(`Unable to resolve repository path for project ${params.projectId}.`);
     }
 
-    return deps.tauri.gitMerge({
+    const integrationWorktree = await ensurePlanIntegrationWorktreeWithDeps({
       repoPath: repository.repoPath,
+      projectId: params.projectId,
+      planBranchName: params.planBranchName,
+    });
+
+    return deps.tauri.gitMerge({
+      repoPath: integrationWorktree.worktreePath,
       branchName: params.branchName,
       intoBranch: params.planBranchName,
     });

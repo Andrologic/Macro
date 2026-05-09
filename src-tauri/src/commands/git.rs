@@ -120,6 +120,16 @@ pub struct GitWorktreeInspectionDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeInspectionDto {
+    pub worktree_key: String,
+    pub worktree_path: String,
+    pub branch_name: Option<String>,
+    pub status: String,
+    pub is_dirty: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitWorktreeEnsureDto {
     pub task_id: String,
     pub worktree_path: String,
@@ -129,8 +139,27 @@ pub struct GitWorktreeEnsureDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeEnsureDto {
+    pub worktree_key: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitWorktreeRemoveDto {
     pub task_id: String,
+    pub worktree_path: String,
+    pub removed_path: bool,
+    pub pruned_registration: bool,
+    pub already_absent: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeRemoveDto {
+    pub worktree_key: String,
     pub worktree_path: String,
     pub removed_path: bool,
     pub pruned_registration: bool,
@@ -3898,6 +3927,7 @@ pub async fn git_worktree_create(
     branch_name: String,
     from_ref: Option<String>,
     preferred_commit_branch: Option<String>,
+    fallback_branches: Option<Vec<String>>,
 ) -> Result<GitWorktreeEnsureDto> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -3909,12 +3939,20 @@ pub async fn git_worktree_create(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        let fallback_branches = fallback_branches.unwrap_or_else(|| {
+            preferred_commit_branch
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>()
+        });
+
         let ensured = git_state.ensure_task_worktree(
             &repo,
             &task_id,
             &branch_name,
             from_ref.as_deref(),
             preferred_commit_branch.as_deref(),
+            &fallback_branches,
         )?;
         Ok(GitWorktreeEnsureDto {
             task_id: ensured.task_id,
@@ -3926,6 +3964,130 @@ pub async fn git_worktree_create(
                 TaskWorktreeEnsureStatus::Repaired => TaskWorktreeEnsureStatus::Repaired.as_str(),
             }
             .to_string(),
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Inspect a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_inspect(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+) -> Result<GitBranchWorktreeInspectionDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
+        Ok(GitBranchWorktreeInspectionDto {
+            worktree_key: inspection.task_id,
+            worktree_path: inspection.worktree_path.to_string_lossy().into_owned(),
+            branch_name: inspection.branch_name,
+            status: match inspection.status {
+                TaskWorktreeStatus::Absent => TaskWorktreeStatus::Absent.as_str(),
+                TaskWorktreeStatus::Ready => TaskWorktreeStatus::Ready.as_str(),
+                TaskWorktreeStatus::StaleRegistration => {
+                    TaskWorktreeStatus::StaleRegistration.as_str()
+                }
+                TaskWorktreeStatus::OrphanPath => TaskWorktreeStatus::OrphanPath.as_str(),
+                TaskWorktreeStatus::InvalidRepo => TaskWorktreeStatus::InvalidRepo.as_str(),
+            }
+            .to_string(),
+            is_dirty: inspection.is_dirty,
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Create or repair a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_create(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+    from_ref: Option<String>,
+    fallback_branches: Option<Vec<String>>,
+) -> Result<GitBranchWorktreeEnsureDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let fallback_branches = fallback_branches.unwrap_or_default();
+        let ensured = git_state.ensure_branch_worktree(
+            &repo,
+            &worktree_key,
+            &branch_name,
+            from_ref.as_deref(),
+            &fallback_branches,
+        )?;
+        Ok(GitBranchWorktreeEnsureDto {
+            worktree_key: ensured.task_id,
+            worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
+            branch_name: ensured.branch_name,
+            status: match ensured.status {
+                TaskWorktreeEnsureStatus::Created => TaskWorktreeEnsureStatus::Created.as_str(),
+                TaskWorktreeEnsureStatus::Reused => TaskWorktreeEnsureStatus::Reused.as_str(),
+                TaskWorktreeEnsureStatus::Repaired => TaskWorktreeEnsureStatus::Repaired.as_str(),
+            }
+            .to_string(),
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Remove a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_remove(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+    force: Option<bool>,
+) -> Result<GitBranchWorktreeRemoveDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let removed = git_state.remove_branch_worktree(
+            &repo,
+            &worktree_key,
+            &branch_name,
+            force.unwrap_or(false),
+        )?;
+        Ok(GitBranchWorktreeRemoveDto {
+            worktree_key: removed.task_id,
+            worktree_path: removed.worktree_path.to_string_lossy().into_owned(),
+            removed_path: removed.removed_path,
+            pruned_registration: removed.pruned_registration,
+            already_absent: removed.already_absent,
         })
     })
     .await

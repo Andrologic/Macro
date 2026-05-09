@@ -57,6 +57,10 @@ export const PREF_KEYS = {
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
   CHAT_MAX_TURNS: "chatMaxTurns",
+  COMPACTION_AUTO: "compaction.auto",
+  COMPACTION_PRUNE: "compaction.prune",
+  COMPACTION_RESERVED_TOKENS: "compaction.reservedTokens",
+  COMPACTION_MANUAL_VISIBLE: "compaction.manualVisible",
   TOOL_RISK_LEVEL: "toolRiskLevel",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
@@ -265,6 +269,10 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
   [PREF_KEYS.CHAT_MAX_TURNS]: CHAT_MAX_TURNS_DEFAULT,
+  [PREF_KEYS.COMPACTION_AUTO]: true,
+  [PREF_KEYS.COMPACTION_PRUNE]: true,
+  [PREF_KEYS.COMPACTION_RESERVED_TOKENS]: null,
+  [PREF_KEYS.COMPACTION_MANUAL_VISIBLE]: false,
   [PREF_KEYS.TOOL_RISK_LEVEL]:
     DEFAULT_TOOL_RISK_LEVEL satisfies ToolRiskLevel,
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
@@ -320,6 +328,19 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.CHAT_MAX_TURNS) {
     return isValidChatMaxTurnsPreference(value);
+  }
+  if (
+    key === PREF_KEYS.COMPACTION_AUTO ||
+    key === PREF_KEYS.COMPACTION_PRUNE ||
+    key === PREF_KEYS.COMPACTION_MANUAL_VISIBLE
+  ) {
+    return typeof value === "boolean";
+  }
+  if (key === PREF_KEYS.COMPACTION_RESERVED_TOKENS) {
+    return (
+      value === null ||
+      (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    );
   }
   return true;
 };

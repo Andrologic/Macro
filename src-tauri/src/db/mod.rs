@@ -477,6 +477,12 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
             estimated_tokens_after INTEGER NOT NULL,
             fingerprint TEXT NOT NULL,
             version INTEGER NOT NULL DEFAULT 1,
+            pruned_tool_context_message_ids_json TEXT NOT NULL DEFAULT '[]',
+            reserved_tokens INTEGER,
+            footprint_before_json TEXT,
+            footprint_after_json TEXT,
+            degraded_reason TEXT,
+            compaction_kind TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
@@ -491,6 +497,26 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         sqlx::query("ALTER TABLE conversation_compactions ADD COLUMN version INTEGER DEFAULT 1")
             .execute(pool)
             .await?;
+    }
+    let optional_columns = [
+        (
+            "pruned_tool_context_message_ids_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        ("reserved_tokens", "INTEGER"),
+        ("footprint_before_json", "TEXT"),
+        ("footprint_after_json", "TEXT"),
+        ("degraded_reason", "TEXT"),
+        ("compaction_kind", "TEXT"),
+    ];
+    for (column, definition) in optional_columns {
+        if !columns.contains(column) {
+            let statement = format!(
+                "ALTER TABLE conversation_compactions ADD COLUMN {} {}",
+                column, definition
+            );
+            sqlx::query(&statement).execute(pool).await?;
+        }
     }
 
     sqlx::query(

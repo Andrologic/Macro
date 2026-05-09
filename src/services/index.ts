@@ -91,7 +91,8 @@ export const services = {
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) =>
     callProviderMethod(
       'gitWorktreeCreate',
@@ -99,7 +100,8 @@ export const services = {
       taskId,
       branchName,
       fromRef,
-      preferredCommitBranch
+      preferredCommitBranch,
+      fallbackBranches
     ),
   gitWorktreeRemove: (projectId: string, taskId: string) =>
     callProviderMethod('gitWorktreeRemove', projectId, taskId),

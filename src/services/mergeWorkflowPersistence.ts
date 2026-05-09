@@ -16,6 +16,8 @@ export interface PersistedMergeWorkflowRepositoryState {
   id: string;
   projectId: string;
   repoPath: string;
+  repositoryRootPath?: string;
+  integrationWorktreePath?: string | null;
   sourceBranchName: string;
   targetBranchName: string;
   state: 'pending' | 'merged' | 'blocked' | 'no_changes';
@@ -63,6 +65,8 @@ const toPersistedRepositoryState = (
   id: repository.id,
   projectId: repository.projectId,
   repoPath: repository.repoPath,
+  repositoryRootPath: repository.repositoryRootPath,
+  integrationWorktreePath: repository.integrationWorktreePath ?? null,
   sourceBranchName: repository.sourceBranchName,
   targetBranchName: repository.targetBranchName,
   state: repository.progressState,
@@ -139,6 +143,8 @@ const toRuntimeRepository = (
     id: repository.id,
     projectId: repository.projectId,
     repoPath: repository.repoPath,
+    repositoryRootPath: repository.repositoryRootPath,
+    integrationWorktreePath: repository.integrationWorktreePath ?? null,
     sourceBranchName: repository.sourceBranchName,
     targetBranchName: repository.targetBranchName,
     progressState,
@@ -325,6 +331,8 @@ export const overlayPersistedMergeWorkflowSession = (params: {
       id: repository.id,
       projectId: repository.projectId,
       repoPath: repository.repoPath,
+      repositoryRootPath: repository.repositoryRootPath,
+      integrationWorktreePath: repository.integrationWorktreePath ?? null,
       sourceBranchName: repository.sourceBranchName,
       targetBranchName: repository.targetBranchName,
       state: repository.progressState,

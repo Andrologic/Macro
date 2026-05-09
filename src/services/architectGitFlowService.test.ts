@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ProjectGitFlowSettings } from '../types';
-import { toBranchWorktreeKey } from './implementTaskDerivation';
+import { toBranchWorktreeKey, toPlanIntegrationWorktreeKey } from './implementTaskDerivation';
 import {
   createArchitectGitFlowService,
   isPlanFinalizationBlockedError,
@@ -147,6 +147,26 @@ const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: st
   prunedRegistration: true,
   alreadyAbsent: false,
 }));
+const gitBranchWorktreeInspectMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'ready' as const,
+  isDirty: false,
+}));
+const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
+const gitBranchWorktreeRemoveMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }): Promise<any> => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  removedPath: true,
+  prunedRegistration: true,
+  alreadyAbsent: false,
+}));
 const gitAddMock = mock(async (_params: { repoPath: string; paths: string[] }) => undefined);
 const gitCommitMock = mock(async (_params: { repoPath: string; message: string }) => 'commit-hash');
 const fsWriteFileMock = mock(async (_params: { path: string; content: string }) => ({
@@ -254,6 +274,9 @@ const createGitFlowSettings = (
 const getExpectedWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
   `${repoPath}/.macro/worktrees/task${toBranchWorktreeKey(projectId, branchName)}`;
 
+const getExpectedIntegrationWorktreePath = (projectId: string, repoPath: string, branchName: string) =>
+  `${repoPath}/.macro/worktrees/integration-${toPlanIntegrationWorktreeKey(projectId, branchName)}`;
+
 const getProjectGroups = () => [
   {
     id: 'group-main',
@@ -328,6 +351,9 @@ describe('architectGitFlowService', () => {
     gitBranchCreateMock.mockReset();
     gitWorktreeInspectMock.mockReset();
     gitWorktreeRemoveMock.mockReset();
+    gitBranchWorktreeInspectMock.mockReset();
+    gitBranchWorktreeCreateMock.mockReset();
+    gitBranchWorktreeRemoveMock.mockReset();
     gitWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
       const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
       if (worktreeStatusByPath.has(worktreePath)) {
@@ -364,6 +390,26 @@ describe('architectGitFlowService', () => {
       prunedRegistration: true,
       alreadyAbsent: false,
     }));
+    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+      worktreeKey: params.worktreeKey,
+      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+      branchName: params.branchName,
+      status: 'ready' as const,
+      isDirty: false,
+    }));
+    gitBranchWorktreeCreateMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+      worktreeKey: params.worktreeKey,
+      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+      branchName: params.branchName,
+      status: 'reused' as const,
+    }));
+    gitBranchWorktreeRemoveMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+      worktreeKey: params.worktreeKey,
+      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+      removedPath: true,
+      prunedRegistration: true,
+      alreadyAbsent: false,
+    }));
     gitAddMock.mockReset();
     gitCommitMock.mockReset();
     fsWriteFileMock.mockReset();
@@ -388,6 +434,9 @@ describe('architectGitFlowService', () => {
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
+        gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
+        gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+        gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
@@ -980,6 +1029,18 @@ describe('architectGitFlowService', () => {
         branchName: 'feature/checkout/checkout-api',
       },
     ]);
+    expect(gitBranchWorktreeRemoveMock.mock.calls.map(([params]) => params)).toEqual([
+      {
+        repoPath: '/repos/web',
+        worktreeKey: toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
+        branchName: 'plan/checkout',
+      },
+      {
+        repoPath: '/repos/api',
+        worktreeKey: toPlanIntegrationWorktreeKey('api', 'plan/checkout'),
+        branchName: 'plan/checkout',
+      },
+    ]);
     expect(gitBranchDeleteMock.mock.calls.map(([params]) => params)).toEqual([
       { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', force: false },
       { repoPath: '/repos/web', branchName: 'plan/checkout', force: false },
@@ -995,6 +1056,10 @@ describe('architectGitFlowService', () => {
           worktreeKey: toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
           branchName: 'feature/checkout/checkout-web',
           worktreePath: getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),
+        }, {
+          worktreeKey: toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
+          branchName: 'plan/checkout',
+          worktreePath: getExpectedIntegrationWorktreePath('web', '/repos/web', 'plan/checkout'),
         }],
         retainedBranches: [],
         retainedWorktrees: [],
@@ -1008,6 +1073,10 @@ describe('architectGitFlowService', () => {
           worktreeKey: toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
           branchName: 'feature/checkout/checkout-api',
           worktreePath: getExpectedWorktreePath('api', '/repos/api', 'feature/checkout/checkout-api'),
+        }, {
+          worktreeKey: toPlanIntegrationWorktreeKey('api', 'plan/checkout'),
+          branchName: 'plan/checkout',
+          worktreePath: getExpectedIntegrationWorktreePath('api', '/repos/api', 'plan/checkout'),
         }],
         retainedBranches: [],
         retainedWorktrees: [],
@@ -1096,6 +1165,13 @@ describe('architectGitFlowService', () => {
     worktreeStatusByPath.set(getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'), null);
     worktreeStatusByPath.set(getExpectedWorktreePath('api', '/repos/api', 'feature/checkout/checkout-api'), null);
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string }) => ({
+      worktreeKey: params.worktreeKey,
+      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+      branchName: null,
+      status: 'absent' as const,
+      isDirty: null,
+    }));
 
     const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
 
@@ -1133,6 +1209,13 @@ describe('architectGitFlowService', () => {
       predictedBranches: [],
     };
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+    gitBranchWorktreeInspectMock.mockImplementation(async (params: { repoPath: string; worktreeKey: string }) => ({
+      worktreeKey: params.worktreeKey,
+      worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+      branchName: null,
+      status: 'absent' as const,
+      isDirty: null,
+    }));
 
     const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
 
@@ -1181,6 +1264,7 @@ describe('architectGitFlowService', () => {
     expect(result.repositories.map((repository) => repository.projectId)).toEqual(['web']);
     expect(result.deletedWorktreeKeys).toEqual([
       toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
+      toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
     ]);
   });
 
@@ -1219,6 +1303,9 @@ describe('architectGitFlowService', () => {
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeInspect: gitWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
+        gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
+        gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+        gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
@@ -1247,6 +1334,28 @@ describe('architectGitFlowService', () => {
       branchName: 'feature/ghost',
       planBranchName: 'plan/checkout',
     })).rejects.toThrow('Unable to resolve repository path for project session-project-ghost.');
+  });
+
+  it('merges feature branches into the plan inside the integration worktree', async () => {
+    await architectGitFlowService.mergeFeatureBranchIntoPlanBranch({
+      projectId: 'web',
+      branchName: 'feature/checkout/checkout-web',
+      planBranchName: 'plan/checkout',
+    });
+
+    expect(gitBranchWorktreeCreateMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      worktreeKey: toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
+      branchName: 'plan/checkout',
+      fromRef: 'develop',
+      fallbackBranches: ['develop', 'main'],
+    });
+    expect(gitMergeMock).toHaveBeenCalledWith({
+      repoPath: getExpectedIntegrationWorktreePath('web', '/repos/web', 'plan/checkout'),
+      branchName: 'feature/checkout/checkout-web',
+      intoBranch: 'plan/checkout',
+    });
+    expect(gitCheckoutMock).not.toHaveBeenCalled();
   });
 
   it('requires the plan to be archived before deleting it', async () => {
@@ -1330,7 +1439,9 @@ describe('architectGitFlowService', () => {
     ]);
     expect(result.deletedWorktreeKeys).toEqual([
       toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
+      toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
       toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
+      toPlanIntegrationWorktreeKey('api', 'plan/checkout'),
     ]);
     expect(gitBranchDeleteRemoteMock).not.toHaveBeenCalled();
   });

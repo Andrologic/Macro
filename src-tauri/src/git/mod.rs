@@ -959,6 +959,7 @@ impl GitRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::build::CheckoutBuilder;
     use std::fs;
     use tempfile::TempDir;
 
@@ -996,6 +997,8 @@ mod tests {
         }
         repo.set_head(&format!("refs/heads/{}", branch_name))
             .expect("set head");
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .expect("checkout head");
     }
 
     fn current_branch_name_for_test(repo: &Repository) -> Option<String> {
@@ -1047,7 +1050,7 @@ mod tests {
         let state = GitState::new();
 
         let ensured = state
-            .ensure_task_worktree(&repo, "123", "task-123", None, None)
+            .ensure_task_worktree(&repo, "123", "task-123", None, None, &[])
             .expect("worktree");
         let worktree_path = ensured.worktree_path;
 
@@ -1069,7 +1072,7 @@ mod tests {
         fs::write(temp.path().join(".gitignore"), "node_modules").expect("write gitignore");
 
         state
-            .ensure_task_worktree(&repo, "124", "task-124", None, None)
+            .ensure_task_worktree(&repo, "124", "task-124", None, None, &[])
             .expect("worktree");
 
         assert_eq!(
@@ -1098,6 +1101,7 @@ mod tests {
                     &format!("task-reuse-{index}"),
                     None,
                     None,
+                    &[],
                 )
                 .expect("worktree");
 
@@ -1115,11 +1119,11 @@ mod tests {
         let state = GitState::new();
 
         let first_path = state
-            .ensure_task_worktree(&repo, "125", "task-125", None, None)
+            .ensure_task_worktree(&repo, "125", "task-125", None, None, &[])
             .expect("first worktree")
             .worktree_path;
         let second_path = state
-            .ensure_task_worktree(&repo, "125", "task-125", None, None)
+            .ensure_task_worktree(&repo, "125", "task-125", None, None, &[])
             .expect("second worktree")
             .worktree_path;
 
@@ -1163,7 +1167,7 @@ mod tests {
 
         let state = GitState::new();
         state
-            .ensure_task_worktree(&repo, "cross-branch", "task-cross-branch", None, None)
+            .ensure_task_worktree(&repo, "cross-branch", "task-cross-branch", None, None, &[])
             .expect("worktree");
 
         assert_eq!(
@@ -1209,7 +1213,7 @@ mod tests {
 
         let state = GitState::new();
         state
-            .ensure_task_worktree(&repo, "rare-skip", "task-rare-skip", None, None)
+            .ensure_task_worktree(&repo, "rare-skip", "task-rare-skip", None, None, &[])
             .expect("worktree");
 
         assert!(!temp.path().join(".gitignore").exists());
@@ -1258,6 +1262,7 @@ mod tests {
                 "task-rare-confirmed",
                 None,
                 Some("integration-ready"),
+                &[],
             )
             .expect("worktree");
 
@@ -1351,7 +1356,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "456", "task-456", None, None)
+            .ensure_task_worktree(&repo, "456", "task-456", None, None, &[])
             .expect("worktree")
             .worktree_path;
 
@@ -1375,7 +1380,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "789", "task-789", None, None)
+            .ensure_task_worktree(&repo, "789", "task-789", None, None, &[])
             .expect("worktree")
             .worktree_path;
 
@@ -1401,7 +1406,7 @@ mod tests {
         let state = GitState::new();
 
         let worktree_path = state
-            .ensure_task_worktree(&repo, "790", "task-790", None, None)
+            .ensure_task_worktree(&repo, "790", "task-790", None, None, &[])
             .expect("worktree")
             .worktree_path;
 
@@ -1422,7 +1427,7 @@ mod tests {
         let state = GitState::new();
 
         let task_worktree = state
-            .ensure_task_worktree(&repo, "debug-reset", "task-debug-reset", None, None)
+            .ensure_task_worktree(&repo, "debug-reset", "task-debug-reset", None, None, &[])
             .expect("task worktree")
             .worktree_path;
         fs::write(task_worktree.join("dirty.txt"), "dirty").expect("dirty worktree");
@@ -1460,13 +1465,13 @@ mod tests {
         let state = GitState::new();
 
         let ensured = state
-            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None)
+            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None, &[])
             .expect("worktree");
         let worktree_path = ensured.worktree_path.clone();
         fs::remove_dir_all(&worktree_path).expect("remove worktree path");
 
         let repaired = state
-            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None)
+            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None, &[])
             .expect("repaired worktree");
 
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
@@ -1487,6 +1492,7 @@ mod tests {
                 "task-registered-missing",
                 None,
                 None,
+                &[],
             )
             .expect("worktree")
             .worktree_path;
@@ -1501,6 +1507,7 @@ mod tests {
                 "task-registered-missing",
                 None,
                 None,
+                &[],
             )
             .expect("repaired worktree");
 
@@ -1520,7 +1527,7 @@ mod tests {
         fs::write(orphan_path.join("README.md"), "orphan").expect("write orphan file");
 
         let repaired = state
-            .ensure_task_worktree(&repo, "orphan", "task-orphan", None, None)
+            .ensure_task_worktree(&repo, "orphan", "task-orphan", None, None, &[])
             .expect("repaired worktree");
 
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
@@ -1535,11 +1542,11 @@ mod tests {
         let state = GitState::new();
 
         let legacy = state
-            .ensure_task_worktree(&repo, "legacy-key", "feature-legacy", None, None)
+            .ensure_task_worktree(&repo, "legacy-key", "feature-legacy", None, None, &[])
             .expect("legacy worktree");
 
         let reused = state
-            .ensure_task_worktree(&repo, "current-key", "feature-legacy", None, None)
+            .ensure_task_worktree(&repo, "current-key", "feature-legacy", None, None, &[])
             .expect("reused worktree");
 
         assert_eq!(reused.status, TaskWorktreeEnsureStatus::Repaired);
@@ -1555,7 +1562,14 @@ mod tests {
         let state = GitState::new();
 
         let legacy_path = state
-            .ensure_task_worktree(&repo, "legacy-remove", "feature-legacy-remove", None, None)
+            .ensure_task_worktree(
+                &repo,
+                "legacy-remove",
+                "feature-legacy-remove",
+                None,
+                None,
+                &[],
+            )
             .expect("legacy worktree")
             .worktree_path;
 
@@ -1576,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_task_worktree_detaches_primary_workdir_when_branch_checked_out() {
+    fn test_ensure_task_worktree_checks_out_stable_branch_when_primary_branch_checked_out() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
         let state = GitState::new();
@@ -1584,15 +1598,137 @@ mod tests {
         checkout_branch(&repo, "feature-detach");
 
         let ensured = state
-            .ensure_task_worktree(&repo, "detach", "feature-detach", None, None)
+            .ensure_task_worktree(
+                &repo,
+                "detach",
+                "feature-detach",
+                None,
+                None,
+                &["main".to_string()],
+            )
             .expect("worktree");
         let worktree_repo = Repository::open(&ensured.worktree_path).expect("open worktree repo");
 
-        assert!(repo.head_detached().expect("head detached state"));
-        assert_eq!(current_branch_name_for_test(&repo), None);
+        assert!(!repo.head_detached().expect("head detached state"));
+        assert_eq!(current_branch_name_for_test(&repo).as_deref(), Some("main"));
         assert_eq!(
             current_branch_name_for_test(&worktree_repo).as_deref(),
             Some("feature-detach")
+        );
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_creates_plan_worktree_without_changing_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        checkout_branch(&repo, "plan/example");
+        checkout_branch(&repo, "main");
+
+        let ensured = state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-example",
+                "plan/example",
+                None,
+                &["main".to_string()],
+            )
+            .expect("branch worktree");
+        let worktree_repo = Repository::open(&ensured.worktree_path).expect("open worktree repo");
+
+        assert!(ensured.worktree_path.ends_with(Path::new(
+            ".macro/worktrees/integration-integration-web-plan-example"
+        )));
+        assert_eq!(current_branch_name_for_test(&repo).as_deref(), Some("main"));
+        assert_eq!(
+            current_branch_name_for_test(&worktree_repo).as_deref(),
+            Some("plan/example")
+        );
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_checks_out_stable_branch_when_plan_branch_is_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        checkout_branch(&repo, "plan/root");
+
+        state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-root",
+                "plan/root",
+                None,
+                &["main".to_string()],
+            )
+            .expect("branch worktree");
+
+        assert!(!repo.head_detached().expect("head detached state"));
+        assert_eq!(current_branch_name_for_test(&repo).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_rejects_dirty_root_when_plan_branch_is_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        checkout_branch(&repo, "plan/dirty-root");
+        fs::write(temp.path().join("README.md"), "dirty primary").expect("write dirty file");
+
+        let err = state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-dirty",
+                "plan/dirty-root",
+                None,
+                &["main".to_string()],
+            )
+            .expect_err("dirty primary checkout should fail");
+
+        match err {
+            BackendError::GitRepositoryNotClean { .. } => {}
+            other => panic!("expected GitRepositoryNotClean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_creates_local_fallback_from_origin() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let main_commit = repo
+            .find_branch("main", BranchType::Local)
+            .expect("main branch")
+            .get()
+            .target()
+            .expect("main target");
+        repo.reference(
+            "refs/remotes/origin/develop",
+            main_commit,
+            true,
+            "set remote develop",
+        )
+        .expect("create remote develop");
+
+        checkout_branch(&repo, "plan/remote-fallback");
+
+        state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-remote",
+                "plan/remote-fallback",
+                None,
+                &["develop".to_string(), "main".to_string()],
+            )
+            .expect("branch worktree");
+
+        assert!(repo.find_branch("develop", BranchType::Local).is_ok());
+        assert_eq!(
+            current_branch_name_for_test(&repo).as_deref(),
+            Some("develop")
         );
     }
 
@@ -1606,7 +1742,14 @@ mod tests {
         fs::write(temp.path().join("README.md"), "dirty primary").expect("write dirty file");
 
         let err = state
-            .ensure_task_worktree(&repo, "dirty-primary", "feature-dirty-primary", None, None)
+            .ensure_task_worktree(
+                &repo,
+                "dirty-primary",
+                "feature-dirty-primary",
+                None,
+                None,
+                &[],
+            )
             .expect_err("dirty primary checkout should fail");
 
         match err {

@@ -84,6 +84,12 @@ const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/worktrees/task-1',
 }));
+const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
 const gitBranchListMock = mock(async (): Promise<{
   local: Array<{ name: string; is_head: boolean; commit: string }>;
   remote: Array<{ name: string; is_head: boolean; commit: string }>;
@@ -204,6 +210,7 @@ mock.module('../services/tauriIpc', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -227,6 +234,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -357,6 +365,7 @@ describe('useTaskStore.finishTask', () => {
     gitWorktreeInspectMock.mockClear();
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
+    gitBranchWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitWorktreeRemoveMock.mockImplementation(async () => ({
       removed: true,
@@ -618,7 +627,7 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });
@@ -683,13 +692,13 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitRebaseBranchMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       branchName: 'feature/task-1',
       ontoBranch: 'plan/checkout',
       confirm: true,
     });
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });
@@ -737,7 +746,7 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });

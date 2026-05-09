@@ -455,7 +455,8 @@ export type ContextFootprintReason =
   | 'total_context_ratio'
   | 'hidden_context_ratio'
   | 'tool_turn_count'
-  | 'post_compaction_overflow';
+  | 'post_compaction_overflow'
+  | 'hard_stop_ratio';
 
 export interface ContextFootprint {
   totalEstimatedTokens: number;
@@ -466,12 +467,23 @@ export interface ContextFootprint {
   imagePlaceholderTokens: number;
   citationTokens: number;
   modelContextWindowTokens: number;
+  reservedTokens: number;
+  usableContextTokens: number;
   threshold: ContextFootprintThreshold;
   reason: ContextFootprintReason;
   totalContextRatio: number;
+  usableContextRatio: number;
   hiddenContextRatio: number;
+  hardStopRatio: number;
+  isHardStop: boolean;
   toolTurnCount: number;
 }
+
+export type ContextCompactionKind =
+  | 'background'
+  | 'blocking'
+  | 'overflow_recovery'
+  | 'manual';
 
 export type ToolContextDigestKind =
   | 'file_read'
@@ -487,6 +499,7 @@ export interface ToolContextDigestEntry {
   evidence_excerpt: string;
   source_message_id: string;
   hash: string;
+  timestamp?: string;
 }
 
 export interface ConversationCompactionState {
@@ -502,6 +515,12 @@ export interface ConversationCompactionState {
   version: number;
   createdAt: string;
   updatedAt: string;
+  prunedToolContextMessageIds?: string[];
+  reservedTokens?: number;
+  footprintBefore?: ContextFootprint;
+  footprintAfter?: ContextFootprint;
+  degradedReason?: ContextFootprintReason | null;
+  compactionKind?: ContextCompactionKind;
 }
 
 export interface ChatGptProviderTurnState {
@@ -566,6 +585,7 @@ export interface ConversationQuestionnaireState {
 export type ConversationExecutionPhase =
   | 'idle'
   | 'preparing'
+  | 'overflow_recovery'
   | 'streaming'
   | 'error';
 
