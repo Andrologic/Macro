@@ -6,6 +6,11 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+### Fixed
+
+- Fixed OpenAI-compatible reasoning/tool-call replay for Kimi, DeepSeek, OpenRouter, Mistral, Claude-like, and LiteLLM providers, including OpenCode Go Kimi preserved-thinking requests after tool calls.
+- Removed temporary provider debug console/Rust instrumentation added while diagnosing OpenCode Go errors.
+
 ## 0.1.0-rc.7
 
 ### Added
