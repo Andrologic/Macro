@@ -97,6 +97,11 @@ export async function windowIsMaximized(): Promise<boolean> {
   return invokeWindow<boolean>('window_is_maximized');
 }
 
+export async function windowIsFullscreen(): Promise<boolean> {
+  const window = await getCurrentTauriWindow();
+  return window.isFullscreen();
+}
+
 export async function windowSetSize(width: number, height: number): Promise<void> {
   await invokeWindow<void>('window_set_size', { width, height });
 }
@@ -177,6 +182,18 @@ export async function windowOnResized(listener: () => void): Promise<() => void>
 export async function windowOnMoved(listener: () => void): Promise<() => void> {
   const window = await getCurrentTauriWindow();
   return window.onMoved(() => listener());
+}
+
+export async function windowOnScaleChanged(listener: () => void): Promise<() => void> {
+  const window = await getCurrentTauriWindow();
+  return window.onScaleChanged(() => listener());
+}
+
+export async function windowOnFocusChanged(
+  listener: (focused: boolean) => void
+): Promise<() => void> {
+  const window = await getCurrentTauriWindow();
+  return window.onFocusChanged(({ payload }) => listener(payload));
 }
 
 export async function windowOnCloseRequested(
