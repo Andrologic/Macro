@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.0-rc.7
+
 ### Added
 
 - Added task-level Architect checklists: generated strategies can now attach concrete todos to each plan task, and Implement agents can read and update the current task checklist through dedicated todo tools.
@@ -17,14 +19,19 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 - Reworked the Architect Branches view into a task progress view that shows readable task titles, todo progress, and checklist items when todos exist, while legacy tasks without generated todos remain compact.
 - Clarified dependency-blocked Implement tasks with a locked conversation state and a calm Changes panel state instead of presenting them as workspace preparation failures.
+- Updated task plan badges to use monochrome plan-kind icons for feature, release, hotfix, and bugfix tasks.
 - Updated Architect prompts and tool schemas so sequential work is represented by task dependencies and task todos, not by reusing a branch for multiple tasks.
 - Improved plan compatibility handling so older plans without `todos` remain completable, and adding a todo initializes a real persisted checklist without schema migration.
+- Switched Tauri and TypeScript build scripts to use project-local CLIs so builds do not depend on a globally healthy Node/Tauri installation.
 
 ### Fixed
 
 - Stabilized feature slug collision handling and predicted branch status normalization for one-branch-per-task plans.
 - Hardened task completion and finalization guards so open task todos block Architect task completion, while legacy plans without generated todos do not.
+- Fixed commit message generation paths used by Implement task flows.
+- Matched the integrated terminal to the active app theme, including live theme changes without recreating terminal sessions.
 - Improved integrated terminal behavior by supplying a complete PTY environment, exposing clear/interrupt controls, following the user's configured Unix shell, and avoiding the macOS zsh migration warning on new sessions.
+- Reduced provider send latency by sharing timeline instrumentation across ChatGPT, Copilot, OpenAI-compatible, and streaming IPC paths.
 - Prevented noisy repository refresh loops while implementation tasks are awaiting a user response, including pending questionnaires.
 - Stabilized `Too many open files` / `EMFILE` handling with refresh backoff, deduplicated notifications, typed resource-pressure errors, and watcher exclusions for cache, build, dependency, agent workspace, and generated worktree directories.
 - Added repair-oriented plan metadata handling, including typed workspace/metadata errors, conservative health inspection, orphan cleanup, and preservation of local `AwaitingResponse` state when persistence is temporarily unavailable.
@@ -32,6 +39,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 - Prevented transient CMD/PowerShell windows on Windows by routing background provider, Git, terminal, Copilot runtime, and launcher commands through explicit hidden-process wrappers while keeping user-requested external terminals visible.
 - Hardened provider diagnostics with OpenCode Go HTTP-only capability classification, Copilot runtime classification, typed keyring-unavailable handling, and stable keyring/provider operation logging.
 - Made tool activity status rendering realistic by marking each tool `running` and `done` independently, preserving completed statuses during mixed activity, and labeling sequential versus parallel tool batches.
+- Stabilized native macOS traffic light positioning after fullscreen transitions by moving recovery into the AppKit layer and avoiding React-driven fullscreen polling.
 
 ## 0.1.0-rc.6
 
