@@ -71,6 +71,7 @@ import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
 import {
   getTooManyOpenFilesNotificationKey,
@@ -310,11 +311,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         indicatorState === 'merge_blocked' ||
         indicatorState === 'merge_failed')
   );
-  const lockTooltip = task.is_blocked
-    ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
-      tasks: task.blocked_by.join(', '),
-    })
-    : '';
+  const lockTooltip = getDependencyBlockedMessage(task, t) ?? '';
   useEffect(() => {
     if (!showMenu) return;
 
@@ -423,7 +420,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 className={status.color}
               />
             </div>
-            {task.is_blocked && task.blocked_by.length > 0 && (
+            {task.is_blocked && lockTooltip && (
               <div className="pointer-events-none absolute left-0 top-9 z-20 hidden min-w-56 max-w-72 rounded-md border border-orange-500/30 bg-popover px-2 py-1.5 text-xs text-orange-300 shadow-lg group-hover/lock:block">
                 {lockTooltip}
               </div>
