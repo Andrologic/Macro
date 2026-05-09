@@ -892,7 +892,8 @@ describe('StrategyGraph', () => {
           projectId: 'project-1',
           todos: [
             { id: 'todo-1', title: 'Wire API', status: 'done' },
-            { id: 'todo-2', title: 'Update tests', status: 'pending' },
+            { id: 'todo-2', title: 'Update tests', status: 'in-progress' },
+            { id: 'todo-3', title: 'Polish responsive states', status: 'pending' },
           ],
         },
         {
@@ -1092,7 +1093,8 @@ describe('StrategyGraph', () => {
     expect(document.body.textContent).toContain('Checkout API');
     expect(document.body.textContent).toContain('Wire API');
     expect(document.body.textContent).toContain('Update tests');
-    expect(document.body.textContent).toContain('Progress: 1/2');
+    expect(document.body.textContent).toContain('Polish responsive states');
+    expect(document.body.textContent).toContain('Progress: 1/3');
     expect(document.body.textContent).toContain('Graph cleanup');
     expect(document.body.textContent).toContain('Plain branch task');
     expect(document.body.textContent).toContain('Branch slug wins');
