@@ -42,6 +42,10 @@ import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState
 import { NeedReferenceChip } from '../architect/NeedReferenceChip';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
 import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
+import {
+  getDependencyBlockedMessage,
+  TaskBlockedState,
+} from '../implement/TaskBlockedState';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -754,6 +758,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode === 'Implement' &&
     selectedTask?.task_source === 'architect' &&
     selectedTaskTodos.length > 0;
+  const isSelectedTaskDependencyBlocked =
+    mode === 'Implement' && Boolean(selectedTask?.is_blocked);
+  const selectedTaskBlockedMessage = getDependencyBlockedMessage(selectedTask, t);
   const implementTaskIdForSend =
     mode === 'Implement'
       ? selectedTask?.id ?? currentConversation?.task_id ?? null
@@ -844,6 +851,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
     isImplementTaskSelectionMissing ||
+    isSelectedTaskDependencyBlocked ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
 
@@ -1551,6 +1559,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               stateKind={workspaceState.kind}
               onPrimaryAction={() => openProjectModal(null)}
             />
+          ) : isSelectedTaskDependencyBlocked && selectedTask ? (
+            <TaskBlockedState
+              title={t('implement.taskBlockedTitle', 'Task blocked')}
+              message={selectedTaskBlockedMessage}
+              help={t(
+                'implement.taskBlockedConversationHelp',
+                'Complete the prerequisite tasks before starting implementation here.'
+              )}
+            />
           ) : selectedConversationId && currentMessages.length > 0 ? (
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
               {renderedMessageItems.map((virtualMessage) => {
@@ -1742,7 +1759,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               )}
             </div>
 
-            {selectedTask && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
+            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
+              <TaskBlockedState
+                variant="compact"
+                title={t('implement.taskBlockedTitle', 'Task blocked')}
+                message={selectedTaskBlockedMessage}
+              />
+            )}
+
+            {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1857,7 +1882,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                        : isImplementComposerInKickoffMode
+                      : isSelectedTaskDependencyBlocked
+                        ? t(
+                            'implement.taskBlockedComposerPlaceholder',
+                            'Task blocked until prerequisites are completed'
+                          )
+                      : isImplementComposerInKickoffMode
                         ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
                         : !selectedProviderId || !selectedModelId
                         ? t('chat.selectProvider')

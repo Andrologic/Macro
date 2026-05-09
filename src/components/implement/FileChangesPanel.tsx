@@ -60,6 +60,10 @@ import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import {
+  getDependencyBlockedMessage,
+  TaskBlockedState,
+} from './TaskBlockedState';
+import {
   presentServiceError,
   presentWorktreeError,
 } from '../../services/degradedErrorPresentation';
@@ -994,13 +998,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const outOfScopeMessage = currentTaskLoadState === 'out_of_scope'
     ? currentTaskLoadMessage
     : null;
+  const dependencyBlockedMessage = getDependencyBlockedMessage(currentTask, t);
   const isManualDraftEmptyState =
     isManualDraftPendingInitialization(currentTask) &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree');
   const draftEmptyStateMessage = isManualDraftEmptyState
     ? currentTaskLoadMessage
     : null;
-  const mappingError = !isManualDraftEmptyState &&
+  const mappingError = !dependencyBlockedMessage && !isManualDraftEmptyState &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree')
     ? currentTaskLoadMessage
     : null;
@@ -1340,17 +1345,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
+        {!isLoading && !mappingError && dependencyBlockedMessage && (
+          <TaskBlockedState
+            variant="panel"
+            title={t('implement.taskBlockedTitle', 'Task blocked')}
+            message={dependencyBlockedMessage}
+            help={t(
+              'implement.taskBlockedChangesHelp',
+              'Complete the prerequisite tasks before reviewing changes here.'
+            )}
+          />
+        )}
         {!isLoading && !mappingError && !displayError && outOfScopeMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {outOfScopeMessage}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {draftEmptyStateMessage}
           </div>
         )}
-        {!isLoading && displayError && (
+        {!isLoading && !dependencyBlockedMessage && displayError && (
           <div className="px-4 py-6">
             {displayErrorPresentation ? (
               <ActionableErrorCallout
@@ -1364,12 +1380,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && repositories.map((repository) => {
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && repositories.map((repository) => {
           const project = getProjectById(repository.projectId);
           const repositorySummary = repositorySummaryById.get(repository.id);
           const isExpanded =

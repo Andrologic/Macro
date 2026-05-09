@@ -159,6 +159,7 @@ type TaskState = {
     draft?: boolean;
     task_source?: 'architect' | 'standalone' | 'plan_finalization';
     is_blocked?: boolean;
+    blocked_by?: string[];
     status?: string;
     execution_targets?: Array<{ projectId: string }>;
     project_ids?: string[];
@@ -1152,6 +1153,52 @@ describe('ChatZone', () => {
     expect(composer?.disabled).toBe(false);
     expect(composer?.getAttribute('placeholder')).toBe('Optional guidance for this task kickoff');
     expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
+    expect(taskState.startTask).not.toHaveBeenCalled();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('shows a locked Implement state for dependency-blocked tasks', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: true,
+          blocked_by: ['Prepare checkout model'],
+          status: 'Blocked',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: ['task-0'],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Task blocked');
+    expect(requireContainer().textContent).toContain('Blocked by: Prepare checkout model');
+    expect(requireContainer().textContent).not.toContain('Task briefing');
+    expect(requireContainer().textContent).not.toContain('Optional guidance for this task kickoff');
+    expect(requireContainer().querySelector('[data-icon="lock"]')).not.toBeNull();
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(true);
+    expect(composer?.getAttribute('placeholder')).toBe('Task blocked until prerequisites are completed');
     expect(taskState.startTask).not.toHaveBeenCalled();
     expect(chatState.sendMessage).not.toHaveBeenCalled();
   });
