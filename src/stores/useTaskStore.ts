@@ -60,6 +60,7 @@ import {
   mergePlanFinalizationRuntimeState,
   type PlanFinalizationRuntimeState,
 } from '../services/planFinalization';
+import { loadOpenTaskTodosForCompletion } from '../services/taskTodoToolService';
 import {
   buildInitialMergeWorkflowRuntimeState,
   buildMergeWorkflowFailureState,
@@ -227,6 +228,38 @@ const isTaskArchived = (task: Pick<CatalogedImplementTask, 'archived_at'>): bool
 const isPlanFinalizationRuntimeTask = (
   task: Pick<CatalogedImplementTask, 'task_source'> | null | undefined
 ): boolean => (task ? isPlanFinalizationTask(task) : false);
+
+const createTaskTodosBlockedError = (
+  openTodos: NonNullable<CatalogedImplementTask['todos']>
+): Error | null => {
+  if (openTodos.length === 0) {
+    return null;
+  }
+  const labels = openTodos.map((todo) => todo.title).join(', ');
+  return new Error(
+    tTask(
+      'implement.errors.taskTodosOpenForComplete',
+      'Cannot complete task while todos remain open: {{todos}}',
+      { todos: labels }
+    )
+  );
+};
+
+const createTaskTodosBlockedErrorFromPlan = async (
+  task: Pick<
+    CatalogedImplementTask,
+    | 'id'
+    | 'title'
+    | 'task_source'
+    | 'plan_id'
+    | 'plan_storage_branch'
+    | 'plan_target_branch'
+    | 'todos'
+  >
+): Promise<Error | null> => {
+  const openTodos = await loadOpenTaskTodosForCompletion(task, getArchitectPlan);
+  return createTaskTodosBlockedError(openTodos);
+};
 
 const getTaskPlanStorageBranch = (
   task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
@@ -3455,6 +3488,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: error.message });
       throw error;
     }
+    if (kind === 'task_completion') {
+      const todoError = await createTaskTodosBlockedErrorFromPlan(task);
+      if (todoError) {
+        set({ lastError: todoError.message });
+        throw todoError;
+      }
+    }
 
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
     let currentRuntime: MergeWorkflowRuntimeState | null =
@@ -4289,6 +4329,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     if (currentTask.status === status) {
       return;
+    }
+
+    if (status === 'Completed') {
+      const todoError = await createTaskTodosBlockedErrorFromPlan(currentTask);
+      if (todoError) {
+        set({ lastError: todoError.message });
+        return;
+      }
     }
 
     if (!canTransitionTaskStatus(currentTask.status, status)) {

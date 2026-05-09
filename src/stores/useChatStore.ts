@@ -12,6 +12,7 @@ import {
   Conversation,
   ConversationCompactionState,
   PendingToolApproval,
+  PlanNodeTodo,
   ReasoningEffort,
   ToolRiskLevel,
   ToolTrace,
@@ -99,6 +100,14 @@ import {
   canPlanFinalizationTaskReceiveMessages,
   isPlanFinalizationTaskSource,
 } from "../services/planFinalization";
+import {
+  summarizePlanNodeTodoProgress,
+} from "../services/planNodeTodos";
+import {
+  applyTaskTodoOperations,
+  formatTaskTodoResult,
+  resolveTaskTodoTarget,
+} from "../services/taskTodoToolService";
 import {
   buildToolRiskLevelSystemInstruction,
   DEFAULT_TOOL_RISK_LEVEL,
@@ -3454,6 +3463,55 @@ export const useChatStore = create<ChatStore>((set, get) => {
       : `Source passage update failed (citation_id=${citationId}).`;
   };
 
+  const handleTaskTodoToolCall = async (
+    conversationId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    if (toolName !== "task_todo_get" && toolName !== "task_todo_update") {
+      return undefined;
+    }
+
+    const taskState = useTaskStore.getState();
+    const target = await resolveTaskTodoTarget({
+      args,
+      executionContext: resolveConversationExecutionContext(conversationId),
+      selectedTaskId: useAppStore.getState().selectedTaskId,
+      tasks: taskState.tasks,
+      getArchitectPlan,
+      mutating: toolName === "task_todo_update",
+    });
+    if (toolName === "task_todo_get") {
+      return formatTaskTodoResult("task_todo_get", target);
+    }
+
+    const nextTodos = applyTaskTodoOperations(target.node.todos, args.operations);
+    const nextNodes = (target.plan.nodes || []).map((node) =>
+      node.id === target.node.id ? { ...node, todos: nextTodos } : node,
+    );
+    await updateArchitectPlan({
+      branchName: target.branchName,
+      planId: target.plan.id,
+      nodes: nextNodes,
+      setActive: false,
+    });
+
+    const appState = useAppStore.getState();
+    if (appState.activeArchitectPlanId === target.plan.id) {
+      appState.setPlanNodes(nextNodes);
+    }
+    await useTaskStore.getState().refreshFromPlan();
+
+    const updatedTarget = await resolveTaskTodoTarget({
+      args: { task_id: target.task.id },
+      executionContext: resolveConversationExecutionContext(conversationId),
+      selectedTaskId: useAppStore.getState().selectedTaskId,
+      tasks: useTaskStore.getState().tasks,
+      getArchitectPlan,
+    });
+    return formatTaskTodoResult("task_todo_update", updatedTarget);
+  };
+
   const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
@@ -3679,6 +3737,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (normalizedToolName === "edit_source_passage") {
       return editConversationSource(conversationId, args);
+    }
+
+    const taskTodoToolResult = await handleTaskTodoToolCall(
+      conversationId,
+      normalizedToolName,
+      args,
+    );
+    if (taskTodoToolResult !== undefined) {
+      return taskTodoToolResult;
     }
 
     const architectToolResult = await handleArchitectToolCall({
@@ -4182,6 +4249,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
+    if (appMode === "Implement" && executionContext.taskId) {
+      const task = useTaskStore.getState().getTaskById(executionContext.taskId);
+      if (task && task.task_source === "architect") {
+        const taskTodos = Array.isArray(task.todos) ? task.todos : [];
+        const todos: PlanNodeTodo[] =
+          taskTodos.length > 0
+            ? taskTodos
+            : [
+                {
+                  id: `implicit:${task.id}`,
+                  title: task.title,
+                  ...(task.description ? { description: task.description } : {}),
+                  status:
+                    task.status === "Completed"
+                      ? "done"
+                      : task.status === "InProgress"
+                        ? "in-progress"
+                        : "pending",
+                },
+              ];
+        const progress = summarizePlanNodeTodoProgress(todos);
+        systemInstructions.push(
+          `[Task Todos] task_id="${task.id}", progress="${progress.done}/${progress.total}". Use task_todo_get to refresh this checklist and task_todo_update to mark progress. Open todos block task completion. todos=${JSON.stringify(todos)}.`,
+        );
+      }
+    }
+
     if (appMode === "Architect") {
       systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
       systemInstructions.push(
@@ -4203,7 +4297,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each subproject Git workflow profile and merge into the plan integration branch.",
       );
       systemInstructions.push(
-        "Each executable plan node owns its own work branch. Express sequential work with `dependencies`, never by reusing a `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Do not create a `Finalize plan` node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.",
+        "Each executable plan node owns its own work branch. Express sequential work with `dependencies`, never by reusing a `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {

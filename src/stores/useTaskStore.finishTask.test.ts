@@ -32,6 +32,9 @@ let planState = {
       assignedBranch: 'feature/task-1',
       projectId: 'project-1',
       projectIds: ['project-1'],
+      todos: undefined as
+        | Array<{ id: string; title: string; status: 'pending' | 'in-progress' | 'done' }>
+        | undefined,
       archivedAt: null as string | null,
       archiveReason: null as 'merged' | null,
       mergedAt: null as string | null,
@@ -336,6 +339,7 @@ describe('useTaskStore.finishTask', () => {
           assignedBranch: 'feature/task-1',
           projectId: 'project-1',
           projectIds: ['project-1'],
+          todos: undefined,
           archivedAt: null,
           archiveReason: null,
           mergedAt: null,
@@ -447,6 +451,147 @@ describe('useTaskStore.finishTask', () => {
     expect(writeArchitectTaskExecutionMock).toHaveBeenCalledTimes(1);
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
+
+  it('blocks architect task completion while task todos remain open', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [
+            { id: 'todo-1', title: 'Wire the checkout API', status: 'done' },
+            { id: 'todo-2', title: 'Update the branch view', status: 'pending' },
+          ],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [
+            { id: 'todo-1', title: 'Wire the checkout API', status: 'done' },
+            { id: 'todo-2', title: 'Update the branch view', status: 'pending' },
+          ],
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Update the branch view',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Update the branch view');
+  });
+
+  it('blocks architect task completion with fresh plan todos when the task snapshot is stale', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [{ id: 'todo-1', title: 'Fresh plan todo', status: 'pending' }],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [{ id: 'todo-1', title: 'Stale done todo', status: 'done' }],
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Fresh plan todo',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Fresh plan todo');
+  });
+
+  it('blocks direct completed status with fresh plan todos when the task snapshot is stale', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [{ id: 'todo-1', title: 'Direct status blocker', status: 'pending' }],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [{ id: 'todo-1', title: 'Stale done todo', status: 'done' }],
+        }),
+      ] as never[],
+      lastError: null,
+    });
+
+    await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+
+    expect(useTaskStore.getState().lastError).toContain('Direct status blocker');
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+  });
+
+  it('does not block legacy architect task completion when todos were never generated', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: undefined,
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: undefined,
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
   });
 
   it('uses fast-forward when the merge workflow action requests it', async () => {

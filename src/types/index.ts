@@ -27,6 +27,7 @@ export type AgentType = 'build' | 'plan';
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
+export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
 export type ProjectGitSetupState =
   | 'not_git'
@@ -113,6 +114,7 @@ export interface PlanNode {
   type: PlanNodeType;
   status: PlanNodeStatus;
   dependencies: string[];
+  todos?: PlanNodeTodo[];
   assignedBranch?: string;
   branchType?: Exclude<GitFlowBranchType, 'plan'>;
   branchSlug?: string;
@@ -122,6 +124,13 @@ export interface PlanNode {
   archivedAt?: string | null;
   archiveReason?: string | null;
   mergedAt?: string | null;
+}
+
+export interface PlanNodeTodo {
+  id: string;
+  title: string;
+  description?: string;
+  status: PlanNodeTodoStatus;
 }
 
 export interface PlanEdge {

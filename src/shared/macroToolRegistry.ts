@@ -64,6 +64,8 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "strategy_generate",
   "strategy_get",
   "strategy_update",
+  "task_todo_get",
+  "task_todo_update",
   "plan_create",
   "plan_list",
   "plan_get",
@@ -78,6 +80,24 @@ const objectTool = (
   id,
   description,
   parameters,
+});
+
+const planNodeTodoSchema = (description?: string): JsonSchema => ({
+  type: "array",
+  ...(description ? { description } : {}),
+  items: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["pending", "in-progress", "done"],
+      },
+    },
+    required: ["title"],
+  },
 });
 
 const copilotBuiltInOverrideTool = (
@@ -845,7 +865,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -935,6 +955,9 @@ export const MACRO_TOOL_REGISTRY = [
                 items: { type: "string" },
                 description: "Titles of nodes this one depends on.",
               },
+              todos: planNodeTodoSchema(
+                "Concrete implementation checklist for this node. Each item should be small enough for the Implement agent to complete and mark done.",
+              ),
             },
             required: ["title", "type"],
           },
@@ -1119,8 +1142,64 @@ export const MACRO_TOOL_REGISTRY = [
     },
   ),
   objectTool(
+    "task_todo_get",
+    "Read the todo checklist for the current Implement task or an allowed Architect task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+      },
+      required: [],
+    },
+  ),
+  objectTool(
+    "task_todo_update",
+    "Modify the todo checklist for the current Implement task or an allowed Architect task. Use this to keep task progress explicit before completing the task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        operations: {
+          type: "array",
+          description: "Todo patch operations applied in order.",
+          items: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["add", "update", "remove", "reorder", "set_status"],
+              },
+              todo_id: { type: "string" },
+              title: { type: "string" },
+              description: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["pending", "in-progress", "done"],
+              },
+              after_todo_id: {
+                type: "string",
+                description:
+                  "For reorder, move todo_id after this todo id. Omit or pass an empty string to move to the top.",
+              },
+            },
+            required: ["action"],
+          },
+        },
+      },
+      required: ["operations"],
+    },
+  ),
+  objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, and keep assignedBranch as a legacy fallback only. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, and keep per-node todos current. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1171,6 +1250,7 @@ export const MACRO_TOOL_REGISTRY = [
                 enum: ["pending", "in-progress", "completed", "blocked"],
               },
               dependencies: { type: "array", items: { type: "string" } },
+              todos: planNodeTodoSchema(),
             },
             required: ["title", "type"],
           },
@@ -1214,6 +1294,7 @@ export const MACRO_TOOL_REGISTRY = [
                 enum: ["pending", "in-progress", "completed", "blocked"],
               },
               dependencies: { type: "array", items: { type: "string" } },
+              todos: planNodeTodoSchema(),
             },
             required: ["action"],
           },

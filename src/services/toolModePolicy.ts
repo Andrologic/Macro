@@ -50,6 +50,10 @@ const TERMINAL_TOOLS = [
   "terminal_read",
   "terminal_kill",
 ] as const;
+const IMPLEMENT_TASK_TODO_TOOLS = [
+  "task_todo_get",
+  "task_todo_update",
+] as const;
 
 const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
   ...SHARED_CONTEXT_TOOLS,
@@ -81,6 +85,7 @@ export const getToolModePolicy = (
   return {
     allowedToolIds: [
       ...ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS,
+      ...IMPLEMENT_TASK_TODO_TOOLS,
       ...GIT_TOOLS,
       ...TERMINAL_TOOLS,
     ],
