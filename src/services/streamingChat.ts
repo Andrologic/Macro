@@ -1119,12 +1119,38 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     options.onToolTracesUpdate?.(snapshotToolTraces());
   };
 
+  const isProtectedToolTraceStatus = (status: ToolTrace['status']): boolean =>
+    status === 'pending_approval' || status === 'denied';
+
+  const mergeToolTraceStatus = (
+    existingTrace: ToolTrace | undefined,
+    incomingStatus: ToolTrace['status']
+  ): ToolTrace['status'] => {
+    if (!existingTrace) return incomingStatus;
+    if (isProtectedToolTraceStatus(existingTrace.status)) return existingTrace.status;
+    if (existingTrace.status === 'done' && incomingStatus === 'running') return 'done';
+    return incomingStatus;
+  };
+
   const upsertToolTrace = (trace: ToolTrace) => {
     const existingTrace = toolTraces.get(trace.tool_call_id);
+    const status = mergeToolTraceStatus(existingTrace, trace.status);
+    const completedAtMs =
+      status === 'done'
+        ? trace.completed_at_ms ?? existingTrace?.completed_at_ms ?? Date.now()
+        : trace.completed_at_ms ?? existingTrace?.completed_at_ms;
     const nextTrace: ToolTrace = {
-      ...trace,
+      tool_call_id: trace.tool_call_id,
+      tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
+      detail: trace.detail ?? existingTrace?.detail,
+      status,
       visible_offset:
         existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
+      execution_mode: trace.execution_mode ?? existingTrace?.execution_mode,
+      batch_id: trace.batch_id ?? existingTrace?.batch_id,
+      order: trace.order ?? existingTrace?.order,
+      started_at_ms: existingTrace?.started_at_ms ?? trace.started_at_ms,
+      completed_at_ms: completedAtMs,
     };
     if (!toolTraces.has(trace.tool_call_id)) {
       toolTraceOrder.push(trace.tool_call_id);
@@ -1138,7 +1164,11 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     for (const toolCallId of toolTraceOrder) {
       const trace = toolTraces.get(toolCallId);
       if (!trace || trace.status !== 'running') continue;
-      toolTraces.set(toolCallId, { ...trace, status: 'done' });
+      toolTraces.set(toolCallId, {
+        ...trace,
+        status: 'done',
+        completed_at_ms: trace.completed_at_ms ?? Date.now(),
+      });
       changed = true;
     }
     if (changed) {
@@ -1157,7 +1187,7 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
 
   return {
     appendProviderDelta(chunk: string) {
-      appendVisibleChunk(chunk, true);
+      appendVisibleChunk(chunk, false);
     },
     flushProviderDelta() {
       // Provider deltas are appended directly.
@@ -1167,14 +1197,49 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     },
     markRunningToolTracesDone,
     upsertToolTrace,
+    upsertToolTraceFromProvider(trace: ToolTrace) {
+      upsertToolTrace(trace);
+    },
+    beginToolTrace(
+      toolCallId: string,
+      toolName: string,
+      detail?: string,
+      metadata?: Pick<ToolTrace, 'execution_mode' | 'batch_id' | 'order'>
+    ) {
+      const existingTrace = toolTraces.get(toolCallId);
+      upsertToolTrace({
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        detail: detail ?? existingTrace?.detail,
+        status: 'running',
+        visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
+        execution_mode: metadata?.execution_mode ?? existingTrace?.execution_mode,
+        batch_id: metadata?.batch_id ?? existingTrace?.batch_id,
+        order: metadata?.order ?? existingTrace?.order,
+        started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
+      });
+    },
+    completeToolTrace(toolCallId: string) {
+      const existingTrace = toolTraces.get(toolCallId);
+      if (!existingTrace || isProtectedToolTraceStatus(existingTrace.status)) return;
+      upsertToolTrace({
+        ...existingTrace,
+        status: 'done',
+        completed_at_ms: Date.now(),
+      });
+    },
     upsertRunningToolTrace(toolCallId: string, toolName: string, detail?: string) {
       const existingTrace = toolTraces.get(toolCallId);
       upsertToolTrace({
         tool_call_id: toolCallId,
         tool_name: toolName,
-        detail,
+        detail: detail ?? existingTrace?.detail,
         status: 'running',
         visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
+        execution_mode: existingTrace?.execution_mode,
+        batch_id: existingTrace?.batch_id,
+        order: existingTrace?.order,
+        started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
       });
     },
     addHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
@@ -1942,6 +2007,7 @@ const streamNativeTurnViaTauri = async (params: {
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
     let questionToolRequestCount = 0;
+    let nativeToolRequestOrder = 0;
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -2003,6 +2069,20 @@ const streamNativeTurnViaTauri = async (params: {
                 event.payload.args && typeof event.payload.args === 'object'
                   ? event.payload.args
                   : {};
+              const detail = formatToolTraceDetail(toolName, args);
+              const order = nativeToolRequestOrder;
+              nativeToolRequestOrder += 1;
+
+              params.onToolTrace?.({
+                tool_call_id: toolCallId,
+                tool_name: toolName,
+                detail,
+                status: 'running',
+                execution_mode: 'parallel',
+                batch_id: requestId,
+                order,
+                started_at_ms: Date.now(),
+              });
 
               try {
                 let toolResult = '';
@@ -2053,6 +2133,17 @@ const streamNativeTurnViaTauri = async (params: {
                   result: toolResult,
                 }).catch(() => undefined);
                 params.onToolResult?.(toolName, toolResult);
+              } finally {
+                params.onToolTrace?.({
+                  tool_call_id: toolCallId,
+                  tool_name: toolName,
+                  detail,
+                  status: 'done',
+                  execution_mode: 'parallel',
+                  batch_id: requestId,
+                  order,
+                  completed_at_ms: Date.now(),
+                });
               }
             })();
           }),
@@ -2263,13 +2354,13 @@ const streamChatViaNativeToolCallingProvider = async (
           }
         },
         onToolTrace: (toolTrace) => {
-          streamAccumulator.upsertToolTrace(toolTrace);
+          streamAccumulator.upsertToolTraceFromProvider(toolTrace);
         },
         onToolCall,
         onToolResult,
       });
       turnResult.toolTraces?.forEach((toolTrace) => {
-        streamAccumulator.upsertToolTrace(toolTrace);
+        streamAccumulator.upsertToolTraceFromProvider(toolTrace);
       });
       if (turnResult.hiddenContext) {
         streamAccumulator.addHiddenContextBlock(turnResult.hiddenContext);
@@ -2384,12 +2475,18 @@ const streamChatViaNativeToolCallingProvider = async (
         (toolCall) => toolCall.function.name === 'question'
       ).length;
 
-      for (const toolCall of validToolCalls) {
+      const toolBatchId = `native-turn-${turnCount}`;
+      for (const [toolIndex, toolCall] of validToolCalls.entries()) {
         const toolName = toolCall.function.name;
         architectToolNamesUsed.add(toolName);
         let toolResult = '';
         let customToolResult: string | undefined;
         let detail: string | undefined;
+        streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+          execution_mode: 'sequential',
+          batch_id: toolBatchId,
+          order: toolIndex,
+        });
 
         if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
           toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
@@ -2400,13 +2497,18 @@ const streamChatViaNativeToolCallingProvider = async (
             tool_name: toolName,
           });
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+          streamAccumulator.completeToolTrace(toolCall.id);
           continue;
         }
 
         try {
           const args = JSON.parse(toolCall.function.arguments);
           detail = formatToolTraceDetail(toolName, args);
-          streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
+          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+            execution_mode: 'sequential',
+            batch_id: toolBatchId,
+            order: toolIndex,
+          });
 
           if (!allowedTools.has(toolName)) {
             toolResult = `Tool ${toolName} is disabled for the current mode.`;
@@ -2611,6 +2713,8 @@ const streamChatViaNativeToolCallingProvider = async (
           toolResult = `Error executing tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+        } finally {
+          streamAccumulator.completeToolTrace(toolCall.id);
         }
 
         toolResults.push({
@@ -3251,12 +3355,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           (toolCall) => toolCall.function.name === 'question'
         ).length;
 
-        for (const toolCall of validToolCalls) {
+        const toolBatchId = `generic-turn-${turnCount}`;
+        for (const [toolIndex, toolCall] of validToolCalls.entries()) {
           const toolName = toolCall.function.name;
           architectToolNamesUsed.add(toolName);
           let toolResult = '';
           let customToolResult: string | undefined;
           let detail: string | undefined;
+          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+            execution_mode: 'sequential',
+            batch_id: toolBatchId,
+            order: toolIndex,
+          });
 
           if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
             toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
@@ -3266,13 +3376,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               content: toolResult,
             });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+            streamAccumulator.completeToolTrace(toolCall.id);
             continue;
           }
 
           try {
             const args = JSON.parse(toolCall.function.arguments);
             detail = formatToolTraceDetail(toolName, args);
-            streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
+            streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+              execution_mode: 'sequential',
+              batch_id: toolBatchId,
+              order: toolIndex,
+            });
 
             if (!allowedTools.has(toolName)) {
               toolResult = `Tool ${toolName} is disabled for the current mode.`;
@@ -3489,6 +3604,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+          } finally {
+            streamAccumulator.completeToolTrace(toolCall.id);
           }
 
           toolResults.push({

@@ -18,6 +18,15 @@ const translationMock = {
     if (key === 'chat.runningTools') {
       return 'Running tools';
     }
+    if (key === 'chat.toolActivity') {
+      return 'Tool activity';
+    }
+    if (key === 'chat.toolExecutionParallel') {
+      return 'Parallel';
+    }
+    if (key === 'chat.toolExecutionSequential') {
+      return 'Sequential';
+    }
     if (key === 'chat.toolsUsedCount') {
       const count = options?.count ?? 0;
       return `${count} ${count === 1 ? 'tool' : 'tools'} used`;
@@ -61,7 +70,9 @@ const getToolNames = (container: HTMLElement): string[] =>
 
 const getToolGroupContainers = (container: HTMLElement): Element[] =>
   Array.from(
-    container.querySelectorAll('[data-testid="tool-traces-running"], [data-testid="tool-traces-completed"]')
+    container.querySelectorAll(
+      '[data-testid="tool-traces-running"], [data-testid="tool-traces-activity"], [data-testid="tool-traces-completed"]'
+    )
   );
 
 const getToolItemIconNames = (container: HTMLElement): string[] =>
@@ -150,11 +161,86 @@ describe('MarkdownRenderer tool trace rendering', () => {
     });
 
     expect(getToolNames(container!)).toEqual(['read', 'grep']);
+    expect(container?.querySelector('[data-testid="tool-traces-activity"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="tool-traces-activity"]')?.textContent).toContain('Tool activity');
     expect(
       Array.from(container!.querySelectorAll('[data-testid="tool-trace-item"]')).map(
         (element) => element.getAttribute('data-tool-status')
       )
     ).toEqual(['done', 'running']);
+  });
+
+  it('labels parallel tool activity when multiple active traces share a batch', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+
+    await act(async () => {
+      root?.render(
+        <MarkdownRenderer
+          content="Assistant response"
+          isStreaming
+          toolTraces={[
+            {
+              tool_call_id: 'call_1',
+              tool_name: 'read',
+              status: 'running',
+              execution_mode: 'parallel',
+              batch_id: 'batch_1',
+              order: 1,
+            },
+            {
+              tool_call_id: 'call_2',
+              tool_name: 'grep',
+              status: 'running',
+              batch_id: 'batch_1',
+              order: 0,
+            },
+          ]}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const mode = container?.querySelector('[data-testid="tool-traces-execution-mode"]');
+    expect(mode?.getAttribute('data-execution-mode')).toBe('parallel');
+    expect(mode?.textContent).toBe('Parallel');
+    expect(getToolNames(container!)).toEqual(['grep', 'read']);
+  });
+
+  it('labels sequential tool activity when traces come from a sequential batch', async () => {
+    const { MarkdownRenderer } = await loadMarkdownRenderer();
+
+    await act(async () => {
+      root?.render(
+        <MarkdownRenderer
+          content="Assistant response"
+          isStreaming
+          toolTraces={[
+            {
+              tool_call_id: 'call_1',
+              tool_name: 'read',
+              status: 'done',
+              execution_mode: 'sequential',
+              batch_id: 'batch_1',
+              order: 0,
+            },
+            {
+              tool_call_id: 'call_2',
+              tool_name: 'grep',
+              status: 'running',
+              execution_mode: 'sequential',
+              batch_id: 'batch_1',
+              order: 1,
+            },
+          ]}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const mode = container?.querySelector('[data-testid="tool-traces-execution-mode"]');
+    expect(container?.querySelector('[data-testid="tool-traces-activity"]')).not.toBeNull();
+    expect(mode?.getAttribute('data-execution-mode')).toBe('sequential');
+    expect(mode?.textContent).toBe('Sequential');
   });
 
   it('compacts completed tools into a collapsed accordion while keeping order', async () => {
