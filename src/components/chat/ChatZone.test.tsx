@@ -2,6 +2,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import {
+  createTranslationMock,
+  installReactI18nextMock,
+} from '../../test-utils/reactI18nextMock';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -278,30 +282,15 @@ const useTaskStore = createStoreHook(() => taskState, (nextState) => {
   taskState = nextState;
 });
 
-const translationMock = {
-  t: (key: string, fallbackOrOptions?: string | { defaultValue?: string }, maybeOptions?: { defaultValue?: string }) => {
-    const interpolate = (
-      template: string,
-      values?: Record<string, string | number | undefined>
-    ) => template.replace(/\{\{(\w+)\}\}/g, (_match, token) => String(values?.[token] ?? `{{${token}}}`));
-    const explicitTranslations: Record<string, string> = {
-      'chat.typeMessage': 'Type your message',
-      'chat.stop': 'Stop',
-      'chat.newConversation': 'New Conversation',
-      'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
-      'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
-      'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
-      'chat.toolTurnLimitFallbackDescription': 'Macro showed a fallback summary.',
-    };
-    if (key in explicitTranslations) {
-      return explicitTranslations[key]!;
-    }
-    if (typeof fallbackOrOptions === 'string') {
-      return interpolate(fallbackOrOptions, maybeOptions as Record<string, string | number | undefined>);
-    }
-    return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
-  },
-};
+const translationMock = createTranslationMock({
+  'chat.typeMessage': 'Type your message',
+  'chat.stop': 'Stop',
+  'chat.newConversation': 'New Conversation',
+  'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
+  'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
+  'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
+  'chat.toolTurnLimitFallbackDescription': 'Macro showed a fallback summary.',
+});
 
 const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock((_content: string) => undefined);
@@ -315,9 +304,7 @@ const loadChatZoneModule = async () => {
   importCounter += 1;
   mock.restore();
 
-  mock.module('react-i18next', () => ({
-    useTranslation: () => translationMock,
-  }));
+  installReactI18nextMock(translationMock);
 
   mock.module('../../stores/useAppStore', () => ({
     useAppStore,

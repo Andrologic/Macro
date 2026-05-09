@@ -16,6 +16,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 ### Changed
 
 - Reworked the Architect Branches view into a task progress view that shows readable task titles, todo progress, and checklist items when todos exist, while legacy tasks without generated todos remain compact.
+- Clarified dependency-blocked Implement tasks with a locked conversation state and a calm Changes panel state instead of presenting them as workspace preparation failures.
 - Updated Architect prompts and tool schemas so sequential work is represented by task dependencies and task todos, not by reusing a branch for multiple tasks.
 - Improved plan compatibility handling so older plans without `todos` remain completable, and adding a todo initializes a real persisted checklist without schema migration.
 

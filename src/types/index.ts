@@ -165,6 +165,8 @@ export interface TaskExecutionTarget {
   predictedBranchId?: string | null;
 }
 
+export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
+
 export interface PredictedCommit {
   id: string;
   branchId: string;
@@ -355,6 +357,18 @@ export interface Task {
   archive_reason?: string | null;
   merged_at?: string | null;
   needs_revalidation?: boolean;
+  task_source?: ImplementTaskSource;
+  assigned_branch?: string;
+  branch_name?: string;
+  branch_id?: string | null;
+  branch_task_index?: number;
+  blocked_by_task_ids?: string[];
+  blocked_by?: string[];
+  is_blocked?: boolean;
+  is_ready?: boolean;
+  sequence_index?: number;
+  execution_targets?: TaskExecutionTarget[];
+  todos?: PlanNodeTodo[];
 }
 
 export interface GitNode {

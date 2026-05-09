@@ -5,26 +5,34 @@ import type { FileChangesPanel as FileChangesPanelComponent } from './FileChange
 import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
+import type { useProviderStore as UseProviderStoreHook } from '../../stores/useProviderStore';
 import {
   type ReviewRepositoryState,
 } from '../../stores/useFileChangesStore';
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
+import {
+  createTranslationMock,
+  installReactI18nextMock,
+} from '../../test-utils/reactI18nextMock';
 
 let FileChangesPanel!: typeof FileChangesPanelComponent;
 let useAppStore!: typeof UseAppStoreHook;
 let useTaskStore!: typeof UseTaskStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
+let useProviderStore!: typeof UseProviderStoreHook;
 let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
 let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
 let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
+let initialProviderState: ReturnType<typeof useProviderStore.getState> | null = null;
 let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | null = null;
 let notifySuccessMock: ReturnType<typeof mock>;
 let notifyErrorMock: ReturnType<typeof mock>;
 let notifyActionRequiredMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
+const translationMock = createTranslationMock();
 
 class ResizeObserverTestMock {
   private callback: ResizeObserverCallback;
@@ -60,6 +68,7 @@ class ResizeObserverTestMock {
 
 const loadFileChangesPanelModules = async () => {
   importCounter += 1;
+  installReactI18nextMock(translationMock);
 
   const tauriWindowModule = await import(
     `../../services/tauriWindow.ts?file-changes-panel-tauri-window-test=${importCounter}`
@@ -97,6 +106,26 @@ const loadFileChangesPanelModules = async () => {
   );
   mock.module('../../stores/useChatStore', () => ({
     ...chatStoreModule,
+  }));
+
+  const providerStoreModule = await import(
+    `../../stores/useProviderStore.ts?file-changes-panel-provider-store-test=${importCounter}`
+  );
+  mock.module('../../stores/useProviderStore', () => ({
+    ...providerStoreModule,
+    providerHasCredentials: (provider: {
+      isEnabled?: boolean;
+      isLocal?: boolean;
+      apiKey?: string;
+      hasStoredApiKey?: boolean;
+      authStatus?: string;
+    }) =>
+      !!provider.isEnabled &&
+      (!!provider.isLocal ||
+        !!provider.apiKey ||
+        !!provider.hasStoredApiKey ||
+        provider.authStatus === 'connected' ||
+        provider.authStatus === 'authenticated'),
   }));
 
   const fileChangesStoreModule = await import(
@@ -147,10 +176,12 @@ const loadFileChangesPanelModules = async () => {
   ({ useAppStore } = appStoreModule);
   ({ useTaskStore } = taskStoreModule);
   ({ useChatStore } = chatStoreModule);
+  ({ useProviderStore } = providerStoreModule);
   ({ useFileChangesStore } = fileChangesStoreModule);
   initialAppState = useAppStore.getState();
   initialTaskState = useTaskStore.getState();
   initialChatState = useChatStore.getState();
+  initialProviderState = useProviderStore.getState();
   initialFileChangesState = useFileChangesStore.getState();
 };
 
@@ -528,6 +559,9 @@ describe('FileChangesPanel', () => {
     }
     if (initialChatState) {
       useChatStore.setState(initialChatState, true);
+    }
+    if (initialProviderState) {
+      useProviderStore.setState(initialProviderState, true);
     }
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
