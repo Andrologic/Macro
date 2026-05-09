@@ -32,6 +32,11 @@ type TauriWindowState = {
 let appState: AppStoreState;
 let tauriWindowState: TauriWindowState;
 let windowSetTrafficLightPositionMock: ReturnType<typeof mock>;
+let windowResizeListeners: Array<() => void>;
+let windowScaleChangedListeners: Array<() => void>;
+let windowFocusChangedListeners: Array<(focused: boolean) => void>;
+let windowEventUnlistenCount: number;
+let windowFullscreenState: boolean;
 let chromeState: {
   platform: 'macos' | 'windows' | 'linux' | 'web';
   isTauriWindow: boolean;
@@ -86,11 +91,85 @@ const registerHeaderMocks = () => {
 
   mock.module('../../services/tauriWindow', () => ({
     ...actualTauriWindow,
+    windowIsFullscreen: () => Promise.resolve(windowFullscreenState),
+    windowOnFocusChanged: (listener: (focused: boolean) => void) => {
+      windowFocusChangedListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowFocusChangedListeners = windowFocusChangedListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
+    windowOnResized: (listener: () => void) => {
+      windowResizeListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowResizeListeners = windowResizeListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
+    windowOnScaleChanged: (listener: () => void) => {
+      windowScaleChangedListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowScaleChangedListeners = windowScaleChangedListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
     windowSetTrafficLightPosition: (...args: [number, number]) =>
       windowSetTrafficLightPositionMock(...args),
   }));
   mock.module('../../services/tauriWindow.ts', () => ({
     ...actualTauriWindow,
+    windowIsFullscreen: () => Promise.resolve(windowFullscreenState),
+    windowOnFocusChanged: (listener: (focused: boolean) => void) => {
+      windowFocusChangedListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowFocusChangedListeners = windowFocusChangedListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
+    windowOnResized: (listener: () => void) => {
+      windowResizeListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowResizeListeners = windowResizeListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
+    windowOnScaleChanged: (listener: () => void) => {
+      windowScaleChangedListeners.push(listener);
+      let active = true;
+      return Promise.resolve(() => {
+        if (!active) return;
+        active = false;
+        windowEventUnlistenCount += 1;
+        windowScaleChangedListeners = windowScaleChangedListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      });
+    },
     windowSetTrafficLightPosition: (...args: [number, number]) =>
       windowSetTrafficLightPositionMock(...args),
   }));
@@ -140,6 +219,11 @@ describe('Header', () => {
       startDragging: () => undefined,
     };
     windowSetTrafficLightPositionMock = mock(() => Promise.resolve());
+    windowResizeListeners = [];
+    windowScaleChangedListeners = [];
+    windowFocusChangedListeners = [];
+    windowEventUnlistenCount = 0;
+    windowFullscreenState = false;
     chromeState = {
       platform: 'windows',
       isTauriWindow: true,
@@ -303,6 +387,165 @@ describe('Header', () => {
     });
 
     expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+  });
+
+  it('does not force native macOS traffic light reapply for ordinary unchanged window events', async () => {
+    const { Header } = await loadHeader();
+    chromeState = {
+      platform: 'macos',
+      isTauriWindow: true,
+      showCustomWindowControls: false,
+      disableCustomDoubleClickZoom: true,
+      usesNativeMacosTitlebar: true,
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+    expect(windowResizeListeners).toHaveLength(1);
+    expect(windowScaleChangedListeners).toHaveLength(1);
+    expect(windowFocusChangedListeners).toHaveLength(1);
+
+    windowSetTrafficLightPositionMock.mockClear();
+
+    await act(async () => {
+      windowResizeListeners[0]?.();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+
+    windowSetTrafficLightPositionMock.mockClear();
+
+    await act(async () => {
+      windowScaleChangedListeners[0]?.();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+
+    windowSetTrafficLightPositionMock.mockClear();
+
+    await act(async () => {
+      windowFocusChangedListeners[0]?.(false);
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      windowFocusChangedListeners[0]?.(true);
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+  });
+
+  it('skips traffic light reapply while fullscreen and reapplies once after leaving fullscreen', async () => {
+    const { Header } = await loadHeader();
+    chromeState = {
+      platform: 'macos',
+      isTauriWindow: true,
+      showCustomWindowControls: false,
+      disableCustomDoubleClickZoom: true,
+      usesNativeMacosTitlebar: true,
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    windowSetTrafficLightPositionMock.mockClear();
+    windowFullscreenState = true;
+
+    await act(async () => {
+      windowResizeListeners[0]?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+
+    windowFullscreenState = false;
+
+    await act(async () => {
+      windowResizeListeners[0]?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+  });
+
+  it('cleans up native macOS traffic light event listeners on unmount', async () => {
+    const { Header } = await loadHeader();
+    chromeState = {
+      platform: 'macos',
+      isTauriWindow: true,
+      showCustomWindowControls: false,
+      disableCustomDoubleClickZoom: true,
+      usesNativeMacosTitlebar: true,
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(windowResizeListeners).toHaveLength(1);
+    expect(windowScaleChangedListeners).toHaveLength(1);
+    expect(windowFocusChangedListeners).toHaveLength(1);
+
+    await act(async () => {
+      root?.unmount();
+      await Promise.resolve();
+    });
+
+    root = null;
+    expect(windowEventUnlistenCount).toBe(3);
+    expect(windowResizeListeners).toHaveLength(0);
+    expect(windowScaleChangedListeners).toHaveLength(0);
+    expect(windowFocusChangedListeners).toHaveLength(0);
   });
 
   it('starts dragging on macOS title bar mouse down', async () => {

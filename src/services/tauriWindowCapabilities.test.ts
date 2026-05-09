@@ -30,4 +30,18 @@ describe('Tauri window close permissions', () => {
 
     expect(permissionIds).toContain('core:window:allow-destroy');
   });
+
+  it('allows fullscreen state reads for macOS traffic-light recovery', () => {
+    const tauriWindowSource = readRepoFile('src', 'services', 'tauriWindow.ts');
+
+    expect(tauriWindowSource).toContain('windowIsFullscreen');
+    expect(tauriWindowSource).toContain('.isFullscreen()');
+
+    const capability = JSON.parse(
+      readRepoFile('src-tauri', 'capabilities', 'default.json')
+    ) as CapabilityFile;
+    const permissionIds = capability.permissions.map(permissionIdentifier);
+
+    expect(permissionIds).toContain('core:window:allow-is-fullscreen');
+  });
 });

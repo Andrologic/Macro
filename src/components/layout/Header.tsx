@@ -11,7 +11,13 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { getGlobalProjectById } from '../../services/globalProjects';
-import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
+import {
+  windowIsFullscreen,
+  windowOnFocusChanged,
+  windowOnResized,
+  windowOnScaleChanged,
+  windowSetTrafficLightPosition,
+} from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
 import { type AppMode } from '../../types';
 import { cn } from '../../utils/cn';
@@ -34,6 +40,7 @@ const ProjectNavigator = lazy(() =>
 const MODES_DROPDOWN_WIDTH = 192;
 const MODES_DROPDOWN_GAP = 6;
 const MODES_DROPDOWN_MARGIN = 8;
+const MACOS_TRAFFIC_LIGHT_FULLSCREEN_EXIT_REAPPLY_DELAY_MS = 120;
 const INTERACTIVE_TITLEBAR_SELECTOR =
   "button, a, input, textarea, select, summary, [role='button'], [role='link'], [contenteditable='true']";
 
@@ -176,8 +183,23 @@ export function Header({
     }
 
     let cancelled = false;
+    let reapplyFrame: number | null = null;
+    let reapplyTimeout: number | null = null;
+    let wasFullscreen = false;
+    const unlisteners: Array<() => void> = [];
 
-    const syncTrafficLights = () => {
+    const clearDeferredReapply = () => {
+      if (reapplyFrame !== null) {
+        window.cancelAnimationFrame(reapplyFrame);
+        reapplyFrame = null;
+      }
+      if (reapplyTimeout !== null) {
+        window.clearTimeout(reapplyTimeout);
+        reapplyTimeout = null;
+      }
+    };
+
+    const syncTrafficLights = ({ force = false }: { force?: boolean } = {}) => {
       if (cancelled) {
         return;
       }
@@ -185,7 +207,7 @@ export function Header({
       const position = getMacosTrafficLightPosition(effectiveUiZoomScale);
       const positionKey = `${position.x}:${position.y}`;
 
-      if (lastTrafficLightPositionRef.current === positionKey) {
+      if (!force && lastTrafficLightPositionRef.current === positionKey) {
         return;
       }
 
@@ -199,12 +221,114 @@ export function Header({
       });
     };
 
+    const scheduleDeferredFullscreenExitReapply = () => {
+      if (cancelled) {
+        return;
+      }
+
+      clearDeferredReapply();
+      reapplyFrame = window.requestAnimationFrame(() => {
+        reapplyFrame = null;
+        syncTrafficLights({ force: true });
+      });
+
+      reapplyTimeout = window.setTimeout(() => {
+        reapplyTimeout = null;
+        syncTrafficLights({ force: true });
+      }, MACOS_TRAFFIC_LIGHT_FULLSCREEN_EXIT_REAPPLY_DELAY_MS);
+    };
+
+    const syncTrafficLightsAfterWindowEvent = async ({
+      deferAfterFullscreenExit = false,
+    }: { deferAfterFullscreenExit?: boolean } = {}) => {
+      if (cancelled) {
+        return;
+      }
+
+      let isFullscreen = false;
+      try {
+        isFullscreen = await windowIsFullscreen();
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to read macOS fullscreen state for traffic lights:', error);
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      if (isFullscreen) {
+        wasFullscreen = true;
+        clearDeferredReapply();
+        return;
+      }
+
+      const justExitedFullscreen = wasFullscreen;
+      wasFullscreen = false;
+      clearDeferredReapply();
+      syncTrafficLights({ force: justExitedFullscreen });
+
+      if (deferAfterFullscreenExit && justExitedFullscreen) {
+        scheduleDeferredFullscreenExitReapply();
+      }
+    };
+
+    const registerTauriWindowListener = async (
+      register: (listener: () => void) => Promise<() => void>,
+      listener: () => void
+    ) => {
+      try {
+        const unlisten = await register(listener);
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        unlisteners.push(unlisten);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to observe macOS traffic light window event:', error);
+        }
+      }
+    };
+
     syncTrafficLights();
-    window.addEventListener('resize', syncTrafficLights);
+    const handleGeometryChange = () => {
+      void syncTrafficLightsAfterWindowEvent({ deferAfterFullscreenExit: true });
+    };
+    const handleSimpleReapply = () => {
+      void syncTrafficLightsAfterWindowEvent();
+    };
+
+    window.addEventListener('resize', handleGeometryChange);
+    void registerTauriWindowListener(windowOnResized, handleGeometryChange);
+    void registerTauriWindowListener(windowOnScaleChanged, handleGeometryChange);
+    void (async () => {
+      try {
+        const unlisten = await windowOnFocusChanged((focused) => {
+          if (focused) {
+            handleSimpleReapply();
+          }
+        });
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        unlisteners.push(unlisten);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to observe macOS traffic light focus event:', error);
+        }
+      }
+    })();
 
     return () => {
       cancelled = true;
-      window.removeEventListener('resize', syncTrafficLights);
+      clearDeferredReapply();
+      window.removeEventListener('resize', handleGeometryChange);
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
     };
   }, [
     effectiveUiZoomScale,
