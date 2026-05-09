@@ -113,19 +113,20 @@ async fn stream_chat_inner(
     if secret_started_at.elapsed().as_millis() > 50 {
         timeline.emit("auth_ready");
     }
-    let body = build_chat_completions_request(&request, &provider)?;
+    let request_body = build_chat_completions_request(&request, &provider)?;
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?;
     timeline.emit("provider_request_sent");
     let response =
-        send_chat_completions_request(&client, &provider, &request, &api_key, &body).await?;
+        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body)
+            .await?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(extract_provider_error(status.as_u16(), &body));
+        let error_body = response.text().await.unwrap_or_default();
+        return Err(extract_provider_error(status.as_u16(), &error_body));
     }
 
     let mut stream = response.bytes_stream();
