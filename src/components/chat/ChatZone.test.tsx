@@ -54,6 +54,15 @@ type MockChatState = {
   messages: MockMessage[];
   selectedConversationId: string | null;
   messagesByConversationId?: Record<string, MockMessage[]>;
+  conversationCompactionStatusById: Record<
+    string,
+    {
+      phase: 'compacting' | 'overflow_recovery' | 'compacted' | 'degraded' | 'too_large';
+      upToMessageId?: string | null;
+      updatedAt?: string | null;
+      summaryText?: string | null;
+    }
+  >;
   getConversationRuntime: (conversationId: string) => {
     phase: 'idle' | 'preparing' | 'streaming' | 'error';
     sessionId: string | null;
@@ -113,6 +122,7 @@ type MockChatState = {
   editMessage: ReturnType<typeof mock>;
   getMessageImages: ReturnType<typeof mock>;
   setMessageImages: ReturnType<typeof mock>;
+  compactConversationNow: ReturnType<typeof mock>;
   architectPlanNamingRecovery: {
     conversationId: string;
     planId: string;
@@ -296,6 +306,7 @@ const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock((_content: string) => undefined);
 let composerEditorValue = '';
 let latestComposerProps: Record<string, unknown> | null = null;
+let manualCompactionVisiblePreference = false;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -433,11 +444,26 @@ const loadChatZoneModule = async () => {
   const actualGlobalProjects = await import(
     `../../services/globalProjects.ts?chat-zone-global-projects-test=${importCounter}`
   );
+  const actualPreferences = await import(
+    `../../services/preferences.ts?chat-zone-preferences-test=${importCounter}`
+  );
 
   mock.module('../../services/globalProjects', () => ({
     ...actualGlobalProjects,
     getFocusedProjectForGroup: () => null,
     getGlobalProjectById: () => null,
+  }));
+
+  mock.module('../../services/preferences', () => ({
+    ...actualPreferences,
+    loadPreference: mock(async (key: string) =>
+      key === actualPreferences.PREF_KEYS.COMPACTION_MANUAL_VISIBLE
+        ? manualCompactionVisiblePreference
+        : actualPreferences.PREF_DEFAULTS[
+            key as keyof typeof actualPreferences.PREF_DEFAULTS
+          ]
+    ),
+    subscribePreference: mock(() => () => undefined),
   }));
 
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
@@ -496,6 +522,7 @@ const resetState = () => {
     conversations: [buildConversation()],
     messages: [],
     selectedConversationId: 'conv-1',
+    conversationCompactionStatusById: {},
     getConversationRuntime: (conversationId: string) =>
       getMockConversationRuntime(chatState, conversationId),
     createConversation: mock(async () => buildConversation()),
@@ -530,6 +557,7 @@ const resetState = () => {
     editMessage: mock(async () => undefined),
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),
+    compactConversationNow: mock(async () => undefined),
     architectPlanNamingRecovery: null,
     setArchitectPlanNamingRecoveryStage: mock(() => undefined),
     retryArchitectPlanNamingRecovery: mock(async () => false),
@@ -558,6 +586,7 @@ const resetState = () => {
   };
   composerEditorValue = '';
   latestComposerProps = null;
+  manualCompactionVisiblePreference = false;
 };
 
 describe('ChatZone', () => {
@@ -631,6 +660,74 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('renders a compaction boundary in the transcript without a header badge', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse avant compression',
+        }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Message après compression' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:30:00.000Z',
+          summaryText: 'Résumé compacté',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
+    expect(boundary).not.toBeNull();
+    expect(boundary?.textContent).toContain('Contexte automatiquement compacté');
+    expect(boundary?.querySelector('[data-icon="archive"]')).not.toBeNull();
+    expect(requireContainer().textContent).not.toContain('Contexte compacté');
+  });
+
+  it('keeps the manual compaction button independent from compacted transcript state', async () => {
+    manualCompactionVisiblePreference = true;
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse avant compression',
+        }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Message après compression' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:30:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await act(async () => undefined);
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
+    ).not.toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
+    ).not.toBeNull();
   });
 
   it('blocks orphan architect conversations when no project is available', async () => {

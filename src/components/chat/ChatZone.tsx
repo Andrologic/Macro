@@ -694,26 +694,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeCompactionStatus = selectedConversationId
     ? conversationCompactionStatusById[selectedConversationId]
     : undefined;
-  const compactionStatusLabel =
-    (activeCompactionStatus?.phase === 'compacting' ||
-      activeCompactionStatus?.phase === 'overflow_recovery')
-      ? t('chat.compactionStatusCompacting', 'Compaction en cours')
-      : activeCompactionStatus?.phase === 'compacted'
-        ? t('chat.compactionStatusCompacted', 'Contexte compacté')
-        : activeCompactionStatus?.phase === 'degraded'
-          ? t('chat.compactionStatusDegraded', 'Contexte dégradé')
-          : activeCompactionStatus?.phase === 'too_large'
-            ? t('chat.compactionStatusTooLarge', 'Contexte trop volumineux')
-            : null;
-  const compactionStatusTone =
-    activeCompactionStatus?.phase === 'too_large'
-      ? 'border-destructive/40 bg-destructive/10 text-destructive'
-      : activeCompactionStatus?.phase === 'degraded'
-        ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-        : activeCompactionStatus?.phase === 'compacting' ||
-            activeCompactionStatus?.phase === 'overflow_recovery'
-          ? 'border-primary/30 bg-primary/10 text-primary'
-          : 'border-border/70 bg-card/60 text-muted-foreground';
   const isCompactionProgressActive =
     activeCompactionStatus?.phase === 'compacting' ||
     activeCompactionStatus?.phase === 'overflow_recovery' ||
@@ -1132,7 +1112,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
       let start = 0;
       return transcriptItems.map((item, index) => {
-        const size = item.kind === 'compaction_boundary' ? 48 : 220;
+        const size = item.kind === 'compaction_boundary' ? 64 : 220;
         const renderedItem = {
           index,
           key: item.key,
@@ -1664,38 +1644,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <LazyPlanSelector />
                 </Suspense>
               </div>
-            )}
-            {compactionStatusLabel && (
-              <span
-                className={cn(
-                  'hidden h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium sm:inline-flex',
-                  compactionStatusTone
-                )}
-                title={
-                  activeCompactionStatus?.summaryText ||
-                  t('chat.compactionStatusTitle', 'Conversation context status')
-                }
-              >
-                <Icon
-                  name={
-                    activeCompactionStatus?.phase === 'too_large' ||
-                    activeCompactionStatus?.phase === 'degraded'
-                      ? 'triangle-alert'
-                      : activeCompactionStatus?.phase === 'compacting' ||
-                          activeCompactionStatus?.phase === 'overflow_recovery'
-                        ? 'loader'
-                        : 'check-circle'
-                  }
-                  size={12}
-                  className={
-                    activeCompactionStatus?.phase === 'compacting' ||
-                    activeCompactionStatus?.phase === 'overflow_recovery'
-                      ? 'animate-spin'
-                      : undefined
-                  }
-                />
-                {compactionStatusLabel}
-              </span>
             )}
             {showManualCompaction && selectedConversationId && (
               <button
