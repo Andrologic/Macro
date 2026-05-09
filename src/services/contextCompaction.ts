@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ContextCompactionKind,
   ContextFootprint,
   ContextFootprintReason,
   ContextFootprintThreshold,
@@ -17,7 +18,8 @@ const EMERGENCY_TOOL_CONTEXT_CHARS = 1200;
 const MAX_DIGEST_ITEMS = 18;
 const MAX_DIGEST_EVIDENCE_CHARS = 220;
 
-type CompactionMode = 'background' | 'blocking' | 'after_compaction';
+type CompactionMode = ContextCompactionKind | 'after_compaction';
+export type ContextCompactionDecision = 'send' | 'retry_after_compaction' | 'hard_stop';
 
 interface CompactionThresholds {
   backgroundRatio: number;
@@ -25,6 +27,19 @@ interface CompactionThresholds {
   hiddenContextRatio: number;
   toolTurnCount: number;
   degradedRatio: number;
+}
+
+export interface ContextBudgetPolicy {
+  auto?: boolean;
+  prune?: boolean;
+  reservedTokens?: number | null;
+  hardStopRatio?: number;
+}
+
+export interface ResolvedContextBudgetPolicy {
+  reservedTokens: number;
+  usableContextTokens: number;
+  hardStopRatio: number;
 }
 
 export interface EstimateConversationFootprintParams {
@@ -36,6 +51,7 @@ export interface EstimateConversationFootprintParams {
   modelContextWindowTokens: number;
   mode?: CompactionMode;
   thresholds?: Partial<CompactionThresholds>;
+  budgetPolicy?: ContextBudgetPolicy;
 }
 
 export interface SummaryGenerationInput {
@@ -54,7 +70,10 @@ export interface MaybeCompactConversationParams {
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
   currentCompactionState?: ConversationCompactionState | null;
-  mode: 'background' | 'blocking';
+  mode: ContextCompactionKind;
+  budgetPolicy?: ContextBudgetPolicy;
+  forceCompaction?: boolean;
+  forcePrune?: boolean;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }
 
@@ -65,6 +84,7 @@ export interface MaybeCompactConversationResult {
   messages: StreamMessage[];
   usedExistingCompaction: boolean;
   degraded: boolean;
+  decision: ContextCompactionDecision;
 }
 
 export interface ProviderCompactionAdapter {
@@ -84,6 +104,12 @@ const DEFAULT_THRESHOLDS: CompactionThresholds = {
 const TOOL_CONTEXT_BLOCK_REGEX =
   /<tool_context\s+([^>]+)>\s*([\s\S]*?)\s*<\/tool_context>/gi;
 const TOOL_ATTR_REGEX = /([a-z_]+)="([^"]*)"/gi;
+const PROTECTED_TOOL_CONTEXT_NAMES = new Set([
+  'question',
+  'task_todo_get',
+  'task_todo_update',
+]);
+const PROTECTED_TOOL_CONTEXT_PREFIXES = ['need_', 'strategy_', 'plan_'];
 
 const normalizeWhitespace = (value: string): string =>
   value.replace(/\s+/g, ' ').trim();
@@ -137,19 +163,26 @@ const countImagePlaceholderTokens = (messages: StreamMessage[]): number =>
   }, 0);
 
 const resolveThreshold = (
-  totalRatio: number,
+  usableRatio: number,
   hiddenRatio: number,
   toolTurnCount: number,
   mode: CompactionMode,
-  thresholds: CompactionThresholds
+  thresholds: CompactionThresholds,
+  isHardStop: boolean
 ): { threshold: ContextFootprintThreshold; reason: ContextFootprintReason } => {
-  if (mode === 'after_compaction' && totalRatio >= thresholds.degradedRatio) {
+  if (isHardStop) {
+    return { threshold: 'degraded', reason: 'hard_stop_ratio' };
+  }
+  if (mode === 'after_compaction' && usableRatio >= thresholds.degradedRatio) {
     return { threshold: 'degraded', reason: 'post_compaction_overflow' };
   }
-  if (totalRatio >= thresholds.blockingRatio) {
+  if (usableRatio >= thresholds.degradedRatio) {
+    return { threshold: 'degraded', reason: 'total_context_ratio' };
+  }
+  if (usableRatio >= thresholds.blockingRatio) {
     return { threshold: 'blocking', reason: 'total_context_ratio' };
   }
-  if (totalRatio >= thresholds.backgroundRatio) {
+  if (usableRatio >= thresholds.backgroundRatio) {
     return { threshold: 'background', reason: 'total_context_ratio' };
   }
   if (hiddenRatio >= thresholds.hiddenContextRatio) {
@@ -167,6 +200,40 @@ const getCompactionThresholds = (
   ...DEFAULT_THRESHOLDS,
   ...overrides,
 });
+
+export const resolveContextBudgetPolicy = (
+  modelContextWindowTokens: number,
+  policy?: ContextBudgetPolicy
+): ResolvedContextBudgetPolicy => {
+  const contextWindow = Math.max(1, Math.trunc(modelContextWindowTokens || 1));
+  const automaticReservedTokens = Math.min(
+    20_000,
+    Math.floor(contextWindow * 0.2)
+  );
+  const explicitReservedTokens =
+    typeof policy?.reservedTokens === 'number' &&
+    Number.isFinite(policy.reservedTokens) &&
+    policy.reservedTokens >= 0
+      ? Math.trunc(policy.reservedTokens)
+      : null;
+  const reservedTokens = Math.min(
+    contextWindow - 1,
+    Math.max(0, explicitReservedTokens ?? automaticReservedTokens)
+  );
+  const hardStopRatio =
+    typeof policy?.hardStopRatio === 'number' &&
+    Number.isFinite(policy.hardStopRatio) &&
+    policy.hardStopRatio > 0 &&
+    policy.hardStopRatio <= 1
+      ? policy.hardStopRatio
+      : 0.98;
+
+  return {
+    reservedTokens,
+    usableContextTokens: Math.max(1, contextWindow - reservedTokens),
+    hardStopRatio,
+  };
+};
 
 const simpleHash = (value: string): string => {
   let hash = 2166136261;
@@ -221,6 +288,16 @@ const parseToolContextAttributes = (rawAttrs: string): Record<string, string> =>
   return attrs;
 };
 
+const isProtectedToolContext = (toolName: string): boolean => {
+  const normalized = toolName.trim();
+  return (
+    PROTECTED_TOOL_CONTEXT_NAMES.has(normalized) ||
+    PROTECTED_TOOL_CONTEXT_PREFIXES.some((prefix) =>
+      normalized.startsWith(prefix)
+    )
+  );
+};
+
 const inferToolDigestKind = (toolName: string): ToolContextDigestKind => {
   if (toolName === 'read' || toolName === 'read_file') return 'file_read';
   if (toolName === 'web_search' || toolName === 'web_fetch') return 'web_result';
@@ -272,6 +349,7 @@ export const parseHiddenToolContext = (
       evidence_excerpt: buildDigestEvidence(body),
       source_message_id: sourceMessageId,
       hash: simpleHash(`${toolName}|${detail}|${body}`),
+      timestamp: attrs.timestamp || undefined,
     };
     if (seen.has(entry.hash)) continue;
     seen.add(entry.hash);
@@ -295,6 +373,114 @@ const buildToolDigest = (
     }
   }
   return Array.from(deduped.values()).slice(0, MAX_DIGEST_ITEMS);
+};
+
+const estimateHiddenContextTokensFromPreparedMessages = (
+  messages: StreamMessage[]
+): number => {
+  let hiddenTokens = 0;
+  for (const message of messages) {
+    if (typeof message.content !== 'string') continue;
+    for (const match of message.content.matchAll(TOOL_CONTEXT_BLOCK_REGEX)) {
+      hiddenTokens += estimateTokensForText(match[0] || '');
+    }
+  }
+  return hiddenTokens;
+};
+
+const getRecentUserTurnStartIndex = (orderedMessages: ChatMessage[]): number => {
+  const userIndexes = orderedMessages.reduce<number[]>((indexes, message, index) => {
+    if (message.role === 'user') {
+      indexes.push(index);
+    }
+    return indexes;
+  }, []);
+
+  if (userIndexes.length < 2) return 0;
+  return userIndexes[userIndexes.length - 2] ?? 0;
+};
+
+const buildPrunedToolContextPlaceholder = (params: {
+  attrs: string;
+  toolName: string;
+  detail: string;
+  body: string;
+  sourceMessageId: string;
+}): string => {
+  const hash = simpleHash(`${params.toolName}|${params.detail}|${params.body}`);
+  const target = inferToolDigestTarget(params.toolName, params.detail, params.body);
+  const excerpt = buildDigestEvidence(params.body);
+  const suffix = ` compacted="true" source_message_id="${params.sourceMessageId}" hash="${hash}"`;
+  return `<tool_context ${params.attrs}${suffix}>
+[pruned tool context]
+tool: ${params.toolName}
+target: ${target}
+excerpt: ${excerpt}
+hash: ${hash}
+</tool_context>`;
+};
+
+export const pruneToolContextBlocks = (
+  preparedMessages: StreamMessage[],
+  orderedMessages: ChatMessage[],
+  options: {
+    force?: boolean;
+    minBodyTokens?: number;
+  } = {}
+): { messages: StreamMessage[]; prunedMessageIds: string[] } => {
+  const recentTurnStartIndex = getRecentUserTurnStartIndex(orderedMessages);
+  const prunedMessageIds = new Set<string>();
+  const minBodyTokens = Math.max(1, options.minBodyTokens ?? 200);
+
+  const messages = preparedMessages.map((message, index) => {
+    const orderedMessage = orderedMessages[index];
+    if (
+      !orderedMessage ||
+      orderedMessage.role !== 'assistant' ||
+      index >= recentTurnStartIndex ||
+      typeof message.content !== 'string' ||
+      !message.content.includes('<tool_context')
+    ) {
+      return message;
+    }
+
+    let changed = false;
+    const content = message.content.replace(
+      TOOL_CONTEXT_BLOCK_REGEX,
+      (match, rawAttrs: string, rawBody: string) => {
+        const attrs = parseToolContextAttributes(rawAttrs || '');
+        const toolName = attrs.tool || 'tool';
+        const body = (rawBody || '').trim();
+        if (!body || isProtectedToolContext(toolName)) {
+          return match;
+        }
+        if (!options.force && estimateTokensForText(body) < minBodyTokens) {
+          return match;
+        }
+
+        changed = true;
+        return buildPrunedToolContextPlaceholder({
+          attrs: rawAttrs,
+          toolName,
+          detail: attrs.detail || '',
+          body,
+          sourceMessageId: orderedMessage.id,
+        });
+      }
+    );
+
+    if (!changed) return message;
+    prunedMessageIds.add(orderedMessage.id);
+    return {
+      ...message,
+      content,
+    };
+  });
+
+  return {
+    messages,
+    prunedMessageIds: Array.from(prunedMessageIds),
+  };
 };
 
 const filterSourcePassagesForBoundary = (
@@ -332,6 +518,9 @@ const computeCompactionFingerprint = (
   );
 
 const buildFallbackSummary = (input: SummaryGenerationInput): string => {
+  const latestRetainedUserRequest = [...input.retainedMessages]
+    .reverse()
+    .find((message) => message.role === 'user');
   const earlierUserRequests = input.compactableMessages
     .filter((message) => message.role === 'user')
     .slice(-3)
@@ -348,12 +537,34 @@ const buildFallbackSummary = (input: SummaryGenerationInput): string => {
     .join('\n');
 
   return [
-    'Compacted prior context summary:',
+    'Current objective:',
+    latestRetainedUserRequest
+      ? truncateMiddle(normalizeWhitespace(latestRetainedUserRequest.content), 220)
+      : 'Continue the current conversation from the retained recent turns.',
+    '',
+    'User instructions:',
+    earlierUserRequests || '- No older user instruction survived deterministic extraction.',
+    '',
+    'Decisions:',
+    '- Preserve recent visible conversation turns verbatim and rely on this compacted state for older context.',
+    '',
+    'Open questions:',
+    '- None captured deterministically.',
+    '',
+    'Active files:',
+    '- See tool facts for referenced paths and targets.',
+    '',
+    'Tool facts:',
+    toolFacts || '- No older tool facts captured.',
+    '',
+    'Remaining work:',
+    '- Continue from the latest retained user turn using this compacted context.',
+    '',
+    'Summary:',
     earlierUserRequests ? `Earlier user requests:\n${earlierUserRequests}` : '',
     earlierAssistantOutputs
       ? `Earlier assistant outputs:\n${earlierAssistantOutputs}`
       : '',
-    toolFacts ? `Tool-derived facts:\n${toolFacts}` : '',
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -507,6 +718,10 @@ export const estimateConversationFootprint = (
   params: EstimateConversationFootprintParams
 ): ContextFootprint => {
   const thresholds = getCompactionThresholds(params.thresholds);
+  const budget = resolveContextBudgetPolicy(
+    params.modelContextWindowTokens,
+    params.budgetPolicy
+  );
   const mode = params.mode || 'blocking';
   const systemTokens = estimateTokensForText(params.systemMessage);
   const toolSchemaTokens = estimateTokensForText(
@@ -517,10 +732,16 @@ export const estimateConversationFootprint = (
     (total, message) => total + estimateTokensForStreamMessage(message),
     0
   );
-  const hiddenContextTokens = params.orderedMessages.reduce(
+  const preparedHiddenContextTokens =
+    estimateHiddenContextTokensFromPreparedMessages(params.preparedMessages);
+  const originalHiddenContextTokens = params.orderedMessages.reduce(
     (total, message) => total + estimateTokensForText(message.hidden_context || ''),
     0
   );
+  const hiddenContextTokens =
+    preparedHiddenContextTokens > 0
+      ? preparedHiddenContextTokens
+      : originalHiddenContextTokens;
   const citationTokens = params.citations.reduce(
     (total, citation) =>
       total +
@@ -542,16 +763,22 @@ export const estimateConversationFootprint = (
     params.modelContextWindowTokens > 0
       ? totalEstimatedTokens / params.modelContextWindowTokens
       : 0;
-  const hiddenContextRatio =
-    params.modelContextWindowTokens > 0
-      ? hiddenContextTokens / params.modelContextWindowTokens
+  const usableContextRatio =
+    budget.usableContextTokens > 0
+      ? totalEstimatedTokens / budget.usableContextTokens
       : 0;
+  const hiddenContextRatio =
+    budget.usableContextTokens > 0
+      ? hiddenContextTokens / budget.usableContextTokens
+      : 0;
+  const isHardStop = totalContextRatio >= budget.hardStopRatio;
   const { threshold, reason } = resolveThreshold(
-    totalContextRatio,
+    usableContextRatio,
     hiddenContextRatio,
     toolTurnCount,
     mode,
-    thresholds
+    thresholds,
+    isHardStop
   );
 
   return {
@@ -563,10 +790,15 @@ export const estimateConversationFootprint = (
     imagePlaceholderTokens,
     citationTokens,
     modelContextWindowTokens: params.modelContextWindowTokens,
+    reservedTokens: budget.reservedTokens,
+    usableContextTokens: budget.usableContextTokens,
     threshold,
     reason,
     totalContextRatio,
+    usableContextRatio,
     hiddenContextRatio,
+    hardStopRatio: budget.hardStopRatio,
+    isHardStop,
     toolTurnCount,
   };
 };
@@ -578,7 +810,11 @@ const buildCompactionState = async (params: {
   preparedMessages: StreamMessage[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  budgetPolicy?: ContextBudgetPolicy;
   currentCompactionState?: ConversationCompactionState | null;
+  prunedToolContextMessageIds?: string[];
+  footprintBefore?: ContextFootprint;
+  compactionKind: ContextCompactionKind;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ConversationCompactionState | null> => {
   const boundaryIndex = getCompactionBoundaryIndex(params.orderedMessages);
@@ -649,6 +885,7 @@ const buildCompactionState = async (params: {
       citations: params.citations,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      budgetPolicy: params.budgetPolicy,
       mode: 'blocking',
     }).totalEstimatedTokens,
     estimatedTokensAfter: 0,
@@ -656,6 +893,14 @@ const buildCompactionState = async (params: {
     version: SOURCE_PASSAGE_VERSION,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    prunedToolContextMessageIds: params.prunedToolContextMessageIds ?? [],
+    reservedTokens: resolveContextBudgetPolicy(
+      params.modelContextWindowTokens,
+      params.budgetPolicy
+    ).reservedTokens,
+    footprintBefore: params.footprintBefore,
+    degradedReason: null,
+    compactionKind: params.compactionKind,
   };
 
   provisionalState.fingerprint = computeCompactionFingerprint(
@@ -690,6 +935,29 @@ export const maybeCompactConversation = async (
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
     mode: params.mode,
+    budgetPolicy: params.budgetPolicy,
+  });
+  const shouldPrune =
+    params.budgetPolicy?.prune !== false &&
+    (params.budgetPolicy?.auto !== false ||
+      params.mode === 'manual' ||
+      params.mode === 'overflow_recovery' ||
+      Boolean(params.forcePrune));
+  const pruned = shouldPrune
+    ? pruneToolContextBlocks(params.preparedMessages, params.orderedMessages, {
+        force: params.forcePrune,
+      })
+    : { messages: params.preparedMessages, prunedMessageIds: [] };
+  const preparedMessages = pruned.messages;
+  const footprintAfterPruning = estimateConversationFootprint({
+    systemMessage: params.systemMessage,
+    preparedMessages,
+    orderedMessages: params.orderedMessages,
+    citations: params.citations,
+    toolDefinitions: params.toolDefinitions,
+    modelContextWindowTokens: params.modelContextWindowTokens,
+    mode: params.mode,
+    budgetPolicy: params.budgetPolicy,
   });
 
   const validCurrentState = validateCompactionState(
@@ -703,7 +971,7 @@ export const maybeCompactConversation = async (
   let usedExistingCompaction = Boolean(validCurrentState);
   let messages = buildMessagesWithCompactionState(
     params.systemMessage,
-    params.preparedMessages,
+    preparedMessages,
     params.orderedMessages,
     params.citations,
     activeState
@@ -717,28 +985,50 @@ export const maybeCompactConversation = async (
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
     mode: 'after_compaction',
+    budgetPolicy: params.budgetPolicy,
   });
 
+  const compactionAllowed =
+    params.budgetPolicy?.auto !== false ||
+    params.mode === 'manual' ||
+    params.mode === 'overflow_recovery' ||
+    Boolean(params.forceCompaction);
   const needsNewCompaction =
-    !activeState &&
-    ((params.mode === 'blocking' && footprintBefore.threshold === 'blocking') ||
-      (params.mode === 'background' &&
-        footprintBefore.threshold !== 'none'));
+    compactionAllowed &&
+    (params.forceCompaction ||
+      (!activeState &&
+        ((params.mode === 'blocking' &&
+          (footprintAfterPruning.threshold === 'blocking' ||
+            footprintAfterPruning.threshold === 'degraded')) ||
+          params.mode === 'overflow_recovery' ||
+          params.mode === 'manual' ||
+          (params.mode === 'background' &&
+            footprintAfterPruning.threshold !== 'none'))));
 
   const existingCompactionInsufficient =
+    compactionAllowed &&
     Boolean(activeState) &&
-    params.mode === 'blocking' &&
-    footprintAfter.threshold === 'blocking';
+    (params.mode === 'blocking' ||
+      params.mode === 'overflow_recovery' ||
+      params.mode === 'manual') &&
+    (footprintAfter.threshold === 'blocking' ||
+      footprintAfter.threshold === 'degraded' ||
+      footprintAfter.isHardStop ||
+      Boolean(params.forceCompaction));
 
   if (needsNewCompaction || existingCompactionInsufficient) {
     const nextState = await buildCompactionState({
       orderedMessages: params.orderedMessages,
       citations: params.citations,
       systemMessage: params.systemMessage,
-      preparedMessages: params.preparedMessages,
+      preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
-      currentCompactionState: activeState,
+      budgetPolicy: params.budgetPolicy,
+      currentCompactionState: params.forceCompaction ? null : activeState,
+      prunedToolContextMessageIds: pruned.prunedMessageIds,
+      footprintBefore,
+      compactionKind: params.mode,
       generateSummary: params.generateSummary,
     });
 
@@ -749,7 +1039,7 @@ export const maybeCompactConversation = async (
       );
       messages = buildMessagesWithCompactionState(
         params.systemMessage,
-        params.preparedMessages,
+        preparedMessages,
         params.orderedMessages,
         params.citations,
         nextState
@@ -762,10 +1052,12 @@ export const maybeCompactConversation = async (
         toolDefinitions: params.toolDefinitions,
         modelContextWindowTokens: params.modelContextWindowTokens,
         mode: 'after_compaction',
+        budgetPolicy: params.budgetPolicy,
       });
       activeState = {
         ...nextState,
         estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
+        footprintAfter,
         updatedAt: new Date().toISOString(),
       };
     }
@@ -783,14 +1075,36 @@ export const maybeCompactConversation = async (
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
       mode: 'after_compaction',
+      budgetPolicy: params.budgetPolicy,
     });
-    if (activeState) {
-      activeState = {
-        ...activeState,
-        estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
-      };
-    }
   }
+
+  if (activeState) {
+    const prunedToolContextMessageIds = Array.from(
+      new Set([
+        ...(activeState.prunedToolContextMessageIds ?? []),
+        ...pruned.prunedMessageIds,
+      ])
+    );
+    activeState = {
+      ...activeState,
+      estimatedTokensBefore: footprintBefore.totalEstimatedTokens,
+      estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
+      prunedToolContextMessageIds,
+      reservedTokens: footprintAfter.reservedTokens,
+      footprintBefore,
+      footprintAfter,
+      degradedReason: degraded ? footprintAfter.reason : null,
+      compactionKind: params.mode,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const decision: ContextCompactionDecision = footprintAfter.isHardStop
+    ? 'hard_stop'
+    : params.mode === 'overflow_recovery'
+      ? 'retry_after_compaction'
+      : 'send';
 
   return {
     compactionState: activeState,
@@ -799,6 +1113,7 @@ export const maybeCompactConversation = async (
     messages,
     usedExistingCompaction,
     degraded,
+    decision,
   };
 };
 

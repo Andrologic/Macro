@@ -46,6 +46,11 @@ import {
   getDependencyBlockedMessage,
   TaskBlockedState,
 } from '../implement/TaskBlockedState';
+import {
+  loadPreference,
+  PREF_KEYS,
+  subscribePreference,
+} from '../../services/preferences';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -561,6 +566,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     messages,
     selectedConversationId,
     selectedConversationRuntime,
+    conversationCompactionStatusById,
     messagesByConversationId,
     createConversation,
     ensureConversationForCurrentMode,
@@ -590,6 +596,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire,
+    compactConversationNow,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
@@ -597,6 +604,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
+    conversationCompactionStatusById: state.conversationCompactionStatusById,
     messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
     ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
@@ -628,6 +636,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireDraftText: state.setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire: state.submitActiveQuestionnaire,
+    compactConversationNow: state.compactConversationNow,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
@@ -647,6 +656,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
+  const [showManualCompaction, setShowManualCompaction] = useState(false);
+  const [isManualCompacting, setIsManualCompacting] = useState(false);
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -666,6 +677,58 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+  const activeCompactionStatus = selectedConversationId
+    ? conversationCompactionStatusById[selectedConversationId]
+    : undefined;
+  const compactionStatusLabel =
+    activeCompactionStatus?.phase === 'compacting'
+      ? t('chat.compactionStatusCompacting', 'Compaction en cours')
+      : activeCompactionStatus?.phase === 'compacted'
+        ? t('chat.compactionStatusCompacted', 'Contexte compacté')
+        : activeCompactionStatus?.phase === 'degraded'
+          ? t('chat.compactionStatusDegraded', 'Contexte dégradé')
+          : activeCompactionStatus?.phase === 'too_large'
+            ? t('chat.compactionStatusTooLarge', 'Contexte trop volumineux')
+            : null;
+  const compactionStatusTone =
+    activeCompactionStatus?.phase === 'too_large'
+      ? 'border-destructive/40 bg-destructive/10 text-destructive'
+      : activeCompactionStatus?.phase === 'degraded'
+        ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+        : activeCompactionStatus?.phase === 'compacting'
+          ? 'border-primary/30 bg-primary/10 text-primary'
+          : 'border-border/70 bg-card/60 text-muted-foreground';
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPreference<boolean>(PREF_KEYS.COMPACTION_MANUAL_VISIBLE).then(
+      (visible) => {
+        if (!cancelled) {
+          setShowManualCompaction(Boolean(visible));
+        }
+      },
+    );
+    const unsubscribe = subscribePreference<boolean>(
+      PREF_KEYS.COMPACTION_MANUAL_VISIBLE,
+      (visible) => setShowManualCompaction(Boolean(visible)),
+    );
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const handleManualCompaction = useCallback(async () => {
+    if (!selectedConversationId || isManualCompacting) {
+      return;
+    }
+    setIsManualCompacting(true);
+    try {
+      await compactConversationNow(selectedConversationId);
+    } finally {
+      setIsManualCompacting(false);
+    }
+  }, [compactConversationNow, isManualCompacting, selectedConversationId]);
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
     for (const need of needs) {
@@ -1527,6 +1590,51 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <LazyPlanSelector />
                 </Suspense>
               </div>
+            )}
+            {compactionStatusLabel && (
+              <span
+                className={cn(
+                  'hidden h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium sm:inline-flex',
+                  compactionStatusTone
+                )}
+                title={
+                  activeCompactionStatus?.summaryText ||
+                  t('chat.compactionStatusTitle', 'Conversation context status')
+                }
+              >
+                <Icon
+                  name={
+                    activeCompactionStatus?.phase === 'too_large' ||
+                    activeCompactionStatus?.phase === 'degraded'
+                      ? 'triangle-alert'
+                      : activeCompactionStatus?.phase === 'compacting'
+                        ? 'loader'
+                        : 'check-circle'
+                  }
+                  size={12}
+                  className={activeCompactionStatus?.phase === 'compacting' ? 'animate-spin' : undefined}
+                />
+                {compactionStatusLabel}
+              </span>
+            )}
+            {showManualCompaction && selectedConversationId && (
+              <button
+                type="button"
+                onClick={handleManualCompaction}
+                disabled={isManualCompacting || isBusySending}
+                className={cn(
+                  'h-8 w-8 shrink-0 rounded-md border border-border/60 bg-card/60 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50',
+                  isManualCompacting && 'text-primary'
+                )}
+                title={t('chat.compactNow', 'Compacter maintenant')}
+                aria-label={t('chat.compactNow', 'Compacter maintenant')}
+              >
+                <Icon
+                  name={isManualCompacting ? 'loader' : 'archive'}
+                  size={14}
+                  className={isManualCompacting ? 'mx-auto animate-spin' : 'mx-auto'}
+                />
+              </button>
             )}
             {headerActions}
           </div>

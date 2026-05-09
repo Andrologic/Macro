@@ -23,6 +23,12 @@ const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/repos/web/.macro/worktrees/task-1',
 }));
+const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
 const gitStatusMock = mock(async () => ({
   branch: 'plan/review-actions',
   is_clean: true,
@@ -130,6 +136,7 @@ mock.module('../services/tauriIpc', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -154,6 +161,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -409,6 +417,7 @@ describe('useTaskStore merge workflow review loading', () => {
     gitRebaseBranchMock.mockClear();
     gitStartMergeResolutionMock.mockClear();
     gitCompleteMergeMock.mockClear();
+    gitBranchWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
@@ -709,10 +718,12 @@ describe('useTaskStore merge workflow review loading', () => {
       autoResolvedRepositoryCount: 0,
       remainingBlockedRepositoryCount: 1,
     });
-    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web');
+    expect(useTaskStore.getState().activeRepositoryPath).toEqual(
+      expect.stringContaining('/repos/web/.macro/worktrees/integration-')
+    );
     expect(useTaskStore.getState().activeBranchName).toBe('plan/review-actions');
     expect(useTaskStore.getState().activeWorkspacePathOverridesByProjectId).toEqual({
-      'project-1': '/repos/web',
+      'project-1': expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -894,7 +905,7 @@ describe('useTaskStore merge workflow review loading', () => {
     await useTaskStore.getState().runMergeWorkflow('task-1');
 
     expect(gitCompleteMergeMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
@@ -975,7 +986,7 @@ describe('useTaskStore merge workflow review loading', () => {
       remainingBlockedRepositoryCount: 0,
     });
     expect(gitStashMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       message: 'Macro merge blocker: Task 1',
     });
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
@@ -1106,7 +1117,7 @@ describe('useTaskStore merge workflow review loading', () => {
       remainingBlockedRepositoryCount: 0,
     });
     expect(gitRestorePathsMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       paths: ['src/staged.ts', 'src/unstaged.ts', 'src/new.ts'],
       target: 'staged_and_worktree',
     });

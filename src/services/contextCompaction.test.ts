@@ -4,8 +4,10 @@ import type { ChatMessage } from '../types';
 import type { Citation } from '../stores/useCitationsStore';
 import {
   buildCompactedMessagesForRequest,
+  estimateConversationFootprint,
   invalidateCompactionFromMessage,
   parseHiddenToolContext,
+  pruneToolContextBlocks,
 } from './contextCompaction';
 
 const makeMessage = (
@@ -78,6 +80,55 @@ diff --git a/src/main.ts b/src/main.ts
 });
 
 describe('buildCompactedMessagesForRequest', () => {
+  it('uses the reserved context budget when deciding blocking compaction', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'a'.repeat(50)),
+      makeMessage('a1', 'assistant', 'b'.repeat(50)),
+      makeMessage('u2', 'user', 'c'.repeat(50)),
+    ];
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 100,
+      budgetPolicy: { reservedTokens: 50 },
+      mode: 'blocking',
+    });
+
+    expect(footprint.reservedTokens).toBe(50);
+    expect(footprint.usableContextTokens).toBe(50);
+    expect(footprint.threshold).toBe('blocking');
+  });
+
+  it('prunes old large tool contexts while preserving recent and protected tool output', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect old files.'),
+      makeMessage('a1', 'assistant', 'Old result.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Check plan state.'),
+      makeMessage('a2', 'assistant', 'Protected result.', {
+        hidden_context:
+          `<tool_context tool="need_get" detail="need-1">\n${'need detail\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u3', 'user', 'Continue.'),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true },
+    );
+
+    expect(result.prunedMessageIds).toEqual(['a1']);
+    expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+    expect(String(result.messages[3]?.content)).toContain('need detail');
+  });
+
   it('keeps the last two user turns raw and injects a compacted system message', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),
@@ -152,6 +203,7 @@ describe('buildCompactedMessagesForRequest', () => {
       toolDefinitions,
       modelContextWindowTokens: 200,
       mode: 'blocking',
+      forcePrune: false,
       generateSummary: async () => 'Current objective: summarize the debug results.',
     });
 
@@ -164,6 +216,38 @@ describe('buildCompactedMessagesForRequest', () => {
     );
     expect(typeof recentAssistant?.content).toBe('string');
     expect(String(recentAssistant?.content)).toContain('[... truncated for compacted context ...]');
+  });
+
+  it('returns a hard stop decision when pruning and summary cannot fit the model window', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the large trace.'),
+      makeMessage('a1', 'assistant', 'Trace captured.', {
+        hidden_context:
+          `<tool_context tool="terminal_run" detail="trace">\n${'trace\n'.repeat(3000)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Keep going.'),
+      makeMessage('a2', 'assistant', 'Recent trace.', {
+        hidden_context:
+          `<tool_context tool="terminal_run" detail="recent">\n${'recent\n'.repeat(3000)}\n</tool_context>`,
+      }),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 100,
+      mode: 'overflow_recovery',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => 'Current objective: answer from the trace.',
+    });
+
+    expect(result.decision).toBe('hard_stop');
+    expect(result.footprintAfter.isHardStop).toBe(true);
   });
 });
 

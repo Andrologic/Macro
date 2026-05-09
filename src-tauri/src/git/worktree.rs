@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use git2::{BranchType, ErrorCode, Repository, WorktreeAddOptions};
+use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository, WorktreeAddOptions};
 
 use crate::core::error::{BackendError, Result};
 use crate::git::repo::get_status_options;
@@ -78,6 +78,42 @@ fn task_worktree_name(task_id: &str) -> String {
     format!("task{}", task_id)
 }
 
+fn stable_hash(value: &str) -> String {
+    let mut hash: u32 = 2166136261;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("{:08x}", hash)
+}
+
+fn sanitize_worktree_key(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        stable_hash(value)
+    } else if sanitized.len() > 48 {
+        format!("{}-{}", &sanitized[..40], stable_hash(value))
+    } else {
+        sanitized
+    }
+}
+
+fn branch_worktree_name(worktree_key: &str) -> String {
+    format!("macro-integration-{}", sanitize_worktree_key(worktree_key))
+}
+
 fn task_worktree_root(repo: &Repository) -> Result<PathBuf> {
     let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
         message: "Bare repositories are not supported for worktrees".to_string(),
@@ -89,6 +125,13 @@ fn task_worktree_path(repo: &Repository, task_id: &str) -> Result<PathBuf> {
     Ok(task_worktree_root(repo)?.join(task_worktree_name(task_id)))
 }
 
+fn branch_worktree_path(repo: &Repository, worktree_key: &str) -> Result<PathBuf> {
+    Ok(task_worktree_root(repo)?.join(format!(
+        "integration-{}",
+        sanitize_worktree_key(worktree_key)
+    )))
+}
+
 fn current_branch_name(repo: &Repository) -> Option<String> {
     repo.head()
         .ok()
@@ -98,6 +141,89 @@ fn current_branch_name(repo: &Repository) -> Option<String> {
 fn is_dirty(repo: &Repository) -> Result<bool> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     Ok(!statuses.is_empty())
+}
+
+fn checkout_existing_local_branch(repo: &Repository, branch_name: &str) -> Result<()> {
+    let ref_name = format!("refs/heads/{}", branch_name);
+    let object = repo.revparse_single(&ref_name)?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.safe();
+    repo.checkout_tree(&object, Some(&mut checkout))
+        .map_err(|e| BackendError::GitConflict {
+            message: e.to_string(),
+        })?;
+    repo.set_head(&ref_name)?;
+    Ok(())
+}
+
+fn ensure_local_branch_from_remote(repo: &Repository, branch_name: &str) -> Result<bool> {
+    if repo.find_branch(branch_name, BranchType::Local).is_ok() {
+        return Ok(true);
+    }
+
+    let remote_name = format!("origin/{}", branch_name);
+    let Ok(remote_branch) = repo.find_branch(&remote_name, BranchType::Remote) else {
+        return Ok(false);
+    };
+    let commit = remote_branch
+        .get()
+        .peel_to_commit()
+        .map_err(|e| BackendError::Git {
+            message: format!(
+                "Cannot create local branch '{}' from remote '{}': {}",
+                branch_name, remote_name, e
+            ),
+        })?;
+    repo.branch(branch_name, &commit, false)
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to create local branch '{}': {}", branch_name, e),
+        })?;
+    Ok(true)
+}
+
+fn checkout_first_stable_fallback(
+    repo: &Repository,
+    branch_name: &str,
+    fallback_branches: &[String],
+) -> Result<()> {
+    let mut attempted = Vec::new();
+
+    for fallback in fallback_branches
+        .iter()
+        .map(|branch| branch.trim())
+        .filter(|branch| !branch.is_empty() && *branch != branch_name)
+    {
+        if attempted.iter().any(|seen| seen == fallback) {
+            continue;
+        }
+        attempted.push(fallback.to_string());
+
+        if !ensure_local_branch_from_remote(repo, fallback)? {
+            continue;
+        }
+
+        match checkout_existing_local_branch(repo, fallback) {
+            Ok(()) => return Ok(()),
+            Err(BackendError::GitConflict { message }) | Err(BackendError::Git { message })
+                if message.to_lowercase().contains("already checked out") =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(BackendError::GitRepositoryNotClean {
+        message: format!(
+            "Cannot create a worktree for '{}' because that branch is checked out in the primary repository. Checkout a clean stable branch first, or fetch/create one of: {}",
+            branch_name,
+            if attempted.is_empty() {
+                "the project base or main branch".to_string()
+            } else {
+                attempted.join(", ")
+            }
+        ),
+    })
 }
 
 enum RepoProbe {
@@ -253,7 +379,11 @@ fn find_ready_worktree_for_branch(
     Ok(None)
 }
 
-fn release_branch_from_primary_workdir(repo: &Repository, branch_name: &str) -> Result<()> {
+fn release_branch_from_primary_workdir(
+    repo: &Repository,
+    branch_name: &str,
+    fallback_branches: &[String],
+) -> Result<()> {
     if current_branch_name(repo).as_deref() != Some(branch_name) {
         return Ok(());
     }
@@ -267,19 +397,7 @@ fn release_branch_from_primary_workdir(repo: &Repository, branch_name: &str) -> 
         });
     }
 
-    let current_commit = repo
-        .head()
-        .and_then(|head| head.peel_to_commit())
-        .map_err(|_| BackendError::Git {
-            message: format!(
-                "Cannot release branch '{}' from the primary repository without a valid HEAD commit",
-                branch_name
-            ),
-        })?;
-
-    repo.set_head_detached(current_commit.id())?;
-
-    Ok(())
+    checkout_first_stable_fallback(repo, branch_name, fallback_branches)
 }
 
 impl GitState {
@@ -405,6 +523,7 @@ impl GitState {
         branch_name: &str,
         from_ref: Option<&str>,
         preferred_commit_branch: Option<&str>,
+        fallback_branches: &[String],
     ) -> Result<TaskWorktreeEnsureResult> {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
@@ -493,7 +612,7 @@ impl GitState {
             repo.branch(branch_name, &branch_commit, false)?;
         }
 
-        release_branch_from_primary_workdir(repo, branch_name)?;
+        release_branch_from_primary_workdir(repo, branch_name, fallback_branches)?;
         ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
 
         let worktree_path = task_worktree_path(repo, task_id)?;
@@ -535,6 +654,266 @@ impl GitState {
             } else {
                 TaskWorktreeEnsureStatus::Created
             },
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn inspect_branch_worktree(
+        &self,
+        repo: &Repository,
+        worktree_key: &str,
+        branch_name: &str,
+    ) -> Result<TaskWorktreeInspection> {
+        let worktree_name = branch_worktree_name(worktree_key);
+        let expected_path = branch_worktree_path(repo, worktree_key)?;
+
+        let registered_path = match repo.find_worktree(&worktree_name) {
+            Ok(worktree) => Some(worktree.path().to_path_buf()),
+            Err(err) if err.code() == ErrorCode::NotFound => None,
+            Err(err) => {
+                return Err(BackendError::Git {
+                    message: format!("Failed to inspect worktree '{}': {}", worktree_name, err),
+                });
+            }
+        };
+
+        if let Some(path) = registered_path.clone() {
+            return inspect_registered_worktree(worktree_key, worktree_name, path);
+        }
+
+        if expected_path.exists() {
+            match probe_repo_path(&expected_path) {
+                RepoProbe::Ready(worktree_repo) => {
+                    return Ok(TaskWorktreeInspection {
+                        task_id: worktree_key.to_string(),
+                        worktree_name,
+                        worktree_path: expected_path.clone(),
+                        registered_path: None,
+                        branch_name: current_branch_name(&worktree_repo),
+                        status: TaskWorktreeStatus::OrphanPath,
+                        is_dirty: Some(is_dirty(&worktree_repo)?),
+                    });
+                }
+                RepoProbe::Missing => {}
+                RepoProbe::Invalid => {
+                    return Ok(TaskWorktreeInspection {
+                        task_id: worktree_key.to_string(),
+                        worktree_name,
+                        worktree_path: expected_path,
+                        registered_path: None,
+                        branch_name: None,
+                        status: TaskWorktreeStatus::InvalidRepo,
+                        is_dirty: None,
+                    });
+                }
+            }
+
+            return Ok(TaskWorktreeInspection {
+                task_id: worktree_key.to_string(),
+                worktree_name,
+                worktree_path: expected_path,
+                registered_path: None,
+                branch_name: None,
+                status: TaskWorktreeStatus::OrphanPath,
+                is_dirty: None,
+            });
+        }
+
+        if let Some(branch_worktree) =
+            find_ready_worktree_for_branch(repo, worktree_key, branch_name, &worktree_name)?
+        {
+            return Ok(branch_worktree);
+        }
+
+        Ok(TaskWorktreeInspection {
+            task_id: worktree_key.to_string(),
+            worktree_name,
+            worktree_path: expected_path,
+            registered_path: None,
+            branch_name: None,
+            status: TaskWorktreeStatus::Absent,
+            is_dirty: None,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn ensure_branch_worktree(
+        &self,
+        repo: &Repository,
+        worktree_key: &str,
+        branch_name: &str,
+        from_ref: Option<&str>,
+        fallback_branches: &[String],
+    ) -> Result<TaskWorktreeEnsureResult> {
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
+
+        let expected_worktree_name = branch_worktree_name(worktree_key);
+        let mut inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
+        let mut repaired = false;
+
+        match inspection.status {
+            TaskWorktreeStatus::Ready if inspection.branch_name.as_deref() == Some(branch_name) => {
+                ensure_task_worktree_gitignore_rule(
+                    repo,
+                    workdir,
+                    fallback_branches.first().map(String::as_str),
+                )?;
+                return Ok(TaskWorktreeEnsureResult {
+                    task_id: worktree_key.to_string(),
+                    worktree_path: inspection.worktree_path,
+                    branch_name: branch_name.to_string(),
+                    status: if inspection.worktree_name == expected_worktree_name {
+                        TaskWorktreeEnsureStatus::Reused
+                    } else {
+                        TaskWorktreeEnsureStatus::Repaired
+                    },
+                });
+            }
+            TaskWorktreeStatus::Ready
+            | TaskWorktreeStatus::StaleRegistration
+            | TaskWorktreeStatus::OrphanPath
+            | TaskWorktreeStatus::InvalidRepo => {
+                if let Some(path) = inspection.registered_path.as_ref() {
+                    let _ = remove_path_if_present(path)?;
+                }
+                if inspection.worktree_path
+                    != inspection.registered_path.clone().unwrap_or_default()
+                {
+                    let _ = remove_path_if_present(&inspection.worktree_path)?;
+                }
+                let _ = prune_worktree(repo, &inspection.worktree_name)?;
+                repaired = true;
+            }
+            TaskWorktreeStatus::Absent => {}
+        }
+
+        if repaired {
+            inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
+            if inspection.status == TaskWorktreeStatus::Ready
+                && inspection.branch_name.as_deref() == Some(branch_name)
+            {
+                ensure_task_worktree_gitignore_rule(
+                    repo,
+                    workdir,
+                    fallback_branches.first().map(String::as_str),
+                )?;
+                return Ok(TaskWorktreeEnsureResult {
+                    task_id: worktree_key.to_string(),
+                    worktree_path: inspection.worktree_path,
+                    branch_name: branch_name.to_string(),
+                    status: TaskWorktreeEnsureStatus::Repaired,
+                });
+            }
+        }
+
+        let worktree_root = task_worktree_root(repo)?;
+        fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+
+        if repo.find_branch(branch_name, BranchType::Local).is_err() {
+            let branch_commit =
+                if let Some(from_ref) = from_ref.map(str::trim).filter(|value| !value.is_empty()) {
+                    repo.revparse_single(from_ref)
+                        .and_then(|object| object.peel_to_commit())
+                        .map_err(|_| BackendError::Git {
+                            message: format!(
+                                "Cannot create branch '{}' from reference '{}'",
+                                branch_name, from_ref
+                            ),
+                        })?
+                } else {
+                    repo.head()
+                        .and_then(|head| head.peel_to_commit())
+                        .map_err(|_| BackendError::Git {
+                            message: "Cannot create branch without an initial commit".to_string(),
+                        })?
+                };
+            repo.branch(branch_name, &branch_commit, false)?;
+        }
+
+        release_branch_from_primary_workdir(repo, branch_name, fallback_branches)?;
+        ensure_task_worktree_gitignore_rule(
+            repo,
+            workdir,
+            fallback_branches.first().map(String::as_str),
+        )?;
+
+        let worktree_path = branch_worktree_path(repo, worktree_key)?;
+        let reference = repo
+            .find_reference(&format!("refs/heads/{}", branch_name))
+            .map_err(|e| BackendError::Git {
+                message: format!("Failed to find branch '{}': {}", branch_name, e),
+            })?;
+
+        let mut opts = WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+
+        repo.worktree(&inspection.worktree_name, &worktree_path, Some(&opts))
+            .map_err(|e| BackendError::Git {
+                message: format!(
+                    "Failed to create worktree '{}': {}",
+                    inspection.worktree_name, e
+                ),
+            })?;
+
+        let created_repo = Repository::open(&worktree_path).map_err(|e| BackendError::Git {
+            message: format!(
+                "Failed to verify created branch worktree {}: {}",
+                worktree_path.display(),
+                e
+            ),
+        })?;
+        let created_branch_name =
+            current_branch_name(&created_repo).unwrap_or_else(|| branch_name.to_string());
+
+        Ok(TaskWorktreeEnsureResult {
+            task_id: worktree_key.to_string(),
+            worktree_path,
+            branch_name: created_branch_name,
+            status: if repaired {
+                TaskWorktreeEnsureStatus::Repaired
+            } else {
+                TaskWorktreeEnsureStatus::Created
+            },
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn remove_branch_worktree(
+        &self,
+        repo: &Repository,
+        worktree_key: &str,
+        branch_name: &str,
+        force: bool,
+    ) -> Result<TaskWorktreeRemoveResult> {
+        let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
+        if !force && inspection.is_dirty.unwrap_or(false) {
+            return Err(BackendError::GitRepositoryNotClean {
+                message: format!(
+                    "Worktree {} has uncommitted changes",
+                    inspection.worktree_path.display()
+                ),
+            });
+        }
+
+        let mut removed_path = false;
+        if let Some(path) = inspection.registered_path.as_ref() {
+            removed_path = remove_path_if_present(path)? || removed_path;
+        }
+        removed_path = remove_path_if_present(&inspection.worktree_path)? || removed_path;
+
+        let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
+
+        Ok(TaskWorktreeRemoveResult {
+            task_id: worktree_key.to_string(),
+            worktree_path: inspection.worktree_path,
+            removed_path,
+            pruned_registration,
+            already_absent: !removed_path && !pruned_registration,
         })
     }
 

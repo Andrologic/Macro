@@ -181,7 +181,8 @@ export const gitWorktreeCreate = async (
   taskId: string,
   branchName: string,
   fromRef?: string | null,
-  preferredCommitBranch?: string | null
+  preferredCommitBranch?: string | null,
+  fallbackBranches?: string[] | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -197,6 +198,7 @@ export const gitWorktreeCreate = async (
     branchName,
     fromRef: fromRef ?? null,
     preferredCommitBranch: preferredCommitBranch ?? null,
+    fallbackBranches: fallbackBranches ?? null,
   });
 };
 

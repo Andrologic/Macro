@@ -53,6 +53,8 @@ export interface MergeWorkflowRepositoryResult {
   id: string;
   projectId: string;
   repoPath: string;
+  repositoryRootPath?: string;
+  integrationWorktreePath?: string | null;
   sourceBranchName: string;
   targetBranchName: string;
   progressState: 'pending' | 'merged' | 'blocked' | 'no_changes';
@@ -503,6 +505,8 @@ export const toMergeWorkflowRepositoryResult = (
   id: repository.id,
   projectId: repository.projectId,
   repoPath: repository.repoPath,
+  repositoryRootPath: repository.repoPath,
+  integrationWorktreePath: null,
   sourceBranchName: repository.planBranchName,
   targetBranchName: repository.baseBranchName,
   progressState: repository.hasChanges ? 'pending' : 'no_changes',
@@ -595,6 +599,8 @@ export const toPendingMergeWorkflowRepositoryResult = (params: {
   id: params.id,
   projectId: params.projectId,
   repoPath: params.repoPath,
+  repositoryRootPath: params.repoPath,
+  integrationWorktreePath: null,
   sourceBranchName: params.sourceBranchName,
   targetBranchName: params.targetBranchName,
   progressState: params.hasChanges === false ? 'no_changes' : 'pending',

@@ -43,6 +43,12 @@ pub struct ConversationCompactionStateRecord {
     pub estimated_tokens_after: i32,
     pub fingerprint: String,
     pub version: i32,
+    pub pruned_tool_context_message_ids_json: Option<String>,
+    pub reserved_tokens: Option<i32>,
+    pub footprint_before_json: Option<String>,
+    pub footprint_after_json: Option<String>,
+    pub degraded_reason: Option<String>,
+    pub compaction_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -295,6 +301,12 @@ pub struct UpsertConversationCompactionStateInput {
     pub estimated_tokens_after: i32,
     pub fingerprint: String,
     pub version: i32,
+    pub pruned_tool_context_message_ids_json: Option<String>,
+    pub reserved_tokens: Option<i32>,
+    pub footprint_before_json: Option<String>,
+    pub footprint_after_json: Option<String>,
+    pub degraded_reason: Option<String>,
+    pub compaction_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

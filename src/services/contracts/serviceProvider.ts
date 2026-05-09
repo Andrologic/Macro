@@ -35,7 +35,8 @@ export interface ServiceProvider {
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) => Promise<{
     taskId: string;
     worktreePath: string;

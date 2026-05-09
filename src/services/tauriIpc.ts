@@ -67,6 +67,12 @@ export interface DbConversationCompactionState {
   estimated_tokens_after: number;
   fingerprint: string;
   version: number;
+  pruned_tool_context_message_ids_json?: string | null;
+  reserved_tokens?: number | null;
+  footprint_before_json?: string | null;
+  footprint_after_json?: string | null;
+  degraded_reason?: string | null;
+  compaction_kind?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -184,6 +190,29 @@ export interface GitWorktreeEnsureDto {
 
 export interface GitWorktreeRemoveDto {
   taskId: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}
+
+export interface GitBranchWorktreeInspectionDto {
+  worktreeKey: string;
+  worktreePath: string;
+  branchName: string | null;
+  status: GitWorktreeInspectionStatus;
+  isDirty: boolean | null;
+}
+
+export interface GitBranchWorktreeEnsureDto {
+  worktreeKey: string;
+  worktreePath: string;
+  branchName: string;
+  status: GitWorktreeEnsureStatus;
+}
+
+export interface GitBranchWorktreeRemoveDto {
+  worktreeKey: string;
   worktreePath: string;
   removedPath: boolean;
   prunedRegistration: boolean;
@@ -507,6 +536,12 @@ export interface DbUpsertConversationCompactionStateInput {
   estimated_tokens_after: number;
   fingerprint: string;
   version: number;
+  pruned_tool_context_message_ids_json?: string | null;
+  reserved_tokens?: number | null;
+  footprint_before_json?: string | null;
+  footprint_after_json?: string | null;
+  degraded_reason?: string | null;
+  compaction_kind?: string | null;
 }
 
 export interface AiChatMessageImageUrl {
@@ -1908,6 +1943,7 @@ export async function gitWorktreeCreate(params: {
   branchName: string;
   fromRef?: string | null;
   preferredCommitBranch?: string | null;
+  fallbackBranches?: string[] | null;
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
@@ -1915,6 +1951,7 @@ export async function gitWorktreeCreate(params: {
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
     preferredCommitBranch: params.preferredCommitBranch ?? null,
+    fallbackBranches: params.fallbackBranches ?? null,
   });
 }
 
@@ -1929,6 +1966,48 @@ export async function gitWorktreeRemove(params: {
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,
+  });
+}
+
+export async function gitBranchWorktreeInspect(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+}): Promise<GitBranchWorktreeInspectionDto> {
+  return invoke<GitBranchWorktreeInspectionDto>("git_branch_worktree_inspect", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+  });
+}
+
+export async function gitBranchWorktreeCreate(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+  fromRef?: string | null;
+  fallbackBranches?: string[] | null;
+}): Promise<GitBranchWorktreeEnsureDto> {
+  return invoke<GitBranchWorktreeEnsureDto>("git_branch_worktree_create", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+    fromRef: params.fromRef ?? null,
+    fallbackBranches: params.fallbackBranches ?? null,
+  });
+}
+
+export async function gitBranchWorktreeRemove(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+  force?: boolean;
+}): Promise<GitBranchWorktreeRemoveDto> {
+  return invoke<GitBranchWorktreeRemoveDto>("git_branch_worktree_remove", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+    force: params.force ?? null,
   });
 }
 
