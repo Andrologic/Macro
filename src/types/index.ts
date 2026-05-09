@@ -489,6 +489,8 @@ export type ContextCompactionKind =
   | 'overflow_recovery'
   | 'manual';
 
+export type CompactionPass = 'normal' | 'forced' | 'ultra';
+
 export type ToolContextDigestKind =
   | 'file_read'
   | 'web_result'
@@ -525,7 +527,7 @@ export interface ConversationCompactionState {
   footprintAfter?: ContextFootprint;
   degradedReason?: ContextFootprintReason | null;
   compactionKind?: ContextCompactionKind;
-  compactionPass?: 'normal' | 'forced' | 'ultra';
+  compactionPass?: CompactionPass;
 }
 
 export interface ChatGptProviderTurnState {

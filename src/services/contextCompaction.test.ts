@@ -4,6 +4,7 @@ import type { ChatMessage } from '../types';
 import type { Citation } from '../stores/useCitationsStore';
 import type { StreamMessage } from './streamingChat';
 import {
+  buildContextTooLargeErrorMessage,
   buildCompactedMessagesForRequest,
   compactProviderInputItemsForContext,
   estimateConversationFootprint,
@@ -79,6 +80,40 @@ diff --git a/src/main.ts b/src/main.ts
       kind: 'git_result',
       source_message_id: 'assistant-1',
     });
+  });
+});
+
+describe('buildContextTooLargeErrorMessage', () => {
+  it('includes a stable payload estimate and largest contributors', () => {
+    const message = buildContextTooLargeErrorMessage({
+      totalEstimatedTokens: 14500,
+      messageTokens: 8000,
+      visibleMessageTokens: 6000,
+      providerInputTokens: 9000,
+      hiddenContextTokens: 200,
+      systemTokens: 1800,
+      toolSchemaTokens: 1200,
+      imagePlaceholderTokens: 0,
+      citationTokens: 0,
+      summaryTokens: 700,
+      latestUserContextTokens: 3000,
+      modelContextWindowTokens: 12000,
+      reservedTokens: 2400,
+      usableContextTokens: 9600,
+      threshold: 'degraded',
+      reason: 'hard_stop_ratio',
+      totalContextRatio: 1.2,
+      usableContextRatio: 1.5,
+      hiddenContextRatio: 0.02,
+      hardStopRatio: 0.98,
+      isHardStop: true,
+      toolTurnCount: 8,
+    });
+
+    expect(message).toContain('Estimated payload: 14,500 tokens / 12,000 tokens');
+    expect(message).toContain('provider history: 9,000 tokens');
+    expect(message).toContain('messages: 6,000 tokens');
+    expect(message).toContain('latest request: 3,000 tokens');
   });
 });
 

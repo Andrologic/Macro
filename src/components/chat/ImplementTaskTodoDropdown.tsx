@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PlanNodeTodo } from '../../types';
-import { summarizePlanNodeTodoProgress } from '../../services/planNodeTodos';
+import { resolvePlanNodeTodoPresentation } from '../../services/planNodeTodos';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { TodoStatusIcon } from '../tasks/TodoStatusIcon';
@@ -25,7 +25,8 @@ export const ImplementTaskTodoDropdown: React.FC<ImplementTaskTodoDropdownProps>
   rootRef,
 }) => {
   const { t } = useTranslation();
-  const progress = summarizePlanNodeTodoProgress(todos);
+  const presentation = resolvePlanNodeTodoPresentation(todos);
+  const { progress } = presentation;
   const progressPercent = progress.total > 0
     ? Math.round((progress.done / progress.total) * 100)
     : 0;
@@ -87,7 +88,7 @@ export const ImplementTaskTodoDropdown: React.FC<ImplementTaskTodoDropdownProps>
             data-testid="implement-task-todos-list"
             className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1"
           >
-            {todos.map((todo) => (
+            {presentation.todos.map((todo) => (
               <div
                 key={todo.id}
                 className="flex min-w-0 items-start gap-2 rounded-md px-1.5 py-1.5"

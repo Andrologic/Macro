@@ -7956,7 +7956,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         plan_target_branch: 'develop',
         todos: [
           { id: 'todo-1', title: 'Wire checkout API', status: 'done' },
-          { id: 'todo-2', title: 'Update branch checklist', status: 'pending' },
+          { id: 'todo-2', title: 'Update branch checklist', status: 'open' as never },
         ],
       }),
     ];
@@ -7997,6 +7997,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(streamOptions.messages[0]?.content)).toContain('[Task Todos]');
     expect(String(streamOptions.messages[0]?.content)).toContain('Update branch checklist');
     expect(String(streamOptions.messages[0]?.content)).toContain('progress="1/2"');
+    expect(String(streamOptions.messages[0]?.content)).toContain('"status":"pending"');
+    expect(String(streamOptions.messages[0]?.content)).not.toContain('"status":"open"');
 
     const onToolCall = getLatestArchitectToolHandler();
     const readResult = await onToolCall('task_todo_get', {});

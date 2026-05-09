@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 export interface CompactionBoundaryVirtualItem {
   index: number;
@@ -46,7 +47,7 @@ export const CompactionProgressNotice: React.FC = () => {
       className="flex items-start gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2 text-xs text-muted-foreground"
     >
       <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
-        <Icon name="loader" size={12} className="animate-spin text-primary" />
+        <SpinnerIcon size={12} className="text-primary" />
       </span>
       <div className="min-w-0">
         <div className="font-medium leading-snug text-foreground">
