@@ -1,10 +1,18 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '..');
+const tauriCli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
 const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const args = process.argv.slice(2);
+
+try {
+  await access(tauriCli);
+} catch {
+  console.error('Tauri CLI is not installed. Run `bun install` before running Macro Tauri commands.');
+  process.exit(1);
+}
 
 const isBuildCommand = args[0] === 'build';
 const hasExplicitBundleTarget = args.some(
@@ -31,11 +39,10 @@ if (isBuildCommand && !env.NODE_ENV) {
   env.NODE_ENV = 'production';
 }
 
-const child = spawn('bunx', ['tauri', ...finalArgs], {
+const child = spawn(process.execPath, [tauriCli, ...finalArgs], {
   cwd: root,
   env,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
 });
 
 child.on('exit', (code, signal) => {
