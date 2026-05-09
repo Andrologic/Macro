@@ -449,6 +449,84 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('marks individual sequential tools done before the next tool starts', async () => {
+    const { __testables } = await loadStreamingChat();
+    const updates: Array<Array<{ tool_call_id: string; status: string }>> = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: (toolTraces: Array<{ tool_call_id: string; status: string }>) => {
+        updates.push(toolTraces);
+      },
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md', {
+      execution_mode: 'sequential',
+      batch_id: 'batch_1',
+      order: 0,
+    });
+    accumulator.completeToolTrace('call_1');
+    accumulator.beginToolTrace('call_2', 'grep', 'src', {
+      execution_mode: 'sequential',
+      batch_id: 'batch_1',
+      order: 1,
+    });
+
+    expect(
+      updates.at(-1)?.map((trace) => ({
+        tool_call_id: trace.tool_call_id,
+        status: trace.status,
+      }))
+    ).toEqual([
+      { tool_call_id: 'call_1', status: 'done' },
+      { tool_call_id: 'call_2', status: 'running' },
+    ]);
+  });
+
+  it('does not mark running tools done when provider text continues streaming', async () => {
+    const { __testables } = await loadStreamingChat();
+    const updates: Array<Array<{ tool_call_id: string; status: string }>> = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: (toolTraces: Array<{ tool_call_id: string; status: string }>) => {
+        updates.push(toolTraces);
+      },
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    accumulator.appendProviderDelta('Assistant text after tool request.');
+
+    expect(
+      updates.at(-1)?.map((trace) => ({
+        tool_call_id: trace.tool_call_id,
+        status: trace.status,
+      }))
+    ).toEqual([{ tool_call_id: 'call_1', status: 'running' }]);
+  });
+
+  it('does not let stale provider traces downgrade local done traces to running', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    accumulator.completeToolTrace('call_1');
+    accumulator.upsertToolTraceFromProvider({
+      tool_call_id: 'call_1',
+      tool_name: 'read',
+      detail: 'README.md',
+      status: 'running',
+    });
+
+    expect(accumulator.buildResult().toolTraces).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call_1',
+        status: 'done',
+      }),
+    ]);
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 

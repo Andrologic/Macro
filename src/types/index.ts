@@ -387,12 +387,19 @@ export type ToolTraceStatus =
   | 'denied'
   | 'done';
 
+export type ToolTraceExecutionMode = 'sequential' | 'parallel';
+
 export interface ToolTrace {
   tool_call_id: string;
   tool_name: string;
   detail?: string;
   status: ToolTraceStatus;
   visible_offset?: number;
+  execution_mode?: ToolTraceExecutionMode;
+  batch_id?: string;
+  order?: number;
+  started_at_ms?: number;
+  completed_at_ms?: number;
 }
 
 export interface PendingToolApproval {

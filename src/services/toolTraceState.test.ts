@@ -81,4 +81,33 @@ describe("toolTraceState", () => {
       },
     ]);
   });
+
+  it("does not downgrade an existing done trace when a stale running trace arrives", () => {
+    expect(
+      mergeToolTracesPreservingDeniedStatus(
+        [
+          {
+            tool_call_id: "tool-1",
+            tool_name: "read",
+            status: "running",
+          },
+        ],
+        [
+          {
+            tool_call_id: "tool-1",
+            tool_name: "read",
+            status: "done",
+            completed_at_ms: 123,
+          },
+        ],
+      ),
+    ).toEqual([
+      {
+        tool_call_id: "tool-1",
+        tool_name: "read",
+        status: "done",
+        completed_at_ms: 123,
+      },
+    ]);
+  });
 });

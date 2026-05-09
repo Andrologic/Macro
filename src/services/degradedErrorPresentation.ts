@@ -331,7 +331,7 @@ export const presentServiceError = (
     return {
       title: 'Plan metadata is incomplete',
       body: 'Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.',
-      nextStep: 'Repair the metadata references, then retry the action.',
+      nextStep: 'Repair the metadata links, then retry the action.',
       severity: 'warning',
       technicalDetails: stringifyDetails(normalized.details) || message,
       projectId: options.projectId ?? null,
