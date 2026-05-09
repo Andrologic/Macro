@@ -51,6 +51,11 @@ import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
 } from "./implementTaskDerivation";
+import {
+  clonePlanNodeTodos,
+  normalizePlanNodeTodos,
+  normalizeRequiredPlanNodeTodos,
+} from "./planNodeTodos";
 import type {
   ApplyStrategyMutationPreviewParams,
   PrepareStrategyMutationPreviewParams,
@@ -123,6 +128,7 @@ type NormalizedArchitectStrategyNodeInput = {
   status: PlanNodeStatus;
   dependencies: string[];
   projectIds: string[];
+  todos: PlanNode["todos"];
 };
 
 interface ArchitectToolAppState {
@@ -307,6 +313,7 @@ const cloneArchitectStrategyWorkingNode = (node: PlanNode): PlanNode => {
   return {
     ...node,
     dependencies: [...node.dependencies],
+    todos: clonePlanNodeTodos(node.todos),
     projectId: projectIds[0],
     projectIds,
   };
@@ -324,6 +331,7 @@ const serializeArchitectStrategyNodeForResolution = (
     | "branchType"
     | "branchSlug"
     | "dependencies"
+    | "todos"
     | "projectId"
     | "projectIds"
   >,
@@ -339,6 +347,7 @@ const serializeArchitectStrategyNodeForResolution = (
     branchType: node.branchType,
     branchSlug: node.branchSlug,
     dependencies: [...node.dependencies],
+    todos: clonePlanNodeTodos(node.todos),
     ...(projectIds.length > 0
       ? {
           projectId: projectIds[0],
@@ -417,6 +426,12 @@ const normalizeArchitectStrategyNodeInput = (
   if (!ARCHITECT_STRATEGY_NODE_STATUSES.has(rawStatus as PlanNodeStatus)) {
     throw new Error(`Invalid node status for "${title}": ${rawStatus}.`);
   }
+  const todos = normalizeRequiredPlanNodeTodos(node.todos, {
+    id: typeof node.id === "string" ? node.id.trim() : undefined,
+    title,
+    description,
+    status: rawStatus as PlanNodeStatus,
+  });
 
   const branchIntent = getPlanNodeBranchIntent({
     branchType: branchTypeRaw,
@@ -436,6 +451,7 @@ const normalizeArchitectStrategyNodeInput = (
     status: rawStatus as PlanNodeStatus,
     dependencies: Array.from(new Set(dependencies)),
     projectIds: Array.from(new Set(projectIds)),
+    todos,
   };
 };
 
@@ -870,6 +886,7 @@ const resolveStrategyForPlan = async (params: {
       projectId: resolvedProjectIds[0] || undefined,
       projectIds: resolvedProjectIds,
       dependencies: [...node.dependencies],
+      todos: clonePlanNodeTodos(node.todos),
     };
   });
 
@@ -1872,6 +1889,17 @@ export const handleArchitectToolCall = async (
                 .map((dep) => dep.trim())
                 .filter(Boolean)
             : target.dependencies;
+          const nextTodos =
+            Array.isArray(operation.todos)
+              ? normalizeRequiredPlanNodeTodos(operation.todos, {
+                  id: target.id,
+                  title: nextTitle || target.title,
+                  description: nextDescription,
+                  status: nextStatusRaw as PlanNodeStatus,
+                }, {
+                  existingTodos: normalizePlanNodeTodos(target.todos),
+                })
+              : clonePlanNodeTodos(target.todos);
           const nextProjectIds = normalizeArchitectStrategyOperationProjectIds(
             operation,
             target,
@@ -1905,6 +1933,7 @@ export const handleArchitectToolCall = async (
             branchType: nextBranchIntent.branchType,
             branchSlug: nextBranchIntent.branchSlug,
             dependencies: Array.from(new Set(nextDependencies)),
+            todos: nextTodos,
             projectId: nextProjectIds[0],
             projectIds: nextProjectIds,
           };
@@ -1929,6 +1958,7 @@ export const handleArchitectToolCall = async (
             branchType: normalized.branchType,
             branchSlug: normalized.branchSlug,
             dependencies: normalized.dependencies,
+            todos: clonePlanNodeTodos(normalized.todos),
             projectId: normalizedProjectIds[0],
             projectIds: normalizedProjectIds,
           });

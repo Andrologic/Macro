@@ -96,6 +96,8 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "edit",
         "delete",
         "apply_patch",
+        "task_todo_get",
+        "task_todo_update",
         "git_status",
         "git_log",
         "git_branch_list",

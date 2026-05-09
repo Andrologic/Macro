@@ -1325,6 +1325,8 @@ export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('plan_set_active')
 );
 const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
+const GET_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_get'));
+const UPDATE_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_update'));
 const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_update')
 );
@@ -1825,6 +1827,8 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('plan_restore')) tools.push(RESTORE_PLAN_TOOL);
   if (allowedTools.has('plan_set_active')) tools.push(SET_ACTIVE_PLAN_TOOL);
   if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
+  if (allowedTools.has('task_todo_get')) tools.push(GET_TASK_TODOS_TOOL);
+  if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);
   if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
 

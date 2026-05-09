@@ -7919,6 +7919,185 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
   });
 
+  it('lets implement agents read and update the selected task todos', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    architectPlans.set(
+      'plan-1',
+      createPlan({
+        status: 'in_progress',
+        targetBranch: 'develop',
+        nodes: [
+          {
+            id: 'task-1',
+            title: 'Implement checkout',
+            description: 'Ship the checkout flow.',
+            type: 'task',
+            status: 'in-progress',
+            dependencies: [],
+            assignedBranch: 'feature/implement-checkout',
+            branchType: 'feature',
+            branchSlug: 'implement-checkout',
+            projectId: 'project-1',
+            projectIds: ['project-1'],
+            todos: [
+              { id: 'todo-1', title: 'Wire checkout API', status: 'done' },
+              { id: 'todo-2', title: 'Update branch checklist', status: 'pending' },
+            ],
+          },
+        ],
+      }),
+    );
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        plan_storage_branch: 'develop',
+        plan_target_branch: 'develop',
+        todos: [
+          { id: 'todo-1', title: 'Wire checkout API', status: 'done' },
+          { id: 'todo-2', title: 'Update branch checklist', status: 'pending' },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Mets a jour la checklist.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const readResult = await onToolCall('task_todo_get', {});
+    expect(String(readResult)).toContain('Update branch checklist');
+
+    const updateResult = await onToolCall('task_todo_update', {
+      operations: [
+        {
+          action: 'set_status',
+          todo_id: 'todo-2',
+          status: 'done',
+        },
+      ],
+    });
+
+    expect(String(updateResult)).toContain('2/2 todos done');
+    expect(architectPlans.get('plan-1')?.nodes[0]?.todos?.[1]).toMatchObject({
+      id: 'todo-2',
+      status: 'done',
+    });
+    expect(taskStoreState.refreshFromPlan).toHaveBeenCalled();
+  });
+
+  it('reports legacy missing task todos and initializes them with add', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    architectPlans.set(
+      'plan-1',
+      createPlan({
+        status: 'in_progress',
+        targetBranch: 'develop',
+        nodes: [
+          {
+            id: 'task-1',
+            title: 'Legacy checkout',
+            description: 'Ship the checkout flow.',
+            type: 'task',
+            status: 'in-progress',
+            dependencies: [],
+            assignedBranch: 'feature/legacy-checkout',
+            branchType: 'feature',
+            branchSlug: 'legacy-checkout',
+            projectId: 'project-1',
+            projectIds: ['project-1'],
+          },
+        ],
+      }),
+    );
+    taskStoreState.tasks = [
+      createImplementTask({
+        title: 'Legacy checkout',
+        status: 'InProgress',
+        plan_storage_branch: 'develop',
+        plan_target_branch: 'develop',
+        todos: undefined,
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Legacy checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Lis la checklist.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const readResult = await onToolCall('task_todo_get', {});
+    expect(String(readResult)).toContain('legacy_missing_todos');
+    expect(String(readResult)).toContain('has no generated todos');
+
+    const updateResult = await onToolCall('task_todo_update', {
+      operations: [
+        {
+          action: 'add',
+          title: 'Create first real todo',
+        },
+      ],
+    });
+
+    expect(String(updateResult)).toContain('0/1 todos done');
+    expect(architectPlans.get('plan-1')?.nodes[0]?.todos).toEqual([
+      expect.objectContaining({
+        title: 'Create first real todo',
+        status: 'pending',
+      }),
+    ]);
+  });
+
   it('promotes a context project before opening an explicit implement terminal session', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';

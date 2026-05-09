@@ -1,4 +1,5 @@
 import type { Need, PlanNode, PredictedBranch } from '../types';
+import { normalizePlanNodeTodos } from './planNodeTodos';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type {
   FrozenPlanNode,
@@ -59,6 +60,7 @@ const summarizePlanNode = (node: PlanNode) => ({
   id: node.id,
   title: node.title,
   ...(cleanLine(node.description) ? { description: cleanLine(node.description) } : {}),
+  todos: normalizePlanNodeTodos(node.todos),
   type: node.type,
   status: node.status,
   assigned_branch: node.assignedBranch,

@@ -288,6 +288,138 @@ describe('architectToolRuntime strategy scope', () => {
     expect(branchSlugs[1]).toMatch(/^release-[0-9a-f]{6}$/);
   });
 
+  it('persists generated todos on strategy nodes', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.args.nodes = [
+      {
+        title: 'Configurer la release',
+        description: 'Préparer le build Android.',
+        type: 'task',
+        featureSlug: 'release',
+        todos: [
+          { title: 'Mettre à jour la version', status: 'done' },
+          { id: 'todo-build', title: 'Lancer le build Android', status: 'in-progress' },
+        ],
+      },
+    ];
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.todos).toEqual([
+      expect.objectContaining({
+        title: 'Mettre à jour la version',
+        status: 'done',
+      }),
+      {
+        id: 'todo-build',
+        title: 'Lancer le build Android',
+        status: 'in-progress',
+      },
+    ]);
+  });
+
+  it('creates a required fallback todo when generated nodes omit todos', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.args.nodes = [
+      {
+        title: 'Configurer la release',
+        description: 'Préparer le build Android.',
+        type: 'task',
+        featureSlug: 'release',
+      },
+    ];
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.todos).toEqual([
+      expect.objectContaining({
+        title: 'Configurer la release',
+        description: 'Préparer le build Android.',
+        status: 'pending',
+      }),
+    ]);
+  });
+
+  it('updates todos through strategy_update operations', async () => {
+    const plan = createPlan({
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Configurer la release',
+          description: 'Préparer le build Android.',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'release',
+          branchType: 'feature',
+          branchSlug: 'release',
+          projectId: 'mouillage-app',
+          projectIds: ['mouillage-app'],
+          todos: [{ id: 'todo-1', title: 'Ancien todo', status: 'pending' }],
+        },
+      ],
+    });
+    const runtime = createRuntime(plan);
+    runtime.params.toolName = 'strategy_update';
+    runtime.params.args = {
+      operations: [
+        {
+          action: 'update',
+          node_id: 'node-1',
+          todos: [
+            { id: 'todo-1', title: 'Ancien todo', status: 'done' },
+            { id: 'todo-2', title: 'Nouveau todo', status: 'pending' },
+          ],
+        },
+      ],
+    };
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.todos).toEqual([
+      { id: 'todo-1', title: 'Ancien todo', status: 'done' },
+      { id: 'todo-2', title: 'Nouveau todo', status: 'pending' },
+    ]);
+  });
+
+  it('preserves existing todo ids when strategy_update sends title-only matching todos', async () => {
+    const plan = createPlan({
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Configurer la release',
+          description: 'Préparer le build Android.',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'release',
+          branchType: 'feature',
+          branchSlug: 'release',
+          projectId: 'mouillage-app',
+          projectIds: ['mouillage-app'],
+          todos: [{ id: 'todo-existing', title: 'Lancer le build Android', status: 'pending' }],
+        },
+      ],
+    });
+    const runtime = createRuntime(plan);
+    runtime.params.toolName = 'strategy_update';
+    runtime.params.args = {
+      operations: [
+        {
+          action: 'update',
+          node_id: 'node-1',
+          todos: [{ title: 'Lancer le build Android', status: 'done' }],
+        },
+      ],
+    };
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.todos).toEqual([
+      { id: 'todo-existing', title: 'Lancer le build Android', status: 'done' },
+    ]);
+  });
+
   it('rejects context-only and external subprojects in explicit node scope', async () => {
     const contextRuntime = createRuntime(createPlan({
       contextProjectIds: ['mouillage-context'],

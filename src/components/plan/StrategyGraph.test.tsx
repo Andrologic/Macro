@@ -33,12 +33,19 @@ type MockProjectGroup = {
 type MockPlanNode = {
   id: string;
   title: string;
+  description?: string;
   type: 'task' | 'milestone';
   status: 'pending' | 'in-progress' | 'completed' | 'blocked';
   dependencies: string[];
   projectId: string;
   projectIds?: string[];
   branchSlug?: string;
+  todos?: Array<{
+    id: string;
+    title: string;
+    description?: string;
+    status: 'pending' | 'in-progress' | 'done';
+  }>;
   archivedAt?: string | null;
 };
 
@@ -503,6 +510,7 @@ const seedStores = (
         status: 'in-progress',
         dependencies: [],
         projectId: 'project-1',
+        todos: [{ id: 'todo-1', title: 'Architect node todo', status: 'pending' }],
       },
     ],
     predictedBranches: [],
@@ -882,6 +890,10 @@ describe('StrategyGraph', () => {
           status: 'pending',
           dependencies: [],
           projectId: 'project-1',
+          todos: [
+            { id: 'todo-1', title: 'Wire API', status: 'done' },
+            { id: 'todo-2', title: 'Update tests', status: 'pending' },
+          ],
         },
         {
           id: 'task-2',
@@ -906,6 +918,16 @@ describe('StrategyGraph', () => {
           status: 'pending',
           dependencies: [],
           projectId: 'project-1',
+        },
+        {
+          id: 'task-5',
+          title: 'Empty checklist',
+          description: 'Do not render this as an implicit todo',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          todos: [],
         },
       ],
       predictedBranches: [
@@ -944,6 +966,15 @@ describe('StrategyGraph', () => {
           parentBranch: 'plan/plan-1',
           projectId: 'project-1',
           taskIds: ['task-4'],
+          status: 'pending',
+        },
+        {
+          id: 'branch-5',
+          name: 'feature/empty-checklist',
+          color: '#06b6d4',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-5'],
           status: 'pending',
         },
       ],
@@ -1022,6 +1053,24 @@ describe('StrategyGraph', () => {
           sequence_index: 3,
           execution_targets: [{ projectId: 'project-1' }],
         },
+        {
+          id: 'task-5',
+          title: 'Empty checklist',
+          status: 'Pending',
+          task_source: 'architect',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'feature/empty-checklist',
+          blocked_by: [],
+          dependencies: [],
+          is_blocked: false,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: 4,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
       ],
     });
 
@@ -1040,10 +1089,19 @@ describe('StrategyGraph', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('checkout-api');
-    expect(document.body.textContent).toContain('graph');
-    expect(document.body.textContent).toContain('plain-name');
-    expect(document.body.textContent).toContain('preferred-name');
+    expect(document.body.textContent).toContain('Checkout API');
+    expect(document.body.textContent).toContain('Wire API');
+    expect(document.body.textContent).toContain('Update tests');
+    expect(document.body.textContent).toContain('Progress: 1/2');
+    expect(document.body.textContent).toContain('Graph cleanup');
+    expect(document.body.textContent).toContain('Plain branch task');
+    expect(document.body.textContent).toContain('Branch slug wins');
+    expect(document.body.textContent).toContain('Empty checklist');
+    expect(document.body.textContent).not.toContain('Sans todo généré');
+    expect(document.body.textContent).not.toContain('Do not render this as an implicit todo');
+    expect(document.body.textContent).not.toContain('checkout-api');
+    expect(document.body.textContent).not.toContain('plain-name');
+    expect(document.body.textContent).not.toContain('preferred-name');
     expect(document.body.textContent).not.toContain('feature/plan-1/checkout-api');
     expect(document.body.textContent).not.toContain('feature/graph');
     expect(document.body.textContent).not.toContain('feature/plan-1/internal-name');
@@ -1199,10 +1257,8 @@ describe('StrategyGraph', () => {
     const branchCards = document.querySelectorAll('[data-branch-card="true"]');
     expect(branchCards).toHaveLength(2);
     expect(document.body.textContent).toContain('shared-feature');
-    expect(document.body.textContent).toContain('Web task');
-    expect(document.body.textContent).toContain('Shared task');
-    expect(document.body.textContent).toContain('API task');
-    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(4);
+    expect(document.body.textContent).not.toContain('Sans todo généré');
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(0);
 
     const searchInput = document.querySelector('input') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
@@ -1223,7 +1279,7 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
-    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(0);
 
     await act(async () => {
       if (searchInput) {
@@ -1251,8 +1307,8 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
-    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
-    expect(document.body.textContent).toContain('API task');
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('Sans todo généré');
   });
 
   it('keeps different tasks separate even when they share the same explicit logical branch slug', async () => {
@@ -1417,7 +1473,6 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
-    expect(document.body.textContent).toContain('checkout-api');
     expect(document.body.textContent).toContain('Web task');
     expect(document.body.textContent).toContain('API task');
   });
@@ -1456,6 +1511,7 @@ describe('StrategyGraph', () => {
           branchSlug: 'checkout-api',
           projectId: 'project-1',
           projectIds: ['project-1', 'project-2'],
+          todos: [{ id: 'todo-shared', title: 'Shared task todo', status: 'pending' }],
         },
       ],
       predictedBranches: [
@@ -1520,6 +1576,7 @@ describe('StrategyGraph', () => {
           status: 'pending',
           dependencies: [],
           projectId: 'project-1',
+          todos: [{ id: 'todo-feature', title: 'Feature checkout todo', status: 'pending' }],
         },
         {
           id: 'task-2',
@@ -1528,6 +1585,7 @@ describe('StrategyGraph', () => {
           status: 'pending',
           dependencies: [],
           projectId: 'project-1',
+          todos: [{ id: 'todo-bugfix', title: 'Bugfix checkout todo', status: 'pending' }],
         },
       ],
       predictedBranches: [
@@ -1608,7 +1666,8 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
-    expect(document.body.textContent).toContain('checkout-api');
+    expect(document.body.textContent).toContain('Feature checkout');
+    expect(document.body.textContent).toContain('Bugfix checkout');
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
   });
 
