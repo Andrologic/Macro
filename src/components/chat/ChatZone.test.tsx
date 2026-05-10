@@ -1176,7 +1176,7 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(requireContainer().textContent).toContain('Mesure en direct');
+    expect(requireContainer().textContent).not.toContain('Mesure en direct');
     expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 

@@ -171,7 +171,7 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('Compaction en cours');
   });
 
-  it('shows a live measurement label in the popover', async () => {
+  it('does not show a live measurement label in the popover', async () => {
     await act(async () => {
       root?.render(
         <ContextWindowIndicator diagnostics={buildDiagnostics({ source: 'live_stream' })} />,
@@ -186,7 +186,7 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Mesure en direct');
+    expect(document.body.textContent).not.toContain('Mesure en direct');
   });
 
   it('closes the popover when clicking outside of it', async () => {
