@@ -839,49 +839,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   useEffect(() => {
-    if (
-      !selectedConversationId ||
-      !shouldShowContextControlsForActiveContext ||
-      !isContextStreaming
-    ) {
-      return;
-    }
-
-    void runContextDiagnosticsRefresh();
-    const intervalId = window.setInterval(() => {
-      void runContextDiagnosticsRefresh();
-    }, 1800);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [
-    isContextStreaming,
-    runContextDiagnosticsRefresh,
-    selectedConversationId,
-    shouldShowContextControlsForActiveContext,
-  ]);
-
-  useEffect(() => {
-    const wasStreaming = wasContextStreamingRef.current;
     wasContextStreamingRef.current = isContextStreaming;
-    if (
-      wasStreaming &&
-      !isContextStreaming &&
-      selectedConversationId &&
-      shouldShowContextControlsForActiveContext
-    ) {
-      void runContextDiagnosticsRefresh();
-    }
-  }, [
-    isContextStreaming,
-    runContextDiagnosticsRefresh,
-    selectedConversationId,
-    shouldShowContextControlsForActiveContext,
-  ]);
+  }, [isContextStreaming]);
+
+  const isStreaming = isContextStreaming;
+  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
+  const isBusySending = isStreaming || isPreparingSend;
 
   const handleManualCompaction = useCallback(async () => {
-    if (!selectedConversationId || isManualCompacting) {
+    if (!selectedConversationId || isManualCompacting || isBusySending) {
       return;
     }
     setIsManualCompacting(true);
@@ -890,7 +856,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } finally {
       setIsManualCompacting(false);
     }
-  }, [compactConversationNow, isManualCompacting, selectedConversationId]);
+  }, [compactConversationNow, isBusySending, isManualCompacting, selectedConversationId]);
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
     for (const need of needs) {
@@ -942,9 +908,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
     restoreStatus === 'resolving';
-  const isStreaming = isContextStreaming;
-  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
-  const isBusySending = isStreaming || isPreparingSend;
   const composerRuntimeError =
     selectedConversationRuntime.lastErrorDisplayTarget === 'composer' ||
     (selectedConversationRuntime.lastError &&
@@ -1809,8 +1772,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {shouldShowContextControlsForActiveContext && selectedConversationId && (
               <ContextWindowIndicator
                 diagnostics={contextDiagnostics}
-                isBusy={contextDiagnostics?.status === 'estimating'}
                 isCompacting={isManualCompacting || isCompactionProgressActive}
+                canCompactNow={!isBusySending}
                 onRefresh={() => {
                   void runContextDiagnosticsRefresh();
                 }}

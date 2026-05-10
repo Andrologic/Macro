@@ -48,6 +48,7 @@ export function useScrollMagnet(
     const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
     const programmaticScrollRef = useRef(false);
     const scrollCaptureRafRef = useRef<number | null>(null);
+    const pinnedScrollRafRef = useRef<number | null>(null);
     const prevStreamingRef = useRef(isStreaming);
     // Keep a mutable ref in sync with state so event handlers always read fresh
     const stateRef = useRef<SeparatorState>(state);
@@ -79,6 +80,26 @@ export function useScrollMagnet(
         if (!el) return;
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }, []);
+
+    const isPinnedState = useCallback((nextState: SeparatorState) => (
+        nextState === 'locked' ||
+        nextState === 'detaching' ||
+        nextState === 'reattaching'
+    ), []);
+
+    const schedulePinnedScrollToBottom = useCallback(() => {
+        if (!isPinnedState(stateRef.current)) return;
+        if (pinnedScrollRafRef.current !== null) {
+            cancelAnimationFrame(pinnedScrollRafRef.current);
+        }
+        pinnedScrollRafRef.current = requestAnimationFrame(() => {
+            pinnedScrollRafRef.current = null;
+            if (!isPinnedState(stateRef.current)) return;
+            const el = scrollContainerRef.current;
+            if (!el) return;
+            el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+        });
+    }, [isPinnedState]);
 
     const findViewportAnchor = useCallback((): ViewportAnchor | null => {
         const el = scrollContainerRef.current;
@@ -188,17 +209,50 @@ export function useScrollMagnet(
     // ---------------------------------------------------------------------------
 
     useEffect(() => {
-        if (state === 'locked' || state === 'detaching' || state === 'reattaching') {
+        if (isPinnedState(state)) {
             viewportAnchorRef.current = null;
-            requestAnimationFrame(() => {
-                const el = scrollContainerRef.current;
-                if (el) {
-                    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-                }
-            });
+            schedulePinnedScrollToBottom();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [...deps, state]);
+    }, [...deps, state, isPinnedState, schedulePinnedScrollToBottom]);
+
+    // ---------------------------------------------------------------------------
+    // Keep pinned when existing content changes height.
+    //
+    // Message deps cover streamed text and new rows, but expanding an already
+    // rendered block (for example a completed tool accordion) can increase the
+    // transcript height without changing message data. Observe the scroll
+    // content itself so locked magnetism follows those layout-only changes.
+    // ---------------------------------------------------------------------------
+
+    useEffect(() => {
+        const el = scrollContainerRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+
+        const resizeObserver = new ResizeObserver(() => {
+            schedulePinnedScrollToBottom();
+        });
+
+        const observeScrollContent = () => {
+            resizeObserver.disconnect();
+            resizeObserver.observe(el);
+            Array.from(el.children).forEach((child) => {
+                if (child instanceof HTMLElement) {
+                    resizeObserver.observe(child);
+                }
+            });
+        };
+
+        observeScrollContent();
+
+        const mutationObserver = new MutationObserver(observeScrollContent);
+        mutationObserver.observe(el, { childList: true });
+
+        return () => {
+            mutationObserver.disconnect();
+            resizeObserver.disconnect();
+        };
+    }, [schedulePinnedScrollToBottom]);
 
     // ---------------------------------------------------------------------------
     // Preserve the user's viewport while detached.
@@ -318,6 +372,15 @@ export function useScrollMagnet(
     useEffect(() => {
         return () => clearTimer();
     }, [clearTimer]);
+
+    useEffect(() => {
+        return () => {
+            if (pinnedScrollRafRef.current !== null) {
+                cancelAnimationFrame(pinnedScrollRafRef.current);
+                pinnedScrollRafRef.current = null;
+            }
+        };
+    }, []);
 
     return { scrollContainerRef, separatorState: state, scrollToBottom };
 }

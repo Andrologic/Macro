@@ -1123,10 +1123,37 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Stop');
   });
 
-  it('refreshes context diagnostics while a visible conversation is streaming', async () => {
+  it('renders live context diagnostics while a visible conversation is streaming', async () => {
     chatState = {
       ...chatState,
       isStreaming: true,
+      contextDiagnosticsByConversationId: {
+        'conv-1': {
+          status: 'ready',
+          source: 'live_stream',
+          conversationId: 'conv-1',
+          updatedAt: '2026-05-10T00:00:00.000Z',
+          providerType: 'openai',
+          modelId: 'gpt-live',
+          ratio: 0.2,
+          usableRatio: 0.25,
+          isHardStop: false,
+          counts: {
+            messages: 2,
+            visibleLines: 8,
+            hiddenContextLines: 0,
+            providerInputItems: 2,
+            providerInputItemLines: 8,
+            reasoningContentLines: 0,
+            toolResultLines: 0,
+            citations: 0,
+            activeFiles: 0,
+            toolFacts: 0,
+          },
+          breakdown: [],
+          topContributors: [],
+        },
+      },
       messages: [
         buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
         buildMessage({
@@ -1142,7 +1169,15 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledWith('conv-1');
+    await act(async () => {
+      requireContainer()
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(requireContainer().textContent).toContain('Mesure en direct');
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 
   it('does not refresh live diagnostics while streaming when context controls are hidden', async () => {
@@ -1168,7 +1203,7 @@ describe('ChatZone', () => {
     expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 
-  it('refreshes context diagnostics once streaming ends', async () => {
+  it('does not issue a duplicate context refresh when streaming ends', async () => {
     chatState = {
       ...chatState,
       isStreaming: true,
@@ -1186,7 +1221,7 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
       await Promise.resolve();
     });
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
 
     chatState = {
       ...chatState,
@@ -1198,13 +1233,13 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(2);
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
 
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 400));
     });
 
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(2);
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 
   it('prevents overlapping context diagnostic refreshes from the indicator', async () => {
@@ -1232,11 +1267,27 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
       await Promise.resolve();
     });
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
 
     await act(async () => {
       requireContainer()
         .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Actualiser'))
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Actualiser'))
         ?.click();
       await Promise.resolve();
     });

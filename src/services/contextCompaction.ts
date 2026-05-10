@@ -254,6 +254,9 @@ const getCompactionThresholds = (
   ...overrides,
 });
 
+const exceedsUsableContext = (footprint: ContextFootprint): boolean =>
+  footprint.isHardStop || footprint.usableContextRatio >= 1;
+
 export const resolveContextBudgetPolicy = (
   modelContextWindowTokens: number,
   policy?: ContextBudgetPolicy
@@ -963,7 +966,7 @@ const applyEmergencyMessageCompaction = (
   });
 };
 
-const validateCompactionState = (
+export const validateCompactionState = (
   state: ConversationCompactionState | null | undefined,
   orderedMessages: ChatMessage[]
 ): boolean => {
@@ -984,7 +987,7 @@ const validateCompactionState = (
   return fingerprint === state.fingerprint;
 };
 
-const buildMessagesWithCompactionState = (
+export const buildMessagesWithCompactionState = (
   systemMessage: string,
   preparedMessages: StreamMessage[],
   orderedMessages: ChatMessage[],
@@ -1395,17 +1398,15 @@ export const maybeCompactConversation = async (
     params.mode === 'manual' ||
     params.mode === 'overflow_recovery' ||
     Boolean(params.forceCompaction);
+  const shouldCreateNewCompaction =
+    params.forceCompaction ||
+    params.mode === 'manual' ||
+    params.mode === 'overflow_recovery' ||
+    (params.mode === 'blocking' && exceedsUsableContext(footprintAfterPruning));
   const needsNewCompaction =
     compactionAllowed &&
-    (params.forceCompaction ||
-      (!activeState &&
-        ((params.mode === 'blocking' &&
-          (footprintAfterPruning.threshold === 'blocking' ||
-            footprintAfterPruning.threshold === 'degraded')) ||
-          params.mode === 'overflow_recovery' ||
-          params.mode === 'manual' ||
-          (params.mode === 'background' &&
-            footprintAfterPruning.threshold !== 'none'))));
+    !activeState &&
+    shouldCreateNewCompaction;
 
   const existingCompactionInsufficient =
     compactionAllowed &&
@@ -1413,9 +1414,7 @@ export const maybeCompactConversation = async (
     (params.mode === 'blocking' ||
       params.mode === 'overflow_recovery' ||
       params.mode === 'manual') &&
-    (footprintAfter.threshold === 'blocking' ||
-      footprintAfter.threshold === 'degraded' ||
-      footprintAfter.isHardStop ||
+    (exceedsUsableContext(footprintAfter) ||
       Boolean(params.forceCompaction));
 
   let notifiedCompactionStarted = false;
@@ -1469,13 +1468,13 @@ export const maybeCompactConversation = async (
   }
 
   let degraded = false;
-  if (footprintAfter.threshold === 'degraded') {
+  if (exceedsUsableContext(footprintAfter) && activeState) {
     degraded = true;
     messages = applyEmergencyMessageCompaction(messages, compactionPass);
     footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
   }
 
-  if (footprintAfter.isHardStop && compactionAllowed) {
+  if (footprintAfter.isHardStop && compactionAllowed && params.mode !== 'background') {
     notifyCompactionStarted();
     compactionPass = 'ultra';
     pruned = runPass(compactionPass);

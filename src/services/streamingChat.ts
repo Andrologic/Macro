@@ -198,6 +198,16 @@ export interface StreamCompletionResult {
   completionReason?: StreamCompletionReason;
 }
 
+export interface LiveStreamContextSnapshot {
+  version: number;
+  visibleContent: string;
+  visibleContentLength: number;
+  toolTraces: ToolTrace[];
+  hiddenContext?: string;
+  providerInputItems?: unknown[];
+  providerTurnState?: ProviderTurnState;
+}
+
 export type StreamCompletionReason = ChatCompletionReason;
 
 export type StreamTimelinePhase =
@@ -318,6 +328,7 @@ export interface StreamingChatOptions {
   onError: (error: Error) => void;
   onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
+  onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;
@@ -1239,11 +1250,17 @@ const buildToolContextBlock = (
   return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
 };
 
-const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate'>) => {
+const createStreamAccumulator = (
+  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>
+) => {
   let visibleContent = '';
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
+  const liveOnlyHiddenContextBlocks: string[] = [];
+  let providerInputItems: unknown[] | undefined;
+  let providerTurnState: ProviderTurnState | undefined;
+  let liveContextVersion = 0;
 
   const snapshotToolTraces = (): ToolTrace[] =>
     // Preserve first-seen insertion order; the UI treats the serialized tool_traces
@@ -1253,8 +1270,33 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
       .filter((trace): trace is ToolTrace => Boolean(trace))
       .map((trace) => ({ ...trace }));
 
+  const buildHiddenContext = (includeLiveOnly: boolean): string | undefined => {
+    const blocks = includeLiveOnly
+      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks]
+      : hiddenContextBlocks;
+    const hiddenContext = blocks.join('\n\n').trim();
+    return hiddenContext || undefined;
+  };
+
+  const snapshotLiveContext = (): LiveStreamContextSnapshot => ({
+    version: liveContextVersion,
+    visibleContent,
+    visibleContentLength: visibleContent.length,
+    toolTraces: snapshotToolTraces(),
+    hiddenContext: buildHiddenContext(true),
+    providerInputItems: cloneProviderInputItems(providerInputItems),
+    providerTurnState,
+  });
+
+  const publishLiveContext = () => {
+    if (!options.onLiveContextUpdate) return;
+    liveContextVersion += 1;
+    options.onLiveContextUpdate(snapshotLiveContext());
+  };
+
   const publishToolTraces = () => {
     options.onToolTracesUpdate?.(snapshotToolTraces());
+    publishLiveContext();
   };
 
   const isProtectedToolTraceStatus = (status: ToolTrace['status']): boolean =>
@@ -1321,6 +1363,7 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     }
     visibleContent += chunk;
     options.onToken(chunk);
+    publishLiveContext();
   };
 
   return {
@@ -1384,24 +1427,46 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
       if (block) {
         hiddenContextBlocks.push(block);
+        publishLiveContext();
+      }
+    },
+    addLiveOnlyHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
+      const block = buildToolContextBlock(toolCallId, toolName, detail, result);
+      if (block) {
+        liveOnlyHiddenContextBlocks.push(block);
+        publishLiveContext();
       }
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();
       if (normalized) {
         hiddenContextBlocks.push(normalized);
+        publishLiveContext();
       }
+    },
+    setProviderContext(context: {
+      providerInputItems?: unknown[] | null;
+      providerTurnState?: ProviderTurnState;
+    }) {
+      providerInputItems = cloneProviderInputItems(context.providerInputItems);
+      providerTurnState = context.providerTurnState;
+      publishLiveContext();
     },
     replaceVisibleContent(content: string) {
       visibleContent = content;
+      publishLiveContext();
+    },
+    publishLiveContext,
+    snapshotLiveContext,
+    getFinalHiddenContext() {
+      return buildHiddenContext(false);
     },
     buildResult(): StreamCompletionResult {
       markRunningToolTracesDone();
-      const hiddenContext = hiddenContextBlocks.join('\n\n').trim();
       return {
         visibleContent,
         toolTraces: snapshotToolTraces(),
-        hiddenContext: hiddenContext || undefined,
+        hiddenContext: buildHiddenContext(false),
       };
     },
   };
@@ -2136,6 +2201,13 @@ const streamNativeTurnViaTauri = async (params: {
   onToolTrace?: (toolTrace: ToolTrace) => void;
   onToolCall?: StreamingChatOptions['onToolCall'];
   onToolResult?: StreamingChatOptions['onToolResult'];
+  onLiveToolResult?: (toolResult: {
+    toolName: string;
+    args: Record<string, unknown>;
+    toolCallId: string;
+    result: string;
+    hiddenContext?: string;
+  }) => void;
 }): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
@@ -2266,6 +2338,13 @@ const streamNativeTurnViaTauri = async (params: {
                   visibleContent,
                   interrupt,
                 });
+                params.onLiveToolResult?.({
+                  toolName,
+                  args,
+                  toolCallId,
+                  result: toolResult,
+                  hiddenContext,
+                });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
                 const toolResult = `Error executing tool ${toolName}: ${
@@ -2276,6 +2355,12 @@ const streamNativeTurnViaTauri = async (params: {
                   toolCallId,
                   result: toolResult,
                 }).catch(() => undefined);
+                params.onLiveToolResult?.({
+                  toolName,
+                  args,
+                  toolCallId,
+                  result: toolResult,
+                });
                 params.onToolResult?.(toolName, toolResult);
               } finally {
                 params.onToolTrace?.({
@@ -2420,6 +2505,7 @@ const streamChatViaNativeToolCallingProvider = async (
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
+    onLiveContextUpdate: options.onLiveContextUpdate,
   });
   let currentMessages: StreamMessage[] = [...messages];
   const assistantTranscriptItems: unknown[] = [];
@@ -2502,6 +2588,11 @@ const streamChatViaNativeToolCallingProvider = async (
         },
         onToolCall,
         onToolResult,
+        onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+          const detail = formatToolTraceDetail(toolName, args);
+          streamAccumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
+          streamAccumulator.addHiddenContextBlock(hiddenContext);
+        },
       });
       turnResult.toolTraces?.forEach((toolTrace) => {
         streamAccumulator.upsertToolTraceFromProvider(toolTrace);
@@ -2551,6 +2642,10 @@ const streamChatViaNativeToolCallingProvider = async (
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems.length > 0) {
           assistantTranscriptItems.push(...turnProviderInputItems);
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+            providerTurnState: latestProviderTurnState,
+          });
         }
         currentMessages.push({
           role: 'assistant',
@@ -2902,6 +2997,10 @@ const streamChatViaNativeToolCallingProvider = async (
           assistantTranscriptItems.push(
             cloneProviderInputItems([providerInputItem])?.[0] ?? providerInputItem
           );
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+            providerTurnState: latestProviderTurnState,
+          });
           return {
             role: 'tool' as const,
             content: result.content,
@@ -3036,6 +3135,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
+    onLiveContextUpdate: options.onLiveContextUpdate,
   });
 
   const headers: Record<string, string> = {
@@ -3466,6 +3566,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems) {
           assistantTranscriptItems.push(...deepCloneJsonValue(turnProviderInputItems));
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+          });
         }
         currentMessages.push({
           role: 'assistant',
@@ -3844,6 +3947,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 toolName
               );
               assistantTranscriptItems.push(deepCloneJsonValue(providerInputItem));
+              streamAccumulator.setProviderContext({
+                providerInputItems: assistantTranscriptItems,
+              });
               return {
                 role: 'tool' as const,
                 content: result.content,
