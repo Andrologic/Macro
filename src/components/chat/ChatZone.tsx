@@ -811,7 +811,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isStreaming = selectedConversationRuntime.phase === 'streaming';
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isStreaming || isPreparingSend;
-  const visibleError = selectedConversationRuntime.lastError ?? lastError;
+  const composerRuntimeError =
+    selectedConversationRuntime.lastErrorDisplayTarget === 'composer' ||
+    (selectedConversationRuntime.lastError &&
+      !selectedConversationRuntime.lastErrorDisplayTarget)
+      ? selectedConversationRuntime.lastError
+      : null;
+  const composerError = composerRuntimeError ?? lastError;
   const activeAssistantMessageId =
     isBusySending ? selectedConversationRuntime.assistantMessageId ?? null : null;
 
@@ -1357,7 +1363,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const removeComposerImage = (imageId: string) => {
-    if (visibleError) {
+    if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
     }
@@ -1467,8 +1473,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         setEditingMessageId(null);
         setEditingValue('');
         setEditingImages([]);
-        return;
       }
+      return;
     }
 
     const content = message.content;
@@ -1967,9 +1973,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {visibleError && (
+            {composerError && (
               <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-                {visibleError}
+                {composerError}
               </div>
             )}
 
@@ -2044,7 +2050,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         : t('chat.typeMessage')
                     }
                     onTextChange={(text) => {
-                      if (visibleError) {
+                      if (composerError) {
                         clearConversationRuntimeError(selectedConversationId ?? '');
                         clearLastError();
                       }

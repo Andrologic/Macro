@@ -279,6 +279,7 @@ const toolsStoreState = {
   internalTools: Object.fromEntries(
     ALL_INTERNAL_TOOL_IDS.map((toolId) => [toolId, { id: toolId }])
   ) as Record<string, { id: string }>,
+  lastError: null as string | null,
   isToolEnabled: (_toolId: string) => true,
   isChatToolEnabled: (_toolId: string) => true,
   getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch', 'question'],
@@ -1859,6 +1860,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
+
+    toolsStoreState.internalTools = Object.fromEntries(
+      ALL_INTERNAL_TOOL_IDS.map((toolId) => [toolId, { id: toolId }])
+    ) as Record<string, { id: string }>;
+    toolsStoreState.lastError = null;
+    toolsStoreState.loadSettings.mockClear();
 
     providerState.providerConfigs = DEFAULT_PROVIDER_CONFIGS.map((provider) => ({ ...provider }));
     providerState.modelsByProvider = Object.fromEntries(
@@ -6982,6 +6989,110 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('reopens questionnaire response edits from conversation-indexed messages after reload', async () => {
+    appState.mode = 'Chat';
+
+    const assistantMessage = {
+      id: 'assistant-questionnaire',
+      task_id: '',
+      conversation_id: 'chat-conv',
+      role: 'assistant' as const,
+      content: 'Need two clarifications.',
+      timestamp: '2026-04-14T10:00:00.000Z',
+      provider_input_items: [
+        {
+          type: 'function_call',
+          call_id: 'call_question',
+          name: 'question',
+          arguments:
+            '{"intro":"Need two clarifications.","questions":[{"id":"scope","prompt":"Which scope should I use?","choices":["Minimal","Balanced","Large"]},{"id":"risk","prompt":"How risky can the change be?","choices":["Safe","Moderate","Aggressive"],"free_text_placeholder":"Custom answer"}]}',
+        },
+      ],
+      questionnaire: {
+        intro: 'Need two clarifications.',
+        source: 'tool' as const,
+        questions: [
+          {
+            id: 'scope',
+            prompt: 'Which scope should I use?',
+            choices: ['Minimal', 'Balanced', 'Large'] as [string, string, string],
+          },
+          {
+            id: 'risk',
+            prompt: 'How risky can the change be?',
+            choices: ['Safe', 'Moderate', 'Aggressive'] as [string, string, string],
+            free_text_placeholder: 'Custom answer',
+          },
+        ],
+      },
+    };
+    const responseMessage = {
+      id: 'user-questionnaire',
+      task_id: '',
+      conversation_id: 'chat-conv',
+      role: 'user' as const,
+      content:
+        'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
+      timestamp: '2026-04-14T10:01:00.000Z',
+      questionnaire_response_summary: {
+        assistantMessageId: 'assistant-questionnaire',
+        source: 'tool' as const,
+        originToolCallId: 'call_question',
+        items: [
+          {
+            id: 'scope',
+            prompt: 'Which scope should I use?',
+            answer: 'Balanced',
+          },
+          {
+            id: 'risk',
+            prompt: 'How risky can the change be?',
+            answer: 'Stay below one day of rework',
+          },
+        ],
+      },
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [],
+      messagesByConversationId: {
+        'chat-conv': [assistantMessage, responseMessage],
+      },
+      messageIndexById: {},
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    expect(
+      useChatStore.getState().startQuestionnaireResponseEdit('user-questionnaire'),
+    ).toBe(true);
+    expect(
+      useChatStore.getState().questionnaireDraftsByConversationId['chat-conv'],
+    ).toMatchObject({
+      mode: 'editing_response',
+      assistantMessageId: 'assistant-questionnaire',
+      responseMessageId: 'user-questionnaire',
+      currentStepIndex: 0,
+      answersByStepId: {
+        scope: 'Balanced',
+        risk: 'Stay below one day of rework',
+      },
+      draftTextByStepId: {
+        risk: 'Stay below one day of rework',
+      },
+    });
+  });
+
   it('navigates between questionnaire steps while preserving existing answers and drafts', async () => {
     appState.mode = 'Chat';
 
@@ -8459,6 +8570,148 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamChatMock).not.toHaveBeenCalled();
     expect(useChatStore.getState().getConversationMessages('chat-conv')).toHaveLength(0);
     expect(useChatStore.getState().sendState).toBe('error');
+  });
+
+  it('routes provider stream errors to the transcript without setting the composer error', async () => {
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as {
+        onError?: (error: Error) => void;
+      };
+      const providerError = Object.assign(new Error('Provider returned error'), {
+        name: 'ProviderRuntimeError',
+        providerError: true,
+        kind: 'rate_limited',
+        status: 429,
+        retryable: true,
+        retryAfterMs: 45000,
+        providerMessage: 'Too many requests for this model.',
+        providerCode: 'rate_limit_exceeded',
+        providerType: 'rate_limit',
+      });
+      options.onError?.(providerError);
+      return { usage: null };
+    }) as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Hello',
+    });
+    await flushAsyncWork();
+
+    const assistantMessage = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .find((message: { role: string }) => message.role === 'assistant');
+    const runtime = useChatStore.getState().getConversationRuntime('chat-conv');
+
+    expect(useChatStore.getState().lastError).toBeNull();
+    expect(runtime.lastErrorOrigin).toBe('provider');
+    expect(runtime.lastErrorDisplayTarget).toBe('transcript');
+    expect(assistantMessage?.content).toContain('### Erreur du provider');
+    expect(assistantMessage?.content).toContain('Too many requests for this model.');
+    expect(assistantMessage?.content).toContain('Statut HTTP: `429`');
+  });
+
+  it('keeps launch-time Macro errors in the composer and removes the empty assistant placeholder', async () => {
+    appState.mode = 'Chat';
+    toolsStoreState.internalTools = {};
+    toolsStoreState.lastError = 'settings unavailable';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Hello',
+    });
+    await flushAsyncWork();
+
+    const messages = useChatStore.getState().getConversationMessages('chat-conv');
+    const runtime = useChatStore.getState().getConversationRuntime('chat-conv');
+
+    expect(messages.filter((message: { role: string }) => message.role === 'assistant')).toHaveLength(0);
+    expect(useChatStore.getState().lastError).toContain('Failed to load tool settings');
+    expect(runtime.lastErrorOrigin).toBe('macro');
+    expect(runtime.lastErrorDisplayTarget).toBe('composer');
+    expect(streamChatMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves conversation-indexed messages when a launch-time Macro error removes a placeholder', async () => {
+    appState.mode = 'Chat';
+    toolsStoreState.internalTools = {};
+    toolsStoreState.lastError = 'settings unavailable';
+
+    const cachedOtherMessage = {
+      id: 'cached-other-message',
+      task_id: '',
+      conversation_id: 'other-conv',
+      role: 'user' as const,
+      content: 'Keep me indexed only.',
+      timestamp: '2026-04-14T10:00:00.000Z',
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        createConversation('chat-conv', ''),
+        createConversation('other-conv', ''),
+      ],
+      messages: [],
+      messagesByConversationId: {
+        'other-conv': [cachedOtherMessage],
+      },
+      messageIndexById: {},
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Hello',
+    });
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().messagesByConversationId['other-conv']).toEqual([
+      cachedOtherMessage,
+    ]);
+    expect(useChatStore.getState().getConversationMessages('other-conv')).toEqual([
+      cachedOtherMessage,
+    ]);
   });
 
   it('surfaces assistant persistence failures instead of losing them silently', async () => {

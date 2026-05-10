@@ -68,6 +68,8 @@ type MockChatState = {
     sessionId: string | null;
     assistantMessageId?: string | null;
     lastError?: string | null;
+    lastErrorOrigin?: 'macro' | 'provider' | null;
+    lastErrorDisplayTarget?: 'composer' | 'transcript' | null;
   };
   createConversation: ReturnType<typeof mock>;
   ensureConversationForCurrentMode: ReturnType<typeof mock>;
@@ -270,6 +272,8 @@ const getMockConversationRuntime = (
       ? latestAssistantMessage?.id ?? null
       : null,
     lastError: phase === 'error' ? state.lastError : null,
+    lastErrorOrigin: phase === 'error' && state.lastError ? 'macro' : null,
+    lastErrorDisplayTarget: phase === 'error' && state.lastError ? 'composer' : null,
   };
 };
 
@@ -693,6 +697,61 @@ describe('ChatZone', () => {
     expect(boundary?.textContent).toContain('Contexte automatiquement compacté');
     expect(boundary?.querySelector('[data-icon="archive"]')).not.toBeNull();
     expect(requireContainer().textContent).not.toContain('Contexte compacté');
+  });
+
+  it('keeps provider runtime errors out of the composer notice', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: '### Erreur du provider\n\nLe provider a refusé la requête.',
+        }),
+      ],
+      sendState: 'error',
+      lastError: null,
+      getConversationRuntime: () => ({
+        phase: 'error',
+        sessionId: 'session-conv-1',
+        assistantMessageId: 'msg-assistant-1',
+        lastError: 'Composer must not render this provider error',
+        lastErrorOrigin: 'provider',
+        lastErrorDisplayTarget: 'transcript',
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Erreur du provider');
+    expect(requireContainer().textContent).not.toContain(
+      'Composer must not render this provider error'
+    );
+  });
+
+  it('keeps Macro runtime errors in the composer notice', async () => {
+    chatState = {
+      ...chatState,
+      sendState: 'error',
+      lastError: null,
+      getConversationRuntime: () => ({
+        phase: 'error',
+        sessionId: 'session-conv-1',
+        assistantMessageId: null,
+        lastError: 'Task worktree is not ready yet.',
+        lastErrorOrigin: 'macro',
+        lastErrorDisplayTarget: 'composer',
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain('Task worktree is not ready yet.');
   });
 
   it('keeps the manual compaction button independent from compacted transcript state', async () => {
@@ -2261,6 +2320,126 @@ describe('ChatZone', () => {
     expect(balancedButton?.className).toContain('border-primary/50');
   });
 
+  it('reopens questionnaire responses from conversation-indexed messages after reload', async () => {
+    const conversationMessages = [
+      buildMessage({
+        id: 'assistant-questionnaire',
+        role: 'assistant',
+        content: 'Need one clarification.',
+        questionnaire: {
+          source: 'tool',
+          questions: [
+            {
+              id: 'scope',
+              prompt: 'Which scope should I use?',
+              choices: ['Minimal', 'Balanced', 'Large'],
+            },
+          ],
+        },
+      }),
+      buildMessage({
+        id: 'user-questionnaire',
+        role: 'user',
+        content: 'Which scope should I use?: Balanced',
+        questionnaire_response_summary: {
+          assistantMessageId: 'assistant-questionnaire',
+          source: 'tool',
+          originToolCallId: 'call_question',
+          items: [
+            {
+              id: 'scope',
+              prompt: 'Which scope should I use?',
+              answer: 'Balanced',
+            },
+          ],
+        },
+      }),
+    ];
+    chatState = {
+      ...chatState,
+      messages: [],
+      messagesByConversationId: {
+        'conv-1': conversationMessages,
+      },
+      startQuestionnaireResponseEdit: mock((messageId: string) => {
+        chatState = {
+          ...chatState,
+          questionnaireDraftsByConversationId: {
+            'conv-1': {
+              mode: 'editing_response',
+              assistantMessageId: 'assistant-questionnaire',
+              responseMessageId: messageId,
+              currentStepIndex: 0,
+              answersByStepId: {
+                scope: 'Balanced',
+              },
+              draftTextByStepId: {},
+            },
+          },
+        };
+        useChatStore.emit();
+        return true;
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
+    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).not.toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(0);
+  });
+
+  it('does not fall back to raw text editing when questionnaire response edit cannot reopen', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'user-questionnaire',
+          role: 'user',
+          content: 'Which scope should I use?: Balanced',
+          questionnaire_response_summary: {
+            assistantMessageId: 'missing-assistant-questionnaire',
+            source: 'tool',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+            ],
+          },
+        }),
+      ],
+      startQuestionnaireResponseEdit: mock(() => false),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
+    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
+    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
+  });
+
   it('cancels questionnaire response editing without touching the message history', async () => {
     chatState = {
       ...chatState,
@@ -2339,5 +2518,96 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
     expect(chatState.editMessage).not.toHaveBeenCalled();
     expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
+  });
+
+  it('keeps only questionnaire cancel enabled while editing during streaming', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'assistant-questionnaire',
+          role: 'assistant',
+          content: 'Need one clarification.',
+          questionnaire: {
+            source: 'tool',
+            questions: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                choices: ['Minimal', 'Balanced', 'Large'],
+              },
+            ],
+          },
+        }),
+        buildMessage({
+          id: 'user-questionnaire',
+          role: 'user',
+          content: 'Which scope should I use?: Balanced',
+          questionnaire_response_summary: {
+            assistantMessageId: 'assistant-questionnaire',
+            source: 'tool',
+            items: [
+              {
+                id: 'scope',
+                prompt: 'Which scope should I use?',
+                answer: 'Balanced',
+              },
+            ],
+          },
+        }),
+      ],
+      questionnaireDraftsByConversationId: {
+        'conv-1': {
+          mode: 'editing_response',
+          assistantMessageId: 'assistant-questionnaire',
+          responseMessageId: 'user-questionnaire',
+          currentStepIndex: 0,
+          answersByStepId: {
+            scope: 'Balanced',
+          },
+          draftTextByStepId: {},
+        },
+      },
+      isStreaming: true,
+      sendState: 'streaming',
+      cancelQuestionnaireSession: mock((conversationId: string) => {
+        const nextDrafts = { ...chatState.questionnaireDraftsByConversationId };
+        delete nextDrafts[conversationId];
+        chatState = {
+          ...chatState,
+          questionnaireDraftsByConversationId: nextDrafts,
+        };
+        useChatStore.emit();
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const cancelButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Annuler'
+    ) as HTMLButtonElement | undefined;
+    const submitButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Envoyer'
+    ) as HTMLButtonElement | undefined;
+    const choiceButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Balanced'
+    ) as HTMLButtonElement | undefined;
+    const textInput = requireContainer().querySelector('input[type="text"]') as HTMLInputElement | null;
+
+    expect(cancelButton).not.toBeNull();
+    expect(cancelButton?.disabled).toBe(false);
+    expect(submitButton?.disabled).toBe(true);
+    expect(choiceButton?.disabled).toBe(true);
+    expect(textInput?.disabled).toBe(true);
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    expect(chatState.cancelQuestionnaireSession).toHaveBeenCalledWith('conv-1');
+    expect(chatState.stopStreaming).not.toHaveBeenCalled();
+    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
   });
 });

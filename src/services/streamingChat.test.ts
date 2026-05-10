@@ -1197,6 +1197,31 @@ describe('streamingChat tool rendering helpers', () => {
     expect(__testables.isContextOverflowError('400 (no body)', 400)).toBe(true);
   });
 
+  it('preserves provider error details for UI presentation', async () => {
+    const { __testables } = await loadStreamingChat();
+    const error = __testables.classifyProviderError(
+      'Quota exceeded rate_limit_exceeded rate_limit',
+      429,
+      12000,
+      {
+        providerMessage: 'Quota exceeded',
+        providerCode: 'rate_limit_exceeded',
+        providerType: 'rate_limit',
+        providerRawBodyExcerpt: '{"error":{"message":"Quota exceeded"}}',
+      }
+    );
+
+    expect(error.name).toBe('ProviderRuntimeError');
+    expect(error.providerError).toBe(true);
+    expect(error.kind).toBe('rate_limited');
+    expect(error.status).toBe(429);
+    expect(error.retryAfterMs).toBe(12000);
+    expect(error.providerMessage).toBe('Quota exceeded');
+    expect(error.providerCode).toBe('rate_limit_exceeded');
+    expect(error.providerType).toBe('rate_limit');
+    expect(error.providerRawBodyExcerpt).toContain('Quota exceeded');
+  });
+
   it('detects repeated identical tool calls before entering another tool loop', async () => {
     const { __testables } = await loadStreamingChat();
     const repeatedCall = {
