@@ -1,6 +1,8 @@
 import { Terminal, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import type { Theme } from '../types/theme';
+import { openExternalUrl } from './externalUrlOpener';
+import { createTerminalUrlLinkProvider } from './terminalLinks';
 import { buildTerminalTheme, getTerminalThemeSignature } from './terminalTheme';
 
 const FIT_RETRY_LIMIT = 8;
@@ -31,6 +33,7 @@ type RuntimeSession = {
   writeFrameId: number | null;
   fitFrameId: number | null;
   fitRetryTimeoutId: number | null;
+  linkProviderDisposable: { dispose: () => void } | null;
   lastTouchedAt: number;
   themeSignature: string;
   windowResizeListener: () => void;
@@ -111,6 +114,19 @@ const buildTerminalOptions = (
     minimumContrastRatio: 4.5,
     smoothScrollDuration: 0,
     windowsPty: getWindowsPtyOptions(),
+    linkHandler: {
+      allowNonHttpProtocols: false,
+      activate: (event, text) => {
+        if (event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void openExternalUrl(text).catch((error) => {
+          console.warn('Failed to open terminal hyperlink:', error);
+        });
+      },
+    },
     theme: buildTerminalTheme(theme),
   };
 
@@ -270,6 +286,13 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
   const terminal = new Terminal(buildTerminalOptions(false));
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
+  const linkProviderDisposable = terminal.registerLinkProvider(
+    createTerminalUrlLinkProvider(terminal, (url) => {
+      void openExternalUrl(url).catch((error) => {
+        console.warn('Failed to open terminal URL:', error);
+      });
+    })
+  );
   terminal.open(mount);
 
   let session: RuntimeSession;
@@ -290,6 +313,7 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
     writeFrameId: null,
     fitFrameId: null,
     fitRetryTimeoutId: null,
+    linkProviderDisposable,
     lastTouchedAt: Date.now(),
     themeSignature: getTerminalThemeSignature(),
     windowResizeListener: () => {
@@ -325,6 +349,8 @@ const destroyRuntimeSession = (session: RuntimeSession) => {
     session.host.replaceChildren();
   }
   session.host = null;
+  session.linkProviderDisposable?.dispose();
+  session.linkProviderDisposable = null;
   session.terminal.dispose();
 };
 
