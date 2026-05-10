@@ -51,6 +51,7 @@ const TOOL_DOOM_LOOP_THRESHOLD = 3;
 const TOOL_EXECUTION_ABORTED_RESULT = 'Tool execution aborted';
 const REPEATED_TOOL_CALL_ABORT_RESULT =
   'Tool execution aborted: repeated identical tool call.';
+const HISTORICAL_TOOL_RESULT_MAX_CHARS = 1600;
 
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
@@ -612,11 +613,62 @@ const getChatCompletionMessageToolCallIds = (message: Record<string, unknown>): 
   });
 };
 
+const chatCompletionMessageContentToText = (content: unknown): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .flatMap((part) => {
+        if (!isRecord(part)) return [];
+        const text = part.text;
+        return typeof text === 'string' ? [text] : [];
+      })
+      .join('\n')
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content ?? '');
+  }
+};
+
+const buildHistoricalToolResultMessage = (
+  message: Record<string, unknown>
+): Record<string, unknown> => {
+  const toolName =
+    typeof message.name === 'string' && message.name.trim()
+      ? message.name.trim()
+      : typeof message.tool_call_id === 'string' && message.tool_call_id.trim()
+        ? message.tool_call_id.trim()
+        : 'tool';
+  const content = truncateMiddle(
+    chatCompletionMessageContentToText(message.content).trim(),
+    HISTORICAL_TOOL_RESULT_MAX_CHARS
+  );
+  return {
+    role: 'assistant',
+    content: [
+      `Historical tool result preserved as context. Tool: ${toolName}.`,
+      content,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+  };
+};
+
 const finalizeDanglingToolCallsForChatCompletions = (
   messages: Array<Record<string, unknown>>
 ): Array<Record<string, unknown>> => {
   const normalized: Array<Record<string, unknown>> = [];
   const pendingToolCallIds: string[] = [];
+  const deferredHistoricalToolResults: Array<Record<string, unknown>> = [];
 
   const flushPendingToolCalls = () => {
     while (pendingToolCallIds.length > 0) {
@@ -630,27 +682,50 @@ const finalizeDanglingToolCallsForChatCompletions = (
     }
   };
 
+  const flushDeferredHistoricalToolResults = () => {
+    while (deferredHistoricalToolResults.length > 0) {
+      const historicalMessage = deferredHistoricalToolResults.shift();
+      if (!historicalMessage) continue;
+      normalized.push(historicalMessage);
+    }
+  };
+
   for (const message of messages) {
-    if (message.role !== 'tool') {
-      flushPendingToolCalls();
+    if (message.role === 'tool') {
+      const toolCallId =
+        typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
+      const matchIndex = toolCallId
+        ? pendingToolCallIds.indexOf(toolCallId)
+        : -1;
+      if (matchIndex >= 0) {
+        normalized.push(message);
+        pendingToolCallIds.splice(matchIndex, 1);
+        if (pendingToolCallIds.length === 0) {
+          flushDeferredHistoricalToolResults();
+        }
+        continue;
+      }
+
+      const historicalMessage = buildHistoricalToolResultMessage(message);
+      if (pendingToolCallIds.length > 0) {
+        deferredHistoricalToolResults.push(historicalMessage);
+      } else {
+        normalized.push(historicalMessage);
+      }
+      continue;
     }
 
+    flushPendingToolCalls();
+    flushDeferredHistoricalToolResults();
     normalized.push(message);
 
     if (message.role === 'assistant') {
       pendingToolCallIds.push(...getChatCompletionMessageToolCallIds(message));
-      continue;
-    }
-
-    if (message.role === 'tool' && typeof message.tool_call_id === 'string') {
-      const matchIndex = pendingToolCallIds.indexOf(message.tool_call_id);
-      if (matchIndex >= 0) {
-        pendingToolCallIds.splice(matchIndex, 1);
-      }
     }
   }
 
   flushPendingToolCalls();
+  flushDeferredHistoricalToolResults();
   return normalized;
 };
 
@@ -722,6 +797,23 @@ const buildChatCompletionMessages = (
     return [serialized];
   });
   return normalizeChatCompletionMessageSequence(serializedMessages, profile);
+};
+
+export const estimateChatCompletionSerializedPayloadTokens = (params: {
+  messages: StreamMessage[];
+  providerType?: string;
+  providerId?: string;
+  baseUrl?: string;
+  modelId: string;
+}): number => {
+  const profile = resolveChatCompletionProviderProfile({
+    providerType: params.providerType ?? '',
+    providerId: params.providerId,
+    baseUrl: params.baseUrl,
+    modelId: params.modelId,
+  });
+  const serializedMessages = buildChatCompletionMessages(params.messages, profile);
+  return Math.max(1, Math.ceil(JSON.stringify(serializedMessages).length / 4));
 };
 
 const buildAssistantChatCompletionProviderItem = (params: {

@@ -14,7 +14,10 @@ import {
   ContextReference,
   Conversation,
   ConversationCompactionState,
+  CompactionPass,
+  CompactionSummarySource,
   PendingToolApproval,
+  ProjectGroup,
   ReasoningEffort,
   ToolRiskLevel,
   ToolTrace,
@@ -31,6 +34,7 @@ import {
   streamChat,
   cancelStream,
   sendChatNonStreaming,
+  estimateChatCompletionSerializedPayloadTokens,
   type StreamCompletionResult,
   type StreamMessage,
   type StreamTimelinePhase,
@@ -132,13 +136,18 @@ import {
   applyStrategyMutationPreview,
   prepareStrategyMutationPreview,
 } from "../services/architectStrategyMutationGuard";
-import { getLocalProjectContextState } from "../services/localProjectContext";
+import {
+  getLocalProjectContextState,
+  type LocalProjectContextState,
+} from "../services/localProjectContext";
 import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
   getScopedActionableProjectIds,
+  getScopedProjectIds,
 } from "../services/globalProjects";
+import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
   isProjectWorkspaceMissing,
   resolveProjectWorkspaceState,
@@ -271,6 +280,242 @@ const EMPTY_CONVERSATION_RUNTIME: ConversationRuntimeState = Object.freeze({
   lastErrorOrigin: null,
   lastErrorDisplayTarget: null,
 });
+
+const EMPTY_CONTEXT_DIAGNOSTICS_COUNTS: ConversationContextDiagnostics["counts"] =
+  Object.freeze({
+    messages: 0,
+    visibleLines: 0,
+    hiddenContextLines: 0,
+    providerInputItems: 0,
+    providerInputItemLines: 0,
+    reasoningContentLines: 0,
+    toolResultLines: 0,
+    citations: 0,
+    activeFiles: 0,
+    toolFacts: 0,
+  });
+
+const countTextLines = (value: unknown): number => {
+  if (typeof value !== "string") return 0;
+  const trimmed = value.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\r?\n/).length;
+};
+
+const countStreamContentLines = (content: StreamMessage["content"]): number => {
+  if (typeof content === "string") return countTextLines(content);
+  return content.reduce((total, part) => {
+    if (part.type !== "text") return total;
+    return total + countTextLines(part.text);
+  }, 0);
+};
+
+const safeJsonLineCount = (value: unknown): number => {
+  try {
+    return countTextLines(JSON.stringify(value, null, 2));
+  } catch {
+    return 0;
+  }
+};
+
+const inspectProviderInputValue = (
+  value: unknown,
+  parentKey = "",
+  depth = 0,
+): { reasoningLines: number; toolResultLines: number } => {
+  if (depth > 8 || value == null) {
+    return { reasoningLines: 0, toolResultLines: 0 };
+  }
+
+  const normalizedKey = parentKey.toLowerCase();
+  if (typeof value === "string") {
+    const lines = countTextLines(value);
+    if (
+      normalizedKey.includes("reasoning") ||
+      normalizedKey.includes("thinking")
+    ) {
+      return { reasoningLines: lines, toolResultLines: 0 };
+    }
+    if (
+      normalizedKey.includes("tool") ||
+      normalizedKey.includes("result") ||
+      normalizedKey.includes("output")
+    ) {
+      return { reasoningLines: 0, toolResultLines: lines };
+    }
+    return { reasoningLines: 0, toolResultLines: 0 };
+  }
+
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (total, item) => {
+        const inspected = inspectProviderInputValue(item, parentKey, depth + 1);
+        return {
+          reasoningLines: total.reasoningLines + inspected.reasoningLines,
+          toolResultLines: total.toolResultLines + inspected.toolResultLines,
+        };
+      },
+      { reasoningLines: 0, toolResultLines: 0 },
+    );
+  }
+
+  if (typeof value !== "object") {
+    return { reasoningLines: 0, toolResultLines: 0 };
+  }
+
+  const record = value as Record<string, unknown>;
+  const typeHint = String(record.type ?? record.role ?? "").toLowerCase();
+  const isToolLike =
+    typeHint.includes("tool") ||
+    typeHint.includes("function_call_output") ||
+    typeHint.includes("function_result");
+
+  return Object.entries(record).reduce(
+    (total, [key, child]) => {
+      const effectiveKey = isToolLike ? `${parentKey}.${key}.tool_result` : key;
+      const inspected = inspectProviderInputValue(child, effectiveKey, depth + 1);
+      return {
+        reasoningLines: total.reasoningLines + inspected.reasoningLines,
+        toolResultLines: total.toolResultLines + inspected.toolResultLines,
+      };
+    },
+    { reasoningLines: 0, toolResultLines: 0 },
+  );
+};
+
+const buildContextDiagnosticsFromFootprint = (params: {
+  conversationId: string;
+  providerId?: string;
+  providerType?: string;
+  modelId?: string;
+  status: ConversationContextDiagnosticsStatus;
+  phase?: ConversationCompactionPhase | "provider_error";
+  decision?: ContextCompactionDecision;
+  compactionPass?: CompactionPass;
+  summaryFormatVersion?: number;
+  summarySource?: CompactionSummarySource;
+  footprintBefore?: ContextFootprint;
+  footprintAfter?: ContextFootprint;
+  orderedMessages: ChatMessage[];
+  preparedMessages: StreamMessage[];
+  citations: Citation[];
+  compactionState?: ConversationCompactionState | null;
+  error?: string;
+}): ConversationContextDiagnostics => {
+  const footprint = params.footprintAfter ?? params.footprintBefore;
+  const providerInputItems = params.preparedMessages.flatMap(
+    (message) => message.provider_input_items ?? [],
+  );
+  const providerInputInspection = inspectProviderInputValue(providerInputItems);
+  const hiddenContextLines = params.orderedMessages.reduce(
+    (total, message) => total + countTextLines(message.hidden_context),
+    0,
+  );
+  const visibleLines = params.preparedMessages.reduce(
+    (total, message) => total + countStreamContentLines(message.content),
+    0,
+  );
+  const counts: ConversationContextDiagnostics["counts"] = {
+    messages: params.orderedMessages.length,
+    visibleLines,
+    hiddenContextLines,
+    providerInputItems: providerInputItems.length,
+    providerInputItemLines: safeJsonLineCount(providerInputItems),
+    reasoningContentLines: providerInputInspection.reasoningLines,
+    toolResultLines:
+      providerInputInspection.toolResultLines + hiddenContextLines,
+    citations: params.citations.length,
+    activeFiles: params.citations.filter(
+      (citation) => citation.type === "file" || citation.type === "document",
+    ).length,
+    toolFacts: params.compactionState?.toolDigest?.length ?? 0,
+  };
+
+  const breakdown: ConversationContextDiagnosticsBreakdownItem[] = footprint
+    ? [
+        {
+          id: "serialized_payload",
+          label: "Payload sérialisé final",
+          tokens: footprint.serializedPayloadTokens,
+        },
+        {
+          id: "visible_messages",
+          label: "Messages visibles",
+          tokens: footprint.visibleMessageTokens,
+          lines: visibleLines,
+          count: params.orderedMessages.length,
+        },
+        {
+          id: "provider_input_items",
+          label: "Historique provider",
+          tokens: footprint.providerInputTokens,
+          lines: counts.providerInputItemLines,
+          count: counts.providerInputItems,
+        },
+        {
+          id: "hidden_context",
+          label: "Contexte masqué / outils",
+          tokens: footprint.hiddenContextTokens,
+          lines: hiddenContextLines,
+        },
+        {
+          id: "system_prompt",
+          label: "Prompt système",
+          tokens: footprint.systemTokens,
+        },
+        {
+          id: "tool_schema",
+          label: "Schémas d'outils",
+          tokens: footprint.toolSchemaTokens,
+        },
+        {
+          id: "citations",
+          label: "Citations et sources",
+          tokens: footprint.citationTokens,
+          count: params.citations.length,
+        },
+        {
+          id: "summary",
+          label: "Résumé compacté",
+          tokens: footprint.summaryTokens,
+          count: params.compactionState ? 1 : 0,
+        },
+        {
+          id: "latest_user",
+          label: "Dernier tour utilisateur",
+          tokens: footprint.latestUserContextTokens,
+        },
+      ]
+    : [];
+
+  const topContributors = [...breakdown]
+    .filter((item) => typeof item.tokens === "number" && item.tokens > 0)
+    .sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0))
+    .slice(0, 5);
+
+  return {
+    status: params.status,
+    conversationId: params.conversationId,
+    updatedAt: new Date().toISOString(),
+    providerId: params.providerId,
+    providerType: params.providerType,
+    modelId: params.modelId,
+    phase: params.phase,
+    decision: params.decision,
+    compactionPass: params.compactionPass,
+    summaryFormatVersion: params.summaryFormatVersion,
+    summarySource: params.summarySource,
+    footprintBefore: params.footprintBefore,
+    footprintAfter: params.footprintAfter,
+    ratio: Math.max(0, footprint?.totalContextRatio ?? 0),
+    usableRatio: Math.max(0, footprint?.usableContextRatio ?? 0),
+    isHardStop: Boolean(footprint?.isHardStop),
+    error: params.error,
+    counts,
+    breakdown,
+    topContributors,
+  };
+};
 
 const createConversationSessionId = (): string =>
   `conversation-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -882,6 +1127,52 @@ export interface ConversationCompactionStatus {
   kind?: ContextCompactionKind;
   footprintAfter?: ContextFootprint;
   recoveredFromOverflow?: boolean;
+  summaryFormatVersion?: number;
+  summarySource?: CompactionSummarySource;
+}
+
+export type ConversationContextDiagnosticsStatus = "estimating" | "ready" | "error";
+
+export interface ConversationContextDiagnosticsBreakdownItem {
+  id: string;
+  label: string;
+  tokens?: number;
+  lines?: number;
+  count?: number;
+}
+
+export interface ConversationContextDiagnostics {
+  status: ConversationContextDiagnosticsStatus;
+  conversationId: string;
+  updatedAt: string;
+  providerId?: string;
+  providerType?: string;
+  modelId?: string;
+  phase?: ConversationCompactionPhase | "provider_error";
+  decision?: ContextCompactionDecision;
+  compactionPass?: CompactionPass;
+  summaryFormatVersion?: number;
+  summarySource?: CompactionSummarySource;
+  footprintBefore?: ContextFootprint;
+  footprintAfter?: ContextFootprint;
+  ratio: number;
+  usableRatio: number;
+  isHardStop: boolean;
+  error?: string;
+  counts: {
+    messages: number;
+    visibleLines: number;
+    hiddenContextLines: number;
+    providerInputItems: number;
+    providerInputItemLines: number;
+    reasoningContentLines: number;
+    toolResultLines: number;
+    citations: number;
+    activeFiles: number;
+    toolFacts: number;
+  };
+  breakdown: ConversationContextDiagnosticsBreakdownItem[];
+  topContributors: ConversationContextDiagnosticsBreakdownItem[];
 }
 
 interface ChatStore {
@@ -904,6 +1195,10 @@ interface ChatStore {
   conversationCompactionStatusById: Record<
     string,
     ConversationCompactionStatus | undefined
+  >;
+  contextDiagnosticsByConversationId: Record<
+    string,
+    ConversationContextDiagnostics | undefined
   >;
   isLoading: boolean;
   isStreaming: boolean;
@@ -977,6 +1272,7 @@ interface ChatStore {
   ensureMessagesLoaded: (conversationId: string) => Promise<void>;
   getConversationRuntime: (conversationId: string) => ConversationRuntimeState;
   compactConversationNow: (conversationId: string) => Promise<void>;
+  refreshConversationContextDiagnostics: (conversationId: string) => Promise<void>;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string) => void;
   approvePendingToolApprovalForConversation: (conversationId: string) => void;
@@ -1260,6 +1556,68 @@ const buildChatContextKey = (
 const isChatContextKeyCurrent = (contextKey: ChatContextKey): boolean =>
   buildChatContextKey(useAppStore.getState()) === contextKey;
 
+interface ResolveImplementTaskForContextInput {
+  selectedTaskId?: string | null;
+  tasks: ImplementTask[];
+  projectGroups: ProjectGroup[];
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
+  localContext?: LocalProjectContextState | null;
+}
+
+const IMPLEMENT_CONTEXT_TASK_STATUS_ORDER: Record<string, number> = {
+  InProgress: 0,
+  AwaitingResponse: 1,
+  Pending: 2,
+};
+
+const taskMatchesScopedProjectIds = (
+  task: Pick<ImplementTask, "project_id" | "project_ids" | "execution_targets">,
+  scopedProjectIds: string[],
+): boolean =>
+  scopedProjectIds.length === 0 ||
+  scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId));
+
+export const resolveImplementTaskForContext = ({
+  selectedTaskId,
+  tasks,
+  projectGroups,
+  selectedGroupId,
+  selectedProjectId,
+  localContext,
+}: ResolveImplementTaskForContextInput): ImplementTask | null => {
+  const scopedProjectIds = getScopedProjectIds(
+    projectGroups,
+    selectedGroupId,
+    selectedProjectId,
+  );
+  const eligibleTasks = tasks.filter((task) =>
+    !task.archived_at && taskMatchesScopedProjectIds(task, scopedProjectIds)
+  );
+  const findEligibleTask = (taskId?: string | null): ImplementTask | null =>
+    taskId
+      ? eligibleTasks.find((task) => task.id === taskId) ?? null
+      : null;
+
+  return (
+    findEligibleTask(selectedTaskId) ||
+    findEligibleTask(localContext?.lastTaskId) ||
+    [...eligibleTasks].sort((left, right) => {
+      const leftOrder =
+        IMPLEMENT_CONTEXT_TASK_STATUS_ORDER[left.status] ??
+        Number.MAX_SAFE_INTEGER;
+      const rightOrder =
+        IMPLEMENT_CONTEXT_TASK_STATUS_ORDER[right.status] ??
+        Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return (left.sequence_index ?? 0) - (right.sequence_index ?? 0);
+    })[0] ||
+    null
+  );
+};
+
 const toComparableChatMessage = (
   message: ChatMessage,
 ): TranscriptComparableMessage => ({
@@ -1521,6 +1879,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
+  const contextDiagnosticsRequestIds = new Map<string, number>();
   let awaitingResponseReconciliationScheduled = false;
   let suppressedSelectionPersistenceCount = 0;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
@@ -3024,6 +3383,68 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const normalizeContextFootprintReason = (
+    value: string | null | undefined,
+  ): ContextFootprintReason | null => {
+    switch (value) {
+      case "below_threshold":
+      case "total_context_ratio":
+      case "hidden_context_ratio":
+      case "tool_turn_count":
+      case "post_compaction_overflow":
+      case "hard_stop_ratio":
+        return value;
+      default:
+        return null;
+    }
+  };
+
+  const normalizeContextCompactionKind = (
+    value: string | null | undefined,
+  ): ContextCompactionKind | undefined => {
+    switch (value) {
+      case "background":
+      case "blocking":
+      case "overflow_recovery":
+      case "manual":
+        return value;
+      default:
+        return undefined;
+    }
+  };
+
+  const normalizeCompactionPass = (
+    value: string | null | undefined,
+  ): CompactionPass => {
+    switch (value) {
+      case "forced":
+      case "ultra":
+        return value;
+      default:
+        return "normal";
+    }
+  };
+
+  const normalizeCompactionSummarySource = (
+    value: string | null | undefined,
+  ): CompactionSummarySource | undefined => {
+    switch (value) {
+      case "model":
+      case "fallback":
+        return value;
+      default:
+        return undefined;
+    }
+  };
+
+  const normalizeSummaryFormatVersion = (
+    value: number | null | undefined,
+  ): number => (
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.trunc(value)
+      : 1
+  );
+
   const resolveCompactionStatusFromState = (
     state: ConversationCompactionState,
   ): ConversationCompactionStatus => {
@@ -3042,6 +3463,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       updatedAt: state.updatedAt,
       reason: state.degradedReason ?? null,
       kind: state.compactionKind,
+      summaryFormatVersion: state.summaryFormatVersion,
+      summarySource: state.summarySource,
       footprintAfter,
     };
   };
@@ -3095,12 +3518,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       record.footprint_after_json,
       undefined as ContextFootprint | undefined,
     ),
-    degradedReason:
-      (record.degraded_reason as ContextFootprintReason | null | undefined) ??
-      null,
-    compactionKind:
-      (record.compaction_kind as ContextCompactionKind | null | undefined) ??
-      undefined,
+    degradedReason: normalizeContextFootprintReason(record.degraded_reason),
+    compactionKind: normalizeContextCompactionKind(record.compaction_kind),
+    compactionPass: normalizeCompactionPass(record.compaction_pass),
+    summaryFormatVersion: normalizeSummaryFormatVersion(
+      record.summary_format_version,
+    ),
+    summarySource: normalizeCompactionSummarySource(record.summary_source),
   });
 
   const getConversationCompactionState = async (
@@ -3189,6 +3613,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : null,
         degraded_reason: state.degradedReason ?? null,
         compaction_kind: state.compactionKind ?? null,
+        compaction_pass: state.compactionPass ?? 'normal',
+        summary_format_version: state.summaryFormatVersion ?? 1,
+        summary_source: state.summarySource ?? null,
       });
     } catch (error) {
       console.error("Failed to persist conversation compaction state:", error);
@@ -3266,10 +3693,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       {
         role: "system",
         content:
-          "Compact older conversation history for a programming agent. Return ONLY valid JSON with keys " +
-          '"currentObjective", "userInstructions", "decisions", "openQuestions", "activeFiles", "toolFacts", "remainingWork", "summary". ' +
-          'Use short factual strings. "userInstructions", "decisions", "openQuestions", "activeFiles", "toolFacts", and "remainingWork" must be arrays of strings. ' +
-          "Do not mention tool calling policy. Do not invent facts. Prefer stable, implementation-relevant facts.",
+          "Compact older conversation history for a programming agent into schema v2. Return ONLY valid JSON with keys " +
+          '"currentObjective", "userInstructions", "decisions", "discoveries", "openQuestions", "activeFiles", "toolFacts", "remainingWork", "summary". ' +
+          'Use short factual strings. "userInstructions", "decisions", "discoveries", "openQuestions", "activeFiles", "toolFacts", and "remainingWork" must be arrays of strings. ' +
+          "Preserve acceptance criteria, user preferences, exact file paths, commands run, errors, decisions, and remaining work. Do not invent facts.",
       },
       {
         role: "user",
@@ -3294,6 +3721,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       currentObjective?: unknown;
       userInstructions?: unknown;
       decisions?: unknown;
+      discoveries?: unknown;
       openQuestions?: unknown;
       activeFiles?: unknown;
       toolFacts?: unknown;
@@ -3309,6 +3737,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       typeof parsed.summary === "string" ? parsed.summary.trim() : "";
     const decisions = Array.isArray(parsed.decisions)
       ? parsed.decisions.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
+      : [];
+    const discoveries = Array.isArray(parsed.discoveries)
+      ? parsed.discoveries.filter(
           (value): value is string =>
             typeof value === "string" && value.trim().length > 0,
         )
@@ -3351,6 +3785,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : "",
       decisions.length > 0
         ? `Decisions made:\n${decisions.map((item) => `- ${item}`).join("\n")}`
+        : "",
+      discoveries.length > 0
+        ? `Discoveries:\n${discoveries.map((item) => `- ${item}`).join("\n")}`
         : "",
       openQuestions.length > 0
         ? `Open questions:\n${openQuestions.map((item) => `- ${item}`).join("\n")}`
@@ -3451,6 +3888,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toolDefinitions,
       modelContextWindowTokens,
       currentCompactionState,
+      estimateSerializedPayloadTokens: (messages) =>
+        estimateChatCompletionSerializedPayloadTokens({
+          messages,
+          providerType: params.providerConfig.providerType,
+          providerId: params.providerId,
+          baseUrl: params.providerConfig.baseUrl,
+          modelId: params.modelId,
+        }),
       mode: params.mode,
       budgetPolicy,
       forceCompaction: params.forceCompaction,
@@ -6514,6 +6959,202 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const refreshConversationContextDiagnostics = async (
+    conversationId: string,
+  ): Promise<void> => {
+    if (!conversationId) {
+      return;
+    }
+
+    const requestId =
+      (contextDiagnosticsRequestIds.get(conversationId) ?? 0) + 1;
+    contextDiagnosticsRequestIds.set(conversationId, requestId);
+
+    set((state) => {
+      const previous = state.contextDiagnosticsByConversationId[conversationId];
+      return {
+        contextDiagnosticsByConversationId: {
+          ...state.contextDiagnosticsByConversationId,
+          [conversationId]: {
+            status: "estimating",
+            conversationId,
+            updatedAt: new Date().toISOString(),
+            providerId: previous?.providerId,
+            providerType: previous?.providerType,
+            modelId: previous?.modelId,
+            phase: previous?.phase,
+            decision: previous?.decision,
+            compactionPass: previous?.compactionPass,
+            summaryFormatVersion: previous?.summaryFormatVersion,
+            summarySource: previous?.summarySource,
+            footprintBefore: previous?.footprintBefore,
+            footprintAfter: previous?.footprintAfter,
+            ratio: previous?.ratio ?? 0,
+            usableRatio: previous?.usableRatio ?? 0,
+            isHardStop: previous?.isHardStop ?? false,
+            counts: previous?.counts ?? EMPTY_CONTEXT_DIAGNOSTICS_COUNTS,
+            breakdown: previous?.breakdown ?? [],
+            topContributors: previous?.topContributors ?? [],
+          },
+        },
+      };
+    });
+
+    const isStale = () =>
+      contextDiagnosticsRequestIds.get(conversationId) !== requestId;
+
+    try {
+      await ensureMessagesLoadedForConversation(conversationId);
+      await ensureToolsLoaded();
+
+      const providerState = useProviderStore.getState();
+      const {
+        selectedProviderId,
+        selectedModelId,
+        providerConfigs,
+      } = providerState;
+      if (!selectedProviderId || !selectedModelId) {
+        throw buildSendError("Select a provider and model to inspect context.");
+      }
+
+      const providerConfig = providerConfigs.find(
+        (provider) => provider.id === selectedProviderId,
+      );
+      if (!providerConfig) {
+        throw buildSendError("Provider configuration not found.");
+      }
+
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
+      const taskStatus = conversation?.task_id
+        ? useTaskStore.getState().getTaskById(conversation.task_id)?.status ??
+          null
+        : null;
+      const internalAgentProfile = resolveInternalAgentProfile({
+        mode: useAppStore.getState().mode,
+        taskStatus,
+      });
+      const allowedToolIds = await getAllowedToolIdsForCurrentMode(
+        internalAgentProfile,
+      );
+      const preparedRequest = await prepareMessagesForRequest(
+        conversationId,
+        allowedToolIds,
+        internalAgentProfile,
+      );
+      const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+      const currentCompactionState = await getConversationCompactionState(
+        conversationId,
+      );
+      const modelContextWindowTokens = getSelectedModelContextWindowTokens(
+        selectedProviderId,
+        selectedModelId,
+        providerConfig.providerType,
+      );
+      const budgetPolicy = await loadContextBudgetPolicy();
+
+      const result = await buildCompactedMessagesForRequest({
+        systemMessage: preparedRequest.systemMessage,
+        preparedMessages: preparedRequest.preparedMessages,
+        orderedMessages: preparedRequest.orderedMessages,
+        citations: preparedRequest.citations,
+        toolDefinitions,
+        modelContextWindowTokens,
+        currentCompactionState,
+        estimateSerializedPayloadTokens: (messages) =>
+          estimateChatCompletionSerializedPayloadTokens({
+            messages,
+            providerType: providerConfig.providerType,
+            providerId: selectedProviderId,
+            baseUrl: providerConfig.baseUrl,
+            modelId: selectedModelId,
+          }),
+        mode: "blocking",
+        budgetPolicy,
+        generateSummary: async () =>
+          currentCompactionState?.summaryText ?? null,
+      });
+
+      if (isStale()) {
+        return;
+      }
+
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        conversationId,
+      );
+      const isProviderError =
+        runtime.lastErrorOrigin === "provider" ||
+        runtime.lastErrorDisplayTarget === "transcript";
+      const phase: ConversationContextDiagnostics["phase"] = isProviderError
+        ? "provider_error"
+        : result.footprintAfter.isHardStop
+          ? "too_large"
+          : result.degraded
+            ? "degraded"
+            : result.compactionState
+              ? "compacted"
+              : "idle";
+
+      const diagnostics = buildContextDiagnosticsFromFootprint({
+        conversationId,
+        providerId: selectedProviderId,
+        providerType: providerConfig.providerType,
+        modelId: selectedModelId,
+        status: "ready",
+        phase,
+        decision: result.decision,
+        compactionPass: result.compactionState?.compactionPass,
+        summaryFormatVersion:
+          (result.compactionState ?? currentCompactionState)?.summaryFormatVersion,
+        summarySource:
+          (result.compactionState ?? currentCompactionState)?.summarySource,
+        footprintBefore: result.footprintBefore,
+        footprintAfter: result.footprintAfter,
+        orderedMessages: preparedRequest.orderedMessages,
+        preparedMessages: result.messages.slice(1),
+        citations: preparedRequest.citations,
+        compactionState: result.compactionState ?? currentCompactionState,
+      });
+
+      set((state) => ({
+        contextDiagnosticsByConversationId: {
+          ...state.contextDiagnosticsByConversationId,
+          [conversationId]: diagnostics,
+        },
+      }));
+    } catch (error) {
+      if (isStale()) {
+        return;
+      }
+      const normalized = toServiceError(error);
+      const providerState = useProviderStore.getState();
+      const providerConfig = providerState.providerConfigs.find(
+        (provider) => provider.id === providerState.selectedProviderId,
+      );
+      const orderedMessages = getOrderedConversationMessages(conversationId);
+      const diagnostics = buildContextDiagnosticsFromFootprint({
+        conversationId,
+        providerId: providerState.selectedProviderId ?? undefined,
+        providerType: providerConfig?.providerType,
+        modelId: providerState.selectedModelId ?? undefined,
+        status: "error",
+        phase: "too_large",
+        orderedMessages,
+        preparedMessages: [],
+        citations: [],
+        error: normalized.message,
+      });
+      set((state) => ({
+        contextDiagnosticsByConversationId: {
+          ...state.contextDiagnosticsByConversationId,
+          [conversationId]: diagnostics,
+        },
+      }));
+    }
+  };
+
   const startAssistantStream = (params: {
     sessionId: string;
     assistantMessage: ChatMessage;
@@ -6628,6 +7269,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         kind: "overflow_recovery",
         recoveredFromOverflow: true,
       });
+      const initialPayloadTokens = estimateChatCompletionSerializedPayloadTokens({
+        messages: params.messagesForRequest,
+        providerType: params.providerConfig.providerType,
+        providerId: params.selectedProviderId,
+        baseUrl: params.providerConfig.baseUrl,
+        modelId: params.selectedModelId,
+      });
       updateConversationRuntimeIfSessionMatches(
         params.conversationId,
         params.sessionId,
@@ -6656,6 +7304,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
           forceCompaction: true,
           forcePrune: true,
         });
+        const recoveredPayloadTokens = estimateChatCompletionSerializedPayloadTokens({
+          messages: streamLaunch.messagesForRequest,
+          providerType: params.providerConfig.providerType,
+          providerId: params.selectedProviderId,
+          baseUrl: params.providerConfig.baseUrl,
+          modelId: params.selectedModelId,
+        });
+        if (recoveredPayloadTokens >= initialPayloadTokens) {
+          throw new Error(
+            `${OVERFLOW_RECOVERY_FAILURE_MESSAGE} Payload estimate did not shrink after forced compaction ` +
+              `(${recoveredPayloadTokens} tokens after, ${initialPayloadTokens} tokens before).`,
+          );
+        }
 
         const currentStatus =
           get().conversationCompactionStatusById[params.conversationId];
@@ -7080,13 +7741,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     mode: AppMode = useAppStore.getState().mode,
   ): boolean => {
-    const appState = useAppStore.getState();
+    let appState = useAppStore.getState();
     const state = get();
     const conversation = state.conversations.find(
       (candidate) => candidate.id === conversationId,
     );
     if (!conversation) {
       return false;
+    }
+
+    if (
+      mode === "Implement" &&
+      conversation.task_id &&
+      appState.selectedTaskId !== conversation.task_id
+    ) {
+      const resolvedTask = resolveImplementTaskForContext({
+        selectedTaskId: conversation.task_id,
+        tasks: useTaskStore.getState().tasks,
+        projectGroups: appState.projectGroups,
+        selectedGroupId: appState.selectedGroupId,
+        selectedProjectId: appState.selectedProjectId,
+        localContext: null,
+      });
+      if (resolvedTask?.id === conversation.task_id) {
+        appState.setSelectedTask(conversation.task_id);
+        appState = useAppStore.getState();
+      }
     }
 
     if (
@@ -7887,6 +8567,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
       conversationCompactionStatusById: {},
+      contextDiagnosticsByConversationId: {},
       isLoading: false,
       isStreaming: false,
       sendState: "idle",
@@ -8291,6 +8972,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
     conversationCompactionStatusById: {},
+    contextDiagnosticsByConversationId: {},
     isLoading: false,
     isStreaming: false,
     sendState: "idle",
@@ -8622,6 +9304,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        contextDiagnosticsByConversationId: {},
         ...buildLegacyStreamingFlags({
           conversationRuntimeById: {},
           selectedConversationId: get().selectedConversationId,
@@ -8936,7 +9619,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ensureConversationForCurrentMode: async () => {
       await waitForHydration();
 
-      const appState = useAppStore.getState();
+      let appState = useAppStore.getState();
+      if (appState.mode === "Implement") {
+        const localContext = appState.selectedGroupId
+          ? await getLocalProjectContextState(appState.selectedGroupId)
+          : null;
+        const resolvedTask = resolveImplementTaskForContext({
+          selectedTaskId: appState.selectedTaskId,
+          tasks: useTaskStore.getState().tasks,
+          projectGroups: appState.projectGroups,
+          selectedGroupId: appState.selectedGroupId,
+          selectedProjectId: appState.selectedProjectId,
+          localContext,
+        });
+        if (resolvedTask && appState.selectedTaskId !== resolvedTask.id) {
+          appState.setSelectedTask(resolvedTask.id);
+          appState = useAppStore.getState();
+        }
+      }
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);
       const stateBeforeResolve = get();
@@ -9240,6 +9940,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     compactConversationNow: (conversationId) =>
       compactConversationNow(conversationId),
+
+    refreshConversationContextDiagnostics: (conversationId) =>
+      refreshConversationContextDiagnostics(conversationId),
 
     getPendingToolApproval: (conversationId) =>
       get().pendingToolApprovalByConversationId[conversationId] ?? null,
@@ -10042,12 +10745,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         runtime?.abortController?.abort();
       });
       messageLoadPromisesByConversationId.clear();
+      contextDiagnosticsRequestIds.clear();
       pendingArchitectConversationIdsByPlanKey.clear();
       pendingArchitectConversationDetailsById.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        contextDiagnosticsByConversationId: {},
         isLoading: true,
         isStreaming: false,
         sendState: "idle",
@@ -10092,6 +10797,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},
           conversationCompactionStatusById: {},
+          contextDiagnosticsByConversationId: {},
           isLoading: false,
           isStreaming: false,
           sendState: "error",

@@ -2246,6 +2246,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const selectedTaskAfterRestore = useAppStore.getState().selectedTaskId;
       if (activateSelectedTask && selectedTaskAfterRestore) {
         void get().activateTask(selectedTaskAfterRestore);
+        void useChatStore.getState().ensureConversationForCurrentMode();
       }
     } catch (error) {
       const normalized = toServiceError(error);

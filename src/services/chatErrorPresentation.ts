@@ -84,7 +84,7 @@ const getSuggestedProviderAction = (params: {
     case "unsupported_reasoning":
       return "Désactive le raisonnement pour ce modèle ou choisis un modèle compatible.";
     case "invalid_tool_protocol":
-      return "Relance la demande. Si l'erreur persiste, change de modèle ou de provider.";
+      return "Relance après compaction stricte. Si l'erreur persiste, l'historique d'outils ancien est probablement invalide pour ce provider.";
     default:
       return params.retryable
         ? "Relance dans quelques instants."

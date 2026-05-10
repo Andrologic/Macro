@@ -6,6 +6,7 @@ import type {
   ContextFootprintReason,
   ContextFootprintThreshold,
   ConversationCompactionState,
+  CompactionSummarySource,
   ToolContextDigestEntry,
   ToolContextDigestKind,
 } from '../types';
@@ -15,6 +16,7 @@ import type { MacroToolRegistryEntry } from '../shared/macroToolRegistry';
 
 const CHARS_PER_TOKEN = 4;
 const SOURCE_PASSAGE_VERSION = 1;
+export const COMPACTION_SUMMARY_FORMAT_VERSION = 2;
 const EMERGENCY_TOOL_CONTEXT_CHARS = 1200;
 const MAX_DIGEST_ITEMS = 18;
 const MAX_DIGEST_EVIDENCE_CHARS = 220;
@@ -60,6 +62,7 @@ export interface EstimateConversationFootprintParams {
   citations: Citation[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   mode?: CompactionMode;
   thresholds?: Partial<CompactionThresholds>;
   budgetPolicy?: ContextBudgetPolicy;
@@ -81,6 +84,7 @@ export interface MaybeCompactConversationParams {
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
   currentCompactionState?: ConversationCompactionState | null;
+  estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   mode: ContextCompactionKind;
   budgetPolicy?: ContextBudgetPolicy;
   forceCompaction?: boolean;
@@ -120,6 +124,7 @@ export const buildContextTooLargeErrorMessage = (
   const contributors = [
     ['messages', footprint.visibleMessageTokens],
     ['provider history', footprint.providerInputTokens],
+    ['serialized payload', footprint.serializedPayloadTokens],
     ['system', footprint.systemTokens],
     ['tools', footprint.toolSchemaTokens],
     ['summary', footprint.summaryTokens],
@@ -835,6 +840,9 @@ const buildFallbackSummary = (input: SummaryGenerationInput): string => {
     'Decisions:',
     '- Preserve recent visible conversation turns verbatim and rely on this compacted state for older context.',
     '',
+    'Discoveries:',
+    toolFacts || '- No deterministic discoveries captured beyond retained recent turns.',
+    '',
     'Open questions:',
     '- None captured deterministically.',
     '',
@@ -894,6 +902,9 @@ const buildCompactionSystemMessage = (
   return [
     '[COMPACTED CONVERSATION STATE]',
     'Use this compacted state as authoritative prior context for older turns.',
+    `Summary schema: v${state.summaryFormatVersion ?? 1}; source: ${
+      state.summarySource ?? 'unknown'
+    }; pass: ${state.compactionPass ?? 'normal'}.`,
     truncateMiddle(state.summaryText.trim(), MAX_SUMMARY_CHARS),
     digestBlock ? `Tool digest:\n${digestBlock}` : '',
     usedRefs ? `Used source passages kept:\n${usedRefs}` : '',
@@ -1112,8 +1123,28 @@ export const estimateConversationFootprint = (
   const latestUserContextTokens = latestPreparedUserMessage
     ? estimateTokensForStreamMessage(latestPreparedUserMessage)
     : 0;
-  const totalEstimatedTokens =
+  let serializedPayloadTokens: number | undefined;
+  try {
+    const serializedEstimate = params.estimateSerializedPayloadTokens?.([
+      { role: 'system', content: params.systemMessage },
+      ...params.preparedMessages,
+    ]);
+    if (
+      typeof serializedEstimate === 'number' &&
+      Number.isFinite(serializedEstimate) &&
+      serializedEstimate > 0
+    ) {
+      serializedPayloadTokens = Math.ceil(serializedEstimate);
+    }
+  } catch {
+    serializedPayloadTokens = undefined;
+  }
+  const structuralEstimatedTokens =
     totalPreparedTokens + systemTokens + toolSchemaTokens;
+  const totalEstimatedTokens =
+    serializedPayloadTokens === undefined
+      ? structuralEstimatedTokens
+      : Math.max(structuralEstimatedTokens, serializedPayloadTokens + toolSchemaTokens);
   const messageTokens = Math.max(totalPreparedTokens - hiddenContextTokens, 0);
   const totalContextRatio =
     params.modelContextWindowTokens > 0
@@ -1139,6 +1170,7 @@ export const estimateConversationFootprint = (
 
   return {
     totalEstimatedTokens,
+    serializedPayloadTokens,
     messageTokens,
     visibleMessageTokens,
     providerInputTokens,
@@ -1170,6 +1202,7 @@ const buildCompactionState = async (params: {
   preparedMessages: StreamMessage[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   budgetPolicy?: ContextBudgetPolicy;
   currentCompactionState?: ConversationCompactionState | null;
   prunedToolContextMessageIds?: string[];
@@ -1225,7 +1258,9 @@ const buildCompactionState = async (params: {
     summaryText = null;
   }
 
-  const summary = (summaryText || buildFallbackSummary({
+  const modelSummary = summaryText?.trim() || '';
+  const summarySource: CompactionSummarySource = modelSummary ? 'model' : 'fallback';
+  const summary = (modelSummary || buildFallbackSummary({
     compactableMessages,
     retainedMessages,
     toolDigest,
@@ -1251,6 +1286,7 @@ const buildCompactionState = async (params: {
       citations: params.citations,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       mode: 'blocking',
     }).totalEstimatedTokens,
@@ -1268,6 +1304,8 @@ const buildCompactionState = async (params: {
     degradedReason: null,
     compactionKind: params.compactionKind,
     compactionPass: params.compactionPass ?? 'normal',
+    summaryFormatVersion: COMPACTION_SUMMARY_FORMAT_VERSION,
+    summarySource,
   };
 
   provisionalState.fingerprint = computeCompactionFingerprint(
@@ -1304,6 +1342,7 @@ export const maybeCompactConversation = async (
     citations: params.citations,
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
+    estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
     mode,
     budgetPolicy: params.budgetPolicy,
   });
@@ -1386,6 +1425,7 @@ export const maybeCompactConversation = async (
       preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: params.forceCompaction ? null : activeState,
       prunedToolContextMessageIds: pruned.prunedMessageIds,
@@ -1436,6 +1476,7 @@ export const maybeCompactConversation = async (
       preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: null,
       prunedToolContextMessageIds: pruned.prunedMessageIds,

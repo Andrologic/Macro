@@ -460,6 +460,7 @@ export type ContextFootprintReason =
 
 export interface ContextFootprint {
   totalEstimatedTokens: number;
+  serializedPayloadTokens?: number;
   messageTokens: number;
   visibleMessageTokens?: number;
   providerInputTokens?: number;
@@ -490,6 +491,7 @@ export type ContextCompactionKind =
   | 'manual';
 
 export type CompactionPass = 'normal' | 'forced' | 'ultra';
+export type CompactionSummarySource = 'model' | 'fallback';
 
 export type ToolContextDigestKind =
   | 'file_read'
@@ -528,6 +530,8 @@ export interface ConversationCompactionState {
   degradedReason?: ContextFootprintReason | null;
   compactionKind?: ContextCompactionKind;
   compactionPass?: CompactionPass;
+  summaryFormatVersion?: number;
+  summarySource?: CompactionSummarySource;
 }
 
 export interface ChatGptProviderTurnState {

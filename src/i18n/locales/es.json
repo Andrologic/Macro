@@ -20,6 +20,7 @@
     "error": "error",
     "success": "Éxito",
     "confirm": "Confirmar",
+    "validate": "Validar",
     "search": "Buscar",
     "searchPlaceholder": "Buscar...",
     "noResults": "No se encontraron resultados",

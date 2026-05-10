@@ -748,6 +748,94 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('converts orphan tool messages into assistant context before provider send', async () => {
+    const { __testables } = await loadStreamingChat();
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        { role: 'assistant', content: 'Compacted historical tool result.' },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          tool_call_id: 'call_read',
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'deepseek-v4-flash',
+      })
+    );
+
+    expect(messages).toEqual([
+      { role: 'assistant', content: 'Compacted historical tool result.' },
+      {
+        role: 'assistant',
+        content: expect.stringContaining('Historical tool result preserved as context'),
+      },
+      { role: 'user', content: 'Continue.' },
+    ]);
+    expect(messages.some((message: Record<string, unknown>) => message.role === 'tool')).toBe(false);
+  });
+
+  it('keeps valid parallel tool responses and converts only orphan tool results', async () => {
+    const { __testables } = await loadStreamingChat();
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call_read',
+              type: 'function' as const,
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+            },
+            {
+              id: 'call_glob',
+              type: 'function' as const,
+              function: { name: 'glob', arguments: '{"pattern":"*.ts"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md',
+          tool_call_id: 'call_read',
+        },
+        {
+          role: 'tool',
+          content: 'orphan terminal output',
+          tool_call_id: 'call_terminal',
+        },
+        {
+          role: 'tool',
+          content: 'MATCHES: src/index.ts',
+          tool_call_id: 'call_glob',
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'gpt-4.1',
+      })
+    );
+
+    expect(messages).toEqual([
+      expect.objectContaining({ role: 'assistant' }),
+      { role: 'tool', content: 'FILE: README.md', tool_call_id: 'call_read' },
+      {
+        role: 'tool',
+        content: 'MATCHES: src/index.ts',
+        tool_call_id: 'call_glob',
+      },
+      {
+        role: 'assistant',
+        content: expect.stringContaining('orphan terminal output'),
+      },
+    ]);
+  });
+
   it('injects a hidden noop tool only for LiteLLM proxy payload compatibility', async () => {
     const { __testables } = await loadStreamingChat();
     const toolHistoryMessages = [

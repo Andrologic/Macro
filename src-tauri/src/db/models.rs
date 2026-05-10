@@ -49,6 +49,9 @@ pub struct ConversationCompactionStateRecord {
     pub footprint_after_json: Option<String>,
     pub degraded_reason: Option<String>,
     pub compaction_kind: Option<String>,
+    pub compaction_pass: Option<String>,
+    pub summary_format_version: Option<i32>,
+    pub summary_source: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -307,6 +310,9 @@ pub struct UpsertConversationCompactionStateInput {
     pub footprint_after_json: Option<String>,
     pub degraded_reason: Option<String>,
     pub compaction_kind: Option<String>,
+    pub compaction_pass: Option<String>,
+    pub summary_format_version: Option<i32>,
+    pub summary_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

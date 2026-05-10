@@ -62,10 +62,41 @@ import {
   CompactionBoundaryRow,
   CompactionProgressNotice,
 } from './CompactionTranscriptUi';
+import { ContextWindowIndicator } from './ContextWindowIndicator';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
 }
+
+interface ContextControlsVisibilityInput {
+  mode: 'Chat' | 'Architect' | 'Implement';
+  selectedConversationId?: string | null;
+  selectedTaskId?: string | null;
+  activeArchitectPlanId?: string | null;
+  activePlanContextId?: string | null;
+}
+
+export const shouldShowContextControls = ({
+  mode,
+  selectedConversationId,
+  selectedTaskId,
+  activeArchitectPlanId,
+  activePlanContextId,
+}: ContextControlsVisibilityInput): boolean => {
+  if (!selectedConversationId) {
+    return false;
+  }
+
+  if (mode === 'Implement') {
+    return Boolean(selectedTaskId);
+  }
+
+  if (mode === 'Architect') {
+    return Boolean(activeArchitectPlanId || activePlanContextId);
+  }
+
+  return true;
+};
 
 const LazyPlanSelector = lazy(async () => {
   const module = await import('../architect/PlanSelector');
@@ -581,6 +612,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     selectedConversationRuntime,
     conversationCompactionStatusById,
+    contextDiagnosticsByConversationId,
     messagesByConversationId,
     createConversation,
     ensureConversationForCurrentMode,
@@ -611,6 +643,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire,
     compactConversationNow,
+    refreshConversationContextDiagnostics,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
@@ -619,6 +652,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
     conversationCompactionStatusById: state.conversationCompactionStatusById,
+    contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
     messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
     ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
@@ -651,6 +685,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire: state.submitActiveQuestionnaire,
     compactConversationNow: state.compactConversationNow,
+    refreshConversationContextDiagnostics:
+      state.refreshConversationContextDiagnostics,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
@@ -664,6 +700,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     tasks: state.tasks,
     startTask: state.startTask,
   })));
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
+  );
+  const shouldShowContextControlsForActiveContext = shouldShowContextControls({
+    mode,
+    selectedConversationId,
+    selectedTaskId,
+    activeArchitectPlanId,
+    activePlanContextId: activePlanContext?.id ?? null,
+  });
 
   const [inputValue, setInputValue] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -694,6 +741,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const activeCompactionStatus = selectedConversationId
     ? conversationCompactionStatusById[selectedConversationId]
+    : undefined;
+  const contextDiagnostics = selectedConversationId
+    ? contextDiagnosticsByConversationId[selectedConversationId]
     : undefined;
   const isCompactionProgressActive =
     activeCompactionStatus?.phase === 'compacting' ||
@@ -745,6 +795,31 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       window.clearTimeout(timeoutId);
     };
   }, [isCompactionProgressActive]);
+
+  useEffect(() => {
+    if (!selectedConversationId || !shouldShowContextControlsForActiveContext) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshConversationContextDiagnostics(selectedConversationId);
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeCompactionStatus?.updatedAt,
+    activeCompactionStatus?.phase,
+    currentMessages,
+    refreshConversationContextDiagnostics,
+    selectedConversationId,
+    selectedConversationRuntime.lastError,
+    selectedConversationRuntime.lastErrorDisplayTarget,
+    selectedModelId,
+    selectedProviderId,
+    shouldShowContextControlsForActiveContext,
+  ]);
 
   const handleManualCompaction = useCallback(async () => {
     if (!selectedConversationId || isManualCompacting) {
@@ -841,10 +916,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
-  const selectedTask = useMemo(
-    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
-    [tasks, selectedTaskId]
-  );
   const selectedTaskTodoState = useMemo(
     () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
     [selectedTask]
@@ -1652,7 +1723,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </Suspense>
               </div>
             )}
-            {showManualCompaction && selectedConversationId && (
+            {showManualCompaction && shouldShowContextControlsForActiveContext && selectedConversationId && (
               <button
                 type="button"
                 onClick={handleManualCompaction}
@@ -1670,6 +1741,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <Icon name="archive" size={14} className="mx-auto" />
                 )}
               </button>
+            )}
+            {shouldShowContextControlsForActiveContext && selectedConversationId && (
+              <ContextWindowIndicator
+                diagnostics={contextDiagnostics}
+                isBusy={contextDiagnostics?.status === 'estimating'}
+                isCompacting={isManualCompacting || isCompactionProgressActive}
+                onRefresh={() => {
+                  void refreshConversationContextDiagnostics(selectedConversationId);
+                }}
+                onCompactNow={handleManualCompaction}
+              />
             )}
             {headerActions}
           </div>

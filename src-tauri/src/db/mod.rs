@@ -483,6 +483,9 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
             footprint_after_json TEXT,
             degraded_reason TEXT,
             compaction_kind TEXT,
+            compaction_pass TEXT,
+            summary_format_version INTEGER,
+            summary_source TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
@@ -508,6 +511,9 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         ("footprint_after_json", "TEXT"),
         ("degraded_reason", "TEXT"),
         ("compaction_kind", "TEXT"),
+        ("compaction_pass", "TEXT"),
+        ("summary_format_version", "INTEGER"),
+        ("summary_source", "TEXT"),
     ];
     for (column, definition) in optional_columns {
         if !columns.contains(column) {

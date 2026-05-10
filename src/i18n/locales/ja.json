@@ -20,6 +20,7 @@
     "error": "エラー",
     "success": "成功",
     "confirm": "確認する",
+    "validate": "検証",
     "search": "検索",
     "searchPlaceholder": "検索...",
     "noResults": "結果が見つかりませんでした",
