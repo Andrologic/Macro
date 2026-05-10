@@ -188,7 +188,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     !isCompacting &&
     effectiveDiagnostics?.status !== 'error';
   const statusLabel = isCompacting ? 'Compaction en cours' : tone.label;
-  const isLiveEstimate = effectiveDiagnostics?.source === 'live_stream';
 
   return (
     <div ref={containerRef} className="relative">
@@ -275,9 +274,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   'Provider'} ·{' '}
                 {effectiveDiagnostics?.modelId ?? 'Modèle non sélectionné'}
               </p>
-              {isLiveEstimate ? (
-                <p className="mt-1 text-[11px] text-primary">Mesure en direct</p>
-              ) : null}
             </div>
             <div className="text-right">
               <p className="text-lg font-semibold tabular-nums">
