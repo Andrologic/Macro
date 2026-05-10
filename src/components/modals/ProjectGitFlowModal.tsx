@@ -89,7 +89,6 @@ export const ProjectGitFlowModal: React.FC = () => {
   const project = projectId ? getProjectById(projectId) : null;
   const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
   const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [isAccessSaving, setIsAccessSaving] = useState(false);
   const [accessPreview, setAccessPreview] = useState<ProjectAccessChangePreview | null>(null);
   const [projectSetupFlow, setProjectSetupFlow] = useState<ProjectSetupFlowState | null>(null);
@@ -100,7 +99,6 @@ export const ProjectGitFlowModal: React.FC = () => {
     }
     setSettings(resolveProjectGitFlowSettings(project.gitFlowSettings));
     setIsSaving(false);
-    setSaveSuccess(false);
     setIsAccessSaving(false);
     setAccessPreview(null);
     setProjectSetupFlow(null);
@@ -462,16 +460,14 @@ export const ProjectGitFlowModal: React.FC = () => {
       return;
     }
     setIsSaving(true);
-    setSaveSuccess(false);
     try {
       await updateProjectGitFlow(projectId, resolveProjectGitFlowSettings(settings));
-      setSaveSuccess(true);
       notify.success(
         t('projects.gitFlowSaved', 'Git workflow settings updated for {{projectName}}.', {
           projectName: project.name,
         })
       );
-      window.setTimeout(() => setSaveSuccess(false), 2500);
+      closeProjectGitFlowModal();
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
       notify.error(message);
@@ -685,7 +681,6 @@ export const ProjectGitFlowModal: React.FC = () => {
               type="button"
               onClick={() => {
                 setSettings(appDefaults);
-                setSaveSuccess(false);
               }}
               className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
@@ -706,20 +701,16 @@ export const ProjectGitFlowModal: React.FC = () => {
                 disabled={isSaving || validationErrors.length > 0}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium transition-colors',
-                  saveSuccess
-                    ? 'bg-emerald-500/20 text-emerald-500'
-                    : 'bg-primary text-primary-foreground hover:bg-primary/90',
+                  'bg-primary text-primary-foreground hover:bg-primary/90',
                   (isSaving || validationErrors.length > 0) && 'cursor-not-allowed opacity-50'
                 )}
               >
                 <Icon
-                  name={isSaving ? 'loader' : saveSuccess ? 'check' : 'download'}
+                  name={isSaving ? 'loader' : 'check'}
                   size={12}
                   className={isSaving ? 'animate-spin' : ''}
                 />
-                {saveSuccess
-                  ? t('common.saved', 'Saved')
-                  : t('common.save', 'Save')}
+                {isSaving ? t('common.saving', 'Saving...') : t('common.validate', 'Validate')}
               </button>
             </div>
           </div>

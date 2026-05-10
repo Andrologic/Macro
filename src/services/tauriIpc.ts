@@ -73,6 +73,9 @@ export interface DbConversationCompactionState {
   footprint_after_json?: string | null;
   degraded_reason?: string | null;
   compaction_kind?: string | null;
+  compaction_pass?: string | null;
+  summary_format_version?: number | null;
+  summary_source?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -542,6 +545,9 @@ export interface DbUpsertConversationCompactionStateInput {
   footprint_after_json?: string | null;
   degraded_reason?: string | null;
   compaction_kind?: string | null;
+  compaction_pass?: string | null;
+  summary_format_version?: number | null;
+  summary_source?: string | null;
 }
 
 export interface AiChatMessageImageUrl {

@@ -251,6 +251,109 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(JSON.stringify(compacted.messages)).not.toContain('tool_calls');
   });
 
+  it('moves compacted provider tool-call details into plain context', async () => {
+    const hugeReasoning = `Need context.\n${'native reasoning payload\n'.repeat(1200)}`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the runtime.'),
+      makeMessage('a1', 'assistant', 'Runtime output summarized.'),
+      makeMessage('a2', 'assistant', 'FILE: README.md'),
+      makeMessage('u2', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Runtime output summarized.',
+          visible_content: 'Runtime output summarized.',
+          reasoning_content: hugeReasoning,
+          tool_calls: [
+            {
+              id: 'call_read',
+              type: 'function',
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+            },
+          ],
+        },
+      ],
+    };
+    preparedMessages[2] = {
+      ...preparedMessages[2]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          tool_call_id: 'call_read',
+          tool_name: 'read',
+        },
+      ],
+    };
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 1000,
+      mode: 'overflow_recovery',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => 'Current objective: answer from compacted provider history.',
+    });
+    const serializedMessages = JSON.stringify(result.messages);
+
+    expect(serializedMessages).toContain('Tool calls preserved as fact: read');
+    expect(serializedMessages).not.toContain('"tool_calls"');
+    expect(serializedMessages).not.toContain('native reasoning payload');
+  });
+
+  it('uses the final serialized payload estimate to trigger compaction after reload', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the old provider trace.'),
+      makeMessage('a1', 'assistant', 'Older provider trace summary.'),
+      makeMessage('u2', 'user', 'Continue from the findings.'),
+      makeMessage('a2', 'assistant', 'Recent answer.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Older provider trace summary.',
+          visible_content: 'Older provider trace summary.',
+          reasoning_content: 'provider trace payload\n'.repeat(500),
+        },
+      ],
+    };
+    const estimateSerializedPayloadTokens = (messages: typeof preparedMessages): number =>
+      JSON.stringify(messages).includes('provider trace payload') ? 4000 : 100;
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 1000,
+      budgetPolicy: { reservedTokens: 0 },
+      mode: 'blocking',
+      estimateSerializedPayloadTokens,
+      generateSummary: async () => 'Current objective: answer from compacted provider history.',
+    });
+
+    expect(result.footprintBefore.serializedPayloadTokens).toBe(4000);
+    expect(result.footprintAfter.serializedPayloadTokens).toBe(100);
+    expect(result.decision).toBe('send');
+    expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
+  });
+
   it('keeps the last two user turns raw and injects a compacted system message', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),
@@ -411,7 +514,36 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.decision).toBe('send');
     expect(result.compactionState?.upToMessageId).toBe('a2');
     expect(result.compactionState?.compactionPass).toBe('ultra');
+    expect(result.compactionState?.summaryFormatVersion).toBe(2);
+    expect(result.compactionState?.summarySource).toBe('model');
     expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
+  });
+
+  it('records fallback summaries explicitly when model summarization fails', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Remember that the migration must stay reversible.'),
+      makeMessage('a1', 'assistant', 'I will keep the migration reversible.'),
+      makeMessage('u2', 'user', 'Capture the risky files before editing.'),
+      makeMessage('a2', 'assistant', 'Risky files captured in tool facts.'),
+      makeMessage('u3', 'user', 'Continue from the retained turn.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 80,
+      mode: 'manual',
+      forceCompaction: true,
+      budgetPolicy: { prune: false, reservedTokens: 0 },
+      generateSummary: async () => null,
+    });
+
+    expect(result.compactionState?.summarySource).toBe('fallback');
+    expect(result.compactionState?.summaryFormatVersion).toBe(2);
+    expect(result.compactionState?.summaryText).toContain('Remember that the migration');
   });
 
   it('keeps the latest user provider input items intact during aggressive compaction', async () => {

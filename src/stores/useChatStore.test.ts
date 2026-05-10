@@ -130,6 +130,9 @@ const appState = {
     return payload;
   },
   setActivePlanContext: (_context: unknown) => undefined,
+  setSelectedTask: (taskId: string | null) => {
+    appState.selectedTaskId = taskId;
+  },
   setTheme: (_themeId: string) => undefined,
   activateArchitectPlan: mock(
     async (
@@ -748,6 +751,10 @@ const sendChatNonStreamingMock = mock(
     })
 );
 const streamChatMock = mock(async () => ({ usage: null }));
+const estimateChatCompletionSerializedPayloadTokensMock = mock(
+  (params: { messages: unknown[] }) =>
+    Math.max(1, Math.ceil(JSON.stringify(params.messages).length / 4))
+);
 const webSearchMock = mock(async (_query: string) => [
   {
     url: 'https://example.com/search-result',
@@ -862,10 +869,19 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
   };
 });
 
-const getLocalProjectContextStateMock = mock(async (_groupId: string) => ({
-  architectConversationId: 'project-architect-conversation',
-  implementConversationId: null,
-}));
+const getLocalProjectContextStateMock = mock(
+  async (
+    _groupId: string
+  ): Promise<{
+    architectConversationId: string | null;
+    implementConversationId: string | null;
+    lastTaskId: string | null;
+  }> => ({
+    architectConversationId: 'project-architect-conversation',
+    implementConversationId: null,
+    lastTaskId: null,
+  })
+);
 const syncArchitectPlanChatFromConversationMock = mock(async () => undefined);
 const saveArchitectPlanNeedsMock = mock(async () => undefined);
 const getChatSnapshotMock = mock(async () => ({
@@ -1317,6 +1333,7 @@ const registerUseChatStoreMocks = async () => {
     streamChat: streamChatMock,
     cancelStream: mock(() => undefined),
     sendChatNonStreaming: sendChatNonStreamingMock,
+    estimateChatCompletionSerializedPayloadTokens: estimateChatCompletionSerializedPayloadTokensMock,
   }));
 
   mock.module('../services/webSearchSettings', () => ({
@@ -5585,6 +5602,179 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('implement-latest');
   });
 
+  it('restores an implement task from local project context before selecting its conversation', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = null;
+    taskStoreState.tasks = [
+      createImplementTask({ id: 'task-1', status: 'Pending' }),
+      createImplementTask({
+        id: 'task-2',
+        title: 'Implement search',
+        status: 'InProgress',
+        sequence_index: 1,
+      }),
+    ];
+    getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
+      architectConversationId: null,
+      implementConversationId: 'implement-task-1',
+      lastTaskId: 'task-1',
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-task-1'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(appState.selectedTaskId as string | null).toBe('task-1');
+    expect(ensuredId).toBe('implement-task-1');
+    expect(useChatStore.getState().selectedConversationId).toBe('implement-task-1');
+  });
+
+  it('restores an in-progress implement task when no local task context exists', async () => {
+    const originalNow = Date.now;
+    Date.now = () => 1773930000000;
+
+    try {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = null;
+      taskStoreState.tasks = [
+        createImplementTask({ id: 'task-pending', status: 'Pending', sequence_index: 0 }),
+        createImplementTask({
+          id: 'task-active',
+          title: 'Implement active task',
+          status: 'InProgress',
+          sequence_index: 1,
+        }),
+      ];
+      getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
+        architectConversationId: null,
+        implementConversationId: null,
+        lastTaskId: null,
+      }));
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [],
+        messages: [],
+        selectedConversationId: null,
+        selectedConversationIdsByMode: {},
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+      const conversation = useChatStore
+        .getState()
+        .conversations.find((candidate: Conversation) => candidate.id === ensuredId);
+
+      expect(appState.selectedTaskId as string | null).toBe('task-active');
+      expect(conversation?.task_id).toBe('task-active');
+      expect(conversation?.title).toBe('Task - Implement active task');
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('does not create a task-scoped implement conversation when no task is eligible for the current scope', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = null;
+    taskStoreState.tasks = [
+      createImplementTask({
+        id: 'task-outside-scope',
+        project_id: 'project-elsewhere',
+        project_ids: ['project-elsewhere'],
+      }),
+    ];
+    getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
+      architectConversationId: null,
+      implementConversationId: null,
+      lastTaskId: 'task-outside-scope',
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [],
+      messages: [],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(appState.selectedTaskId).toBeNull();
+    expect(
+      useChatStore
+        .getState()
+        .conversations.some((conversation: Conversation) => Boolean(conversation.task_id))
+    ).toBe(false);
+  });
+
+  it('syncs the selected task when an existing implement conversation is restored', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = null;
+    taskStoreState.tasks = [createImplementTask({ id: 'task-1' })];
+    getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
+      architectConversationId: null,
+      implementConversationId: 'implement-conv',
+      lastTaskId: null,
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Task - Implement checkout',
+        },
+      ],
+      messages: [],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(ensuredId).toBe('implement-conv');
+    expect(appState.selectedTaskId as string | null).toBe('task-1');
+    expect(useChatStore.getState().selectedConversationId).toBe('implement-conv');
+  });
+
   it('creates a task-scoped implement conversation when none exists yet', async () => {
     const originalNow = Date.now;
     Date.now = () => 1773910000000;
@@ -6133,6 +6323,237 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       status: 'InProgress',
     });
+  });
+
+  it('persists manual compaction pass and summary schema metadata', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+      JSON.stringify({
+        currentObjective: 'Continue the database migration safely.',
+        userInstructions: ['Keep the migration reversible.'],
+        decisions: ['Use a forced manual compaction for older turns.'],
+        openQuestions: [],
+        activeFiles: ['src-tauri/src/db/mod.rs'],
+        toolFacts: ['The old schema lacks compaction_pass.'],
+        remainingWork: ['Run targeted tests.'],
+        summary: 'Manual compaction preserved the migration objective.',
+      })
+    );
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Keep this migration reversible.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'I will keep it reversible.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Inspect the compaction table.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'The table does not persist compaction_pass.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Now compact manually.',
+        timestamp: '2026-04-14T10:04:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().compactConversationNow('chat-conv');
+
+    const upsertInput = ((dbUpsertConversationCompactionStateMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? null);
+    expect(upsertInput).toMatchObject({
+      conversation_id: 'chat-conv',
+      compaction_kind: 'manual',
+      compaction_pass: 'forced',
+      summary_format_version: 2,
+      summary_source: 'model',
+    });
+    expect(upsertInput?.summary_text).toContain('Continue the database migration safely.');
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      summaryFormatVersion: 2,
+      summarySource: 'model',
+    });
+  });
+
+  it('hydrates persisted compaction metadata when a conversation is reselected', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    (dbGetConversationCompactionStateMock as unknown as {
+      mockImplementationOnce: (
+        implementation: () => Promise<unknown>,
+      ) => void;
+    }).mockImplementationOnce(async () => ({
+      conversation_id: 'chat-conv',
+      up_to_message_id: 'a1',
+      summary_text: 'Current objective: continue safely.',
+      tool_digest_json: '[]',
+      used_source_passage_ids_json: '[]',
+      interesting_source_passage_ids_json: '[]',
+      estimated_tokens_before: 4200,
+      estimated_tokens_after: 900,
+      fingerprint: 'fp',
+      version: 1,
+      pruned_tool_context_message_ids_json: '["a1"]',
+      reserved_tokens: 1200,
+      footprint_before_json: null,
+      footprint_after_json: JSON.stringify({
+        totalEstimatedTokens: 900,
+        messageTokens: 700,
+        hiddenContextTokens: 0,
+        systemTokens: 120,
+        toolSchemaTokens: 80,
+        imagePlaceholderTokens: 0,
+        citationTokens: 0,
+        modelContextWindowTokens: 8000,
+        reservedTokens: 1200,
+        usableContextTokens: 6800,
+        threshold: 'none',
+        reason: 'below_threshold',
+        totalContextRatio: 0.11,
+        usableContextRatio: 0.13,
+        hiddenContextRatio: 0,
+        hardStopRatio: 0.98,
+        isHardStop: false,
+        toolTurnCount: 0,
+      }),
+      degraded_reason: null,
+      compaction_kind: 'manual',
+      compaction_pass: 'ultra',
+      summary_format_version: 2,
+      summary_source: 'fallback',
+      created_at: '2026-04-14T10:00:00.000Z',
+      updated_at: '2026-04-14T10:05:00.000Z',
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      hydrationStatus: 'ready',
+      restoreStatus: 'idle',
+    }));
+
+    await useChatStore.getState().selectConversation('chat-conv');
+
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      summaryText: 'Current objective: continue safely.',
+      summaryFormatVersion: 2,
+      summarySource: 'fallback',
+    });
+  });
+
+  it('normalizes invalid persisted compaction metadata instead of trusting DB strings', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    (dbGetConversationCompactionStateMock as unknown as {
+      mockImplementationOnce: (
+        implementation: () => Promise<unknown>,
+      ) => void;
+    }).mockImplementationOnce(async () => ({
+      conversation_id: 'chat-conv',
+      up_to_message_id: 'a1',
+      summary_text: 'Legacy compacted summary.',
+      tool_digest_json: '[]',
+      used_source_passage_ids_json: '[]',
+      interesting_source_passage_ids_json: '[]',
+      estimated_tokens_before: 4200,
+      estimated_tokens_after: 900,
+      fingerprint: 'fp',
+      version: 1,
+      pruned_tool_context_message_ids_json: '[]',
+      reserved_tokens: null,
+      footprint_before_json: null,
+      footprint_after_json: null,
+      degraded_reason: 'not_a_reason',
+      compaction_kind: 'not_a_kind',
+      compaction_pass: 'dangerously_wrong',
+      summary_format_version: -10,
+      summary_source: 'robot_guess',
+      created_at: '2026-04-14T10:00:00.000Z',
+      updated_at: '2026-04-14T10:05:00.000Z',
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+      hydrationStatus: 'ready',
+      restoreStatus: 'idle',
+    }));
+
+    await useChatStore.getState().selectConversation('chat-conv');
+
+    const status =
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'];
+    expect(status).toMatchObject({
+      phase: 'compacted',
+      summaryText: 'Legacy compacted summary.',
+      reason: null,
+      summaryFormatVersion: 1,
+    });
+    expect(status?.kind).toBeUndefined();
+    expect(status?.summarySource).toBeUndefined();
   });
 
   it('passes Architect mode and the post-tool recap instruction into streaming requests', async () => {

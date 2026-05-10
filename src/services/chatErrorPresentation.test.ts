@@ -46,4 +46,21 @@ describe("chatErrorPresentation", () => {
     expect(markdown).toContain("Code: `rate_limit_exceeded`");
     expect(markdown).toContain("You exceeded your current quota.");
   });
+
+  it("gives an actionable hint for invalid tool protocol provider errors", () => {
+    const providerError = Object.assign(new Error("tool protocol rejected"), {
+      name: "ProviderRuntimeError",
+      providerError: true,
+      kind: "invalid_tool_protocol",
+      status: 400,
+      retryable: false,
+      providerMessage:
+        "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
+    });
+
+    const presentation = resolveChatErrorPresentation(providerError);
+
+    expect(presentation.suggestedAction).toContain("compaction stricte");
+    expect(presentation.suggestedAction).toContain("historique d'outils");
+  });
 });

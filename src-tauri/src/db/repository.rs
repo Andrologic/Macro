@@ -1458,7 +1458,8 @@ pub async fn get_conversation_compaction_state(
                estimated_tokens_before, estimated_tokens_after, fingerprint,
                version, pruned_tool_context_message_ids_json, reserved_tokens,
                footprint_before_json, footprint_after_json, degraded_reason,
-               compaction_kind, created_at, updated_at
+               compaction_kind, compaction_pass, summary_format_version,
+               summary_source, created_at, updated_at
         FROM conversation_compactions
         WHERE conversation_id = ?
         "#,
@@ -1502,6 +1503,18 @@ pub async fn get_conversation_compaction_state(
             .try_get::<Option<String>, _>("compaction_kind")
             .ok()
             .flatten(),
+        compaction_pass: row
+            .try_get::<Option<String>, _>("compaction_pass")
+            .ok()
+            .flatten(),
+        summary_format_version: row
+            .try_get::<Option<i32>, _>("summary_format_version")
+            .ok()
+            .flatten(),
+        summary_source: row
+            .try_get::<Option<String>, _>("summary_source")
+            .ok()
+            .flatten(),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }))
@@ -1522,9 +1535,10 @@ pub async fn upsert_conversation_compaction_state(
             estimated_tokens_before, estimated_tokens_after, fingerprint,
             version, pruned_tool_context_message_ids_json, reserved_tokens,
             footprint_before_json, footprint_after_json, degraded_reason,
-            compaction_kind, created_at, updated_at
+            compaction_kind, compaction_pass, summary_format_version,
+            summary_source, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             up_to_message_id = excluded.up_to_message_id,
             summary_text = excluded.summary_text,
@@ -1541,6 +1555,9 @@ pub async fn upsert_conversation_compaction_state(
             footprint_after_json = excluded.footprint_after_json,
             degraded_reason = excluded.degraded_reason,
             compaction_kind = excluded.compaction_kind,
+            compaction_pass = excluded.compaction_pass,
+            summary_format_version = excluded.summary_format_version,
+            summary_source = excluded.summary_source,
             updated_at = excluded.updated_at
         "#,
     )
@@ -1565,6 +1582,9 @@ pub async fn upsert_conversation_compaction_state(
     .bind(&input.footprint_after_json)
     .bind(&input.degraded_reason)
     .bind(&input.compaction_kind)
+    .bind(&input.compaction_pass)
+    .bind(input.summary_format_version)
+    .bind(&input.summary_source)
     .bind(&now)
     .bind(&now)
     .execute(pool)

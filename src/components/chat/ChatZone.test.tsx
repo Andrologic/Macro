@@ -63,6 +63,7 @@ type MockChatState = {
       summaryText?: string | null;
     }
   >;
+  contextDiagnosticsByConversationId: Record<string, unknown>;
   getConversationRuntime: (conversationId: string) => {
     phase: 'idle' | 'preparing' | 'streaming' | 'error';
     sessionId: string | null;
@@ -125,6 +126,7 @@ type MockChatState = {
   getMessageImages: ReturnType<typeof mock>;
   setMessageImages: ReturnType<typeof mock>;
   compactConversationNow: ReturnType<typeof mock>;
+  refreshConversationContextDiagnostics: ReturnType<typeof mock>;
   architectPlanNamingRecovery: {
     conversationId: string;
     planId: string;
@@ -151,6 +153,7 @@ type AppStoreState = {
   selectedTaskId: string | null;
   projectGroups: unknown[];
   activeArchitectPlanId: string | null;
+  activePlanContext: { id: string; [key: string]: unknown } | null;
   planNodes: unknown[];
   predictedBranches: unknown[];
 };
@@ -518,6 +521,7 @@ const resetState = () => {
     selectedTaskId: null,
     projectGroups: buildProjectGroups(),
     activeArchitectPlanId: null,
+    activePlanContext: null,
     planNodes: [],
     predictedBranches: [],
   };
@@ -527,6 +531,7 @@ const resetState = () => {
     messages: [],
     selectedConversationId: 'conv-1',
     conversationCompactionStatusById: {},
+    contextDiagnosticsByConversationId: {},
     getConversationRuntime: (conversationId: string) =>
       getMockConversationRuntime(chatState, conversationId),
     createConversation: mock(async () => buildConversation()),
@@ -562,6 +567,7 @@ const resetState = () => {
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),
     compactConversationNow: mock(async () => undefined),
+    refreshConversationContextDiagnostics: mock(async () => undefined),
     architectPlanNamingRecovery: null,
     setArchitectPlanNamingRecoveryStage: mock(() => undefined),
     retryArchitectPlanNamingRecovery: mock(async () => false),
@@ -786,6 +792,156 @@ describe('ChatZone', () => {
     ).not.toBeNull();
     expect(
       requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
+    ).not.toBeNull();
+  });
+
+  it('shows the context indicator in Chat mode when a conversation is selected', async () => {
+    chatState = {
+      ...chatState,
+      selectedConversationId: 'conv-1',
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Conversation libre' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
+    ).not.toBeNull();
+  });
+
+  it('hides the context indicator when Implement has no selected task', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: null,
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Ancienne conversation' }),
+      ],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
+    ).toBeNull();
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('shows the context indicator when Implement has a selected task id before task details load', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [],
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Conversation liée' }),
+      ],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
+    ).not.toBeNull();
+  });
+
+  it('hides context controls when Architect has no selected plan', async () => {
+    manualCompactionVisiblePreference = true;
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Conversation architecte' }),
+      ],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
+    ).toBeNull();
+    expect(
+      requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
+    ).toBeNull();
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('shows the context indicator when Architect has an active plan id before plan details load', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: 'plan-1',
+      activePlanContext: null,
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Plan à charger' }),
+      ],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
+    ).not.toBeNull();
+  });
+
+  it('shows the context indicator when Architect has an active plan context', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: { id: 'plan-1' },
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Plan hydraté' }),
+      ],
+      selectedConversationId: 'conv-1',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
     ).not.toBeNull();
   });
 

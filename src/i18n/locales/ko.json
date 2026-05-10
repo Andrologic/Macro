@@ -20,6 +20,7 @@
     "error": "오류",
     "success": "성공",
     "confirm": "확인하다",
+    "validate": "확인",
     "search": "찾다",
     "searchPlaceholder": "찾다...",
     "noResults": "검색결과가 없습니다",

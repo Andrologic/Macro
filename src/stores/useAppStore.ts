@@ -637,6 +637,7 @@ const restoreProjectContext = async (
   if (restoredTaskId) {
     useAppStore.setState({ selectedTaskId: restoredTaskId });
     await taskStore.activateTask(restoredTaskId);
+    await useChatStore.getState().ensureConversationForCurrentMode();
   } else {
     useAppStore.setState({ selectedTaskId: null });
   }
