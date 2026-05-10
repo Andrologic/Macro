@@ -1,6 +1,7 @@
 import type { ILink, ILinkProvider } from 'xterm';
 
-const TERMINAL_URL_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"'`{}|\\^\]]+/gi;
+const TERMINAL_URL_PATTERN =
+  /\b(?:https?:\/\/|www\.|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5})[^\s<>"'`{}|\\^\]]*/gi;
 const SIMPLE_TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?']);
 const BALANCED_CLOSERS: Record<string, string> = {
   ')': '(',
@@ -51,14 +52,21 @@ export const normalizeTerminalUrl = (rawToken: string): string | null => {
     return null;
   }
 
-  const candidate = trimmed.toLowerCase().startsWith('www.')
-    ? `https://${trimmed}`
-    : trimmed;
+  const lowerTrimmed = trimmed.toLowerCase();
+  const candidate =
+    lowerTrimmed.startsWith('www.')
+      ? `https://${trimmed}`
+      : /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5}(?:[/?#].*)?$/i.test(trimmed)
+        ? `http://${trimmed}`
+        : trimmed;
 
   try {
     const parsed = new URL(candidate);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null;
+    }
+    if (parsed.hostname === '0.0.0.0') {
+      parsed.hostname = 'localhost';
     }
     return parsed.toString();
   } catch {

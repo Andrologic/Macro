@@ -39,8 +39,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const tasks = useTaskStore((state) => state.tasks);
+  const panelRef = useRef<HTMLElement | null>(null);
   const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [tabStripOverflow, setTabStripOverflow] = useState({ left: false, right: false });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResult, setSearchResult] = useState({ matchIndex: -1, matchCount: 0 });
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
@@ -115,6 +120,89 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
         'Send a first message to name this feature and initialize its terminal.'
       )
     : t('implement.selectTaskToStart', 'Select a task to start implementation.');
+
+  const runTerminalSearch = (
+    query: string,
+    direction: 'next' | 'previous',
+    currentIndex: number | null = searchResult.matchIndex
+  ) => {
+    if (!activeTab) {
+      setSearchResult({ matchIndex: -1, matchCount: 0 });
+      return;
+    }
+
+    const result = terminalRuntime.searchTab(activeTab.id, query, direction, currentIndex, {
+      focusTerminal: false,
+    });
+    setSearchResult(result);
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  };
+
+  const updateSearchQuery = (value: string) => {
+    setSearchQuery(value);
+    runTerminalSearch(value, 'next', null);
+  };
+
+  const closeSearch = () => {
+    if (activeTab) {
+      terminalRuntime.clearSearch(activeTab.id);
+    }
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchResult({ matchIndex: -1, matchCount: 0 });
+  };
+
+  useEffect(() => {
+    if (!searchOpen) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [activeTab?.id, searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen || !activeTab) {
+      return;
+    }
+
+    runTerminalSearch(searchQuery, 'next', null);
+    // Search should refresh when the active terminal changes without re-running on every result update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.id]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const isFindShortcut = (event.metaKey || event.ctrlKey) && !event.altKey && key === 'f';
+      const activeElement = document.activeElement;
+      const panelHasFocus =
+        activeElement instanceof Node &&
+        Boolean(panelRef.current?.contains(activeElement));
+
+      if (isFindShortcut && panelHasFocus) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSearchOpen(true);
+        return;
+      }
+
+      if (searchOpen && event.key === 'Escape' && panelHasFocus) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearch();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+    // The handler needs the current active tab/search state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.id, searchOpen]);
 
   useEffect(() => {
     const container = tabStripRef.current;
@@ -276,6 +364,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
 
   return (
     <section
+      ref={panelRef}
       className={cn('flex h-full min-h-0 flex-col border-t border-border/60 bg-background', className)}
       data-tour-id="terminal-panel"
     >
@@ -357,6 +446,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
         <div className="flex items-center gap-1">
           <button
             type="button"
+            onClick={() => setSearchOpen(true)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={t('terminal.search', 'Search terminal')}
+            aria-label={t('terminal.search', 'Search terminal')}
+          >
+            <Icon name="search" size={14} />
+          </button>
+          <button
+            type="button"
             onClick={() => runAction(() => clearTab(activeTab.id))}
             disabled={!activeTab.hasLiveSession}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
@@ -415,6 +513,64 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
+        {searchOpen && (
+          <div className="absolute right-3 top-3 z-10 flex h-9 max-w-[min(520px,calc(100%-1.5rem))] items-center gap-1 rounded-md border border-border/80 bg-background/95 px-2 shadow-lg backdrop-blur">
+            <Icon name="search" size={13} className="shrink-0 text-muted-foreground" />
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(event) => updateSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  runTerminalSearch(searchQuery, event.shiftKey ? 'previous' : 'next');
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeSearch();
+                }
+              }}
+              placeholder={t('terminal.searchPlaceholder', 'Search terminal')}
+              className="h-7 min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+            />
+            <span className="min-w-[3.5rem] text-right text-[11px] tabular-nums text-muted-foreground">
+              {searchQuery.trim()
+                ? searchResult.matchCount > 0
+                  ? `${searchResult.matchIndex + 1}/${searchResult.matchCount}`
+                  : '0/0'
+                : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => runTerminalSearch(searchQuery, 'previous')}
+              disabled={!searchQuery.trim() || searchResult.matchCount === 0}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              title={t('terminal.searchPrevious', 'Previous match')}
+              aria-label={t('terminal.searchPrevious', 'Previous match')}
+            >
+              <Icon name="arrow-up" size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runTerminalSearch(searchQuery, 'next')}
+              disabled={!searchQuery.trim() || searchResult.matchCount === 0}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              title={t('terminal.searchNext', 'Next match')}
+              aria-label={t('terminal.searchNext', 'Next match')}
+            >
+              <Icon name="arrow-down" size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={closeSearch}
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              title={t('common.close', 'Close')}
+              aria-label={t('common.close', 'Close')}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          </div>
+        )}
         <TerminalViewport
           tab={activeTab}
           onInput={(input) => {

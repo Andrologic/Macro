@@ -19,6 +19,12 @@ describe('terminalLinks', () => {
     expect(normalizeTerminalUrl('ftp://example.com/path')).toBeNull();
   });
 
+  it('normalizes local dev server ports into clickable HTTP URLs', () => {
+    expect(normalizeTerminalUrl('localhost:3000')).toBe('http://localhost:3000/');
+    expect(normalizeTerminalUrl('127.0.0.1:5173/path')).toBe('http://127.0.0.1:5173/path');
+    expect(normalizeTerminalUrl('0.0.0.0:8080')).toBe('http://localhost:8080/');
+  });
+
   it('detects URL ranges on a terminal buffer line and opens the normalized URL', () => {
     const openUrl = mock(() => undefined);
     const links = detectTerminalLinksInLine(
@@ -79,5 +85,23 @@ describe('terminalLinks', () => {
     });
 
     expect(providedCount).toBe(1);
+  });
+
+  it('detects localhost ports without requiring a URL scheme', () => {
+    const openUrl = mock(() => undefined);
+    const links = detectTerminalLinksInLine(
+      'Vite ready at localhost:5173 and 0.0.0.0:4173.',
+      2,
+      openUrl
+    );
+
+    expect(links).toHaveLength(2);
+    expect(links?.[0]?.text).toBe('localhost:5173');
+    links?.[1]?.activate(
+      { button: 0, preventDefault: () => undefined, stopPropagation: () => undefined } as MouseEvent,
+      links[1].text
+    );
+
+    expect(openUrl).toHaveBeenCalledWith('http://localhost:4173/');
   });
 });
