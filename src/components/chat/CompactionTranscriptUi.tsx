@@ -37,28 +37,35 @@ export const CompactionBoundaryRow: React.FC<{
   );
 };
 
-export const CompactionProgressNotice: React.FC = () => {
+export const CompactionProgressRow: React.FC<{
+  virtualItem: CompactionBoundaryVirtualItem;
+  measureElement: (el: HTMLElement | null) => void;
+  phase?: 'compacting' | 'overflow_recovery';
+}> = ({ virtualItem, measureElement, phase = 'compacting' }) => {
   const { t } = useTranslation();
+  const isOverflowRecovery = phase === 'overflow_recovery';
 
   return (
     <div
+      ref={measureElement}
+      data-chat-compaction-progress="true"
+      data-index={virtualItem.index}
+      className="absolute left-0 top-0 w-full py-4"
+      style={{ transform: `translateY(${virtualItem.start}px)` }}
       role="status"
       aria-live="polite"
-      className="flex items-start gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2 text-xs text-muted-foreground"
     >
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
-        <SpinnerIcon size={12} className="text-primary" />
-      </span>
-      <div className="min-w-0">
-        <div className="font-medium leading-snug text-foreground">
-          {t('chat.compactionProgressTitle', 'Compression du contexte en cours...')}
-        </div>
-        <div className="mt-0.5 leading-relaxed">
-          {t(
-            'chat.compactionProgressDescription',
-            'Macro prépare une version plus légère de l’historique avant de contacter le modèle.',
-          )}
-        </div>
+      <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground">
+        <span className="h-px flex-1 bg-gradient-to-r from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
+        <span className="inline-flex max-w-[min(34rem,calc(100%-3rem))] shrink-0 items-center gap-2 rounded-full border border-primary/20 bg-background px-3 py-1.5 text-primary shadow-sm">
+          <SpinnerIcon size={13} />
+          <span className="truncate">
+            {isOverflowRecovery
+              ? t('chat.compactionOverflowProgress', 'Récupération après dépassement de contexte...')
+              : t('chat.compactionProgressTitle', 'Compression du contexte en cours...')}
+          </span>
+        </span>
+        <span className="h-px flex-1 bg-gradient-to-l from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
       </div>
     </div>
   );

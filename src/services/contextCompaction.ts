@@ -90,6 +90,7 @@ export interface MaybeCompactConversationParams {
   forceCompaction?: boolean;
   forcePrune?: boolean;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
+  onCompactionStarted?: () => void;
 }
 
 export interface MaybeCompactConversationResult {
@@ -1417,7 +1418,17 @@ export const maybeCompactConversation = async (
       footprintAfter.isHardStop ||
       Boolean(params.forceCompaction));
 
+  let notifiedCompactionStarted = false;
+  const notifyCompactionStarted = () => {
+    if (notifiedCompactionStarted) {
+      return;
+    }
+    notifiedCompactionStarted = true;
+    params.onCompactionStarted?.();
+  };
+
   if (needsNewCompaction || existingCompactionInsufficient) {
+    notifyCompactionStarted();
     const nextState = await buildCompactionState({
       orderedMessages: params.orderedMessages,
       citations: params.citations,
@@ -1465,6 +1476,7 @@ export const maybeCompactConversation = async (
   }
 
   if (footprintAfter.isHardStop && compactionAllowed) {
+    notifyCompactionStarted();
     compactionPass = 'ultra';
     pruned = runPass(compactionPass);
     preparedMessages = pruned.messages;

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 import type { ConversationContextDiagnostics } from '../../stores/useChatStore';
 import { cn } from '../../utils/cn';
@@ -39,39 +39,44 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   if (!diagnostics) {
     return {
       label: 'Contexte inconnu',
-      className: 'text-muted-foreground',
+      accentClassName: 'text-muted-foreground',
     };
   }
   if (diagnostics.status === 'error' || diagnostics.phase === 'provider_error') {
     return {
       label: 'Erreur contexte',
-      className: 'text-destructive',
+      accentClassName: 'text-destructive',
     };
   }
   if (diagnostics.isHardStop || diagnostics.phase === 'too_large') {
     return {
       label: 'Contexte trop volumineux',
-      className: 'text-destructive',
+      accentClassName: 'text-destructive',
     };
   }
   const pressureRatio = getPressureRatio(diagnostics);
   if (diagnostics.phase === 'degraded' || pressureRatio >= 0.9) {
     return {
       label: 'Contexte dégradé',
-      className: 'text-amber-500',
+      accentClassName: 'text-amber-500',
     };
   }
   if (diagnostics.phase === 'compacted' || pressureRatio >= 0.72) {
     return {
       label: 'Contexte compacté',
-      className: 'text-primary',
+      accentClassName: 'text-primary',
     };
   }
   return {
     label: 'Contexte disponible',
-    className: 'text-emerald-500',
+    accentClassName: 'text-primary',
   };
 };
+
+const prefersReducedMotion = (): boolean =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   diagnostics,
@@ -81,35 +86,119 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   onCompactNow,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const tone = resolveTone(diagnostics);
-  const pressureRatio = getPressureRatio(diagnostics);
-  const totalRatio = Math.min(Math.max(diagnostics?.ratio ?? 0, 0), 1);
-  const progress = Math.round(pressureRatio * 100);
-  const footprint = diagnostics?.footprintAfter ?? diagnostics?.footprintBefore;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [lastStableDiagnostics, setLastStableDiagnostics] = useState<
+    ConversationContextDiagnostics | undefined
+  >(() =>
+    diagnostics?.status === 'estimating' ? undefined : diagnostics,
+  );
+
+  useEffect(() => {
+    if (diagnostics && diagnostics.status !== 'estimating') {
+      setLastStableDiagnostics(diagnostics);
+    }
+  }, [diagnostics]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        containerRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setIsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, [isOpen]);
+
+  const effectiveDiagnostics =
+    diagnostics?.status === 'estimating' &&
+    !diagnostics.footprintAfter &&
+    !diagnostics.footprintBefore
+      ? lastStableDiagnostics
+      : diagnostics;
+  const tone = resolveTone(effectiveDiagnostics);
+  const pressureRatio = getPressureRatio(effectiveDiagnostics);
+  const [displayedPressureRatio, setDisplayedPressureRatio] = useState(pressureRatio);
+  const displayedPressureRatioRef = useRef(displayedPressureRatio);
+
+  useEffect(() => {
+    displayedPressureRatioRef.current = displayedPressureRatio;
+  }, [displayedPressureRatio]);
+
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setDisplayedPressureRatio(pressureRatio);
+      return;
+    }
+
+    const startRatio = displayedPressureRatioRef.current;
+    const delta = pressureRatio - startRatio;
+    if (Math.abs(delta) < 0.005) {
+      setDisplayedPressureRatio(pressureRatio);
+      return;
+    }
+
+    let frameId: number | null = null;
+    const durationMs = 750;
+    const startTime =
+      typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    const animate = (timestamp: number) => {
+      const elapsed = Math.min(Math.max(timestamp - startTime, 0), durationMs);
+      const progress = elapsed / durationMs;
+      const easedProgress = 1 - Math.pow(1 - progress, 2);
+      setDisplayedPressureRatio(startRatio + delta * easedProgress);
+      if (elapsed < durationMs) {
+        frameId = window.requestAnimationFrame(animate);
+      }
+    };
+
+    frameId = window.requestAnimationFrame(animate);
+    return () => {
+      if (frameId !== null && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [pressureRatio]);
+
+  const totalRatio = Math.min(Math.max(effectiveDiagnostics?.ratio ?? 0, 0), 1);
+  const progress = Math.round(displayedPressureRatio * 100);
+  const footprint =
+    effectiveDiagnostics?.footprintAfter ?? effectiveDiagnostics?.footprintBefore;
   const remainingTokens = footprint
     ? footprint.usableContextTokens - footprint.totalEstimatedTokens
     : undefined;
   const savedTokens =
-    diagnostics?.footprintBefore && diagnostics.footprintAfter
-      ? diagnostics.footprintBefore.totalEstimatedTokens -
-        diagnostics.footprintAfter.totalEstimatedTokens
+    effectiveDiagnostics?.footprintBefore && effectiveDiagnostics.footprintAfter
+      ? effectiveDiagnostics.footprintBefore.totalEstimatedTokens -
+        effectiveDiagnostics.footprintAfter.totalEstimatedTokens
       : undefined;
   const canCompact =
     Boolean(onCompactNow) &&
     !isCompacting &&
-    diagnostics?.status !== 'estimating' &&
-    getPressureRatio(diagnostics) >= 0.6;
+    effectiveDiagnostics?.status !== 'estimating' &&
+    getPressureRatio(effectiveDiagnostics) >= 0.6;
+  const statusLabel = isCompacting ? 'Compaction en cours' : tone.label;
 
   return (
-    <div className="relative">
+    <div ref={containerRef} className="relative">
       <button
         type="button"
         onClick={() => setIsOpen((current) => !current)}
         className={cn(
-          'flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-card/60 transition-colors hover:border-primary/40 hover:text-primary',
-          tone.className,
+          'flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-card/60 text-primary transition-colors hover:border-primary/40 hover:bg-primary/5',
+          isOpen ? 'border-primary/50 bg-primary/10' : 'border-border/60',
         )}
-        title={`${tone.label} · ${formatPercent(pressureRatio)} du budget utile`}
+        title={`${statusLabel} · ${formatPercent(displayedPressureRatio)} du budget utile`}
         aria-label="Diagnostic du contexte"
         aria-expanded={isOpen}
       >
@@ -156,12 +245,20 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               strokeLinecap="round"
               pathLength="100"
               strokeDasharray={`${progress} 100`}
-              className="transition-[stroke-dasharray] duration-300 ease-out"
               data-testid="context-window-fill"
             />
           </svg>
-          <span className="absolute h-1.5 w-1.5 rounded-full bg-current/70" />
-          {isBusy ? (
+          {isCompacting ? (
+            <span
+              className="relative flex h-4 w-4 items-center justify-center rounded-full bg-background/85"
+              data-testid="context-window-compacting-spinner"
+            >
+              <SpinnerIcon size={12} className="text-primary" label="Compaction en cours" />
+            </span>
+          ) : (
+            <span className="absolute h-1.5 w-1.5 rounded-full bg-current/70" />
+          )}
+          {isBusy && !footprint && !isCompacting ? (
             <SpinnerIcon size={11} className="relative text-current" />
           ) : null}
         </span>
@@ -172,25 +269,29 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           <div className="flex items-start justify-between gap-3 border-b border-border/60 pb-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className={cn('h-2 w-2 rounded-full bg-current', tone.className)} />
-                <p className="text-sm font-medium">{tone.label}</p>
+                <span className={cn('h-2 w-2 rounded-full bg-current', tone.accentClassName)} />
+                <p className="text-sm font-medium">{statusLabel}</p>
               </div>
               <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                {diagnostics?.providerType ?? diagnostics?.providerId ?? 'Provider'} ·{' '}
-                {diagnostics?.modelId ?? 'Modèle non sélectionné'}
+                {effectiveDiagnostics?.providerType ??
+                  effectiveDiagnostics?.providerId ??
+                  'Provider'} ·{' '}
+                {effectiveDiagnostics?.modelId ?? 'Modèle non sélectionné'}
               </p>
             </div>
             <div className="text-right">
-              <p className="text-lg font-semibold tabular-nums">{formatPercent(pressureRatio)}</p>
+              <p className="text-lg font-semibold tabular-nums">
+                {formatPercent(displayedPressureRatio)}
+              </p>
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 budget utile
               </p>
             </div>
           </div>
 
-          {diagnostics?.error ? (
+          {effectiveDiagnostics?.error ? (
             <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-              {diagnostics.error}
+              {effectiveDiagnostics.error}
             </div>
           ) : null}
 
@@ -202,13 +303,13 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           </div>
 
           <section className="mt-3 space-y-2">
-            {diagnostics?.footprintBefore && diagnostics?.footprintAfter ? (
+            {effectiveDiagnostics?.footprintBefore && effectiveDiagnostics?.footprintAfter ? (
               <div className="flex items-center justify-between rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
                 <span className="text-muted-foreground">Compaction</span>
                 <span className="font-medium tabular-nums">
-                  {formatCompactTokens(diagnostics.footprintBefore.totalEstimatedTokens)}
+                  {formatCompactTokens(effectiveDiagnostics.footprintBefore.totalEstimatedTokens)}
                   {' → '}
-                  {formatCompactTokens(diagnostics.footprintAfter.totalEstimatedTokens)}
+                  {formatCompactTokens(effectiveDiagnostics.footprintAfter.totalEstimatedTokens)}
                   {typeof savedTokens === 'number' && savedTokens > 0
                     ? ` (-${formatCompactTokens(savedTokens)})`
                     : ''}
@@ -218,8 +319,8 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           </section>
 
           <p className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-            {formatNumber(diagnostics?.counts.messages)} messages ·{' '}
-            {formatNumber(diagnostics?.counts.citations)} sources
+            {formatNumber(effectiveDiagnostics?.counts.messages)} messages ·{' '}
+            {formatNumber(effectiveDiagnostics?.counts.citations)} sources
           </p>
 
           <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/60 pt-3">
@@ -239,7 +340,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 text-xs text-primary transition-colors hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isCompacting ? <SpinnerIcon size={13} /> : <Icon name="archive" size={13} />}
-                {diagnostics?.phase === 'too_large'
+                {effectiveDiagnostics?.phase === 'too_large'
                   ? 'Compacter plus agressivement'
                   : 'Compacter maintenant'}
               </button>

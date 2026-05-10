@@ -173,6 +173,7 @@ import {
   resolveModelContextWindowTokens,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
+  type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
@@ -3484,6 +3485,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  const markConversationCompactionStarted = (
+    conversationId: string,
+    kind: ContextCompactionKind,
+    fallbackStatus?: ConversationCompactionStatus | null,
+  ) => {
+    const previous =
+      get().conversationCompactionStatusById[conversationId] ?? fallbackStatus;
+    setConversationCompactionStatus(conversationId, {
+      ...previous,
+      phase: kind === "overflow_recovery" ? "overflow_recovery" : "compacting",
+      updatedAt: new Date().toISOString(),
+      kind,
+    });
+  };
+
   const mapDbCompactionStateToState = (
     record: tauriIpc.DbConversationCompactionState,
   ): ConversationCompactionState => ({
@@ -3870,9 +3886,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     forcePrune?: boolean;
   }) => {
     const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+    const previousCompactionStatus =
+      get().conversationCompactionStatusById[params.conversationId] ?? null;
     const currentCompactionState = await getConversationCompactionState(
       params.conversationId,
     );
+    const statusBeforeNewCompaction =
+      get().conversationCompactionStatusById[params.conversationId] ??
+      previousCompactionStatus;
     const modelContextWindowTokens = getSelectedModelContextWindowTokens(
       params.providerId,
       params.modelId,
@@ -3880,35 +3901,48 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     const budgetPolicy = await loadContextBudgetPolicy();
 
-    const result = await buildCompactedMessagesForRequest({
-      systemMessage: params.systemMessage,
-      preparedMessages: params.preparedMessages,
-      orderedMessages: params.orderedMessages,
-      citations: params.citations,
-      toolDefinitions,
-      modelContextWindowTokens,
-      currentCompactionState,
-      estimateSerializedPayloadTokens: (messages) =>
-        estimateChatCompletionSerializedPayloadTokens({
-          messages,
-          providerType: params.providerConfig.providerType,
-          providerId: params.providerId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.modelId,
-        }),
-      mode: params.mode,
-      budgetPolicy,
-      forceCompaction: params.forceCompaction,
-      forcePrune: params.forcePrune,
-      generateSummary: (input) =>
-        generateCompactionSummary(
-          params.providerConfig,
-          params.providerId,
-          params.modelId,
-          params.reasoningEffort,
-          input,
-        ),
-    });
+    let result: MaybeCompactConversationResult;
+    try {
+      result = await buildCompactedMessagesForRequest({
+        systemMessage: params.systemMessage,
+        preparedMessages: params.preparedMessages,
+        orderedMessages: params.orderedMessages,
+        citations: params.citations,
+        toolDefinitions,
+        modelContextWindowTokens,
+        currentCompactionState,
+        estimateSerializedPayloadTokens: (messages) =>
+          estimateChatCompletionSerializedPayloadTokens({
+            messages,
+            providerType: params.providerConfig.providerType,
+            providerId: params.providerId,
+            baseUrl: params.providerConfig.baseUrl,
+            modelId: params.modelId,
+          }),
+        mode: params.mode,
+        budgetPolicy,
+        forceCompaction: params.forceCompaction,
+        forcePrune: params.forcePrune,
+        onCompactionStarted: () => {
+          markConversationCompactionStarted(
+            params.conversationId,
+            params.mode,
+            statusBeforeNewCompaction,
+          );
+        },
+        generateSummary: (input) =>
+          generateCompactionSummary(
+            params.providerConfig,
+            params.providerId,
+            params.modelId,
+            params.reasoningEffort,
+            input,
+          ),
+      });
+    } catch (error) {
+      setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
+      throw error;
+    }
 
     const hadCompaction = Boolean(currentCompactionState);
     const hasCompaction = Boolean(result.compactionState);
@@ -3916,6 +3950,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await persistConversationCompactionState(result.compactionState);
     } else if (hadCompaction) {
       await deleteConversationCompactionState(params.conversationId);
+    } else {
+      setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
     }
 
     if (result.degraded) {
@@ -6858,12 +6894,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!conversationId) {
       return;
     }
-
-    setConversationCompactionStatus(conversationId, {
-      phase: "compacting",
-      updatedAt: new Date().toISOString(),
-      kind: "manual",
-    });
+    const previousCompactionStatus =
+      get().conversationCompactionStatusById[conversationId] ?? null;
 
     try {
       await ensureMessagesLoadedForConversation(conversationId);
@@ -6935,6 +6967,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (!result.compactionState) {
         setConversationCompactionStatus(conversationId, {
+          ...previousCompactionStatus,
           phase: result.footprintAfter.isHardStop ? "too_large" : "compacted",
           updatedAt: new Date().toISOString(),
           reason: result.footprintAfter.reason,
@@ -6946,13 +6979,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const normalized = toServiceError(error);
       if (isProviderContextOverflowError(error)) {
         setConversationCompactionStatus(conversationId, {
+          ...previousCompactionStatus,
           phase: "too_large",
           updatedAt: new Date().toISOString(),
           reason: "hard_stop_ratio",
           kind: "manual",
         });
       } else {
-        setConversationCompactionStatus(conversationId, null);
+        setConversationCompactionStatus(conversationId, previousCompactionStatus);
       }
       set({ lastError: normalized.message });
       throw normalized;
