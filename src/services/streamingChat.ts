@@ -238,6 +238,11 @@ class ProviderRuntimeError extends Error {
   readonly status?: number;
   readonly retryAfterMs?: number;
   readonly retryable: boolean;
+  readonly providerError = true;
+  readonly providerMessage?: string;
+  readonly providerCode?: string;
+  readonly providerType?: string;
+  readonly providerRawBodyExcerpt?: string;
 
   constructor(
     message: string,
@@ -246,6 +251,10 @@ class ProviderRuntimeError extends Error {
       status?: number;
       retryAfterMs?: number;
       retryable?: boolean;
+      providerMessage?: string;
+      providerCode?: string;
+      providerType?: string;
+      providerRawBodyExcerpt?: string;
       cause?: unknown;
     } = {}
   ) {
@@ -255,6 +264,10 @@ class ProviderRuntimeError extends Error {
     this.status = options.status;
     this.retryAfterMs = options.retryAfterMs;
     this.retryable = options.retryable ?? false;
+    this.providerMessage = options.providerMessage;
+    this.providerCode = options.providerCode;
+    this.providerType = options.providerType;
+    this.providerRawBodyExcerpt = options.providerRawBodyExcerpt;
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -813,7 +826,13 @@ const parseRetryAfterMs = (headers: Headers | undefined): number | undefined => 
 const classifyProviderError = (
   message: string,
   status?: number,
-  retryAfterMs?: number
+  retryAfterMs?: number,
+  details?: {
+    providerMessage?: string;
+    providerCode?: string;
+    providerType?: string;
+    providerRawBodyExcerpt?: string;
+  }
 ): ProviderRuntimeError => {
   const normalized = message.toLowerCase();
   let kind: ProviderRuntimeErrorKind = 'unknown';
@@ -850,12 +869,16 @@ const classifyProviderError = (
     status,
     retryAfterMs,
     retryable,
+    ...details,
   });
 };
 
 const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
   const errorText = await response.text().catch(() => 'Unknown error');
   let errorMessage = `Request failed: ${response.status}`;
+  let providerMessage: string | undefined;
+  let providerCode: string | undefined;
+  let providerType: string | undefined;
 
   try {
     const errorJson = JSON.parse(errorText) as {
@@ -865,24 +888,42 @@ const extractProviderErrorMessage = async (response: Response): Promise<Provider
       type?: unknown;
     };
     const parsedMessage = errorJson.error?.message ?? errorJson.message;
+    providerMessage = typeof parsedMessage === 'string' ? parsedMessage : undefined;
+    providerCode =
+      typeof errorJson.error?.code === 'string'
+        ? errorJson.error.code
+        : typeof errorJson.code === 'string'
+          ? errorJson.code
+          : undefined;
+    providerType =
+      typeof errorJson.error?.type === 'string'
+        ? errorJson.error.type
+        : typeof errorJson.type === 'string'
+          ? errorJson.type
+          : undefined;
     const contextParts = [
-      typeof parsedMessage === 'string' ? parsedMessage : undefined,
-      typeof errorJson.error?.code === 'string' ? errorJson.error.code : undefined,
-      typeof errorJson.error?.type === 'string' ? errorJson.error.type : undefined,
-      typeof errorJson.code === 'string' ? errorJson.code : undefined,
-      typeof errorJson.type === 'string' ? errorJson.type : undefined,
+      providerMessage,
+      providerCode,
+      providerType,
     ].filter((part): part is string => Boolean(part));
     errorMessage = contextParts.length > 0 ? contextParts.join(' ') : errorMessage;
   } catch {
     if (errorText) {
       errorMessage = errorText;
+      providerMessage = errorText;
     }
   }
 
   return classifyProviderError(
     errorMessage,
     response.status,
-    parseRetryAfterMs(response.headers)
+    parseRetryAfterMs(response.headers),
+    {
+      providerMessage,
+      providerCode,
+      providerType,
+      providerRawBodyExcerpt: errorText.slice(0, 1200),
+    }
   );
 };
 
@@ -2192,7 +2233,7 @@ const streamNativeTurnViaTauri = async (params: {
             if (params.signal) {
               params.signal.removeEventListener('abort', signalHandler);
             }
-            finish(() => reject(new Error(event.payload.message)));
+            finish(() => reject(classifyProviderError(event.payload.message)));
           }),
         ]);
 
@@ -3778,7 +3819,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     if (isLocalProvider && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('connection'))) {
       const providerName = options.providerType === 'lmstudio' ? 'LM Studio' : 'Ollama';
       emitGenericTimeline('error');
-      onError(new Error(`Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`));
+      onError(new ProviderRuntimeError(
+        `Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`,
+        {
+          kind: 'network',
+          retryable: true,
+          providerMessage: err.message,
+          cause: error,
+        }
+      ));
       return;
     }
 

@@ -602,6 +602,8 @@ export interface ConversationRuntimeState {
   assistantMessageId?: string | null;
   abortController?: AbortController | null;
   lastError?: string | null;
+  lastErrorOrigin?: 'macro' | 'provider' | null;
+  lastErrorDisplayTarget?: 'composer' | 'transcript' | null;
 }
 
 export interface ChatMessage {

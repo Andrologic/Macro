@@ -20,6 +20,10 @@ import {
   ToolTrace,
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
+import {
+  buildProviderErrorTranscriptMarkdown,
+  resolveChatErrorPresentation,
+} from "../services/chatErrorPresentation";
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
 import { useCitationsStore } from "./useCitationsStore";
 import type { Citation, SourcePassageKind } from "./useCitationsStore";
@@ -264,6 +268,8 @@ const EMPTY_CONVERSATION_RUNTIME: ConversationRuntimeState = Object.freeze({
   assistantMessageId: null,
   abortController: null,
   lastError: null,
+  lastErrorOrigin: null,
+  lastErrorDisplayTarget: null,
 });
 
 const createConversationSessionId = (): string =>
@@ -1315,6 +1321,39 @@ const getConversationMessagesFromState = (
   return fallbackMessages.length > 0
     ? sortMessagesChronologically(fallbackMessages)
     : EMPTY_CHAT_MESSAGES;
+};
+
+const findChatMessageInState = (
+  state: Pick<
+    ChatStore,
+    "messages" | "messagesByConversationId" | "messageIndexById"
+  >,
+  messageId: string,
+): ChatMessage | null => {
+  const indexedMessageIndex = state.messageIndexById[messageId];
+  const indexedMessage =
+    typeof indexedMessageIndex === "number"
+      ? state.messages[indexedMessageIndex]
+      : undefined;
+  if (indexedMessage?.id === messageId) {
+    return indexedMessage;
+  }
+
+  const directMessage = state.messages.find((message) => message.id === messageId);
+  if (directMessage) {
+    return directMessage;
+  }
+
+  for (const conversationMessages of Object.values(state.messagesByConversationId)) {
+    const message = conversationMessages?.find(
+      (candidate) => candidate.id === messageId,
+    );
+    if (message) {
+      return message;
+    }
+  }
+
+  return null;
 };
 
 const resolveConversationQuestionnaireFromState = (
@@ -5906,6 +5945,57 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const removeEmptyAssistantPlaceholderFromState = (
+    state: ChatStore,
+    messageId: string,
+  ): Partial<ChatStore> => {
+    const targetMessage =
+      state.messages[state.messageIndexById[messageId] ?? -1] ??
+      state.messages.find((message) => message.id === messageId);
+    if (
+      !targetMessage ||
+      targetMessage.role !== "assistant" ||
+      targetMessage.content.trim().length > 0 ||
+      (targetMessage.tool_traces?.length ?? 0) > 0
+    ) {
+      return {};
+    }
+
+    const nextMessages = state.messages.filter(
+      (message) => message.id !== messageId,
+    );
+    const messageIndexById = Object.fromEntries(
+      nextMessages.map((message, index) => [message.id, index]),
+    );
+    const existingConversationMessages = getConversationMessagesFromState(
+      state,
+      targetMessage.conversation_id,
+    );
+    const conversationMessages = existingConversationMessages.filter(
+      (message) => message.id !== messageId,
+    );
+    return {
+      messages: nextMessages,
+      messagesByConversationId: {
+        ...state.messagesByConversationId,
+        [targetMessage.conversation_id]: conversationMessages,
+      },
+      messageIndexById,
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === targetMessage.conversation_id
+          ? {
+              ...conversation,
+              message_count: conversationMessages.length,
+              last_message:
+                conversationMessages[conversationMessages.length - 1]
+                  ?.content ?? "",
+              updated_at: new Date().toISOString(),
+            }
+          : conversation,
+      ),
+    };
+  };
+
   const applyAssistantLaunchError = (
     conversationId: string,
     sessionId: string,
@@ -5914,17 +6004,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
-    get().updateMessageContent(
-      assistantMessageId,
-      `Error: ${normalized.message}`,
-    );
     set((state) => ({
+      ...removeEmptyAssistantPlaceholderFromState(state, assistantMessageId),
       ...buildConversationRuntimePatch(state, conversationId, {
         phase: "error",
         sessionId,
-        assistantMessageId,
+        assistantMessageId: null,
         abortController: null,
         lastError: normalized.message,
+        lastErrorOrigin: "macro",
+        lastErrorDisplayTarget: "composer",
       }),
       lastError: normalized.message,
       ...(options?.setSendState ? { sendState: "error" as const } : {}),
@@ -6599,10 +6688,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const normalized = toServiceError(recoveryError);
         const message =
           normalized.message || OVERFLOW_RECOVERY_FAILURE_MESSAGE;
-        get().updateMessageContent(
-          params.assistantMessage.id,
-          `Error: ${message}`,
-        );
         setConversationCompactionStatus(params.conversationId, {
           phase: "too_large",
           updatedAt: new Date().toISOString(),
@@ -6611,18 +6696,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
           recoveredFromOverflow: true,
         });
         await maybeMarkImplementTaskFailedAfterStreamError();
-        updateConversationRuntimeIfSessionMatches(
-          params.conversationId,
-          params.sessionId,
-          () => ({
+        set((state) => {
+          const currentRuntime =
+            state.conversationRuntimeById[params.conversationId];
+          if (!currentRuntime || currentRuntime.sessionId !== params.sessionId) {
+            return state;
+          }
+          return {
+            ...removeEmptyAssistantPlaceholderFromState(
+              state,
+              params.assistantMessage.id,
+            ),
+            ...buildConversationRuntimePatch(state, params.conversationId, {
             phase: "error",
             sessionId: params.sessionId,
-            assistantMessageId: params.assistantMessage.id,
+              assistantMessageId: null,
             abortController: null,
             lastError: message,
-          }),
-        );
-        set({ lastError: message, sendState: "error" });
+              lastErrorOrigin: "macro",
+              lastErrorDisplayTarget: "composer",
+            }),
+            lastError: message,
+            sendState: "error",
+          };
+        });
         return true;
       }
     };
@@ -6644,13 +6741,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
           (assistantMessage.content.trim().length > 0 ||
             (assistantMessage.tool_traces?.length ?? 0) > 0),
       );
+      const errorPresentation = resolveChatErrorPresentation(error, {
+        providerId: params.selectedProviderId,
+        providerType: params.providerConfig.providerType,
+        modelId: params.selectedModelId,
+      });
 
-      if (!hasPartialAssistantProgress) {
+      if (errorPresentation.displayTarget === "transcript") {
+        const providerErrorMarkdown =
+          buildProviderErrorTranscriptMarkdown(errorPresentation);
+        const nextAssistantContent = hasPartialAssistantProgress && assistantMessage
+          ? `${assistantMessage.content.trimEnd()}\n\n---\n\n${providerErrorMarkdown}`
+          : providerErrorMarkdown;
         get().updateMessageContent(
           params.assistantMessage.id,
-          `Error: ${error.message}`,
+          nextAssistantContent,
         );
-      } else if (assistantMessage) {
+        const updatedAssistantMessage = get().messages.find(
+          (message) => message.id === params.assistantMessage.id,
+        );
+        if (updatedAssistantMessage) {
+          try {
+            await persistAssistantPartialStreamResult(
+              params.conversationId,
+              updatedAssistantMessage,
+            );
+          } catch (persistError) {
+            console.warn(
+              "Failed to persist provider error after stream error:",
+              persistError,
+            );
+          }
+        }
+      } else if (hasPartialAssistantProgress && assistantMessage) {
         try {
           await persistAssistantPartialStreamResult(
             params.conversationId,
@@ -6662,6 +6785,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             persistError,
           );
         }
+      } else {
+        set((state) => removeEmptyAssistantPlaceholderFromState(
+          state,
+          params.assistantMessage.id,
+        ));
       }
 
       updateConversationRuntimeIfSessionMatches(
@@ -6670,12 +6798,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         () => ({
           phase: "error",
           sessionId: params.sessionId,
-          assistantMessageId: params.assistantMessage.id,
+          assistantMessageId:
+            errorPresentation.displayTarget === "composer" &&
+            !hasPartialAssistantProgress
+              ? null
+              : params.assistantMessage.id,
           abortController: null,
-          lastError: error.message,
+          lastError: errorPresentation.message,
+          lastErrorOrigin: errorPresentation.origin,
+          lastErrorDisplayTarget: errorPresentation.displayTarget,
         }),
       );
-      set({ lastError: error.message, sendState: "error" });
+      set(
+        errorPresentation.displayTarget === "composer"
+          ? { lastError: errorPresentation.message, sendState: "error" }
+          : { sendState: "error" },
+      );
     };
 
     void (async () => {
@@ -9160,9 +9298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     startQuestionnaireResponseEdit: (messageId) => {
       const state = get();
-      const targetMessage = state.messages.find(
-        (message) => message.id === messageId,
-      );
+      const targetMessage = findChatMessageInState(state, messageId);
       if (
         !targetMessage ||
         targetMessage.role !== "user" ||
