@@ -14,24 +14,38 @@ export type ChatTranscriptCompactionBoundaryItem = {
   updatedAt?: string;
 };
 
+export type ChatTranscriptCompactionProgressItem = {
+  kind: 'compaction_progress';
+  key: string;
+  phase: 'compacting' | 'overflow_recovery';
+  updatedAt?: string;
+};
+
 export type ChatTranscriptItem =
   | ChatTranscriptMessageItem
-  | ChatTranscriptCompactionBoundaryItem;
+  | ChatTranscriptCompactionBoundaryItem
+  | ChatTranscriptCompactionProgressItem;
 
 export const buildChatTranscriptItems = (
   messages: ChatMessage[],
-  compactionBoundary?: {
+  compactionState?: {
+    conversationId?: string | null;
     upToMessageId?: string | null;
     updatedAt?: string | null;
+    phase?: string | null;
   } | null,
 ): ChatTranscriptItem[] => {
   const items: ChatTranscriptItem[] = [];
-  const boundaryMessageId = compactionBoundary?.upToMessageId || null;
+  const boundaryMessageId = compactionState?.upToMessageId || null;
   const boundaryIndex = boundaryMessageId
     ? messages.findIndex((message) => message.id === boundaryMessageId)
     : -1;
-  const shouldInsertBoundary =
-    boundaryIndex >= 0 && boundaryIndex < messages.length - 1;
+  const shouldInsertBoundary = boundaryIndex >= 0;
+  const progressPhase =
+    compactionState?.phase === 'compacting' ||
+    compactionState?.phase === 'overflow_recovery'
+      ? compactionState.phase
+      : null;
 
   messages.forEach((message, messageIndex) => {
     items.push({
@@ -46,10 +60,19 @@ export const buildChatTranscriptItems = (
         kind: 'compaction_boundary',
         key: `compaction-boundary:${message.id}`,
         afterMessageId: message.id,
-        updatedAt: compactionBoundary?.updatedAt ?? undefined,
+        updatedAt: compactionState?.updatedAt ?? undefined,
       });
     }
   });
+
+  if (progressPhase) {
+    items.push({
+      kind: 'compaction_progress',
+      key: `compaction-progress:${compactionState?.conversationId ?? 'active'}`,
+      phase: progressPhase,
+      updatedAt: compactionState?.updatedAt ?? undefined,
+    });
+  }
 
   return items;
 };

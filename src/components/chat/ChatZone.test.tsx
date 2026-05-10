@@ -705,6 +705,109 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('Contexte compacté');
   });
 
+  it('keeps the compaction boundary visible when the compacted message is last', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Dernière réponse compactée',
+        }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:30:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
+    ).not.toBeNull();
+  });
+
+  it('renders compaction progress in the transcript while manual compaction is running', async () => {
+    manualCompactionVisiblePreference = true;
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacting',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:30:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
+    expect(progress).not.toBeNull();
+    expect(progress?.textContent).toContain('Compression du contexte en cours');
+    expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
+  });
+
+  it('renders overflow recovery progress clearly in the transcript', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'overflow_recovery',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
+    expect(progress).not.toBeNull();
+    expect(progress?.textContent).toContain('Récupération après dépassement de contexte');
+  });
+
+  it('removes transcript progress after compaction completes', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:32:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
+  });
+
   it('keeps provider runtime errors out of the composer notice', async () => {
     chatState = {
       ...chatState,
@@ -1018,6 +1121,132 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
     expect(requireContainer().textContent).toContain('Stop');
+  });
+
+  it('refreshes context diagnostics while a visible conversation is streaming', async () => {
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse partielle',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+      await Promise.resolve();
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledWith('conv-1');
+  });
+
+  it('does not refresh live diagnostics while streaming when context controls are hidden', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: null,
+    };
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      selectedConversationId: 'conv-1',
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Ancienne tâche' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+      await Promise.resolve();
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('refreshes context diagnostics once streaming ends', async () => {
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse partielle',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+      await Promise.resolve();
+    });
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+
+    chatState = {
+      ...chatState,
+      isStreaming: false,
+      sendState: 'idle',
+    };
+    await act(async () => {
+      useChatStore.emit();
+      await Promise.resolve();
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(2);
+  });
+
+  it('prevents overlapping context diagnostic refreshes from the indicator', async () => {
+    let resolveRefresh: (() => void) | null = null;
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      refreshConversationContextDiagnostics: mock(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      ),
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse partielle',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+      await Promise.resolve();
+    });
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      requireContainer()
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveRefresh?.();
+      await Promise.resolve();
+    });
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {

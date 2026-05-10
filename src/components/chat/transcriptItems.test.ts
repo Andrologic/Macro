@@ -48,13 +48,17 @@ describe('buildChatTranscriptItems', () => {
     ]);
   });
 
-  it('does not insert a boundary at the end of the conversation', () => {
+  it('inserts a boundary even when the compacted message is at the end of the conversation', () => {
     const items = buildChatTranscriptItems(
       [makeMessage('u1'), makeMessage('a1')],
       { upToMessageId: 'a1' },
     );
 
-    expect(items.map((item) => item.kind)).toEqual(['message', 'message']);
+    expect(items.map((item) => item.kind)).toEqual([
+      'message',
+      'message',
+      'compaction_boundary',
+    ]);
   });
 
   it('keeps stable virtualization keys', () => {
@@ -88,5 +92,44 @@ describe('buildChatTranscriptItems', () => {
 
     expect(boundary).toBeDefined();
     expect('message' in boundary!).toBe(false);
+  });
+
+  it('adds a transient compaction progress item while compaction is running', () => {
+    const items = buildChatTranscriptItems(
+      [makeMessage('u1'), makeMessage('a1')],
+      {
+        conversationId: 'conv-1',
+        upToMessageId: 'a1',
+        phase: 'compacting',
+        updatedAt: '2026-05-09T10:00:00.000Z',
+      },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual([
+      'message',
+      'message',
+      'compaction_boundary',
+      'compaction_progress',
+    ]);
+    expect(items[3]).toMatchObject({
+      kind: 'compaction_progress',
+      key: 'compaction-progress:conv-1',
+      phase: 'compacting',
+    });
+    expect('message' in items[3]).toBe(false);
+  });
+
+  it('uses a stable progress key across compaction updates', () => {
+    const items = buildChatTranscriptItems(
+      [makeMessage('u1')],
+      { conversationId: 'conv-1', phase: 'compacting', updatedAt: '2026-05-09T10:00:00.000Z' },
+    );
+    const nextItems = buildChatTranscriptItems(
+      [makeMessage('u1')],
+      { conversationId: 'conv-1', phase: 'overflow_recovery', updatedAt: '2026-05-09T11:00:00.000Z' },
+    );
+
+    expect(items.at(-1)?.key).toBe('compaction-progress:conv-1');
+    expect(nextItems.at(-1)?.key).toBe('compaction-progress:conv-1');
   });
 });

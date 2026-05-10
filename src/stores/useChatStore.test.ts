@@ -6427,6 +6427,120 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('marks manual compaction as running while preserving the previous boundary', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const summaryDeferred = createDeferred<string>();
+    sendChatNonStreamingMock.mockImplementationOnce(async () => summaryDeferred.promise);
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Keep this migration reversible.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'I will keep it reversible.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Inspect the compaction table.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'The table does not persist compaction_pass.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Now compact manually.',
+        timestamp: '2026-04-14T10:04:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+      conversationCompactionStatusById: {
+        'chat-conv': {
+          phase: 'compacted',
+          upToMessageId: 'a1',
+          summaryText: 'Previous compacted summary.',
+          updatedAt: '2026-04-14T09:00:00.000Z',
+          kind: 'manual',
+        },
+      },
+    });
+
+    const compactionPromise = useChatStore.getState().compactConversationNow('chat-conv');
+    await flushAsyncWork();
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacting',
+      upToMessageId: 'a1',
+      summaryText: 'Previous compacted summary.',
+      kind: 'manual',
+    });
+
+    summaryDeferred.resolve(
+      JSON.stringify({
+        currentObjective: 'Continue the database migration safely.',
+        userInstructions: ['Keep the migration reversible.'],
+        decisions: ['Use a forced manual compaction for older turns.'],
+        openQuestions: [],
+        activeFiles: ['src-tauri/src/db/mod.rs'],
+        toolFacts: ['The old schema lacks compaction_pass.'],
+        remainingWork: ['Run targeted tests.'],
+        summary: 'Manual compaction preserved the migration objective.',
+      })
+    );
+    await compactionPromise;
+
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      summaryText: expect.stringContaining('Continue the database migration safely.'),
+    });
+  });
+
   it('hydrates persisted compaction metadata when a conversation is reselected', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';

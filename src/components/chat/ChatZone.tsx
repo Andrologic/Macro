@@ -60,7 +60,7 @@ import {
 } from './transcriptItems';
 import {
   CompactionBoundaryRow,
-  CompactionProgressNotice,
+  CompactionProgressRow,
 } from './CompactionTranscriptUi';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 
@@ -719,10 +719,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
   const [showManualCompaction, setShowManualCompaction] = useState(false);
   const [isManualCompacting, setIsManualCompacting] = useState(false);
-  const [showCompactionProgressNotice, setShowCompactionProgressNotice] = useState(false);
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  const contextRefreshInFlightRef = useRef(false);
+  const wasContextStreamingRef = useRef(false);
 
   const [editingValue, setEditingValue] = useState('');
   const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
@@ -749,16 +750,41 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeCompactionStatus?.phase === 'compacting' ||
     activeCompactionStatus?.phase === 'overflow_recovery' ||
     selectedConversationRuntime.phase === 'overflow_recovery';
+  const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
+  const runContextDiagnosticsRefresh = useCallback(async () => {
+    if (
+      !selectedConversationId ||
+      !shouldShowContextControlsForActiveContext ||
+      contextRefreshInFlightRef.current
+    ) {
+      return;
+    }
+
+    contextRefreshInFlightRef.current = true;
+    try {
+      await refreshConversationContextDiagnostics(selectedConversationId);
+    } finally {
+      contextRefreshInFlightRef.current = false;
+    }
+  }, [
+    refreshConversationContextDiagnostics,
+    selectedConversationId,
+    shouldShowContextControlsForActiveContext,
+  ]);
   const transcriptItems = useMemo(
     () =>
       buildChatTranscriptItems(currentMessages, {
+        conversationId: selectedConversationId,
         upToMessageId: activeCompactionStatus?.upToMessageId,
         updatedAt: activeCompactionStatus?.updatedAt,
+        phase: activeCompactionStatus?.phase,
       }),
     [
       activeCompactionStatus?.upToMessageId,
       activeCompactionStatus?.updatedAt,
+      activeCompactionStatus?.phase,
       currentMessages,
+      selectedConversationId,
     ]
   );
 
@@ -782,27 +808,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, []);
 
   useEffect(() => {
-    if (!isCompactionProgressActive) {
-      setShowCompactionProgressNotice(false);
+    if (
+      !selectedConversationId ||
+      !shouldShowContextControlsForActiveContext ||
+      isContextStreaming ||
+      wasContextStreamingRef.current
+    ) {
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      setShowCompactionProgressNotice(true);
-    }, 400);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [isCompactionProgressActive]);
-
-  useEffect(() => {
-    if (!selectedConversationId || !shouldShowContextControlsForActiveContext) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      void refreshConversationContextDiagnostics(selectedConversationId);
+      void runContextDiagnosticsRefresh();
     }, 350);
 
     return () => {
@@ -812,12 +828,55 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeCompactionStatus?.updatedAt,
     activeCompactionStatus?.phase,
     currentMessages,
-    refreshConversationContextDiagnostics,
+    isContextStreaming,
+    runContextDiagnosticsRefresh,
     selectedConversationId,
     selectedConversationRuntime.lastError,
     selectedConversationRuntime.lastErrorDisplayTarget,
     selectedModelId,
     selectedProviderId,
+    shouldShowContextControlsForActiveContext,
+  ]);
+
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      !shouldShowContextControlsForActiveContext ||
+      !isContextStreaming
+    ) {
+      return;
+    }
+
+    void runContextDiagnosticsRefresh();
+    const intervalId = window.setInterval(() => {
+      void runContextDiagnosticsRefresh();
+    }, 1800);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    isContextStreaming,
+    runContextDiagnosticsRefresh,
+    selectedConversationId,
+    shouldShowContextControlsForActiveContext,
+  ]);
+
+  useEffect(() => {
+    const wasStreaming = wasContextStreamingRef.current;
+    wasContextStreamingRef.current = isContextStreaming;
+    if (
+      wasStreaming &&
+      !isContextStreaming &&
+      selectedConversationId &&
+      shouldShowContextControlsForActiveContext
+    ) {
+      void runContextDiagnosticsRefresh();
+    }
+  }, [
+    isContextStreaming,
+    runContextDiagnosticsRefresh,
+    selectedConversationId,
     shouldShowContextControlsForActiveContext,
   ]);
 
@@ -883,7 +942,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
     restoreStatus === 'resolving';
-  const isStreaming = selectedConversationRuntime.phase === 'streaming';
+  const isStreaming = isContextStreaming;
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isStreaming || isPreparingSend;
   const composerRuntimeError =
@@ -1190,7 +1249,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
       let start = 0;
       return transcriptItems.map((item, index) => {
-        const size = item.kind === 'compaction_boundary' ? 64 : 220;
+        const size =
+          item.kind === 'compaction_boundary'
+            ? 64
+            : item.kind === 'compaction_progress'
+              ? 72
+              : 220;
         const renderedItem = {
           index,
           key: item.key,
@@ -1748,7 +1812,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 isBusy={contextDiagnostics?.status === 'estimating'}
                 isCompacting={isManualCompacting || isCompactionProgressActive}
                 onRefresh={() => {
-                  void refreshConversationContextDiagnostics(selectedConversationId);
+                  void runContextDiagnosticsRefresh();
                 }}
                 onCompactNow={handleManualCompaction}
               />
@@ -1802,6 +1866,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       key={virtualItem.key}
                       virtualItem={virtualItem}
                       measureElement={measureMessageElement}
+                    />
+                  );
+                }
+                if (virtualItem.item.kind === 'compaction_progress') {
+                  return (
+                    <CompactionProgressRow
+                      key={virtualItem.key}
+                      virtualItem={virtualItem}
+                      measureElement={measureMessageElement}
+                      phase={virtualItem.item.phase}
                     />
                   );
                 }
@@ -1884,8 +1958,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {showCompactionProgressNotice && <CompactionProgressNotice />}
-
             {!activeQuestionnaire && !activePendingToolApproval && composerImages.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
                 {composerImages.map((image) => (
