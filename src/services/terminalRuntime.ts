@@ -2,6 +2,13 @@ import { Terminal, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import type { Theme } from '../types/theme';
 import { openExternalUrl } from './externalUrlOpener';
+import {
+  findTerminalSearchMatches,
+  getNextTerminalSearchIndex,
+  selectTerminalSearchMatch,
+  type TerminalSearchDirection,
+  type TerminalSearchResult,
+} from './terminalSearch';
 import { createTerminalUrlLinkProvider } from './terminalLinks';
 import { buildTerminalTheme, getTerminalThemeSignature } from './terminalTheme';
 
@@ -459,6 +466,44 @@ export const terminalRuntime = {
     }
 
     scheduleFit(session);
+  },
+
+  searchTab(
+    tabId: string,
+    query: string,
+    direction: TerminalSearchDirection = 'next',
+    currentIndex?: number | null,
+    options?: { focusTerminal?: boolean }
+  ): TerminalSearchResult {
+    const session = runtimeSessions.get(tabId);
+    if (!session || !query.trim()) {
+      session?.terminal.clearSelection();
+      return { matchIndex: -1, matchCount: 0 };
+    }
+
+    const matches = findTerminalSearchMatches(session.terminal, query);
+    const nextIndex = getNextTerminalSearchIndex(matches.length, currentIndex, direction);
+    if (nextIndex === null) {
+      session.terminal.clearSelection();
+      return { matchIndex: -1, matchCount: 0 };
+    }
+
+    selectTerminalSearchMatch(session.terminal, matches[nextIndex], options?.focusTerminal ?? true);
+    session.lastTouchedAt = Date.now();
+    return {
+      matchIndex: nextIndex,
+      matchCount: matches.length,
+    };
+  },
+
+  clearSearch(tabId: string) {
+    const session = runtimeSessions.get(tabId);
+    if (!session) {
+      return;
+    }
+
+    session.terminal.clearSelection();
+    session.terminal.focus();
   },
 
   disposeTab(tabId: string) {

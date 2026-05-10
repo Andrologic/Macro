@@ -98,11 +98,21 @@ const flushRender = async () => {
   });
 };
 
+const setInputValue = (input: HTMLInputElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+};
+
 let TerminalPanel!: typeof TerminalPanelComponent;
 let importCounter = 0;
+let terminalRuntimeSearchTabMock: ReturnType<typeof mock>;
+let terminalRuntimeClearSearchMock: ReturnType<typeof mock>;
 
 const loadTerminalPanel = async () => {
   importCounter += 1;
+  terminalRuntimeSearchTabMock = mock(() => ({ matchIndex: 0, matchCount: 2 }));
+  terminalRuntimeClearSearchMock = mock(() => undefined);
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
       t: (_key: string, fallback?: string) => fallback ?? _key,
@@ -129,6 +139,8 @@ const loadTerminalPanel = async () => {
   mock.module('../../services/terminalRuntime', () => ({
     default: {
       disposeTab: mock(() => undefined),
+      searchTab: terminalRuntimeSearchTabMock,
+      clearSearch: terminalRuntimeClearSearchMock,
     },
   }));
   mock.module('../../services/manualTerminalTargets', () => ({
@@ -247,5 +259,64 @@ describe('TerminalPanel', () => {
     });
 
     expect(terminalState.clearTab).toHaveBeenCalledWith('terminal-tab-1');
+  });
+
+  it('opens terminal search from the toolbar and navigates matches', async () => {
+    await act(async () => {
+      root?.render(<TerminalPanel />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('button[aria-label="Search terminal"]')?.click();
+      await flushRender();
+    });
+
+    const input = container?.querySelector<HTMLInputElement>('input[placeholder="Search terminal"]');
+    expect(input).not.toBeNull();
+
+    await act(async () => {
+      setInputValue(input!, 'vite');
+      await flushRender();
+    });
+
+    expect(terminalRuntimeSearchTabMock).toHaveBeenCalledWith(
+      'terminal-tab-1',
+      'vite',
+      'next',
+      null,
+      { focusTerminal: false }
+    );
+    expect(container?.textContent).toContain('1/2');
+
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('button[aria-label="Next match"]')?.click();
+      await flushRender();
+    });
+
+    expect(terminalRuntimeSearchTabMock).toHaveBeenLastCalledWith(
+      'terminal-tab-1',
+      'vite',
+      'next',
+      0,
+      { focusTerminal: false }
+    );
+  });
+
+  it('opens terminal search with Ctrl-F while the terminal panel has focus', async () => {
+    await act(async () => {
+      root?.render(<TerminalPanel />);
+      await flushRender();
+    });
+
+    const viewport = container?.querySelector<HTMLButtonElement>('[data-testid="mock-terminal-viewport"]');
+    viewport?.focus();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+      await flushRender();
+    });
+
+    expect(container?.querySelector<HTMLInputElement>('input[placeholder="Search terminal"]')).not.toBeNull();
   });
 });
