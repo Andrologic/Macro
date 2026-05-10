@@ -8,6 +8,17 @@ let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 let scrollContainer: HTMLDivElement | null = null;
 let latestState: SeparatorState | null = null;
+let resizeObserverCallbacks: ResizeObserverCallback[] = [];
+
+class TriggerableResizeObserver {
+  constructor(callback: ResizeObserverCallback) {
+    resizeObserverCallbacks.push(callback);
+  }
+
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 const TestComponent: React.FC<{
   isStreaming: boolean;
@@ -32,6 +43,12 @@ const TestComponent: React.FC<{
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const flushRaf = () =>
   new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+const triggerResizeObservers = () => {
+  for (const callback of resizeObserverCallbacks) {
+    callback([], {} as ResizeObserver);
+  }
+};
 
 const makeRect = (top: number, height: number): DOMRect => ({
   x: 0,
@@ -139,6 +156,7 @@ describe('useScrollMagnet', () => {
     host = null;
     scrollContainer = null;
     latestState = null;
+    resizeObserverCallbacks = [];
   });
 
   const mount = async (params: {
@@ -146,6 +164,7 @@ describe('useScrollMagnet', () => {
     dep: unknown;
     messages?: string[];
   }) => {
+    globalThis.ResizeObserver = TriggerableResizeObserver as unknown as typeof ResizeObserver;
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -174,6 +193,31 @@ describe('useScrollMagnet', () => {
     });
 
     expect(el.scrollTop).toBe(1200);
+  });
+
+  it('keeps the transcript pinned when locked content expands without message deps changing', async () => {
+    const el = await mount({ isStreaming: false, dep: 0 });
+    setScrollMetrics(el, { clientHeight: 200, scrollHeight: 1000, scrollTop: 0 });
+
+    await renderHookHarness({ isStreaming: true, dep: 0 });
+    await act(async () => {
+      await flushRaf();
+    });
+
+    expect(latestState).toBe('locked');
+    expect(el.scrollTop).toBe(1000);
+
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      value: 1350,
+    });
+
+    await act(async () => {
+      triggerResizeObservers();
+      await flushRaf();
+    });
+
+    expect(el.scrollTop).toBe(1350);
   });
 
   it('preserves the visible anchor when detached content updates move scrollTop', async () => {

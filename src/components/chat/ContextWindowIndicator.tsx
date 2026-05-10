@@ -7,8 +7,8 @@ import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 interface ContextWindowIndicatorProps {
   diagnostics?: ConversationContextDiagnostics;
-  isBusy?: boolean;
   isCompacting?: boolean;
+  canCompactNow?: boolean;
   onRefresh?: () => void;
   onCompactNow?: () => void;
 }
@@ -38,7 +38,7 @@ const getPressureRatio = (diagnostics?: ConversationContextDiagnostics): number 
 const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   if (!diagnostics) {
     return {
-      label: 'Contexte inconnu',
+      label: 'Contexte non mesuré',
       accentClassName: 'text-muted-foreground',
     };
   }
@@ -57,11 +57,11 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   const pressureRatio = getPressureRatio(diagnostics);
   if (diagnostics.phase === 'degraded' || pressureRatio >= 0.9) {
     return {
-      label: 'Contexte dégradé',
+      label: 'Contexte élevé',
       accentClassName: 'text-amber-500',
     };
   }
-  if (diagnostics.phase === 'compacted' || pressureRatio >= 0.72) {
+  if (diagnostics.phase === 'compacted') {
     return {
       label: 'Contexte compacté',
       accentClassName: 'text-primary',
@@ -80,8 +80,8 @@ const prefersReducedMotion = (): boolean =>
 
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   diagnostics,
-  isBusy = false,
   isCompacting = false,
+  canCompactNow = true,
   onRefresh,
   onCompactNow,
 }) => {
@@ -184,10 +184,11 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       : undefined;
   const canCompact =
     Boolean(onCompactNow) &&
+    canCompactNow &&
     !isCompacting &&
-    effectiveDiagnostics?.status !== 'estimating' &&
-    getPressureRatio(effectiveDiagnostics) >= 0.6;
+    effectiveDiagnostics?.status !== 'error';
   const statusLabel = isCompacting ? 'Compaction en cours' : tone.label;
+  const isLiveEstimate = effectiveDiagnostics?.source === 'live_stream';
 
   return (
     <div ref={containerRef} className="relative">
@@ -258,9 +259,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           ) : (
             <span className="absolute h-1.5 w-1.5 rounded-full bg-current/70" />
           )}
-          {isBusy && !footprint && !isCompacting ? (
-            <SpinnerIcon size={11} className="relative text-current" />
-          ) : null}
         </span>
       </button>
 
@@ -268,16 +266,18 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
         <div className="absolute right-0 top-full z-50 mt-2 w-[320px] max-w-[calc(100vw-2rem)] rounded-lg border border-border/70 bg-popover p-3 text-popover-foreground shadow-xl">
           <div className="flex items-start justify-between gap-3 border-b border-border/60 pb-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className={cn('h-2 w-2 rounded-full bg-current', tone.accentClassName)} />
-                <p className="text-sm font-medium">{statusLabel}</p>
-              </div>
+              <p className={cn('text-sm font-medium', tone.accentClassName)}>
+                {statusLabel}
+              </p>
               <p className="mt-1 truncate text-[11px] text-muted-foreground">
                 {effectiveDiagnostics?.providerType ??
                   effectiveDiagnostics?.providerId ??
                   'Provider'} ·{' '}
                 {effectiveDiagnostics?.modelId ?? 'Modèle non sélectionné'}
               </p>
+              {isLiveEstimate ? (
+                <p className="mt-1 text-[11px] text-primary">Mesure en direct</p>
+              ) : null}
             </div>
             <div className="text-right">
               <p className="text-lg font-semibold tabular-nums">

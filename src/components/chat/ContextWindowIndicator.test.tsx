@@ -171,6 +171,24 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('Compaction en cours');
   });
 
+  it('shows a live measurement label in the popover', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator diagnostics={buildDiagnostics({ source: 'live_stream' })} />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Mesure en direct');
+  });
+
   it('closes the popover when clicking outside of it', async () => {
     await act(async () => {
       root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
@@ -275,7 +293,6 @@ describe('ContextWindowIndicator', () => {
     await act(async () => {
       root?.render(
         <ContextWindowIndicator
-          isBusy
           diagnostics={buildDiagnostics({
             status: 'estimating',
             footprintBefore: undefined,
@@ -291,6 +308,102 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('82%');
     expect(document.body.textContent).toContain('42 messages · 6 sources');
     expect(document.body.querySelector('[data-testid="context-window-refreshing"]')).toBeNull();
+  });
+
+  it('keeps manual compaction available below the automatic threshold', async () => {
+    const onCompactNow = mock(() => undefined);
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            phase: 'idle',
+            ratio: 0.18,
+            usableRatio: 0.22,
+            footprintBefore: undefined,
+            footprintAfter: {
+              ...buildDiagnostics().footprintAfter!,
+              totalEstimatedTokens: 20_000,
+              serializedPayloadTokens: 18_000,
+              totalContextRatio: 0.18,
+              usableContextRatio: 0.22,
+              threshold: 'none',
+              reason: 'below_threshold',
+              isHardStop: false,
+            },
+          })}
+          onCompactNow={onCompactNow}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    const compactButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Compacter maintenant'),
+    );
+    expect(compactButton?.disabled).toBe(false);
+
+    await act(async () => {
+      compactButton?.click();
+      await flushRender();
+    });
+
+    expect(onCompactNow).toHaveBeenCalled();
+  });
+
+  it('can disable manual compaction while keeping the low-threshold action visible', async () => {
+    const onCompactNow = mock(() => undefined);
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            phase: 'idle',
+            ratio: 0.18,
+            usableRatio: 0.22,
+            footprintBefore: undefined,
+            footprintAfter: {
+              ...buildDiagnostics().footprintAfter!,
+              totalEstimatedTokens: 20_000,
+              serializedPayloadTokens: 18_000,
+              totalContextRatio: 0.18,
+              usableContextRatio: 0.22,
+              threshold: 'none',
+              reason: 'below_threshold',
+              isHardStop: false,
+            },
+          })}
+          canCompactNow={false}
+          onCompactNow={onCompactNow}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    const compactButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Compacter maintenant'),
+    );
+    expect(compactButton).not.toBeNull();
+    expect(compactButton?.disabled).toBe(true);
+
+    await act(async () => {
+      compactButton?.click();
+      await flushRender();
+    });
+
+    expect(onCompactNow).not.toHaveBeenCalled();
   });
 
   it('applies the target ratio immediately when reduced motion is requested', async () => {

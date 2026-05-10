@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
-import type { StreamCompletionResult } from './streamingChat';
+import type { LiveStreamContextSnapshot, StreamCompletionResult } from './streamingChat';
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
@@ -449,6 +449,81 @@ describe('streamingChat tool rendering helpers', () => {
       'call_z',
       'call_a',
     ]);
+  });
+
+  it('publishes live context snapshots for tokens, tool traces, hidden context, and provider context', async () => {
+    const { __testables } = await loadStreamingChat();
+    const snapshots: LiveStreamContextSnapshot[] = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => {
+        snapshots.push(snapshot);
+      },
+    });
+
+    accumulator.appendProviderDelta('Response');
+    expect(snapshots.at(-1)).toEqual(
+      expect.objectContaining({
+        version: 1,
+        visibleContent: 'Response',
+        visibleContentLength: 'Response'.length,
+      }),
+    );
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    expect(snapshots.at(-1)?.toolTraces).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call_1',
+        tool_name: 'read',
+        status: 'running',
+      }),
+    ]);
+
+    accumulator.addHiddenToolContext('call_1', 'read', 'README.md', 'FILE: README.md\nsecret');
+    expect(snapshots.at(-1)?.hiddenContext).toContain('FILE: README.md');
+
+    const providerInputItems = [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Response' }],
+      },
+    ];
+    const providerTurnState = {
+      provider: 'chatgpt' as const,
+      response_id: 'resp_1',
+      output_items: providerInputItems,
+    };
+    accumulator.setProviderContext({ providerInputItems, providerTurnState });
+
+    expect(snapshots.at(-1)).toEqual(
+      expect.objectContaining({
+        version: 4,
+        providerInputItems,
+        providerTurnState,
+      }),
+    );
+    expect(snapshots.map((snapshot) => snapshot.version)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('counts native live-only tool output in snapshots without persisting duplicate hidden context', async () => {
+    const { __testables } = await loadStreamingChat();
+    const snapshots: LiveStreamContextSnapshot[] = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => {
+        snapshots.push(snapshot);
+      },
+    });
+
+    accumulator.addLiveOnlyHiddenToolContext('call_native', 'read', 'src/App.tsx', 'A'.repeat(500));
+
+    expect(snapshots.at(-1)?.hiddenContext).toContain('call_native');
+    expect(snapshots.at(-1)?.hiddenContext).toContain('src/App.tsx');
+    expect(accumulator.getFinalHiddenContext()).toBeUndefined();
+    expect(accumulator.buildResult().hiddenContext).toBeUndefined();
   });
 
   it('marks individual sequential tools done before the next tool starts', async () => {

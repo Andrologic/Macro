@@ -354,6 +354,62 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
   });
 
+  it('does not create automatic summary compaction before the usable window is full', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'First request.'),
+      makeMessage('a1', 'assistant', 'First answer.'),
+      makeMessage('u2', 'user', 'Second request.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 100,
+      budgetPolicy: { reservedTokens: 0 },
+      mode: 'blocking',
+      estimateSerializedPayloadTokens: () => 80,
+      generateSummary: async () => 'This summary should not be created.',
+    });
+
+    expect(result.footprintBefore.usableContextRatio).toBeGreaterThan(0.75);
+    expect(result.footprintBefore.usableContextRatio).toBeLessThan(1);
+    expect(result.compactionState).toBeNull();
+    expect(result.messages).toEqual([
+      { role: 'system', content: 'You are Macro.' },
+      ...makePreparedMessages(orderedMessages),
+    ]);
+    expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
+  });
+
+  it('never creates durable summary compaction in background mode', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'First request.'),
+      makeMessage('a1', 'assistant', 'First answer.'),
+      makeMessage('u2', 'user', 'Second request.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 100,
+      budgetPolicy: { reservedTokens: 0 },
+      mode: 'background',
+      estimateSerializedPayloadTokens: () => 120,
+      generateSummary: async () => 'This background summary should not be created.',
+    });
+
+    expect(result.footprintBefore.isHardStop).toBe(true);
+    expect(result.compactionState).toBeNull();
+    expect(result.decision).toBe('hard_stop');
+    expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
+  });
+
   it('keeps the last two user turns raw and injects a compacted system message', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),

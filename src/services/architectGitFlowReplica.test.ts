@@ -49,6 +49,15 @@ const gitWorktreeInspectMock = mock(
     isDirty: false,
   })
 );
+const gitBranchWorktreeInspectMock = mock(
+  async (params: { repoPath: string; worktreeKey: string; branchName?: string | null }) => ({
+    worktreeKey: params.worktreeKey,
+    worktreePath: `${params.repoPath}/.macro/worktrees/${params.worktreeKey}`,
+    branchName: params.branchName ?? 'develop',
+    status: 'ready' as const,
+    isDirty: false,
+  })
+);
 
 const normalizeFsPath = (value: string): string =>
   value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
@@ -286,6 +295,7 @@ const registerModuleMocks = () => {
     gitCheckout: gitCheckoutMock,
     gitBranchCreate: gitBranchCreateMock,
     gitWorktreeInspect: gitWorktreeInspectMock,
+    gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
     gitWorktreeRemove: gitWorktreeRemoveMock,
   }));
 
@@ -348,6 +358,7 @@ describe('architectGitFlowService replica integration', () => {
     gitCheckoutMock.mockClear();
     gitBranchCreateMock.mockClear();
     gitWorktreeInspectMock.mockClear();
+    gitBranchWorktreeInspectMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
   });
 
@@ -371,6 +382,7 @@ describe('architectGitFlowService replica integration', () => {
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeInspect: gitWorktreeInspectMock,
+        gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
@@ -448,6 +460,7 @@ describe('architectGitFlowService replica integration', () => {
         gitCheckout: gitCheckoutMock,
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeInspect: gitWorktreeInspectMock,
+        gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({
