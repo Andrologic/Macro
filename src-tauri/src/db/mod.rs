@@ -234,6 +234,9 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
             task_id TEXT,
             group_id TEXT,
             project_id TEXT,
+            provider_id TEXT,
+            model_id TEXT,
+            reasoning_effort TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_message TEXT,
@@ -263,6 +266,21 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("project_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN project_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("provider_id") {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN provider_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("model_id") {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN model_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("reasoning_effort") {
+        sqlx::query("ALTER TABLE conversations ADD COLUMN reasoning_effort TEXT")
             .execute(pool)
             .await?;
     }

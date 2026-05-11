@@ -658,6 +658,9 @@ export interface Conversation {
   task_id: string | null;
   group_id?: string | null;
   project_id: string | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  reasoning_effort?: ReasoningEffort | null;
   last_message: string;
   message_count: number;
   updated_at: string;

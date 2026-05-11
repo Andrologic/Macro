@@ -863,6 +863,14 @@ const branchNameMatchesCandidate = (
 
 const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
 const QUESTIONNAIRE_DRAFTS_STORAGE_KEY = "macro_chat_questionnaire_drafts";
+const REASONING_EFFORT_VALUES = new Set<ReasoningEffort>([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
 
 type AISelectionModeKey = "Chat" | "Architect" | "Implement";
 
@@ -910,6 +918,11 @@ const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
   return "Implement";
 };
 
+const normalizeReasoningEffort = (value: unknown): ReasoningEffort | null =>
+  typeof value === "string" && REASONING_EFFORT_VALUES.has(value as ReasoningEffort)
+    ? (value as ReasoningEffort)
+    : null;
+
 const normalizePersistedSelection = (
   value: unknown,
 ): PersistedAISelection | null => {
@@ -937,12 +950,7 @@ const normalizePersistedSelection = (
   return {
     providerId,
     modelId,
-    reasoningEffort:
-      candidate.reasoningEffort === null ||
-      typeof candidate.reasoningEffort === "string"
-        ? ((candidate.reasoningEffort as ReasoningEffort | null | undefined) ??
-          null)
-        : null,
+    reasoningEffort: normalizeReasoningEffort(candidate.reasoningEffort),
     updatedAt:
       typeof candidate.updatedAt === "string" &&
       candidate.updatedAt.trim().length > 0
@@ -967,12 +975,7 @@ const normalizePersistedProviderSelection = (
 
   return {
     modelId: candidate.modelId,
-    reasoningEffort:
-      candidate.reasoningEffort === null ||
-      typeof candidate.reasoningEffort === "string"
-        ? ((candidate.reasoningEffort as ReasoningEffort | null | undefined) ??
-          null)
-        : null,
+    reasoningEffort: normalizeReasoningEffort(candidate.reasoningEffort),
     updatedAt:
       typeof candidate.updatedAt === "string" &&
       candidate.updatedAt.trim().length > 0
@@ -1536,6 +1539,9 @@ const mapDbConversationToConversation = (
   task_id: conversation.task_id,
   group_id: conversation.group_id,
   project_id: conversation.project_id,
+  provider_id: conversation.provider_id,
+  model_id: conversation.model_id,
+  reasoning_effort: normalizeReasoningEffort(conversation.reasoning_effort),
   last_message: conversation.last_message || "",
   message_count: conversation.message_count,
   updated_at: conversation.updated_at,
@@ -2440,6 +2446,82 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
+  const getConversationPersistedSelection = (
+    conversationId: string | null,
+  ): PersistedAISelection | null => {
+    if (!conversationId) {
+      return null;
+    }
+
+    const conversation = get().conversations.find(
+      (candidate) => candidate.id === conversationId,
+    );
+    if (!conversation?.provider_id || !conversation.model_id) {
+      return null;
+    }
+
+    return {
+      providerId: conversation.provider_id,
+      modelId: conversation.model_id,
+      reasoningEffort: conversation.reasoning_effort ?? null,
+      updatedAt: conversation.updated_at || new Date().toISOString(),
+    };
+  };
+
+  const persistConversationAISelection = (
+    conversationId: string | null,
+    selection: PersistedAISelection | null,
+  ) => {
+    if (!conversationId || !selection?.providerId || !selection.modelId) {
+      return;
+    }
+
+    const currentConversation = get().conversations.find(
+      (conversation) => conversation.id === conversationId,
+    );
+    if (!currentConversation) {
+      return;
+    }
+
+    const nextReasoningEffort = selection.reasoningEffort ?? null;
+    if (
+      currentConversation.provider_id === selection.providerId &&
+      currentConversation.model_id === selection.modelId &&
+      currentConversation.reasoning_effort === nextReasoningEffort
+    ) {
+      return;
+    }
+
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              provider_id: selection.providerId,
+              model_id: selection.modelId,
+              reasoning_effort: nextReasoningEffort,
+            }
+          : conversation,
+      ),
+    }));
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    void tauriIpc.updateConversationAISelection({
+      id: conversationId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reasoningEffort: nextReasoningEffort,
+    }).catch((error) => {
+      console.warn(
+        "Failed to persist conversation AI selection:",
+        toServiceError(error).message,
+      );
+    });
+  };
+
   const toPersistedProviderSelection = (
     selection: PersistedAISelection,
   ): PersistedAIProviderSelection => ({
@@ -2679,6 +2761,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     commitAiSelections(nextSelections);
+    persistConversationAISelection(conversationId, selection);
   };
 
   const persistSelectionForConversationSwitch = (
@@ -2725,9 +2808,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const conversationSelection = conversationId
       ? aiSelections.conversationSelections[conversationId] ?? null
       : null;
+    const persistedConversationSelection =
+      getConversationPersistedSelection(conversationId);
     const modeSelection = aiSelections.modeSelections[modeKey] ?? null;
     const conversationProviderId =
       preferredProviderId ??
+      persistedConversationSelection?.providerId ??
       conversationSelection?.providerId ??
       currentSelection?.providerId ??
       modeSelection?.providerId ??
@@ -2736,10 +2822,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       preferredProviderId ??
       modeSelection?.providerId ??
       currentSelection?.providerId ??
+      persistedConversationSelection?.providerId ??
       conversationSelection?.providerId ??
       null;
     const fallbackProviderId =
       preferredProviderId ??
+      persistedConversationSelection?.providerId ??
       currentSelection?.providerId ??
       conversationSelection?.providerId ??
       modeSelection?.providerId ??
@@ -2771,6 +2859,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         invalidate,
       });
     };
+
+    pushCandidate(persistedConversationSelection, () => false);
 
     pushCandidate(conversationSelection, (target) =>
       conversationId
@@ -3025,6 +3115,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (selectionsChanged) {
         commitAiSelections(nextSelections);
       }
+      persistConversationAISelection(params.conversationId, appliedSelection);
 
       set((current) => ({
         restoreStatus: "ready",
@@ -8975,6 +9066,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : mode === "Implement"
           ? (groupId ?? appState.selectedGroupId ?? null)
           : (groupId ?? null);
+    const initialAISelection = getCurrentSelection();
 
     if (mode === "Implement" && resolvedTaskId) {
       const existingConversation = getLatestConversationForTask(resolvedTaskId);
@@ -9010,6 +9102,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           taskId: resolvedTaskId,
           groupId: resolvedGroupId,
           projectId: resolvedProjectId,
+          providerId: initialAISelection?.providerId ?? null,
+          modelId: initialAISelection?.modelId ?? null,
+          reasoningEffort: initialAISelection?.reasoningEffort ?? null,
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
@@ -9022,6 +9117,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           task_id: resolvedTaskId,
           group_id: resolvedGroupId,
           project_id: resolvedProjectId,
+          provider_id: initialAISelection?.providerId ?? null,
+          model_id: initialAISelection?.modelId ?? null,
+          reasoning_effort: initialAISelection?.reasoningEffort ?? null,
           last_message: "",
           message_count: 0,
           updated_at: new Date().toISOString(),
@@ -9037,6 +9135,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         task_id: resolvedTaskId,
         group_id: resolvedGroupId,
         project_id: resolvedProjectId,
+        provider_id: initialAISelection?.providerId ?? null,
+        model_id: initialAISelection?.modelId ?? null,
+        reasoning_effort: initialAISelection?.reasoningEffort ?? null,
         last_message: "",
         message_count: 0,
         updated_at: new Date().toISOString(),
@@ -9099,6 +9200,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const now = new Date().toISOString();
+    const initialAISelection = getCurrentSelection();
     const conversation: Conversation = {
       id,
       title: params.title,
@@ -9107,6 +9209,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       task_id: null,
       group_id: params.fallbackGroupId,
       project_id: params.fallbackProjectId,
+      provider_id: initialAISelection?.providerId ?? null,
+      model_id: initialAISelection?.modelId ?? null,
+      reasoning_effort: initialAISelection?.reasoningEffort ?? null,
       last_message: "",
       message_count: 0,
       updated_at: now,
