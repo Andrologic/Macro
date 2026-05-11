@@ -24,6 +24,7 @@ pub struct Conversation {
 pub struct Message {
     pub id: String,
     pub conversation_id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub created_at: String,
@@ -131,6 +132,10 @@ pub struct AiModel {
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
     pub context_window_tokens: Option<i32>,
+    pub input_limit_tokens: Option<i32>,
+    pub output_limit_tokens: Option<i32>,
+    pub context_window_source: Option<String>,
+    pub context_limits_updated_at: Option<String>,
     pub is_enabled: bool,
     pub is_manual: bool,
     pub first_seen_at: String,
@@ -205,7 +210,9 @@ pub struct CreateConversationInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageInput {
+    pub id: Option<String>,
     pub conversation_id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub token_count: Option<i32>,
@@ -218,6 +225,7 @@ pub struct CreateMessageInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportMessageInput {
     pub id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub created_at: String,
@@ -304,6 +312,10 @@ pub struct ProviderModelInput {
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
     pub context_window_tokens: Option<i32>,
+    pub input_limit_tokens: Option<i32>,
+    pub output_limit_tokens: Option<i32>,
+    pub context_window_source: Option<String>,
+    pub context_limits_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

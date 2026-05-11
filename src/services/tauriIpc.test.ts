@@ -114,6 +114,8 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           params: {
             conversationId: "conv-1",
+            id: null,
+            turnId: null,
             role: "user",
             content: "hello",
             tokenCount: 3,
@@ -140,6 +142,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           params: {
             id: "msg-1",
+            turnId: null,
             content: "updated",
             tokenCount: null,
             toolTracesJson: null,

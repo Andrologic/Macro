@@ -49,6 +49,7 @@ export interface DbConversation {
 export interface DbMessage {
   id: string;
   conversation_id: string;
+  turn_id?: string | null;
   role: string;
   content: string;
   created_at: string;
@@ -93,6 +94,7 @@ export interface DbConversationCompactionState {
 
 export interface DbImportMessageInput {
   id: string;
+  turn_id?: string | null;
   role: string;
   content: string;
   created_at: string;
@@ -409,6 +411,10 @@ export interface DbAiModel {
   reasoning_efforts: string[] | null;
   default_reasoning_effort: string | null;
   context_window_tokens: number | null;
+  input_limit_tokens: number | null;
+  output_limit_tokens: number | null;
+  context_window_source: string | null;
+  context_limits_updated_at: string | null;
   is_enabled: boolean;
   is_manual: boolean;
   first_seen_at: string;
@@ -537,6 +543,10 @@ export interface DbProviderModelInput {
   reasoning_efforts?: string[] | null;
   default_reasoning_effort?: string | null;
   context_window_tokens?: number | null;
+  input_limit_tokens?: number | null;
+  output_limit_tokens?: number | null;
+  context_window_source?: string | null;
+  context_limits_updated_at?: string | null;
 }
 
 export interface DbUpsertConversationCompactionStateInput {
@@ -1275,6 +1285,8 @@ export async function createMessage(
   role: string,
   content: string,
   options?: {
+    id?: string;
+    turnId?: string | null;
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
@@ -1285,6 +1297,8 @@ export async function createMessage(
   return invoke<DbMessage>("db_create_message", {
     params: {
       conversationId,
+      id: options?.id ?? null,
+      turnId: options?.turnId ?? null,
       role,
       content,
       tokenCount: options?.tokenCount ?? null,
@@ -1316,6 +1330,7 @@ export async function updateMessage(
   id: string,
   content: string,
   options?: {
+    turnId?: string | null;
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
@@ -1326,6 +1341,7 @@ export async function updateMessage(
   return invoke("db_update_message", {
     params: {
       id,
+      turnId: options?.turnId ?? null,
       content,
       tokenCount: options?.tokenCount ?? null,
       toolTracesJson: options?.toolTraces

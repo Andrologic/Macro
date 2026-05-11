@@ -471,7 +471,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Submit",
-    "questionnaireNext": "Next"
+    "questionnaireNext": "Next",
+    "compactionBoundary": "Contexto compactado",
+    "compactionProgressTitle": "Compactando contexto...",
+    "streamingCompactionActivity": "Compactando contexto...",
+    "compactNow": "Compactar ahora",
+    "loadingModels": "Cargando modelos",
+    "agentCodeReplayTitle": "¿Volver al punto de control del código?",
+    "agentCodeReplayDescription": "Los cambios hechos por Macro después de este mensaje se borrarán antes de reintentar. Los archivos cambiados desde el último punto de control aparecen abajo.",
+    "agentCodeReplayConfirmEdit": "Restaurar y guardar",
+    "agentCodeReplayConfirmRegenerate": "Restaurar y reintentar",
+    "agentCodeReplayExternalChangesDetected": "Algunos archivos cambiaron desde el último punto registrado. Al confirmar se restaurarán solo los archivos listados.",
+    "agentCodeReplayFileCreated": "creado",
+    "agentCodeReplayFileDeleted": "eliminado",
+    "agentCodeReplayFileModified": "modificado",
+    "agentCodeReplayExternalFileChanged": "cambiado",
+    "agentCodeReplayExternalWarning": "Solo se restauran los archivos seguidos por las herramientas de edición de Macro, incluidos los archivos sin seguimiento creados por el agente."
   },
   "settings": {
     "title": "Configuración",
@@ -664,7 +679,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "Compactación de sesiones largas",
+      "description": "Reserva contexto del modelo y compacta turnos antiguos con muchas herramientas antes de que la sesión se desborde.",
+      "auto": "Compactación automática",
+      "autoDesc": "Compacta antes de un desbordamiento del proveedor.",
+      "prune": "Recortar salidas antiguas de herramientas",
+      "pruneDesc": "Resume primero los contextos grandes de herramientas antiguas.",
+      "manualVisible": "Mostrar acción de compactación",
+      "manualVisibleDesc": "Añade un botón de compactación manual en la cabecera del chat.",
+      "reservedTokens": "Tokens reservados",
+      "reservedTokensDesc": "Vacío mantiene la reserva automática 20 %/20k.",
+      "autoPlaceholder": "Auto"
+    }
   },
   "project": {
     "projects": "Proyectos",
@@ -1295,7 +1323,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "Mostrar lista de tarea",
+    "taskTodoDropdownLabel": "Lista de tarea",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "Detalles",
+    "retryGenerationHelp": "Vuelve a intentarlo con el modelo de commit actual.",
+    "writeCommitMessagesManually": "Escribir manualmente",
+    "writeCommitMessagesManuallyHelp": "Usa el editor de commits en lugar de la IA.",
+    "commitModelSettings": "Ajustes del modelo de commit",
+    "commitModelSettingsHelp": "Cambia el modelo usado para los mensajes de commit.",
+    "commitMessageManualTitle": "Escribir mensajes de commit",
+    "commitMessageManualDescription": "Escribe un mensaje Conventional Commit para cada repositorio y luego confirma."
   },
   "architect": {
     "needs": "Necesidades identificadas",
@@ -1980,7 +2019,11 @@
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "clear": "Clear terminal",
     "interrupt": "Interrupt terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "Buscar en terminal",
+    "searchPlaceholder": "Buscar en terminal",
+    "searchPrevious": "Coincidencia anterior",
+    "searchNext": "Coincidencia siguiente"
   },
   "notify": {
     "connectionFailed": "Connection failed",

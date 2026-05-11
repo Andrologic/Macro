@@ -471,7 +471,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Submit",
-    "questionnaireNext": "Next"
+    "questionnaireNext": "Next",
+    "compactionBoundary": "압축된 컨텍스트",
+    "compactionProgressTitle": "컨텍스트 압축 중...",
+    "streamingCompactionActivity": "컨텍스트 압축 중...",
+    "compactNow": "지금 압축",
+    "loadingModels": "모델 불러오는 중",
+    "agentCodeReplayTitle": "코드 체크포인트로 돌아갈까요?",
+    "agentCodeReplayDescription": "이 메시지 이후 Macro가 만든 변경 사항은 다시 실행하기 전에 지워집니다. 마지막 체크포인트 이후 변경된 파일은 아래에 표시됩니다.",
+    "agentCodeReplayConfirmEdit": "복원하고 저장",
+    "agentCodeReplayConfirmRegenerate": "복원하고 다시 실행",
+    "agentCodeReplayExternalChangesDetected": "마지막 기록 지점 이후 일부 파일이 변경되었습니다. 확인하면 목록의 파일만 복원합니다.",
+    "agentCodeReplayFileCreated": "생성됨",
+    "agentCodeReplayFileDeleted": "삭제됨",
+    "agentCodeReplayFileModified": "수정됨",
+    "agentCodeReplayExternalFileChanged": "변경됨",
+    "agentCodeReplayExternalWarning": "Macro 편집 도구가 추적한 파일만 복원합니다. 에이전트가 만든 미추적 파일도 포함됩니다."
   },
   "settings": {
     "title": "설정",
@@ -664,7 +679,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "긴 세션 압축",
+      "description": "모델 컨텍스트를 예약하고 세션이 넘치기 전에 오래된 도구 중심 턴을 압축합니다.",
+      "auto": "자동 압축",
+      "autoDesc": "공급자 한도 초과 전에 압축합니다.",
+      "prune": "오래된 도구 출력 정리",
+      "pruneDesc": "큰 오래된 도구 컨텍스트를 먼저 요약합니다.",
+      "manualVisible": "압축 동작 표시",
+      "manualVisibleDesc": "채팅 헤더에 수동 압축 버튼을 추가합니다.",
+      "reservedTokens": "예약 토큰",
+      "reservedTokensDesc": "비워 두면 자동 20%/20k 예약을 유지합니다.",
+      "autoPlaceholder": "자동"
+    }
   },
   "project": {
     "projects": "프로젝트",
@@ -1295,7 +1323,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "작업 체크리스트 표시",
+    "taskTodoDropdownLabel": "작업 체크리스트",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "세부 정보",
+    "retryGenerationHelp": "현재 커밋 모델로 다시 시도합니다.",
+    "writeCommitMessagesManually": "수동으로 작성",
+    "writeCommitMessagesManuallyHelp": "AI 대신 커밋 편집기를 사용합니다.",
+    "commitModelSettings": "커밋 모델 설정",
+    "commitModelSettingsHelp": "커밋 메시지에 사용할 모델을 변경합니다.",
+    "commitMessageManualTitle": "커밋 메시지 작성",
+    "commitMessageManualDescription": "각 저장소에 Conventional Commit 메시지를 작성한 뒤 커밋합니다."
   },
   "architect": {
     "needs": "확인된 요구사항",
@@ -1980,7 +2019,11 @@
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "clear": "Clear terminal",
     "interrupt": "Interrupt terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "터미널 검색",
+    "searchPlaceholder": "터미널 검색",
+    "searchPrevious": "이전 일치 항목",
+    "searchNext": "다음 일치 항목"
   },
   "notify": {
     "connectionFailed": "Connection failed",

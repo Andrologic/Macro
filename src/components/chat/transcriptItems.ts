@@ -17,6 +17,7 @@ export type ChatTranscriptCompactionBoundaryItem = {
 export type ChatTranscriptCompactionProgressPhase =
   | 'compacting'
   | 'safety_compacting'
+  | 'model_switch_compacting'
   | 'overflow_recovery'
   | 'recovering_overflow';
 
@@ -37,6 +38,7 @@ export const isChatTranscriptCompactionProgressPhase = (
 ): phase is ChatTranscriptCompactionProgressPhase =>
   phase === 'compacting' ||
   phase === 'safety_compacting' ||
+  phase === 'model_switch_compacting' ||
   phase === 'overflow_recovery' ||
   phase === 'recovering_overflow';
 

@@ -11,6 +11,7 @@ import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
+import { isContextOverflowMessage } from './contextOverflow';
 import type { InternalAgentProfile } from './internalAgentProfile';
 import {
   applyReasoningToChatCompletionsRequest,
@@ -398,35 +399,8 @@ const isReasoningReplayRequiredError = (message: string): boolean => {
   );
 };
 
-const CONTEXT_OVERFLOW_PATTERNS = [
-  /prompt is too long/i,
-  /input is too long for requested model/i,
-  /exceeds the context window/i,
-  /input token count.*exceeds the maximum/i,
-  /maximum prompt length is \d+/i,
-  /reduce the length of the messages/i,
-  /maximum context length is \d+ tokens/i,
-  /exceeds the limit of \d+/i,
-  /exceeds the available context size/i,
-  /greater than the context length/i,
-  /context window exceeds limit/i,
-  /exceeded model token limit/i,
-  /context[_ ]length[_ ]exceeded/i,
-  /context_length_exceeded/i,
-  /model_context_window_exceeded/i,
-  /request entity too large/i,
-  /context length is only \d+ tokens/i,
-  /input length.*exceeds.*context length/i,
-  /prompt too long; exceeded (?:max )?context length/i,
-  /too large for model with \d+ maximum context length/i,
-  /^4(00|13)\s*(status code)?\s*\(no body\)/i,
-];
-
 const isContextOverflowError = (message: string, status?: number): boolean => {
-  if (status === 413) {
-    return true;
-  }
-  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
+  return isContextOverflowMessage(message, status);
 };
 
 const disableReasoningForSession = (providerId: string, modelId: string) => {

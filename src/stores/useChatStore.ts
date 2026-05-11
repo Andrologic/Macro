@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import {
   AppMode,
+  AgentCodeCheckpoint,
+  AgentCodeCheckpointFile,
+  AgentCodeReplayPreview,
   ChatMessage,
   ConversationApprovalGrant,
   ConversationExecutionPhase,
@@ -28,6 +31,10 @@ import {
   buildProviderErrorTranscriptMarkdown,
   resolveChatErrorPresentation,
 } from "../services/chatErrorPresentation";
+import {
+  extractContextLimitTokensFromErrorLike,
+  isContextOverflowErrorLike,
+} from "../services/contextOverflow";
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
 import { useCitationsStore } from "./useCitationsStore";
 import type { Citation, SourcePassageKind } from "./useCitationsStore";
@@ -178,12 +185,26 @@ import {
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
   isContextFootprintOverUsableBudget,
-  resolveModelContextWindowTokens,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
   type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
+import {
+  contextLimitsToFootprintFields,
+  resolveModelContextLimits,
+  type ContextLimitFootprintFields,
+} from "../services/modelContextLimits";
+import {
+  appendAgentCodeCheckpoint,
+  buildAgentCodeReplayPreview,
+  createAgentCodeCheckpoint,
+  hydrateAgentCodeReplayPreviewCurrentState,
+  loadAgentCodeCheckpoints,
+  pruneAgentCodeCheckpointsToMessageIds,
+  restoreAgentCodeReplayPreview,
+  saveAgentCodeCheckpoints,
+} from "../services/agentCodeCheckpoints";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
   filterToolIdsForInternalAgentProfile,
@@ -206,6 +227,10 @@ const metadataGenerationInFlight = new Set<string>();
 const conversationCompactionStateCache = new Map<
   string,
   ConversationCompactionState | null
+>();
+const agentCodeCheckpointLoadPromisesByConversationId = new Map<
+  string,
+  Promise<AgentCodeCheckpoint[]>
 >();
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
@@ -267,6 +292,10 @@ interface StreamContextDiagnosticsBaseline {
   baseUrl: string;
   modelId: string;
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ContextFootprint["contextLimitSource"];
+  isContextLimitAuthoritative?: boolean;
   allowedToolIds: string[];
   toolDefinitions: MacroToolRegistryEntry[];
   messagesForRequest: StreamMessage[];
@@ -326,34 +355,8 @@ const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
   };
 };
 
-const CONTEXT_OVERFLOW_ERROR_PATTERNS = [
-  /context_length_exceeded/i,
-  /maximum context length/i,
-  /too many tokens/i,
-  /request entity too large/i,
-  /\b413\b/i,
-  /prompt is too long/i,
-  /context window/i,
-];
-
 const isProviderContextOverflowError = (error: unknown): boolean => {
-  const candidate = error as {
-    kind?: unknown;
-    status?: unknown;
-    message?: unknown;
-  };
-  if (candidate?.kind === "context_overflow" || candidate?.status === 413) {
-    return true;
-  }
-  const message =
-    typeof candidate?.message === "string"
-      ? candidate.message
-      : error instanceof Error
-        ? error.message
-        : String(error ?? "");
-  return CONTEXT_OVERFLOW_ERROR_PATTERNS.some((pattern) =>
-    pattern.test(message),
-  );
+  return isContextOverflowErrorLike(error);
 };
 
 const OVERFLOW_RECOVERY_FAILURE_MESSAGE =
@@ -362,6 +365,7 @@ const OVERFLOW_RECOVERY_FAILURE_MESSAGE =
 const EMPTY_CONVERSATION_RUNTIME: ConversationRuntimeState = Object.freeze({
   phase: "idle" as ConversationExecutionPhase,
   sessionId: null,
+  turnId: null,
   assistantMessageId: null,
   abortController: null,
   lastError: null,
@@ -617,6 +621,8 @@ const buildContextDiagnosticsFromFootprint = (params: {
     providerType: params.providerType,
     modelId: params.modelId,
     modelContextWindowTokens: footprint?.modelContextWindowTokens,
+    contextLimitSource: footprint?.contextLimitSource,
+    isContextLimitAuthoritative: footprint?.isContextLimitAuthoritative,
     previousModelContextWindowTokens: footprint?.previousModelContextWindowTokens,
     modelContextWindowShrank: footprint?.modelContextWindowShrank,
     marginTokens: footprint?.marginTokens,
@@ -639,6 +645,13 @@ const buildContextDiagnosticsFromFootprint = (params: {
 
 const createConversationSessionId = (): string =>
   `conversation-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const createConversationTurnId = (): string =>
+  `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const getMessageTurnId = (
+  message: Pick<ChatMessage, "id" | "turn_id">,
+): string => message.turn_id || `legacy-turn-${message.id}`;
 
 const isConversationRuntimeActive = (
   runtime: ConversationRuntimeState | undefined,
@@ -1201,8 +1214,9 @@ type ChatSendState = "idle" | "preparing" | "streaming" | "error";
 interface ChatSendResult {
   status: "sent";
   conversationId: string;
+  turnId: string;
   userMessageId: string;
-  assistantMessageId: string;
+  assistantMessageId: string | null;
 }
 
 interface ArchitectTranscriptState {
@@ -1237,6 +1251,7 @@ export type ConversationCompactionPhase =
   | "idle"
   | "compacting"
   | "safety_compacting"
+  | "model_switch_compacting"
   | "overflow_recovery"
   | "recovering_overflow"
   | "compacted"
@@ -1286,6 +1301,8 @@ export interface ConversationContextDiagnostics {
   providerType?: string;
   modelId?: string;
   modelContextWindowTokens?: number;
+  contextLimitSource?: ContextFootprint["contextLimitSource"];
+  isContextLimitAuthoritative?: boolean;
   previousModelContextWindowTokens?: number;
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
@@ -1351,6 +1368,10 @@ interface ChatStore {
     string,
     ConversationCompactionStatus | undefined
   >;
+  agentCodeCheckpointsByConversationId: Record<
+    string,
+    AgentCodeCheckpoint[] | undefined
+  >;
   contextDiagnosticsByConversationId: Record<
     string,
     ConversationContextDiagnostics | undefined
@@ -1384,6 +1405,7 @@ interface ChatStore {
       Pick<
         ChatMessage,
         | "tool_traces"
+        | "turn_id"
         | "hidden_context"
         | "provider_input_items"
         | "provider_turn_state"
@@ -1474,6 +1496,12 @@ interface ChatStore {
   stopConversationStream: (conversationId: string) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
   stopStreaming: () => void;
+  getAgentCodeReplayPreview: (
+    messageId: string,
+  ) => Promise<AgentCodeReplayPreview | null>;
+  restoreAgentCodeForReplay: (
+    preview: AgentCodeReplayPreview,
+  ) => Promise<void>;
   editMessage: (
     messageId: string,
     newContent: string,
@@ -1482,6 +1510,7 @@ interface ChatStore {
       providerInputItems?: unknown[];
       replaceStructuredFields?: boolean;
       clearQuestionnaireSession?: boolean;
+      skipAgentCodeReplayCheck?: boolean;
     },
   ) => Promise<void>;
   setMessageImages: (
@@ -1638,6 +1667,7 @@ const mapDbMessageToChatMessage = (
     );
     return {
       id: message.id,
+      turn_id: message.turn_id ?? null,
       task_id: taskId,
       conversation_id: message.conversation_id,
       role: message.role as "user" | "assistant",
@@ -1663,6 +1693,7 @@ const mapDbMessageToChatMessage = (
   );
   return {
     id: message.id,
+    turn_id: message.turn_id ?? null,
     task_id: taskId,
     conversation_id: message.conversation_id,
     role: message.role as "user" | "assistant",
@@ -2516,7 +2547,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       reasoningEffort: nextReasoningEffort,
     }).catch((error) => {
       console.warn(
-        "Failed to persist conversation AI selection:",
+        "Failed to persist conversation AI choice:",
         toServiceError(error).message,
       );
     });
@@ -3687,6 +3718,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         persistSelectionForContext(appState.mode, selectedConversationId);
+        if ((providerChanged || modelChanged) && selectedConversationId) {
+          void maybeCompactConversationAfterModelSwitch({
+            conversationId: selectedConversationId,
+            previousProviderId: previousState.selectedProviderId,
+            previousModelId: previousState.selectedModelId,
+            nextProviderId: nextState.selectedProviderId,
+            nextModelId: nextState.selectedModelId,
+          });
+        }
       },
     );
   };
@@ -3775,16 +3815,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
   };
 
-  const getSelectedModelContextWindowTokens = (
+  const getSelectedModelContext = (
     providerId: string,
     modelId: string,
     providerType: string,
-  ): number => {
+  ): {
+    limits: ReturnType<typeof resolveModelContextLimits>;
+    footprintFields: ContextLimitFootprintFields;
+  } => {
     const providerState = useProviderStore.getState();
     const selectedModel = (
       providerState.modelsByProvider[providerId] || []
     ).find((model) => model.id === modelId);
-    return resolveModelContextWindowTokens({
+    const limits = resolveModelContextLimits({
       providerType,
       providerId,
       baseUrl: providerState.providerConfigs.find(
@@ -3792,8 +3835,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       )?.baseUrl,
       modelId,
       modelContextWindowTokens: selectedModel?.contextWindowTokens,
+      inputLimitTokens: selectedModel?.inputLimitTokens,
+      outputLimitTokens: selectedModel?.outputLimitTokens,
+      contextWindowSource: selectedModel?.contextWindowSource,
+      contextLimitsUpdatedAt: selectedModel?.contextLimitsUpdatedAt,
     });
+    return {
+      limits,
+      footprintFields: contextLimitsToFootprintFields(limits),
+    };
   };
+
+  const getSelectedModelContextWindowTokens = (
+    providerId: string,
+    modelId: string,
+    providerType: string,
+  ): number =>
+    getSelectedModelContext(providerId, modelId, providerType)
+      .footprintFields.modelContextWindowTokens;
 
   const parseCompactionJson = <T,>(
     value: string | null | undefined,
@@ -3831,6 +3890,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     switch (value) {
       case "background":
       case "blocking":
+      case "model_switch":
       case "overflow_recovery":
       case "safety_prestream":
       case "stream_overflow":
@@ -3883,6 +3943,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): ConversationCompactionState["lastTrigger"] | undefined => {
     switch (value) {
       case "manual":
+      case "model_switch":
       case "safety_prestream":
       case "stream_overflow":
         return value;
@@ -3906,9 +3967,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     (!params.usedExistingCompaction ||
       Boolean(params.forceCompaction) ||
       params.mode === "manual" ||
+      params.mode === "model_switch" ||
       params.mode === "safety_prestream" ||
       params.mode === "stream_overflow" ||
       params.mode === "overflow_recovery");
+
+  const isTransientCompactionStatus = (
+    status: ConversationCompactionStatus | null | undefined,
+  ): status is ConversationCompactionStatus =>
+    status?.phase === "compacting" ||
+    status?.phase === "safety_compacting" ||
+    status?.phase === "model_switch_compacting" ||
+    status?.phase === "overflow_recovery" ||
+    status?.phase === "recovering_overflow";
 
   const normalizeSummaryFormatVersion = (
     value: number | null | undefined,
@@ -3970,6 +4041,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       phase:
         kind === "overflow_recovery" || kind === "stream_overflow"
           ? "recovering_overflow"
+          : kind === "model_switch"
+            ? "model_switch_compacting"
           : kind === "safety_prestream"
             ? "safety_compacting"
             : "compacting",
@@ -4436,10 +4509,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const currentCompactionState = await getConversationCompactionState(
       params.conversationId,
     );
+    if (isTransientCompactionStatus(previousCompactionStatus)) {
+      const persistedStatus = currentCompactionState
+        ? resolveCompactionStatusFromState(currentCompactionState)
+        : null;
+      const restoredStatus: ConversationCompactionStatus = {
+        ...persistedStatus,
+        ...previousCompactionStatus,
+        phase: previousCompactionStatus.phase,
+      };
+      setConversationCompactionStatus(
+        params.conversationId,
+        restoredStatus,
+      );
+    }
     const statusBeforeNewCompaction =
       get().conversationCompactionStatusById[params.conversationId] ??
       previousCompactionStatus;
-    const modelContextWindowTokens = getSelectedModelContextWindowTokens(
+    const { footprintFields } = getSelectedModelContext(
       params.providerId,
       params.modelId,
       params.providerConfig.providerType,
@@ -4454,7 +4541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         orderedMessages: params.orderedMessages,
         citations: params.citations,
         toolDefinitions,
-        modelContextWindowTokens,
+        ...footprintFields,
         previousModelContextWindowTokens:
           currentCompactionState?.modelContextWindowTokens,
         providerId: params.providerId,
@@ -4495,7 +4582,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
         modelId: params.modelId,
-        modelContextWindowTokens,
+        modelContextWindowTokens: footprintFields.modelContextWindowTokens,
         status: "failed",
         errorCode: isProviderContextOverflowError(error)
           ? "context_overflow"
@@ -4522,7 +4609,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
         modelId: params.modelId,
-        modelContextWindowTokens,
+        modelContextWindowTokens: footprintFields.modelContextWindowTokens,
         tokensBefore: result.footprintBefore.totalEstimatedTokens,
         tokensAfter: result.footprintAfter.totalEstimatedTokens,
         status: result.degraded ? "degraded" : "success",
@@ -4546,6 +4633,163 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return result;
+  };
+
+  const maybeCompactConversationAfterModelSwitch = async (params: {
+    conversationId: string;
+    previousProviderId: string | null;
+    previousModelId: string | null;
+    nextProviderId: string | null;
+    nextModelId: string | null;
+  }): Promise<void> => {
+    if (
+      !params.conversationId ||
+      !params.previousProviderId ||
+      !params.previousModelId ||
+      !params.nextProviderId ||
+      !params.nextModelId
+    ) {
+      return;
+    }
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      params.conversationId,
+    );
+    if (isConversationRuntimeActive(runtime)) {
+      return;
+    }
+
+    const providerState = useProviderStore.getState();
+    const previousProvider = providerState.providerConfigs.find(
+      (provider) => provider.id === params.previousProviderId,
+    );
+    const nextProvider = providerState.providerConfigs.find(
+      (provider) => provider.id === params.nextProviderId,
+    );
+    if (!previousProvider || !nextProvider) {
+      return;
+    }
+
+    const previousWindow = getSelectedModelContextWindowTokens(
+      params.previousProviderId,
+      params.previousModelId,
+      previousProvider.providerType,
+    );
+    const nextWindow = getSelectedModelContextWindowTokens(
+      params.nextProviderId,
+      params.nextModelId,
+      nextProvider.providerType,
+    );
+    if (nextWindow >= previousWindow) {
+      return;
+    }
+
+    const previousStatus =
+      get().conversationCompactionStatusById[params.conversationId] ?? null;
+    try {
+      await ensureMessagesLoadedForConversation(params.conversationId);
+      await ensureToolsLoaded();
+      const orderedMessages = getOrderedConversationMessages(params.conversationId);
+      if (orderedMessages.length < 3) {
+        return;
+      }
+
+      const taskStatus = orderedMessages
+        .map((message) => message.task_id)
+        .find(Boolean)
+        ? useTaskStore
+            .getState()
+            .getTaskById(orderedMessages.find((message) => message.task_id)?.task_id ?? "")
+            ?.status ?? null
+        : null;
+      const internalAgentProfile = resolveInternalAgentProfile({
+        mode: useAppStore.getState().mode,
+        taskStatus,
+      });
+      const allowedToolIds = await getAllowedToolIdsForCurrentMode(
+        internalAgentProfile,
+      );
+      const preparedRequest = await prepareMessagesForRequest(
+        params.conversationId,
+        allowedToolIds,
+        internalAgentProfile,
+      );
+      const { footprintFields } = getSelectedModelContext(
+        params.nextProviderId,
+        params.nextModelId,
+        nextProvider.providerType,
+      );
+      const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+      const budgetPolicy = await loadContextBudgetPolicy();
+      const footprint = estimateConversationFootprint({
+        systemMessage: preparedRequest.systemMessage,
+        preparedMessages: preparedRequest.preparedMessages,
+        orderedMessages: preparedRequest.orderedMessages,
+        citations: preparedRequest.citations,
+        toolDefinitions,
+        ...footprintFields,
+        estimateSerializedPayloadTokens: (messages) =>
+          estimateChatCompletionSerializedPayloadTokens({
+            messages,
+            providerType: nextProvider.providerType,
+            providerId: params.nextProviderId!,
+            baseUrl: nextProvider.baseUrl,
+            modelId: params.nextModelId!,
+          }),
+        mode: "model_switch",
+        budgetPolicy,
+      });
+      if (!isContextFootprintOverUsableBudget(footprint)) {
+        return;
+      }
+
+      const resolvedApiKey =
+        nextProvider.isLocal || providerHasAuthSession(nextProvider)
+          ? nextProvider.apiKey
+          : await providerState.resolveProviderApiKey(params.nextProviderId);
+      const providerConfigForUse = {
+        ...nextProvider,
+        apiKey: resolvedApiKey,
+        apiKeyLoaded: nextProvider.apiKeyLoaded || resolvedApiKey !== undefined,
+      };
+
+      setConversationCompactionStatus(params.conversationId, {
+        ...previousStatus,
+        phase: "model_switch_compacting",
+        updatedAt: new Date().toISOString(),
+        reason: "model_window_shrank",
+        kind: "model_switch",
+        footprintAfter: footprint,
+      });
+      await compactConversationMessages({
+        conversationId: params.conversationId,
+        providerId: params.nextProviderId,
+        modelId: params.nextModelId,
+        reasoningEffort: providerState.selectedReasoningEffort,
+        providerConfig: providerConfigForUse,
+        allowedToolIds,
+        systemMessage: preparedRequest.systemMessage,
+        preparedMessages: preparedRequest.preparedMessages,
+        orderedMessages: preparedRequest.orderedMessages,
+        citations: preparedRequest.citations,
+        mode: "model_switch",
+        forceCompaction: true,
+        forcePrune: true,
+      });
+      void refreshConversationContextDiagnostics(params.conversationId, {
+        mode: "full",
+        providerContext: {
+          providerId: params.nextProviderId,
+          providerType: nextProvider.providerType,
+          baseUrl: nextProvider.baseUrl ?? "",
+          modelId: params.nextModelId,
+        },
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      setConversationCompactionStatus(params.conversationId, previousStatus);
+      set({ lastError: normalized.message });
+    }
   };
 
   const ensureToolsLoaded = async (): Promise<void> => {
@@ -4834,6 +5078,88 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return formatTaskTodoResult("task_todo_update", updatedTarget);
   };
 
+  const getLoadedAgentCodeCheckpoints = async (
+    conversationId: string,
+  ): Promise<AgentCodeCheckpoint[]> => {
+    const cached = get().agentCodeCheckpointsByConversationId[conversationId];
+    if (cached) {
+      return cached;
+    }
+
+    const existingPromise =
+      agentCodeCheckpointLoadPromisesByConversationId.get(conversationId);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const loadPromise = loadAgentCodeCheckpoints(conversationId);
+    agentCodeCheckpointLoadPromisesByConversationId.set(
+      conversationId,
+      loadPromise,
+    );
+    try {
+      const checkpoints = await loadPromise;
+      set((state) => ({
+        agentCodeCheckpointsByConversationId: {
+          ...state.agentCodeCheckpointsByConversationId,
+          [conversationId]: checkpoints,
+        },
+      }));
+      return checkpoints;
+    } finally {
+      agentCodeCheckpointLoadPromisesByConversationId.delete(conversationId);
+    }
+  };
+
+  const persistAgentCodeCheckpointsForConversation = async (
+    conversationId: string,
+    checkpoints: AgentCodeCheckpoint[],
+  ): Promise<void> => {
+    set((state) => ({
+      agentCodeCheckpointsByConversationId: {
+        ...state.agentCodeCheckpointsByConversationId,
+        [conversationId]: checkpoints,
+      },
+    }));
+    await saveAgentCodeCheckpoints(conversationId, checkpoints);
+  };
+
+  const recordAgentCodeCheckpoint = async (params: {
+    conversationId: string;
+    turnId?: string | null;
+    assistantMessageId: string;
+    toolCallId?: string;
+    toolName: string;
+    files: AgentCodeCheckpointFile[];
+  }): Promise<void> => {
+    if (params.files.length === 0) {
+      return;
+    }
+
+    const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+    const checkpoint = createAgentCodeCheckpoint(existing, params);
+    await persistAgentCodeCheckpointsForConversation(
+      params.conversationId,
+      appendAgentCodeCheckpoint(existing, checkpoint),
+    );
+  };
+
+  const pruneAgentCodeCheckpointsForConversation = async (
+    conversationId: string,
+    keptMessageIds: Set<string>,
+  ): Promise<void> => {
+    const existing = await getLoadedAgentCodeCheckpoints(conversationId);
+    const pruned = pruneAgentCodeCheckpointsToMessageIds(
+      existing,
+      conversationId,
+      keptMessageIds,
+    );
+    if (pruned.length === existing.length) {
+      return;
+    }
+    await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
+  };
+
   const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
@@ -4842,6 +5168,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     toolCallId?: string,
   ): Promise<ToolCallResolution | string | void> => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
+    const assistantTurnId =
+      get().messages.find((message) => message.id === assistantMessageId)
+        ?.turn_id ?? null;
 
     if (!(await isSourceToolEnabled(normalizedToolName))) {
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
@@ -5259,6 +5588,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         projectMounts: executionContext.projectMounts,
         virtualRootEnabled: executionContext.virtualRootEnabled,
         workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+        onCodeCheckpoint: async (checkpoint) => {
+          await recordAgentCodeCheckpoint({
+            conversationId,
+            turnId: assistantTurnId,
+            assistantMessageId,
+            toolCallId,
+            toolName: checkpoint.toolName,
+            files: checkpoint.files,
+          });
+        },
       });
       return result === undefined ? result : withPromotionNotice(result);
     }
@@ -5934,6 +6273,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       citations: payload.citations,
       toolDefinitions: payload.baseline.toolDefinitions,
       modelContextWindowTokens: payload.baseline.modelContextWindowTokens,
+      inputLimitTokens: payload.baseline.inputLimitTokens,
+      outputLimitTokens: payload.baseline.outputLimitTokens,
+      contextLimitSource: payload.baseline.contextLimitSource,
+      isContextLimitAuthoritative: payload.baseline.isContextLimitAuthoritative,
       estimateSerializedPayloadTokens,
       mode: "blocking",
       budgetPolicy,
@@ -5944,7 +6287,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? "provider_error"
         : footprint.isHardStop
           ? "too_large"
-          : footprint.usableContextRatio >= 1
+          : isContextFootprintOverUsableBudget(footprint)
             ? "needs_manual_compaction"
           : hasCompactedPayload
             ? "compacted"
@@ -7139,6 +7482,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     try {
       await tauriIpc.updateMessage(messageId, message.content, {
+        turnId: message.turn_id ?? null,
         toolTraces: message.tool_traces,
         hiddenContext: message.hidden_context,
         providerInputItems,
@@ -7157,6 +7501,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildUserMessageForSend = async (params: {
     conversationId: string;
+    turnId: string;
     taskId: string;
     content: string;
     hiddenContext?: string;
@@ -7168,6 +7513,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     let userMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
+      turn_id: params.turnId,
       task_id: params.taskId,
       conversation_id: params.conversationId,
       role: "user",
@@ -7186,6 +7532,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "user",
           params.content,
           {
+            turnId: params.turnId,
             hiddenContext: params.hiddenContext,
             providerInputItems: params.providerInputItems,
           },
@@ -7196,6 +7543,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         userMessage = {
           id: dbMessage.id,
+          turn_id: dbMessage.turn_id ?? params.turnId,
           task_id: params.taskId,
           conversation_id: dbMessage.conversation_id,
           role: "user",
@@ -7217,6 +7565,70 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     return userMessage;
+  };
+
+  const buildAssistantMessageForSend = async (params: {
+    conversationId: string;
+    turnId: string;
+    taskId: string;
+  }): Promise<ChatMessage> => {
+    const clientMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-assistant`;
+    let assistantMessage: ChatMessage = {
+      id: clientMessageId,
+      turn_id: params.turnId,
+      task_id: params.taskId,
+      conversation_id: params.conversationId,
+      role: "assistant",
+      content: "",
+      tool_traces: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    if (tauriIpc.isTauriAvailable()) {
+      try {
+        const dbMessage = await tauriIpc.createMessage(
+          params.conversationId,
+          "assistant",
+          "",
+          {
+            id: clientMessageId,
+            turnId: params.turnId,
+            toolTraces: [],
+          },
+        );
+        const presentation = buildAssistantMessagePresentation(
+          dbMessage.content,
+          dbMessage.hidden_context ?? undefined,
+        );
+        assistantMessage = {
+          id: dbMessage.id,
+          turn_id: dbMessage.turn_id ?? params.turnId,
+          task_id: params.taskId,
+          conversation_id: dbMessage.conversation_id,
+          role: "assistant",
+          content: presentation.content,
+          timestamp: dbMessage.created_at,
+          choices: presentation.choices,
+          allow_free_response: presentation.allow_free_response,
+          questionnaire: presentation.questionnaire,
+          tool_traces: parseToolTracesJson(dbMessage.tool_traces_json) ?? [],
+          hidden_context: dbMessage.hidden_context ?? undefined,
+          provider_input_items: parseDbProviderInputItems(
+            dbMessage.provider_input_items_json,
+          ),
+          provider_turn_state: parseDbProviderTurnState(
+            dbMessage.provider_turn_state_json,
+          ),
+        };
+      } catch (error) {
+        const normalized = toServiceError(error);
+        throw buildSendError(
+          `Failed to create the assistant message before streaming: ${normalized.message}`,
+        );
+      }
+    }
+
+    return assistantMessage;
   };
 
   const prepareAssistantStreamLaunch = async (params: {
@@ -7271,6 +7683,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
       internalAgentProfile,
       params.replyToMessageId,
     );
+    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+    const { footprintFields } = getSelectedModelContext(
+      params.providerId,
+      params.modelId,
+      params.providerConfig.providerType,
+    );
+    const budgetPolicy = await loadContextBudgetPolicy();
+    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+      estimateChatCompletionSerializedPayloadTokens({
+        messages,
+        providerType: params.providerConfig.providerType,
+        providerId: params.providerId,
+        baseUrl: params.providerConfig.baseUrl,
+        modelId: params.modelId,
+      });
+    const initialFootprint = estimateConversationFootprint({
+      systemMessage: preparedRequest.systemMessage,
+      preparedMessages: preparedRequest.preparedMessages,
+      orderedMessages: preparedRequest.orderedMessages,
+      citations: preparedRequest.citations,
+      toolDefinitions,
+      ...footprintFields,
+      estimateSerializedPayloadTokens,
+      mode: params.compactionMode ?? "blocking",
+      budgetPolicy,
+    });
+    const markSafetyPrestreamCompacting = (footprintAfter: ContextFootprint) => {
+      const previousStatus =
+        get().conversationCompactionStatusById[params.conversationId] ?? null;
+      setConversationCompactionStatus(params.conversationId, {
+        ...previousStatus,
+        phase: "safety_compacting",
+        updatedAt: new Date().toISOString(),
+        kind: "safety_prestream",
+        footprintAfter,
+      });
+    };
     const compactPreparedRequest = (
       overrides: Partial<{
         mode: ContextCompactionKind;
@@ -7293,23 +7742,45 @@ export const useChatStore = create<ChatStore>((set, get) => {
         forceCompaction: overrides.forceCompaction ?? params.forceCompaction,
         forcePrune: overrides.forcePrune ?? params.forcePrune,
       });
-    let compactedRequest = await compactPreparedRequest();
-    const needsSafetyPrestream =
+    let needsSafetyPrestream =
       !params.compactionMode &&
-      isContextFootprintOverUsableBudget(compactedRequest.footprintAfter);
+      isContextFootprintOverUsableBudget(initialFootprint);
+    let compactedRequest: MaybeCompactConversationResult;
     if (needsSafetyPrestream) {
+      markSafetyPrestreamCompacting(initialFootprint);
       compactedRequest = await compactPreparedRequest({
         mode: "safety_prestream",
         forceCompaction: true,
         forcePrune: true,
       });
+    } else {
+      compactedRequest = await compactPreparedRequest();
+      needsSafetyPrestream =
+        !params.compactionMode &&
+        isContextFootprintOverUsableBudget(compactedRequest.footprintAfter);
+      if (needsSafetyPrestream) {
+        markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
+        compactedRequest = await compactPreparedRequest({
+          mode: "safety_prestream",
+          forceCompaction: true,
+          forcePrune: true,
+        });
+      }
     }
     if (
       compactedRequest.decision === "hard_stop" ||
       isContextFootprintOverUsableBudget(compactedRequest.footprintAfter)
     ) {
+      const latestUserContextTokens =
+        compactedRequest.footprintAfter.latestUserContextTokens ?? 0;
+      const latestRequestTooLarge =
+        latestUserContextTokens > 0 &&
+        latestUserContextTokens >= compactedRequest.footprintAfter.usableContextTokens;
       setConversationCompactionStatus(params.conversationId, {
-        phase: needsSafetyPrestream ? "needs_manual_compaction" : "too_large",
+        phase:
+          needsSafetyPrestream && !latestRequestTooLarge
+            ? "needs_manual_compaction"
+            : "too_large",
         updatedAt: new Date().toISOString(),
         reason: compactedRequest.footprintAfter.reason,
         kind: needsSafetyPrestream
@@ -7372,11 +7843,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerType: params.providerConfig.providerType,
         baseUrl: params.providerConfig.baseUrl ?? "",
         modelId: params.modelId,
-        modelContextWindowTokens: getSelectedModelContextWindowTokens(
-          params.providerId,
-          params.modelId,
-          params.providerConfig.providerType,
-        ),
+        ...footprintFields,
         allowedToolIds,
         toolDefinitions: getToolDefinitionsForIds(allowedToolIds),
         messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
@@ -7449,16 +7916,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const applyAssistantLaunchError = (
     conversationId: string,
     sessionId: string,
-    assistantMessageId: string,
+    assistantMessageId: string | null,
     error: unknown,
     options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
+    const previousRuntime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
     set((state) => ({
-      ...removeEmptyAssistantPlaceholderFromState(state, assistantMessageId),
+      ...(assistantMessageId
+        ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId)
+        : {}),
       ...buildConversationRuntimePatch(state, conversationId, {
         phase: "error",
         sessionId,
+        turnId: previousRuntime.turnId ?? null,
         assistantMessageId: null,
         abortController: null,
         lastError: normalized.message,
@@ -7473,6 +7947,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const replaceUserMessagePresentationLocally = (params: {
     messageId: string;
+    turnId?: string | null;
     content: string;
     hiddenContext?: string;
     providerInputItems?: unknown[];
@@ -7498,6 +7973,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const updatedMessage: ChatMessage = {
         ...currentMessage,
+        turn_id: params.turnId ?? currentMessage.turn_id ?? null,
         content: presentation.content,
         hidden_context: params.hiddenContext,
         provider_input_items: cloneProviderInputItems(
@@ -7535,6 +8011,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const persistEditedUserMessage = async (params: {
     messageId: string;
+    turnId?: string | null;
     content: string;
     hiddenContext?: string;
     providerInputItems?: unknown[];
@@ -7558,18 +8035,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (params.replaceStructuredFields) {
         replaceUserMessagePresentationLocally({
           messageId: params.messageId,
+          turnId: params.turnId,
           content: params.content,
           hiddenContext: nextHiddenContext,
           providerInputItems: nextProviderInputItems,
         });
       } else {
         get().updateMessageContent(params.messageId, params.content);
+        if (params.turnId) {
+          get().updateMessageFields(params.messageId, {
+            turn_id: params.turnId,
+          });
+        }
       }
       return;
     }
 
     try {
       await tauriIpc.updateMessage(params.messageId, params.content, {
+        turnId: params.turnId ?? currentMessage.turn_id ?? null,
         toolTraces: currentMessage.tool_traces,
         hiddenContext: nextHiddenContext,
         providerInputItems: nextProviderInputItems,
@@ -7578,12 +8062,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (params.replaceStructuredFields) {
         replaceUserMessagePresentationLocally({
           messageId: params.messageId,
+          turnId: params.turnId,
           content: params.content,
           hiddenContext: nextHiddenContext,
           providerInputItems: nextProviderInputItems,
         });
       } else {
         get().updateMessageContent(params.messageId, params.content);
+        if (params.turnId) {
+          get().updateMessageFields(params.messageId, {
+            turn_id: params.turnId,
+          });
+        }
       }
     } catch (error) {
       const normalized = toServiceError(error);
@@ -7707,6 +8197,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         (message) => message.conversation_id === params.conversationId,
       )
       .map((message) => message.id);
+    await pruneAgentCodeCheckpointsForConversation(
+      params.conversationId,
+      new Set(keptConversationMessageIds),
+    );
     useCitationsStore
       .getState()
       .pruneConversationSourceCitations(
@@ -7733,6 +8227,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const restartAssistantFromEditedMessage = async (params: {
     sessionId: string;
+    turnId: string;
     messageId: string;
     conversationId: string;
     taskId: string;
@@ -7746,23 +8241,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     >;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
   }) => {
-    const assistantMessage: ChatMessage = {
-      id: `msg-${Date.now()}-assistant`,
-      task_id: params.taskId,
-      conversation_id: params.conversationId,
-      role: "assistant",
-      content: "",
-      tool_traces: [],
-      timestamp: new Date().toISOString(),
-    };
-
-    get().addMessage(assistantMessage);
+    let assistantMessageId: string | null = null;
     setConversationRuntime(
       params.conversationId,
       {
         phase: "preparing",
         sessionId: params.sessionId,
-        assistantMessageId: assistantMessage.id,
+        turnId: params.turnId,
+        assistantMessageId: null,
         abortController: null,
         lastError: null,
       },
@@ -7781,6 +8267,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
         reasoningEffort: params.reasoningEffort,
         providerConfig: params.providerConfig,
       });
+
+      const assistantMessage = await buildAssistantMessageForSend({
+        conversationId: params.conversationId,
+        turnId: params.turnId,
+        taskId: params.taskId,
+      });
+      assistantMessageId = assistantMessage.id;
+      get().addMessage(assistantMessage);
+      setConversationRuntime(
+        params.conversationId,
+        {
+          phase: "preparing",
+          sessionId: params.sessionId,
+          turnId: params.turnId,
+          assistantMessageId: assistantMessage.id,
+          abortController: null,
+          lastError: null,
+        },
+        { globalLastError: null },
+      );
 
       startAssistantStream({
         sessionId: params.sessionId,
@@ -7818,7 +8324,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       applyAssistantLaunchError(
         params.conversationId,
         params.sessionId,
-        assistantMessage.id,
+        assistantMessageId,
         error,
       );
     }
@@ -8009,7 +8515,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const currentCompactionState = await getConversationCompactionState(
         conversationId,
       );
-      const modelContextWindowTokens = getSelectedModelContextWindowTokens(
+      const { footprintFields } = getSelectedModelContext(
         providerContext.providerId,
         providerContext.modelId,
         providerContext.providerType,
@@ -8039,7 +8545,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         orderedMessages: preparedRequest.orderedMessages,
         citations: preparedRequest.citations,
         toolDefinitions,
-        modelContextWindowTokens,
+        ...footprintFields,
         currentCompactionState,
         estimateSerializedPayloadTokens,
         mode: "blocking",
@@ -8056,8 +8562,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isProviderRuntimeError(runtime)
           ? "provider_error"
           : result.footprintAfter.isHardStop
-            ? "too_large"
-            : result.footprintAfter.usableContextRatio >= 1
+          ? "too_large"
+            : isContextFootprintOverUsableBudget(result.footprintAfter)
               ? "needs_manual_compaction"
             : result.degraded
               ? "degraded"
@@ -8282,12 +8788,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
   }) => {
+    const streamTurnId = getMessageTurnId(params.assistantMessage);
     const abortController = new AbortController();
+    const shouldAcceptStreamUpdate = (): boolean => {
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        params.conversationId,
+      );
+      return (
+        runtime.phase === "streaming" &&
+        runtime.sessionId === params.sessionId &&
+        runtime.assistantMessageId === params.assistantMessage.id &&
+        runtime.turnId === streamTurnId
+      );
+    };
     setConversationRuntime(
       params.conversationId,
       {
         phase: "streaming",
         sessionId: params.sessionId,
+        turnId: streamTurnId,
         assistantMessageId: params.assistantMessage.id,
         abortController,
         lastError: null,
@@ -8295,8 +8815,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       { globalLastError: null },
     );
     const tokenBatcher = createTokenBatcher((tokenChunk) => {
+      if (!shouldAcceptStreamUpdate()) {
+        return;
+      }
       get().appendToMessage(params.assistantMessage.id, tokenChunk);
     });
+    const deleteEmptyAssistantMessageFromDb = async () => {
+      if (!tauriIpc.isTauriAvailable()) {
+        return;
+      }
+      try {
+        await tauriIpc.deleteMessagesAfter(
+          params.conversationId,
+          params.replyToMessageId,
+        );
+      } catch (error) {
+        console.warn("Failed to delete empty assistant message after stream error:", error);
+      }
+    };
     const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
       ...params.contextDiagnosticsBaselineSeed,
       sessionId: params.sessionId,
@@ -8347,6 +8883,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (
         params.overflowRecoveryAttempted ||
         abortController.signal.aborted ||
+        !shouldAcceptStreamUpdate() ||
         !isProviderContextOverflowError(error)
       ) {
         return false;
@@ -8365,6 +8902,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return false;
       }
 
+      const learnedContextLimit =
+        extractContextLimitTokensFromErrorLike(error);
+      if (learnedContextLimit) {
+        try {
+          await useProviderStore
+            .getState()
+            .recordProviderModelContextOverflowLimit(
+              params.selectedProviderId,
+              params.selectedModelId,
+              learnedContextLimit,
+            );
+        } catch (persistError) {
+          console.warn(
+            "Failed to persist provider context overflow limit:",
+            persistError,
+          );
+        }
+      }
+
       tokenBatcher.dispose();
       clearLiveStreamContextEstimate(params.conversationId);
       setConversationCompactionStatus(params.conversationId, {
@@ -8373,19 +8929,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         kind: "stream_overflow",
         recoveredFromOverflow: true,
       });
-      const initialPayloadTokens = estimateChatCompletionSerializedPayloadTokens({
-        messages: params.messagesForRequest,
-        providerType: params.providerConfig.providerType,
-        providerId: params.selectedProviderId,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.selectedModelId,
-      });
       updateConversationRuntimeIfSessionMatches(
         params.conversationId,
         params.sessionId,
         () => ({
           phase: "overflow_recovery",
           sessionId: params.sessionId,
+          turnId: streamTurnId,
           assistantMessageId: params.assistantMessage.id,
           abortController: null,
           lastError: null,
@@ -8408,18 +8958,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
           forceCompaction: true,
           forcePrune: true,
         });
-        const recoveredPayloadTokens = estimateChatCompletionSerializedPayloadTokens({
-          messages: streamLaunch.messagesForRequest,
-          providerType: params.providerConfig.providerType,
-          providerId: params.selectedProviderId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-        });
-        if (recoveredPayloadTokens >= initialPayloadTokens) {
-          throw new Error(
-            `${OVERFLOW_RECOVERY_FAILURE_MESSAGE} Payload estimate did not shrink after forced compaction ` +
-              `(${recoveredPayloadTokens} tokens after, ${initialPayloadTokens} tokens before).`,
-          );
+
+        const runtimeAfterCompaction = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          params.conversationId,
+        );
+        if (
+          runtimeAfterCompaction.phase !== "overflow_recovery" ||
+          runtimeAfterCompaction.sessionId !== params.sessionId ||
+          runtimeAfterCompaction.turnId !== streamTurnId ||
+          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id
+        ) {
+          return true;
         }
 
         const currentStatus =
@@ -8477,6 +9027,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ...buildConversationRuntimePatch(state, params.conversationId, {
               phase: "error",
               sessionId: params.sessionId,
+              turnId: streamTurnId,
               assistantMessageId: null,
               abortController: null,
               lastError: message,
@@ -8487,11 +9038,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sendState: "error",
           };
         });
+        await deleteEmptyAssistantMessageFromDb();
         return true;
       }
     };
 
     const handleAssistantStreamError = async (error: Error) => {
+      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+        tokenBatcher.dispose();
+        return;
+      }
+
       if (await tryRecoverFromOverflow(error)) {
         return;
       }
@@ -8531,7 +9088,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (updatedAssistantMessage) {
           try {
             await persistAssistantPartialStreamResult(
-              params.conversationId,
               updatedAssistantMessage,
             );
           } catch (persistError) {
@@ -8544,7 +9100,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } else if (hasPartialAssistantProgress && assistantMessage) {
         try {
           await persistAssistantPartialStreamResult(
-            params.conversationId,
             assistantMessage,
           );
         } catch (persistError) {
@@ -8558,6 +9113,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           state,
           params.assistantMessage.id,
         ));
+        await deleteEmptyAssistantMessageFromDb();
       }
 
       updateConversationRuntimeIfSessionMatches(
@@ -8566,6 +9122,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         () => ({
           phase: "error",
           sessionId: params.sessionId,
+          turnId: streamTurnId,
           assistantMessageId:
             errorPresentation.displayTarget === "composer" &&
             !hasPartialAssistantProgress
@@ -8621,11 +9178,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             tokenBatcher.push(token);
           },
           onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+            if (!shouldAcceptStreamUpdate()) {
+              return;
+            }
             get().updateMessageFields(params.assistantMessage.id, {
               tool_traces: toolTraces,
             });
           },
           onLiveContextUpdate: (snapshot) => {
+            if (!shouldAcceptStreamUpdate()) {
+              return;
+            }
             recordLiveStreamContextEstimate({
               conversationId: params.conversationId,
               sessionId: params.sessionId,
@@ -8634,6 +9197,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
           },
           onComplete: (result) => {
+            if (!shouldAcceptStreamUpdate()) {
+              tokenBatcher.dispose();
+              return;
+            }
             tokenBatcher.flushNow();
             applyStreamCompletion(params.assistantMessage.id, result);
             useProviderStore
@@ -8689,23 +9256,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
               },
             });
 
-            void persistAssistantStreamResult(params.conversationId, result).catch(
-              (error) => {
-                const normalized = toServiceError(error);
-                setConversationRuntime(
-                  params.conversationId,
-                  {
-                    phase: "error",
-                    sessionId: params.sessionId,
-                    assistantMessageId: params.assistantMessage.id,
-                    abortController: null,
-                    lastError: normalized.message,
-                  },
-                  { globalLastError: normalized.message },
-                );
-                set({ sendState: "error" });
-              },
-            );
+            void persistAssistantStreamResult(
+              params.conversationId,
+              params.assistantMessage.id,
+              result,
+            ).catch((error) => {
+              const currentRuntime = getConversationRuntimeSnapshot(
+                get().conversationRuntimeById,
+                params.conversationId,
+              );
+              if (
+                currentRuntime.sessionId &&
+                currentRuntime.sessionId !== params.sessionId
+              ) {
+                return;
+              }
+              const normalized = toServiceError(error);
+              setConversationRuntime(
+                params.conversationId,
+                {
+                  phase: "error",
+                  sessionId: params.sessionId,
+                  turnId: streamTurnId,
+                  assistantMessageId: params.assistantMessage.id,
+                  abortController: null,
+                  lastError: normalized.message,
+                  lastErrorOrigin: "macro",
+                  lastErrorDisplayTarget: "composer",
+                },
+                { globalLastError: normalized.message },
+              );
+              set({ sendState: "error" });
+            });
             void syncMacroMetadataAfterStreamService({
               mode: params.modeAtSend,
               conversationId: params.conversationId,
@@ -8747,7 +9329,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const persistAssistantPartialStreamResult = async (
-    conversationId: string,
     assistantMessage: ChatMessage,
   ) => {
     if (!tauriIpc.isTauriAvailable()) return;
@@ -8758,39 +9339,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    await tauriIpc.createMessage(
-      conversationId,
-      "assistant",
-      assistantMessage.content,
-      {
-        toolTraces: assistantMessage.tool_traces,
-        hiddenContext: assistantMessage.hidden_context,
-      },
-    );
+    await tauriIpc.updateMessage(assistantMessage.id, assistantMessage.content, {
+      turnId: assistantMessage.turn_id ?? null,
+      toolTraces: assistantMessage.tool_traces,
+      hiddenContext: assistantMessage.hidden_context,
+      providerInputItems: assistantMessage.provider_input_items,
+      providerTurnState: assistantMessage.provider_turn_state,
+    });
   };
 
   const persistAssistantStreamResult = async (
     conversationId: string,
+    assistantMessageId: string,
     result: StreamCompletionResult,
   ) => {
     if (!tauriIpc.isTauriAvailable()) return;
+    const persistedAssistant = get()
+      .getConversationMessages(conversationId)
+      .find((message) => message.id === assistantMessageId);
     const persistedToolTraces =
-      get()
-        .getConversationMessages(conversationId)
-        .filter((message) => message.role === "assistant")
-        .at(-1)?.tool_traces ?? result.toolTraces;
+      persistedAssistant?.tool_traces ?? result.toolTraces;
     try {
-      await tauriIpc.createMessage(
-        conversationId,
-        "assistant",
-        result.visibleContent,
-        {
-          toolTraces: persistedToolTraces,
-          hiddenContext: result.hiddenContext,
-          providerInputItems: result.providerInputItems,
-          providerTurnState: result.providerTurnState,
-        },
-      );
+      await tauriIpc.updateMessage(assistantMessageId, result.visibleContent, {
+        turnId: persistedAssistant?.turn_id ?? null,
+        toolTraces: persistedToolTraces,
+        hiddenContext: result.hiddenContext,
+        providerInputItems: result.providerInputItems,
+        providerTurnState: result.providerTurnState,
+      });
     } catch (error) {
       const normalized = toServiceError(error);
       throw buildSendError(
@@ -9645,6 +10221,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const hydrateChatSnapshot = async (): Promise<void> => {
     conversationCompactionStateCache.clear();
+    agentCodeCheckpointLoadPromisesByConversationId.clear();
     messageLoadPromisesByConversationId.clear();
     let conversations: Conversation[] = [];
     let messages: ChatMessage[] = [];
@@ -9697,6 +10274,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
       conversationCompactionStatusById: {},
+      agentCodeCheckpointsByConversationId: {},
       contextDiagnosticsByConversationId: {},
       liveStreamContextEstimatesByConversationId: {},
       isLoading: false,
@@ -10103,6 +10681,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
     conversationCompactionStatusById: {},
+    agentCodeCheckpointsByConversationId: {},
     contextDiagnosticsByConversationId: {},
     liveStreamContextEstimatesByConversationId: {},
     isLoading: false,
@@ -10437,6 +11016,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        agentCodeCheckpointsByConversationId: {},
         contextDiagnosticsByConversationId: {},
         liveStreamContextEstimatesByConversationId: {},
         ...buildLegacyStreamingFlags({
@@ -11431,6 +12011,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
       } = payload;
       let activeSessionId: string | null = null;
+      let activeTurnId: string | null = null;
       let assistantMessageId: string | null = null;
       const sendTimelineStartedAt = Date.now();
       const emitSendTimeline = (phase: StreamTimelinePhase | string, context?: Record<string, unknown>) => {
@@ -11445,12 +12026,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         assertConversationRuntimeAvailableForSend(conversationId);
         activeSessionId = createConversationSessionId();
+        activeTurnId = createConversationTurnId();
         emitSendTimeline("send_requested", { conversationId });
         setConversationRuntime(
           conversationId,
           {
             phase: "preparing",
             sessionId: activeSessionId,
+            turnId: activeTurnId,
             assistantMessageId: null,
             abortController: null,
             lastError: null,
@@ -11473,6 +12056,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             {
               phase: "preparing",
               sessionId: activeSessionId,
+              turnId: activeTurnId,
               assistantMessageId: null,
               abortController: null,
               lastError: null,
@@ -11567,6 +12151,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         const userMessage = await buildUserMessageForSend({
           conversationId,
+          turnId: activeTurnId,
           taskId: resolvedTaskId,
           content,
           hiddenContext,
@@ -11624,30 +12209,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
         }
 
-        const assistantMessage: ChatMessage = {
-          id: `msg-${Date.now()}-assistant`,
-          task_id: resolvedTaskId,
-          conversation_id: conversationId,
-          role: "assistant",
-          content: "",
-          tool_traces: [],
-          timestamp: new Date().toISOString(),
-        };
-        assistantMessageId = assistantMessage.id;
-
-        get().addMessage(assistantMessage);
-        setConversationRuntime(
-          conversationId,
-          {
-            phase: "preparing",
-            sessionId: activeSessionId,
-            assistantMessageId: assistantMessage.id,
-            abortController: null,
-            lastError: null,
-          },
-          { globalLastError: null },
-        );
-
         try {
           const streamLaunch = await prepareAssistantStreamLaunch({
             conversationId,
@@ -11666,6 +12227,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerId: selectedProviderId,
             providerType: providerConfigForUse.providerType,
           });
+
+          const assistantMessage = await buildAssistantMessageForSend({
+            conversationId,
+            turnId: activeTurnId,
+            taskId: resolvedTaskId,
+          });
+          assistantMessageId = assistantMessage.id;
+          get().addMessage(assistantMessage);
+          setConversationRuntime(
+            conversationId,
+            {
+              phase: "preparing",
+              sessionId: activeSessionId,
+              turnId: activeTurnId,
+              assistantMessageId: assistantMessage.id,
+              abortController: null,
+              lastError: null,
+            },
+            { globalLastError: null },
+          );
 
           emitSendTimeline("provider_stream_start_requested", {
             conversationId,
@@ -11708,7 +12289,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           applyAssistantLaunchError(
             conversationId,
             activeSessionId,
-            assistantMessage.id,
+            assistantMessageId,
             error,
             {
               setSendState: true,
@@ -11716,26 +12297,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         }
 
+        if (!activeTurnId) {
+          throw buildSendError("Conversation turn was not created before sending.");
+        }
+
         return {
           status: "sent",
           conversationId,
+          turnId: activeTurnId,
           userMessageId: userMessage.id,
-          assistantMessageId: assistantMessage.id,
+          assistantMessageId,
         };
       } catch (error) {
         const normalized = toServiceError(error);
         if (activeSessionId) {
-          setConversationRuntime(
+          const runtime = getConversationRuntimeSnapshot(
+            get().conversationRuntimeById,
             conversationId,
-            {
-              phase: "error",
-              sessionId: activeSessionId,
-              assistantMessageId,
-              abortController: null,
-              lastError: normalized.message,
-            },
-            { globalLastError: normalized.message },
           );
+          if (!(runtime.phase === "error" && runtime.sessionId === activeSessionId)) {
+            setConversationRuntime(
+              conversationId,
+              {
+                phase: "error",
+                sessionId: activeSessionId,
+                turnId: activeTurnId,
+                assistantMessageId,
+                abortController: null,
+                lastError: normalized.message,
+              },
+              { globalLastError: normalized.message },
+            );
+          }
         } else {
           set({ sendState: "error", lastError: normalized.message });
         }
@@ -11765,6 +12358,43 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
       stopConversationRuntimeLocally(selectedConversationId);
+    },
+
+    getAgentCodeReplayPreview: async (messageId) => {
+      const state = get();
+      const target = state.messages.find((message) => message.id === messageId);
+      if (!target || target.role !== "user") {
+        return null;
+      }
+      const conversationMessages = getConversationMessagesFromState(
+        state,
+        target.conversation_id,
+      );
+      const checkpoints = await getLoadedAgentCodeCheckpoints(
+        target.conversation_id,
+      );
+      const preview = buildAgentCodeReplayPreview(
+        target.conversation_id,
+        messageId,
+        conversationMessages,
+        checkpoints,
+      );
+      return hydrateAgentCodeReplayPreviewCurrentState(preview);
+    },
+
+    restoreAgentCodeForReplay: async (preview) => {
+      if (preview.affectedFiles.length === 0) {
+        return;
+      }
+      try {
+        await restoreAgentCodeReplayPreview(preview);
+      } catch (error) {
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message, sendState: "error" });
+        throw buildSendError(
+          `Failed to restore code checkpoint before replay: ${normalized.message}`,
+        );
+      }
     },
 
     editMessage: async (messageId, newContent, options) => {
@@ -11805,8 +12435,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const state = get();
       const target = state.messages.find((message) => message.id === messageId);
       if (!target) return;
+      if (!options?.skipAgentCodeReplayCheck) {
+        const replayPreview = await get().getAgentCodeReplayPreview(messageId);
+        if (replayPreview && replayPreview.affectedFiles.length > 0) {
+          set({
+            lastError:
+              "Replay blocked: confirm the code checkpoint restore before editing this earlier message.",
+          });
+          return;
+        }
+      }
 
       const conversationId = target.conversation_id;
+      const turnId = getMessageTurnId(target);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
       assertConversationRuntimeAvailableForSend(conversationId);
       if (modeAtEdit === "Implement" && target.task_id) {
@@ -11833,6 +12474,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       await persistEditedUserMessage({
         messageId,
+        turnId,
         content: newContent,
         hiddenContext: options?.hiddenContext,
         providerInputItems: options?.providerInputItems,
@@ -11854,6 +12496,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         {
           phase: "preparing",
           sessionId,
+          turnId,
           assistantMessageId: null,
           abortController: null,
           lastError: null,
@@ -11863,6 +12506,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       await restartAssistantFromEditedMessage({
         sessionId,
+        turnId,
         messageId,
         conversationId,
         taskId: target.task_id ?? "",
@@ -11881,6 +12525,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         runtime?.abortController?.abort();
       });
       messageLoadPromisesByConversationId.clear();
+      agentCodeCheckpointLoadPromisesByConversationId.clear();
       contextDiagnosticsRequestIds.clear();
       cancelAllLiveContextDiagnosticsRefreshSchedules();
       pendingArchitectConversationIdsByPlanKey.clear();
@@ -11889,6 +12534,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        agentCodeCheckpointsByConversationId: {},
         contextDiagnosticsByConversationId: {},
         liveStreamContextEstimatesByConversationId: {},
         isLoading: true,
@@ -11935,6 +12581,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},
           conversationCompactionStatusById: {},
+          agentCodeCheckpointsByConversationId: {},
           contextDiagnosticsByConversationId: {},
           liveStreamContextEstimatesByConversationId: {},
           isLoading: false,

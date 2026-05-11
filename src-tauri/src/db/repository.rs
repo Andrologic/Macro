@@ -548,7 +548,7 @@ pub async fn update_git_worktree_project_access(
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
         FROM messages
         WHERE conversation_id = ?
         ORDER BY created_at ASC, id ASC
@@ -563,6 +563,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
         .map(|row| Message {
             id: row.get("id"),
             conversation_id: row.get("conversation_id"),
+            turn_id: row.get("turn_id"),
             role: row.get("role"),
             content: row.get("content"),
             created_at: row.get("created_at"),
@@ -580,7 +581,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
         FROM messages
         ORDER BY created_at ASC, id ASC
         "#,
@@ -593,6 +594,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
         .map(|row| Message {
             id: row.get("id"),
             conversation_id: row.get("conversation_id"),
+            turn_id: row.get("turn_id"),
             role: row.get("role"),
             content: row.get("content"),
             created_at: row.get("created_at"),
@@ -669,7 +671,7 @@ pub async fn get_chat_bootstrap_snapshot(
         let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
         let query = format!(
             r#"
-            SELECT id, conversation_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
             FROM messages
             WHERE conversation_id IN ({})
             ORDER BY conversation_id ASC, created_at ASC, id ASC
@@ -685,6 +687,7 @@ pub async fn get_chat_bootstrap_snapshot(
             let message = Message {
                 id: row.get("id"),
                 conversation_id: row.get("conversation_id"),
+                turn_id: row.get("turn_id"),
                 role: row.get("role"),
                 content: row.get("content"),
                 created_at: row.get("created_at"),
@@ -710,7 +713,10 @@ pub async fn get_chat_bootstrap_snapshot(
 }
 
 pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbResult<Message> {
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = input
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -718,6 +724,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         INSERT INTO messages (
             id,
             conversation_id,
+            turn_id,
             role,
             content,
             created_at,
@@ -727,11 +734,12 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
             provider_input_items_json,
             provider_turn_state_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
     .bind(&input.conversation_id)
+    .bind(&input.turn_id)
     .bind(&input.role)
     .bind(&input.content)
     .bind(&now)
@@ -748,6 +756,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     Ok(Message {
         id,
         conversation_id: input.conversation_id,
+        turn_id: input.turn_id,
         role: input.role,
         content: input.content,
         created_at: now,
@@ -774,6 +783,7 @@ pub async fn import_messages(
             INSERT INTO messages (
                 id,
                 conversation_id,
+                turn_id,
                 role,
                 content,
                 created_at,
@@ -783,12 +793,13 @@ pub async fn import_messages(
                 provider_input_items_json,
                 provider_turn_state_json
             )
-            VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
             ON CONFLICT(id) DO NOTHING
             "#,
         )
         .bind(&message.id)
         .bind(conversation_id)
+        .bind(&message.turn_id)
         .bind(&message.role)
         .bind(&message.content)
         .bind(&message.created_at)
@@ -803,6 +814,7 @@ pub async fn import_messages(
         inserted.push(Message {
             id: message.id,
             conversation_id: conversation_id.to_string(),
+            turn_id: message.turn_id,
             role: message.role,
             content: message.content,
             created_at: message.created_at,
@@ -860,6 +872,7 @@ pub async fn import_messages(
 
 pub struct UpdateMessageContentInput<'a> {
     pub id: &'a str,
+    pub turn_id: Option<String>,
     pub content: &'a str,
     pub token_count: Option<i32>,
     pub tool_traces_json: Option<String>,
@@ -874,6 +887,7 @@ pub async fn update_message_content(
 ) -> DbResult<()> {
     let UpdateMessageContentInput {
         id,
+        turn_id,
         content,
         token_count,
         tool_traces_json,
@@ -882,14 +896,21 @@ pub async fn update_message_content(
         provider_turn_state_json,
     } = input;
 
+    let conversation_id: Option<String> =
+        sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+
     sqlx::query(
         r#"
         UPDATE messages
-        SET content = ?, token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?
+        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?
         WHERE id = ?
         "#,
     )
     .bind(content)
+    .bind(turn_id)
     .bind(token_count)
     .bind(tool_traces_json)
     .bind(hidden_context)
@@ -898,6 +919,10 @@ pub async fn update_message_content(
     .bind(id)
     .execute(pool)
     .await?;
+
+    if let Some(conversation_id) = conversation_id {
+        refresh_conversation_metadata(pool, &conversation_id, None).await?;
+    }
 
     Ok(())
 }
@@ -1343,7 +1368,8 @@ pub async fn list_models_by_provider(
         SELECT id, provider_id, model_id, name, description, owned_by,
                pricing_prompt, pricing_completion, pricing_request,
                reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
-             is_enabled, is_manual, first_seen_at, last_seen_at
+               input_limit_tokens, output_limit_tokens, context_window_source,
+               context_limits_updated_at, is_enabled, is_manual, first_seen_at, last_seen_at
         FROM ai_models
         WHERE provider_id = ?
         ORDER BY name ASC
@@ -1368,6 +1394,22 @@ pub async fn list_models_by_provider(
             reasoning_efforts: parse_reasoning_efforts(row.get("reasoning_efforts_json")),
             default_reasoning_effort: row.get("default_reasoning_effort"),
             context_window_tokens: row.get("context_window_tokens"),
+            input_limit_tokens: row
+                .try_get::<Option<i32>, _>("input_limit_tokens")
+                .ok()
+                .flatten(),
+            output_limit_tokens: row
+                .try_get::<Option<i32>, _>("output_limit_tokens")
+                .ok()
+                .flatten(),
+            context_window_source: row
+                .try_get::<Option<String>, _>("context_window_source")
+                .ok()
+                .flatten(),
+            context_limits_updated_at: row
+                .try_get::<Option<String>, _>("context_limits_updated_at")
+                .ok()
+                .flatten(),
             is_enabled: row.get::<i32, _>("is_enabled") != 0,
             is_manual: row.get::<i32, _>("is_manual") != 0,
             first_seen_at: row.get("first_seen_at"),
@@ -1395,9 +1437,10 @@ pub async fn upsert_provider_models(
                 id, provider_id, model_id, name, description, owned_by,
                 pricing_prompt, pricing_completion, pricing_request,
                 reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
-                is_enabled, is_manual, first_seen_at, last_seen_at
+                input_limit_tokens, output_limit_tokens, context_window_source,
+                context_limits_updated_at, is_enabled, is_manual, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -1408,6 +1451,10 @@ pub async fn upsert_provider_models(
                 reasoning_efforts_json = excluded.reasoning_efforts_json,
                 default_reasoning_effort = excluded.default_reasoning_effort,
                 context_window_tokens = excluded.context_window_tokens,
+                input_limit_tokens = excluded.input_limit_tokens,
+                output_limit_tokens = excluded.output_limit_tokens,
+                context_window_source = excluded.context_window_source,
+                context_limits_updated_at = excluded.context_limits_updated_at,
                 last_seen_at = excluded.last_seen_at
             "#,
         )
@@ -1425,6 +1472,10 @@ pub async fn upsert_provider_models(
         ))
         .bind(&model.default_reasoning_effort)
         .bind(model.context_window_tokens)
+        .bind(model.input_limit_tokens)
+        .bind(model.output_limit_tokens)
+        .bind(&model.context_window_source)
+        .bind(&model.context_limits_updated_at)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -1586,10 +1637,7 @@ pub async fn get_conversation_compaction_state(
             .try_get::<Option<String>, _>("provider_id")
             .ok()
             .flatten(),
-        model_id: row
-            .try_get::<Option<String>, _>("model_id")
-            .ok()
-            .flatten(),
+        model_id: row.try_get::<Option<String>, _>("model_id").ok().flatten(),
         checkpoint_health: row
             .try_get::<Option<String>, _>("checkpoint_health")
             .ok()
@@ -2582,12 +2630,14 @@ mod tests {
             vec![
                 ImportMessageInput {
                     id: "msg-b".to_string(),
+                    turn_id: None,
                     role: "assistant".to_string(),
                     content: "Second by id".to_string(),
                     created_at: "2026-03-19T00:00:00.000Z".to_string(),
                 },
                 ImportMessageInput {
                     id: "msg-a".to_string(),
+                    turn_id: None,
                     role: "user".to_string(),
                     content: "First by id".to_string(),
                     created_at: "2026-03-19T00:00:00.000Z".to_string(),
@@ -2601,6 +2651,7 @@ mod tests {
             &second.id,
             vec![ImportMessageInput {
                 id: "other-msg".to_string(),
+                turn_id: None,
                 role: "user".to_string(),
                 content: "Do not preload".to_string(),
                 created_at: "2026-03-19T00:01:00.000Z".to_string(),
@@ -2636,18 +2687,21 @@ mod tests {
             vec![
                 ImportMessageInput {
                     id: "msg-1".to_string(),
+                    turn_id: None,
                     role: "user".to_string(),
                     content: "Keep me".to_string(),
                     created_at: created_at.clone(),
                 },
                 ImportMessageInput {
                     id: "msg-2".to_string(),
+                    turn_id: None,
                     role: "assistant".to_string(),
                     content: "Delete me".to_string(),
                     created_at: created_at.clone(),
                 },
                 ImportMessageInput {
                     id: "msg-3".to_string(),
+                    turn_id: None,
                     role: "assistant".to_string(),
                     content: "Delete me too".to_string(),
                     created_at,

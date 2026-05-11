@@ -9,6 +9,7 @@ import {
   compactProviderInputItemsForContext,
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
+  isContextFootprintOverUsableBudget,
   parseHiddenToolContext,
   pruneToolContextBlocks,
   resolveModelContextWindowTokens,
@@ -883,6 +884,52 @@ describe('buildCompactedMessagesForRequest', () => {
         modelId: 'kimi-k2.6',
       }),
     ).toBe(128_000);
+  });
+
+  it('does not treat a non-authoritative fallback budget as automatic overflow', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Send a large payload.'),
+    ];
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 64_000,
+      contextLimitSource: 'macro_fallback',
+      isContextLimitAuthoritative: false,
+      estimateSerializedPayloadTokens: () => 80_000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.contextLimitSource).toBe('macro_fallback');
+    expect(footprint.isContextLimitAuthoritative).toBe(false);
+    expect(footprint.usableContextRatio).toBeGreaterThan(1);
+    expect(footprint.isHardStop).toBe(false);
+    expect(isContextFootprintOverUsableBudget(footprint)).toBe(false);
+  });
+
+  it('uses an authoritative model limit for automatic overflow detection', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Send a large payload.'),
+    ];
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 64_000,
+      contextLimitSource: 'provider_metadata',
+      isContextLimitAuthoritative: true,
+      estimateSerializedPayloadTokens: () => 80_000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.contextLimitSource).toBe('provider_metadata');
+    expect(footprint.isContextLimitAuthoritative).toBe(true);
+    expect(isContextFootprintOverUsableBudget(footprint)).toBe(true);
   });
 });
 

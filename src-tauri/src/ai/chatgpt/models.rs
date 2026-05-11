@@ -235,6 +235,10 @@ pub(super) fn build_provider_models(
                     Some(reasoning.reasoning_efforts)
                 },
                 context_window_tokens: None,
+                input_limit_tokens: None,
+                output_limit_tokens: None,
+                context_window_source: None,
+                context_limits_updated_at: None,
                 default_reasoning_effort: reasoning.default_reasoning_effort,
             }
         })

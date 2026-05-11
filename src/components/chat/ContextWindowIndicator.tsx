@@ -29,6 +29,13 @@ const formatCompactTokens = (value?: number): string => {
   return Math.round(value).toLocaleString();
 };
 
+const getContextLimitLabel = (
+  diagnostics?: ConversationContextDiagnostics,
+): string =>
+  diagnostics?.isContextLimitAuthoritative === false
+    ? 'Limite estimée'
+    : 'Limite modèle';
+
 const getPressureRatio = (diagnostics?: ConversationContextDiagnostics): number =>
   Math.min(
     Math.max(diagnostics?.usableRatio ?? diagnostics?.ratio ?? 0, 0),
@@ -65,6 +72,7 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   }
   if (
     diagnostics.phase === 'safety_compacting' ||
+    diagnostics.phase === 'model_switch_compacting' ||
     diagnostics.phase === 'recovering_overflow'
   ) {
     return {
@@ -223,6 +231,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const modelWindowTokens =
     effectiveDiagnostics?.modelContextWindowTokens ??
     footprint?.modelContextWindowTokens;
+  const contextLimitLabel = getContextLimitLabel(effectiveDiagnostics);
   const modelWindowShrank =
     Boolean(effectiveDiagnostics?.modelContextWindowShrank) ||
     Boolean(footprint?.modelContextWindowShrank);
@@ -351,7 +360,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
 
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <Metric label="Payload" value={formatCompactTokens(footprint?.serializedPayloadTokens ?? footprint?.totalEstimatedTokens)} />
-            <Metric label="Fenêtre max" value={formatCompactTokens(modelWindowTokens)} />
+            <Metric label={contextLimitLabel} value={formatCompactTokens(modelWindowTokens)} />
             <Metric label="Budget utile" value={formatCompactTokens(footprint?.usableContextTokens)} />
             <Metric label="Marge" value={formatCompactTokens(remainingTokens)} />
             <Metric label="Contexte total" value={formatPercent(totalRatio)} />

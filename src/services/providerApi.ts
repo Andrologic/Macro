@@ -19,6 +19,9 @@ export interface ProviderModel {
   context_window?: number;
   context_window_tokens?: number;
   max_input_tokens?: number;
+  max_output_tokens?: number;
+  output_tokens?: number;
+  max_completion_tokens?: number;
   supported_parameters?: string[];
   pricing?: {
     prompt?: string;
@@ -133,6 +136,9 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
       context_window: entry.context_window,
       context_window_tokens: entry.context_window_tokens,
       max_input_tokens: entry.max_input_tokens,
+      max_output_tokens: entry.max_output_tokens,
+      output_tokens: entry.output_tokens,
+      max_completion_tokens: entry.max_completion_tokens,
       ...(Array.isArray(entry.supported_parameters)
         ? {
             supported_parameters: entry.supported_parameters.filter(

@@ -47,20 +47,62 @@ export const CompactionBoundaryRow: React.FC<{
   );
 };
 
+const CompactionActivitySpinner: React.FC<{ spinnerSize?: number }> = ({
+  spinnerSize = 12,
+}) => (
+  <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-visible">
+    <span
+      className="chat-streaming-compaction__wave absolute h-7 w-7 rounded-full"
+      aria-hidden="true"
+    />
+    <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-primary/20 bg-background/85">
+      <SpinnerIcon size={spinnerSize} className="text-primary" />
+    </span>
+  </span>
+);
+
+const CompactionWaveText: React.FC<React.PropsWithChildren> = ({ children }) => (
+  <>
+    <style>
+      {`
+        @keyframes macro-compaction-text-wave {
+          0% { background-position: 200% 50%; }
+          100% { background-position: -200% 50%; }
+        }
+        .macro-compaction-wave-text {
+          background-image: linear-gradient(90deg, hsl(var(--primary)), currentColor, hsl(var(--primary)), currentColor);
+          background-size: 220% 100%;
+          background-clip: text;
+          -webkit-background-clip: text;
+          color: hsl(var(--primary));
+          -webkit-text-fill-color: transparent;
+          animation: macro-compaction-text-wave 1.8s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .macro-compaction-wave-text {
+            animation: none;
+            background-image: none;
+            -webkit-text-fill-color: currentColor;
+          }
+        }
+      `}
+    </style>
+    <span className="macro-compaction-wave-text truncate">{children}</span>
+  </>
+);
+
 export const CompactionProgressRow: React.FC<{
   virtualItem: CompactionBoundaryVirtualItem;
   measureElement: (el: HTMLElement | null) => void;
   phase?: ChatTranscriptCompactionProgressPhase;
 }> = ({ virtualItem, measureElement, phase = 'compacting' }) => {
   const { t } = useTranslation();
-  const isOverflowRecovery =
-    phase === 'overflow_recovery' || phase === 'recovering_overflow';
-  const isSafetyPrestream = phase === 'safety_compacting';
 
   return (
     <div
       ref={measureElement}
       data-chat-compaction-progress="true"
+      data-chat-compaction-progress-phase={phase}
       data-index={virtualItem.index}
       className="absolute left-0 top-0 w-full py-4"
       style={{ transform: `translateY(${virtualItem.start}px)` }}
@@ -69,15 +111,11 @@ export const CompactionProgressRow: React.FC<{
     >
       <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground">
         <span className="h-px flex-1 bg-gradient-to-r from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
-        <span className="inline-flex max-w-[min(34rem,calc(100%-3rem))] shrink-0 items-center gap-2 rounded-full border border-primary/20 bg-background px-3 py-1.5 text-primary shadow-sm">
-          <SpinnerIcon size={13} />
-          <span className="truncate">
-            {isOverflowRecovery
-              ? t('chat.compactionOverflowProgress', 'Récupération après dépassement de contexte...')
-              : isSafetyPrestream
-                ? t('chat.compactionSafetyProgress', 'Compression nécessaire avant envoi...')
-              : t('chat.compactionProgressTitle', 'Compression du contexte en cours...')}
-          </span>
+        <span className="inline-flex max-w-[min(34rem,calc(100%-3rem))] shrink-0 items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-primary shadow-sm">
+          <CompactionActivitySpinner spinnerSize={13} />
+          <CompactionWaveText>
+            {t('chat.compactionProgressTitle', 'Compactage du contexte...')}
+          </CompactionWaveText>
         </span>
         <span className="h-px flex-1 bg-gradient-to-l from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
       </div>
@@ -95,18 +133,10 @@ export const StreamingCompactionActivity: React.FC = () => {
       role="status"
       aria-live="polite"
     >
-      <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-visible">
-        <span
-          className="chat-streaming-compaction__wave absolute h-7 w-7 rounded-full"
-          aria-hidden="true"
-        />
-        <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-primary/20 bg-background/85">
-          <SpinnerIcon size={12} className="text-primary" />
-        </span>
-      </span>
-      <span className="truncate">
-        {t('chat.streamingCompactionActivity', 'Compactage du contexte en cours...')}
-      </span>
+      <CompactionActivitySpinner />
+      <CompactionWaveText>
+        {t('chat.streamingCompactionActivity', 'Compactage du contexte...')}
+      </CompactionWaveText>
     </span>
   );
 };

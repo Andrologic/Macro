@@ -470,7 +470,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Envoyer",
-    "questionnaireNext": "Suivant"
+    "questionnaireNext": "Suivant",
+    "compactionBoundary": "Contexte compacté",
+    "compactionProgressTitle": "Compactage du contexte...",
+    "streamingCompactionActivity": "Compactage du contexte...",
+    "compactNow": "Compacter maintenant",
+    "loadingModels": "Chargement des modèles",
+    "agentCodeReplayTitle": "Revenir au point de contrôle du code ?",
+    "agentCodeReplayDescription": "Les modifications faites par Macro après ce message seront effacées avant la relance. Les fichiers changés depuis le dernier checkpoint sont signalés ci-dessous.",
+    "agentCodeReplayConfirmEdit": "Restaurer et sauvegarder",
+    "agentCodeReplayConfirmRegenerate": "Restaurer et relancer",
+    "agentCodeReplayExternalChangesDetected": "Certains fichiers ont changé depuis le dernier point enregistré. Confirmer restaurera uniquement les fichiers listés.",
+    "agentCodeReplayFileCreated": "créé",
+    "agentCodeReplayFileDeleted": "supprimé",
+    "agentCodeReplayFileModified": "modifié",
+    "agentCodeReplayExternalFileChanged": "changé",
+    "agentCodeReplayExternalWarning": "Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés, y compris les fichiers non suivis créés par l’agent."
   },
   "settings": {
     "title": "Paramètres",
@@ -663,7 +678,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "Compaction des longues sessions",
+      "description": "Réserve du contexte modèle et compacte les anciens tours riches en outils avant saturation.",
+      "auto": "Compaction automatique",
+      "autoDesc": "Compacte avant un dépassement côté fournisseur.",
+      "prune": "Élaguer les anciennes sorties d’outils",
+      "pruneDesc": "Résume d’abord les gros contextes d’outils anciens.",
+      "manualVisible": "Afficher l’action de compaction",
+      "manualVisibleDesc": "Ajoute un bouton de compaction manuelle dans l’en-tête du chat.",
+      "reservedTokens": "Tokens réservés",
+      "reservedTokensDesc": "Vide conserve la réserve automatique 20 %/20k.",
+      "autoPlaceholder": "Auto"
+    }
   },
   "project": {
     "projects": "Projets",
@@ -1294,7 +1322,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "Afficher la checklist de tâche",
+    "taskTodoDropdownLabel": "Checklist de tâche",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "Détails",
+    "retryGenerationHelp": "Réessayer avec le modèle de commit actuel.",
+    "writeCommitMessagesManually": "Écrire manuellement",
+    "writeCommitMessagesManuallyHelp": "Utiliser l’éditeur de commit plutôt que l’IA.",
+    "commitModelSettings": "Paramètres du modèle de commit",
+    "commitModelSettingsHelp": "Changer le modèle utilisé pour les messages de commit.",
+    "commitMessageManualTitle": "Écrire les messages de commit",
+    "commitMessageManualDescription": "Écris un message Conventional Commit pour chaque dépôt, puis commit."
   },
   "architect": {
     "needs": "Besoins identifiés",
@@ -1979,7 +2018,11 @@
     "disconnectedDescription": "Cette session de terminal n'est plus attachée à un processus actif.",
     "clear": "Effacer le terminal",
     "interrupt": "Interrompre le terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "Rechercher dans le terminal",
+    "searchPlaceholder": "Rechercher dans le terminal",
+    "searchPrevious": "Correspondance précédente",
+    "searchNext": "Correspondance suivante"
   },
   "notify": {
     "connectionFailed": "Connection failed",

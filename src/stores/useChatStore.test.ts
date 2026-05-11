@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { AppMode, Conversation, ProjectGroup } from '../types';
+import type { AgentCodeCheckpoint, AppMode, Conversation, ProjectGroup } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
 
@@ -46,6 +46,7 @@ const DEFAULT_PROVIDER_CONFIGS = [
     apiKey: '',
   },
 ];
+const COMPACTED_STATE_MARKER = '[COMPACTED CONVERSATION STATE]';
 
 const DEFAULT_MODELS_BY_PROVIDER = {
   'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true }],
@@ -989,27 +990,49 @@ const createMessageMock = mock(
   async (
     conversationId: string,
     role: 'user' | 'assistant',
-    content: string,
-    options?: {
-      hiddenContext?: string;
-      providerInputItems?: unknown[];
-    }
-  ) => ({
-    id: `db-message-${++dbMessageCounter}`,
-    conversation_id: conversationId,
-    role,
-    content,
-    created_at: '2026-03-19T00:00:00.000Z',
-    hidden_context: options?.hiddenContext ?? null,
-    provider_input_items_json: options?.providerInputItems
-      ? JSON.stringify(options.providerInputItems)
-      : null,
-  })
-);
+	    content: string,
+	    options?: {
+	      id?: string;
+	      turnId?: string | null;
+	      toolTraces?: unknown[];
+	      hiddenContext?: string;
+	      providerInputItems?: unknown[];
+	      providerTurnState?: unknown;
+	    }
+	  ) => ({
+	    id: options?.id ?? `db-message-${++dbMessageCounter}`,
+	    conversation_id: conversationId,
+	    turn_id: options?.turnId ?? null,
+	    role,
+	    content,
+	    created_at: '2026-03-19T00:00:00.000Z',
+	    tool_traces_json: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+	    hidden_context: options?.hiddenContext ?? null,
+	    provider_input_items_json: options?.providerInputItems
+	      ? JSON.stringify(options.providerInputItems)
+	      : null,
+	    provider_turn_state_json: options?.providerTurnState
+	      ? JSON.stringify(options.providerTurnState)
+	      : null,
+	  })
+	);
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
 const deleteConversationsMock = mock(async (_conversationIds: string[]) => undefined);
 const updateConversationScopeMock = mock(async () => undefined);
-const updateMessageMock = mock(async () => undefined);
+const updateMessageMock = mock(
+  async (
+    _id?: string,
+    _content?: string,
+    _options?: {
+      turnId?: string | null;
+      tokenCount?: number;
+      toolTraces?: unknown[];
+      hiddenContext?: string;
+      providerInputItems?: unknown[];
+      providerTurnState?: unknown;
+    }
+  ) => undefined
+);
 const deleteMessagesAfterMock = mock(async () => undefined);
 const importMessagesMock = mock(
   async (
@@ -1797,6 +1820,24 @@ const getLatestStreamOptions = <T extends Record<string, unknown> = Record<strin
     throw new Error('Expected streamChat options');
   }
   return lastCall;
+};
+
+const waitForStreamCallCount = async (expectedCallCount: number) => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const callCount = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls.length);
+    if (callCount >= expectedCallCount) {
+      return;
+    }
+    await flushAsyncWork();
+  }
+
+  expect(
+    ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls.length),
+  ).toBeGreaterThanOrEqual(expectedCallCount);
 };
 
 const waitForConversationDiagnostics = async (
@@ -6840,6 +6881,354 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(status?.summarySource).toBeUndefined();
   });
 
+  it('runs safety prestream compaction before streaming when the projected payload is full', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    providerState.modelsByProvider = {
+      'provider-1': [
+        {
+          id: 'model-1',
+          name: 'Small context model',
+          isEnabled: true,
+          contextWindowTokens: 8000,
+          outputLimitTokens: 1200,
+        } as never,
+      ],
+    };
+    const summaryDeferred = createDeferred<string>();
+    sendChatNonStreamingMock.mockImplementationOnce(async () => summaryDeferred.promise);
+    const oldContext = 'ancien contexte utile\n'.repeat(5000);
+    (dbGetConversationCompactionStateMock as unknown as {
+      mockImplementationOnce: (
+        implementation: () => Promise<unknown>,
+      ) => void;
+    }).mockImplementationOnce(async () => ({
+      conversation_id: 'chat-conv',
+      up_to_message_id: 'a1',
+      summary_text: 'Previous compacted state that must not hide active safety compaction.',
+      tool_digest_json: '[]',
+      used_source_passage_ids_json: '[]',
+      interesting_source_passage_ids_json: '[]',
+      estimated_tokens_before: 12000,
+      estimated_tokens_after: 1200,
+      fingerprint: 'previous-fingerprint',
+      version: 1,
+      pruned_tool_context_message_ids_json: '[]',
+      reserved_tokens: 1200,
+      footprint_before_json: null,
+      footprint_after_json: JSON.stringify({
+        totalEstimatedTokens: 1200,
+        messageTokens: 1000,
+        hiddenContextTokens: 0,
+        systemTokens: 120,
+        toolSchemaTokens: 80,
+        imagePlaceholderTokens: 0,
+        citationTokens: 0,
+        modelContextWindowTokens: 8000,
+        reservedTokens: 1200,
+        usableContextTokens: 6800,
+        threshold: 'none',
+        reason: 'below_threshold',
+        totalContextRatio: 0.15,
+        usableContextRatio: 0.18,
+        hiddenContextRatio: 0,
+        hardStopRatio: 0.98,
+        isHardStop: false,
+        toolTurnCount: 0,
+      }),
+      degraded_reason: null,
+      compaction_kind: 'manual',
+      compaction_pass: 'forced',
+      summary_format_version: 3,
+      summary_source: 'model',
+      created_at: '2026-04-14T09:00:00.000Z',
+      updated_at: '2026-04-14T09:05:00.000Z',
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: `Analyse ce gros historique.\n${oldContext}`,
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: `Historique analysé.\n${oldContext}`,
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Garde les conclusions importantes.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Je garde les conclusions.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+    ];
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    const sendPromise = useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Continue avec une réponse courte.',
+    });
+    await flushAsyncWork();
+
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'safety_compacting',
+      kind: 'safety_prestream',
+      upToMessageId: 'a1',
+      summaryText: 'Previous compacted state that must not hide active safety compaction.',
+    });
+
+    summaryDeferred.resolve(
+      JSON.stringify({
+        currentObjective: 'Continue from the compacted older context.',
+        userInstructions: ['Keep the answer short.'],
+        decisions: ['Older context was compacted before streaming.'],
+        openQuestions: [],
+        activeFiles: [],
+        toolFacts: [],
+        remainingWork: ['Answer the latest user request.'],
+        summary: 'The old history contained useful context but no pending blocker.',
+      }),
+    );
+    await sendPromise;
+    await waitForStreamCallCount(1);
+
+    const streamOptions = getLatestStreamOptions<{
+      messages: Array<{ role: string; content: string }>;
+    }>();
+    const serializedRequest = JSON.stringify(streamOptions.messages);
+    expect(serializedRequest).toContain(COMPACTED_STATE_MARKER);
+    expect(serializedRequest).toContain('Continue from the compacted older context.');
+    expect(useChatStore.getState().lastError).toBeNull();
+  });
+
+  it('blocks clearly when the latest user request is too large to compact away', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    providerState.modelsByProvider = {
+      'provider-1': [
+        {
+          id: 'model-1',
+          name: 'Tiny context model',
+          isEnabled: true,
+          contextWindowTokens: 2000,
+        } as never,
+      ],
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: `Réponds à ce payload impossible.\n${'dernier message énorme\n'.repeat(6000)}`,
+    });
+    await flushAsyncWork();
+
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'too_large',
+      kind: 'safety_prestream',
+    });
+    expect(useChatStore.getState().lastError).toContain(
+      'The conversation is still too large',
+    );
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('chat-conv')
+        .filter((message: { role: string }) => message.role === 'user'),
+    ).toHaveLength(1);
+  });
+
+  it('recovers a provider context overflow by compacting and retrying once', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+      JSON.stringify({
+        currentObjective: 'Retry after provider context overflow.',
+        userInstructions: [],
+        decisions: ['Use stream overflow compaction before retrying.'],
+        openQuestions: [],
+        activeFiles: [],
+        toolFacts: [],
+        remainingWork: ['Retry the provider request once.'],
+        summary: 'Older turns can be represented by this summary.',
+      })
+    );
+    streamChatMock
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onError?: (error: Error) => void;
+        };
+        options.onError?.(
+          new Error('input is too long for requested model'),
+        );
+        return { usage: null };
+      }) as unknown as typeof streamChatMock)
+      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Ancienne demande.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Ancienne réponse.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Conserve ce contexte.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Contexte conservé.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+    ];
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Continue après overflow.',
+    });
+    await waitForStreamCallCount(2);
+
+    expect(streamChatMock).toHaveBeenCalledTimes(2);
+    const retryOptions = getLatestStreamOptions<{
+      messages: Array<{ role: string; content: string }>;
+    }>();
+    expect(JSON.stringify(retryOptions.messages)).toContain(
+      COMPACTED_STATE_MARKER,
+    );
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      kind: 'stream_overflow',
+      recoveredFromOverflow: true,
+    });
+  });
+
+  it('does not retry provider context overflow after useful assistant progress', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as {
+        onToolTracesUpdate?: (toolTraces: unknown[]) => void;
+        onError?: (error: Error) => void;
+      };
+      options.onToolTracesUpdate?.([
+        {
+          tool_call_id: 'call-1',
+          tool_name: 'read_file',
+          detail: 'src/app.ts',
+          status: 'done',
+        },
+      ]);
+      options.onError?.(
+        Object.assign(new Error('maximum context length is 100 tokens'), {
+          name: 'ProviderRuntimeError',
+          providerError: true,
+          kind: 'context_overflow',
+          status: 400,
+          retryable: false,
+          providerMessage: 'maximum context length is 100 tokens',
+        }),
+      );
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Lance une requête provider.',
+    });
+    await flushAsyncWork();
+
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toBeUndefined();
+    const runtime = useChatStore.getState().getConversationRuntime('chat-conv');
+    expect(runtime.lastErrorOrigin).toBe('provider');
+    expect(runtime.lastErrorDisplayTarget).toBe('transcript');
+  });
+
   it('passes Architect mode and the post-tool recap instruction into streaming requests', async () => {
     appState.mode = 'Architect';
     appState.selectedTaskId = null;
@@ -7005,8 +7394,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
     ];
     providerState.modelsByProvider = {
-      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000 } as never],
-      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000 } as never],
+      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
+      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000, outputLimitTokens: 4_000 } as never],
     };
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
@@ -7175,8 +7564,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
     ];
     providerState.modelsByProvider = {
-      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000 } as never],
-      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000 } as never],
+      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
+      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000, outputLimitTokens: 4_000 } as never],
     };
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
@@ -8459,6 +8848,77 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       message.content ===
         'Which scope should I use?: Large\nHow risky can the change be?: Stay below one day of rework'
     )).toBe(true);
+  });
+
+  it('blocks direct edits that would rewind agent code checkpoints without confirmation', async () => {
+    tauriAvailable = false;
+    appState.mode = 'Chat';
+
+    const checkpoint: AgentCodeCheckpoint = {
+      id: 'checkpoint-1',
+      conversationId: 'chat-conv',
+      assistantMessageId: 'assistant-after',
+      toolCallId: 'call-write',
+      toolName: 'write',
+      sequence: 1,
+      createdAt: '2026-05-11T10:00:00.000Z',
+      files: [
+        {
+          path: 'src/new-file.ts',
+          realPath: '/repo/src/new-file.ts',
+          status: 'created',
+          before: { exists: false, content: null },
+          after: { exists: true, content: 'export const value = 1;\n' },
+        },
+      ],
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'user-before-code',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Change the code',
+          timestamp: '2026-05-11T09:59:00.000Z',
+        },
+        {
+          id: 'assistant-after',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Done.',
+          timestamp: '2026-05-11T10:00:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: {
+        'chat-conv': [checkpoint],
+      },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore
+      .getState()
+      .editMessage('user-before-code', 'Change the code again');
+
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().lastError).toContain(
+      'confirm the code checkpoint restore',
+    );
   });
 
   it('submits legacy quick-reply questionnaires without fabricating a function call output', async () => {
@@ -9797,31 +10257,41 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('surfaces assistant persistence failures instead of losing them silently', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
-    createMessageMock
-      .mockImplementationOnce(
-        async (
-          conversationId: string,
-          role: 'user' | 'assistant',
-          content: string,
-          options?: {
-            hiddenContext?: string;
-            providerInputItems?: unknown[];
-          }
-        ) => ({
-          id: 'db-user-message',
-          conversation_id: conversationId,
-          role,
-          content,
-          created_at: '2026-03-19T00:00:00.000Z',
-          hidden_context: options?.hiddenContext ?? null,
-          provider_input_items_json: options?.providerInputItems
-            ? JSON.stringify(options.providerInputItems)
-            : null,
-        })
-      )
-      .mockImplementationOnce(async () => {
+    createMessageMock.mockImplementationOnce(
+      async (
+        conversationId: string,
+        role: 'user' | 'assistant',
+        content: string,
+        options?: {
+          id?: string;
+          turnId?: string | null;
+          toolTraces?: unknown[];
+          hiddenContext?: string;
+          providerInputItems?: unknown[];
+          providerTurnState?: unknown;
+        }
+      ) => ({
+        id: 'db-user-message',
+        conversation_id: conversationId,
+        turn_id: options?.turnId ?? null,
+        role,
+        content,
+        created_at: '2026-03-19T00:00:00.000Z',
+        tool_traces_json: options?.toolTraces ? JSON.stringify(options.toolTraces) : null,
+        hidden_context: options?.hiddenContext ?? null,
+        provider_input_items_json: options?.providerInputItems
+          ? JSON.stringify(options.providerInputItems)
+          : null,
+        provider_turn_state_json: options?.providerTurnState
+          ? JSON.stringify(options.providerTurnState)
+          : null,
+      })
+    );
+    updateMessageMock.mockImplementation(async (_id, content) => {
+      if (content === 'Persist me') {
         throw new Error('assistant write failed');
-      });
+      }
+    });
     streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
       const options = (args[0] ?? {}) as {
         onComplete?: (result: {
@@ -9872,6 +10342,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           message.role === 'assistant' && message.content === 'Persist me'
         )
     ).toBe(true);
+    updateMessageMock.mockImplementation(async () => undefined);
   });
 
   it('rejects concurrent sends while an Implement message is still preparing', async () => {
