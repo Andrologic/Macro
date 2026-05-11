@@ -84,6 +84,7 @@ const registerWorkspaceToolExecutorMocks = (
       bytes_written: 0,
       created: false,
     }),
+    fsDelete: async () => undefined,
     gitStatus: async () => ({
       branch: "main",
       head_commit: null,
@@ -174,6 +175,96 @@ describe("workspaceToolExecutor helpers", () => {
     expect(isWriteTool("read")).toBe(false);
     expect(isWriteTool("git_commit")).toBe(false);
     expect(isWriteTool("git_add")).toBe(false);
+  });
+
+  it("captures before and after checkpoints for new write files without git scans", async () => {
+    let exists = false;
+    let content = "";
+    const checkpoints: unknown[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => exists,
+        fsWriteFile: async ({ path, content: nextContent }: { path: string; content: string }) => {
+          const created = !exists;
+          exists = true;
+          content = nextContent;
+          return {
+            path,
+            bytes_written: nextContent.length,
+            created,
+            skipped: false,
+          };
+        },
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "TypeScript",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+        }),
+      },
+    } as Partial<MockAppState>);
+
+    await executeWorkspaceTool(
+      "write",
+      { path: "src/new-file.ts", content: "export const value = 1;\n" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: { toolName: string; files: unknown[] }) => {
+          checkpoints.push(checkpoint);
+        },
+      },
+    );
+
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]).toMatchObject({
+      toolName: "write",
+      files: [
+        {
+          path: "src/new-file.ts",
+          realPath: "C:/dev/macro-web/src/new-file.ts",
+          status: "created",
+          before: { exists: false, content: null },
+          after: { exists: true, content: "export const value = 1;\n" },
+        },
+      ],
+    });
+  });
+
+  it("does not capture checkpoints when apply_patch fails before writing", async () => {
+    const checkpoints: unknown[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Add File: src/already.ts",
+          "+export const value = 1;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: { toolName: string; files: unknown[] }) => {
+          checkpoints.push(checkpoint);
+        },
+      },
+    );
+
+    expect(result).toContain("Cannot add file");
+    expect(checkpoints).toHaveLength(0);
   });
 
   it("extracts explicit mutating project targets without falling back to focused repositories", async () => {
@@ -773,6 +864,174 @@ describe("workspaceToolExecutor helpers", () => {
       "export const App = 'before';\n",
     ]);
     expect(deletes).toEqual([]);
+  });
+
+  it("reverts single-file mutations when checkpoint publication fails", async () => {
+    let content = "export const value = 'before';\n";
+    const writes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "typescript",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+        }),
+        fsWriteFile: async ({
+          content: nextContent,
+        }: {
+          content: string;
+        }) => {
+          writes.push(nextContent);
+          content = nextContent;
+          return {
+            path: "C:/dev/macro-web/src/value.ts",
+            bytes_written: nextContent.length,
+            created: false,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/value.ts", content: "export const value = 'after';\n" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async () => {
+          throw new Error("checkpoint db unavailable");
+        },
+      },
+    );
+
+    expect(result).toContain("Failed to record code checkpoint");
+    expect(result).toContain("mutation was reverted");
+    expect(content).toBe("export const value = 'before';\n");
+    expect(writes).toEqual([
+      "export const value = 'after';\n",
+      "export const value = 'before';\n",
+    ]);
+  });
+
+  it("reverts apply_patch batches when checkpoint publication fails", async () => {
+    let appContent = "export const App = 'before';\n";
+    let noteExists = false;
+    let noteContent = "";
+    const writes: Array<{ path: string; content: string }> = [];
+    const deletes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) =>
+          path === "C:/dev/macro-web/src/App.tsx" ||
+          (path === "C:/dev/macro-web/notes.md" && noteExists),
+        fsReadFileWithOptions: async ({ path }: { path: string }) => {
+          if (path === "C:/dev/macro-web/src/App.tsx") {
+            return {
+              content: appContent,
+              language: "typescript",
+              is_binary: false,
+              size: appContent.length,
+              encoding: "utf-8",
+            };
+          }
+          if (path === "C:/dev/macro-web/notes.md" && noteExists) {
+            return {
+              content: noteContent,
+              language: "markdown",
+              is_binary: false,
+              size: noteContent.length,
+              encoding: "utf-8",
+            };
+          }
+          throw new Error(`unexpected read: ${path}`);
+        },
+        fsWriteFile: async ({
+          path,
+          content,
+        }: {
+          path: string;
+          content: string;
+        }) => {
+          writes.push({ path, content });
+          if (path === "C:/dev/macro-web/src/App.tsx") {
+            appContent = content;
+          }
+          if (path === "C:/dev/macro-web/notes.md") {
+            noteExists = true;
+            noteContent = content;
+          }
+          return {
+            path,
+            bytes_written: content.length,
+            created: path.endsWith("notes.md"),
+          };
+        },
+        fsDelete: async ({ path }: { path: string }) => {
+          deletes.push(path);
+          if (path === "C:/dev/macro-web/notes.md") {
+            noteExists = false;
+            noteContent = "";
+          }
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/App.tsx",
+          "@@",
+          "-export const App = 'before';",
+          "+export const App = 'after';",
+          "*** Add File: web/notes.md",
+          "+hello",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: {
+          web: "C:/dev/macro-web",
+        },
+        onCodeCheckpoint: async () => {
+          throw new Error("checkpoint db unavailable");
+        },
+      },
+    );
+
+    expect(result).toContain("Failed to record code checkpoint");
+    expect(result).toContain("mutations were reverted");
+    expect(appContent).toBe("export const App = 'before';\n");
+    expect(noteExists).toBe(false);
+    expect(writes.map((entry) => entry.path)).toEqual([
+      "C:/dev/macro-web/src/App.tsx",
+      "C:/dev/macro-web/notes.md",
+      "C:/dev/macro-web/src/App.tsx",
+    ]);
+    expect(deletes).toEqual(["C:/dev/macro-web/notes.md"]);
   });
 
   it("deletes a file from the routed worktree workspace", async () => {

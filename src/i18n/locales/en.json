@@ -471,7 +471,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Submit",
-    "questionnaireNext": "Next"
+    "questionnaireNext": "Next",
+    "compactionBoundary": "Compacted context",
+    "compactionProgressTitle": "Compacting context...",
+    "streamingCompactionActivity": "Compacting context...",
+    "compactNow": "Compact now",
+    "loadingModels": "Loading models",
+    "agentCodeReplayTitle": "Return to the code checkpoint?",
+    "agentCodeReplayDescription": "Changes made by Macro after this message will be erased before retrying. Files changed since the last checkpoint are highlighted below.",
+    "agentCodeReplayConfirmEdit": "Restore and save",
+    "agentCodeReplayConfirmRegenerate": "Restore and retry",
+    "agentCodeReplayExternalChangesDetected": "Some files changed since the last recorded checkpoint. Confirming will restore only the listed files.",
+    "agentCodeReplayFileCreated": "created",
+    "agentCodeReplayFileDeleted": "deleted",
+    "agentCodeReplayFileModified": "modified",
+    "agentCodeReplayExternalFileChanged": "changed",
+    "agentCodeReplayExternalWarning": "Only files tracked by Macro editing tools are restored, including untracked files created by the agent."
   },
   "settings": {
     "title": "Settings",
@@ -664,7 +679,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "Long-session compaction",
+      "description": "Reserve model context and compact older tool-heavy turns before a session overflows.",
+      "auto": "Automatic compaction",
+      "autoDesc": "Compact before provider overflow.",
+      "prune": "Prune old tool output",
+      "pruneDesc": "Digest large old tool contexts first.",
+      "manualVisible": "Show compact action",
+      "manualVisibleDesc": "Add a chat header button for manual compaction.",
+      "reservedTokens": "Reserved tokens",
+      "reservedTokensDesc": "Blank keeps the automatic 20%/20k reserve.",
+      "autoPlaceholder": "Auto"
+    }
   },
   "project": {
     "projects": "Projects",
@@ -1295,7 +1323,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "Show task checklist",
+    "taskTodoDropdownLabel": "Task checklist",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "Details",
+    "retryGenerationHelp": "Try again with the current commit model.",
+    "writeCommitMessagesManually": "Write manually",
+    "writeCommitMessagesManuallyHelp": "Use the commit editor instead of AI.",
+    "commitModelSettings": "Commit model settings",
+    "commitModelSettingsHelp": "Change the model used for commit messages.",
+    "commitMessageManualTitle": "Write commit messages",
+    "commitMessageManualDescription": "Write a Conventional Commit message for each repository, then commit."
   },
   "architect": {
     "needs": "Identified Needs",
@@ -1980,7 +2019,11 @@
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "clear": "Clear terminal",
     "interrupt": "Interrupt terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "Search terminal",
+    "searchPlaceholder": "Search terminal",
+    "searchPrevious": "Previous match",
+    "searchNext": "Next match"
   },
   "notify": {
     "connectionFailed": "Connection failed",

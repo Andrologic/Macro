@@ -355,6 +355,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
+            turn_id TEXT,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -373,6 +374,11 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
     let columns = table_columns(pool, "messages").await?;
     if !columns.contains("created_at") {
         sqlx::query("ALTER TABLE messages ADD COLUMN created_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("turn_id") {
+        sqlx::query("ALTER TABLE messages ADD COLUMN turn_id TEXT")
             .execute(pool)
             .await?;
     }
@@ -428,6 +434,15 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_turn
+        ON messages(conversation_id, turn_id);
         "#,
     )
     .execute(pool)
@@ -831,6 +846,10 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
             reasoning_efforts_json TEXT,
             default_reasoning_effort TEXT,
             context_window_tokens INTEGER,
+            input_limit_tokens INTEGER,
+            output_limit_tokens INTEGER,
+            context_window_source TEXT,
+            context_limits_updated_at TEXT,
             is_enabled INTEGER DEFAULT 1,
             is_manual INTEGER DEFAULT 0,
             first_seen_at TEXT NOT NULL,
@@ -870,6 +889,26 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("context_window_tokens") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN context_window_tokens INTEGER")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("input_limit_tokens") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN input_limit_tokens INTEGER")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("output_limit_tokens") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN output_limit_tokens INTEGER")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("context_window_source") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN context_window_source TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("context_limits_updated_at") {
+        sqlx::query("ALTER TABLE ai_models ADD COLUMN context_limits_updated_at TEXT")
             .execute(pool)
             .await?;
     }

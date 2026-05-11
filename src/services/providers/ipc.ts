@@ -124,6 +124,16 @@ const toModelDto = (model: tauriIpc.DbAiModel): AIModel => ({
   isEnabled: model.is_enabled,
   isManual: model.is_manual,
   contextWindowTokens: model.context_window_tokens ?? undefined,
+  inputLimitTokens: model.input_limit_tokens ?? undefined,
+  outputLimitTokens: model.output_limit_tokens ?? undefined,
+  contextWindowSource:
+    (model.context_window_source as AIModel['contextWindowSource'] | null) ??
+    (model.context_window_tokens
+      ? model.is_manual
+        ? 'user_override'
+        : 'model_metadata'
+      : undefined),
+  contextLimitsUpdatedAt: model.context_limits_updated_at ?? undefined,
   first_seen_at: model.first_seen_at,
   last_seen_at: model.last_seen_at,
   db_id: model.id,

@@ -65,6 +65,8 @@ import {
   StreamingCompactionActivity,
 } from './CompactionTranscriptUi';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
+import { AgentCodeReplayConfirmModal } from './AgentCodeReplayConfirmModal';
+import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -191,11 +193,13 @@ interface RenderedMessageItem extends Omit<RenderedTranscriptItem, 'item'> {
   item: ChatTranscriptMessageItem;
 }
 
+type AssistantMessageActivity = 'streaming' | 'compacting' | null;
+
 interface ChatMessageRowProps {
   virtualMessage: RenderedMessageItem;
   measureElement: (el: HTMLElement | null) => void;
-  streamingAssistantMessageId: string | null;
-  isStreamingCompactionActive?: boolean;
+  assistantActivity: AssistantMessageActivity;
+  isStreamingCompactionActive: boolean;
   showToolTraces: boolean;
   isEditing: boolean;
   editingValue: string;
@@ -223,6 +227,29 @@ const NEED_MENTION_PATTERN = /\[need:\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
+
+const resolveAssistantActivityAnchorId = (
+  messages: ChatMessage[],
+  preferredMessageId: string | null,
+  allowLatestAssistantFallback: boolean,
+): string | null => {
+  if (
+    preferredMessageId &&
+    messages.some(
+      (message) =>
+        message.id === preferredMessageId && message.role === 'assistant',
+    )
+  ) {
+    return preferredMessageId;
+  }
+
+  if (!allowLatestAssistantFallback) {
+    return null;
+  }
+
+  const latestMessage = messages[messages.length - 1];
+  return latestMessage?.role === 'assistant' ? latestMessage.id : null;
+};
 
 const UserMessageContent: React.FC<{
   content: string;
@@ -274,8 +301,8 @@ const UserMessageContent: React.FC<{
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
-  streamingAssistantMessageId,
-  isStreamingCompactionActive = false,
+  assistantActivity,
+  isStreamingCompactionActive,
   showToolTraces,
   isEditing,
   editingValue,
@@ -300,7 +327,12 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const visibleImages = isEditing ? editingImages : messageImages;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
-  const isStreamingMessage = streamingAssistantMessageId === message.id;
+  const hasAssistantActivity =
+    message.role === 'assistant' &&
+    (assistantActivity !== null || isStreamingCompactionActive);
+  const hasAssistantCompactionActivity =
+    message.role === 'assistant' &&
+    (isStreamingCompactionActive || assistantActivity === 'compacting');
   const hasAssistantCompletionNotice =
     message.role === 'assistant' &&
     Boolean(message.completion_reason && message.completion_reason !== 'completed');
@@ -407,7 +439,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <MarkdownRenderer
                     content={message.content}
                     toolTraces={showToolTraces ? message.tool_traces : undefined}
-                    isStreaming={isStreamingMessage}
+                    isStreaming={assistantActivity === 'streaming' && !hasAssistantCompactionActivity}
                   />
                   <AssistantCompletionNotice
                     completionReason={message.completion_reason}
@@ -438,8 +470,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
-              {isStreamingMessage && message.role === 'assistant' && (
-                isStreamingCompactionActive ? (
+              {hasAssistantActivity && (
+                hasAssistantCompactionActivity ? (
                   <StreamingCompactionActivity />
                 ) : (
                   <span
@@ -527,7 +559,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.messageImages === next.messageImages &&
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
-    prev.streamingAssistantMessageId === next.streamingAssistantMessageId &&
+    prev.assistantActivity === next.assistantActivity &&
+    prev.isStreamingCompactionActive === next.isStreamingCompactionActive &&
     prev.showToolTraces === next.showToolTraces &&
     prev.needsByTitle === next.needsByTitle
 );
@@ -632,6 +665,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearLastError,
     clearConversationRuntimeError,
     editMessage,
+    getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay,
     getMessageImages,
     setMessageImages,
     architectPlanNamingRecovery,
@@ -672,6 +707,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
     editMessage: state.editMessage,
+    getAgentCodeReplayPreview: state.getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay: state.restoreAgentCodeForReplay,
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     architectPlanNamingRecovery: state.architectPlanNamingRecovery,
@@ -756,21 +793,45 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     : undefined;
   const activeCompactionPhase = activeCompactionStatus?.phase ?? null;
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
+  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
+  const isBusySending = isContextStreaming || isPreparingSend;
   const isContextOverflowRecovering =
     selectedConversationRuntime.phase === 'overflow_recovery';
   const runtimeAssistantMessageId =
     selectedConversationRuntime.assistantMessageId ?? null;
-  const isStreamingCompactionActive =
-    Boolean(runtimeAssistantMessageId) &&
-    (isContextStreaming || isContextOverflowRecovering) &&
-    isChatTranscriptCompactionProgressPhase(activeCompactionPhase);
+  const activeTranscriptCompactionPhase =
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase)
+      ? activeCompactionPhase
+      : isManualCompacting
+        ? 'compacting'
+        : null;
+  const shouldShowContextIndicator =
+    Boolean(selectedConversationId) &&
+    (shouldShowContextControlsForActiveContext ||
+      Boolean(contextDiagnostics) ||
+      Boolean(activeTranscriptCompactionPhase));
+  const runtimeAssistantActivityAnchorId = resolveAssistantActivityAnchorId(
+    currentMessages,
+    runtimeAssistantMessageId,
+    false,
+  );
+  const compactionAssistantActivityMessageId = activeTranscriptCompactionPhase
+    ? resolveAssistantActivityAnchorId(
+        currentMessages,
+        runtimeAssistantMessageId,
+        isBusySending || isContextOverflowRecovering,
+      )
+    : null;
+  const streamingAssistantActivityMessageId =
+    !activeTranscriptCompactionPhase && (isBusySending || isContextOverflowRecovering)
+      ? runtimeAssistantActivityAnchorId
+      : null;
+  const showInlineCompactionActivity =
+    Boolean(compactionAssistantActivityMessageId);
   const showStandaloneCompactionProgress =
-    isChatTranscriptCompactionProgressPhase(activeCompactionPhase) &&
-    !isStreamingCompactionActive;
+    Boolean(activeTranscriptCompactionPhase) &&
+    !showInlineCompactionActivity;
   const showCompactionBoundary = Boolean(activeCompactionStatus?.upToMessageId);
-  const isCompactionProgressActive =
-    isChatTranscriptCompactionProgressPhase(activeCompactionPhase) ||
-    isContextOverflowRecovering;
   const runContextDiagnosticsRefresh = useCallback(async () => {
     if (
       !selectedConversationId ||
@@ -802,12 +863,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           ? activeCompactionStatus?.upToMessageId
           : null,
         updatedAt: activeCompactionStatus?.updatedAt,
-        phase: showStandaloneCompactionProgress ? activeCompactionPhase : null,
+        phase: showStandaloneCompactionProgress ? activeTranscriptCompactionPhase : null,
       }),
     [
       activeCompactionStatus?.upToMessageId,
       activeCompactionStatus?.updatedAt,
-      activeCompactionPhase,
+      activeTranscriptCompactionPhase,
       currentMessages,
       selectedConversationId,
       showCompactionBoundary,
@@ -870,8 +931,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [isContextStreaming]);
 
   const isStreaming = isContextStreaming;
-  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
-  const isBusySending = isStreaming || isPreparingSend;
 
   const handleManualCompaction = useCallback(async () => {
     if (!selectedConversationId || isManualCompacting || isBusySending) {
@@ -942,8 +1001,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? selectedConversationRuntime.lastError
       : null;
   const composerError = composerRuntimeError ?? lastError;
-  const activeAssistantMessageId =
-    isBusySending || isContextOverflowRecovering ? runtimeAssistantMessageId : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1615,6 +1672,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setEditingImages([]);
   };
 
+  const handleEditCommitted = useCallback(() => {
+    setEditingMessageId(null);
+    setEditingValue('');
+    setEditingImages([]);
+  }, []);
+
   const handleQuestionnaireCancel = () => {
     if (!activeQuestionnaire) {
       return;
@@ -1622,15 +1685,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     cancelQuestionnaireSession(activeQuestionnaire.conversationId);
   };
 
+  const {
+    pendingReplayConfirmation,
+    isReplayConfirmationSubmitting,
+    requestReplay,
+    cancelReplayConfirmation,
+    confirmReplayConfirmation,
+  } = useAgentCodeReplayConfirmation({
+    getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay,
+    editMessage,
+    setMessageImages,
+    onEditCommitted: handleEditCommitted,
+  });
+
   const handleEditSave = async () => {
     if (!editingMessageId) return;
     const content = editingValue.trim();
     if (!content) return;
-    setMessageImages(editingMessageId, editingImages);
-    setEditingMessageId(null);
-    setEditingValue('');
-    setEditingImages([]);
-    await editMessage(editingMessageId, content);
+    await requestReplay({
+      kind: 'edit',
+      messageId: editingMessageId,
+      content,
+      images: editingImages,
+    });
   };
 
   const handleCopy = async (content: string, messageId: string) => {
@@ -1640,7 +1718,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleRegenerate = async (messageId: string, content: string) => {
-    await editMessage(messageId, content);
+    await requestReplay({
+      kind: 'regenerate',
+      messageId,
+      content,
+    });
   };
 
   const canSend =
@@ -1796,11 +1878,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 )}
               </button>
             )}
-            {shouldShowContextControlsForActiveContext && selectedConversationId && (
+            {shouldShowContextIndicator && selectedConversationId && (
               <ContextWindowIndicator
                 diagnostics={contextDiagnostics}
-                isCompacting={isManualCompacting || isCompactionProgressActive}
-                canCompactNow={!isBusySending}
+                isCompacting={Boolean(activeTranscriptCompactionPhase)}
+                canCompactNow={!isBusySending && !isManualCompacting}
                 onRefresh={() => {
                   void runContextDiagnosticsRefresh();
                 }}
@@ -1847,7 +1929,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 'Complete the prerequisite tasks before starting implementation here.'
               )}
             />
-          ) : selectedConversationId && currentMessages.length > 0 ? (
+          ) : selectedConversationId && transcriptItems.length > 0 ? (
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
               {renderedMessageItems.map((virtualItem) => {
                 if (virtualItem.item.kind === 'compaction_boundary') {
@@ -1874,17 +1956,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const message = virtualMessage.item.message;
                 const isEditing = editingMessageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
+                const assistantActivity: AssistantMessageActivity =
+                  message.id === compactionAssistantActivityMessageId
+                    ? 'compacting'
+                    : message.id === streamingAssistantActivityMessageId
+                      ? 'streaming'
+                      : null;
 
                 return (
                   <MemoizedChatMessageRow
                     key={virtualMessage.key}
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
-                    streamingAssistantMessageId={activeAssistantMessageId}
-                    isStreamingCompactionActive={
-                      isStreamingCompactionActive &&
-                      message.id === activeAssistantMessageId
-                    }
+                    assistantActivity={assistantActivity}
+                    isStreamingCompactionActive={assistantActivity === 'compacting'}
                     showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}
@@ -2247,6 +2332,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
         </footer>
       </div>
+
+      <AgentCodeReplayConfirmModal
+        pendingReplayConfirmation={pendingReplayConfirmation}
+        isSubmitting={isReplayConfirmationSubmitting}
+        onCancel={cancelReplayConfirmation}
+        onConfirm={() => {
+          void confirmReplayConfirmation();
+        }}
+      />
 
       <ImagePreviewModal
         isOpen={Boolean(previewImage)}

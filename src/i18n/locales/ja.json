@@ -471,7 +471,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Submit",
-    "questionnaireNext": "Next"
+    "questionnaireNext": "Next",
+    "compactionBoundary": "コンテキストを圧縮済み",
+    "compactionProgressTitle": "コンテキストを圧縮中...",
+    "streamingCompactionActivity": "コンテキストを圧縮中...",
+    "compactNow": "今すぐ圧縮",
+    "loadingModels": "モデルを読み込み中",
+    "agentCodeReplayTitle": "コードのチェックポイントに戻りますか？",
+    "agentCodeReplayDescription": "このメッセージ以降に Macro が行った変更は再実行前に消去されます。最後のチェックポイント以降に変更されたファイルを下に表示します。",
+    "agentCodeReplayConfirmEdit": "復元して保存",
+    "agentCodeReplayConfirmRegenerate": "復元して再実行",
+    "agentCodeReplayExternalChangesDetected": "最後に記録したポイント以降に変更されたファイルがあります。確認すると一覧のファイルだけを復元します。",
+    "agentCodeReplayFileCreated": "作成",
+    "agentCodeReplayFileDeleted": "削除",
+    "agentCodeReplayFileModified": "変更",
+    "agentCodeReplayExternalFileChanged": "変更あり",
+    "agentCodeReplayExternalWarning": "Macro の編集ツールが追跡したファイルのみ復元します。エージェントが作成した未追跡ファイルも含みます。"
   },
   "settings": {
     "title": "設定",
@@ -664,7 +679,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "長いセッションの圧縮",
+      "description": "モデルのコンテキストを予約し、セッションがあふれる前に古いツール多用ターンを圧縮します。",
+      "auto": "自動圧縮",
+      "autoDesc": "プロバイダーの上限超過前に圧縮します。",
+      "prune": "古いツール出力を整理",
+      "pruneDesc": "大きな古いツールコンテキストを先に要約します。",
+      "manualVisible": "圧縮アクションを表示",
+      "manualVisibleDesc": "チャットヘッダーに手動圧縮ボタンを追加します。",
+      "reservedTokens": "予約トークン",
+      "reservedTokensDesc": "空欄なら自動の 20%/20k 予約を使います。",
+      "autoPlaceholder": "自動"
+    }
   },
   "project": {
     "projects": "プロジェクト",
@@ -1295,7 +1323,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "タスクチェックリストを表示",
+    "taskTodoDropdownLabel": "タスクチェックリスト",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "詳細",
+    "retryGenerationHelp": "現在のコミットモデルでもう一度試します。",
+    "writeCommitMessagesManually": "手動で書く",
+    "writeCommitMessagesManuallyHelp": "AI ではなくコミットエディターを使います。",
+    "commitModelSettings": "コミットモデル設定",
+    "commitModelSettingsHelp": "コミットメッセージに使うモデルを変更します。",
+    "commitMessageManualTitle": "コミットメッセージを書く",
+    "commitMessageManualDescription": "各リポジトリに Conventional Commit メッセージを書いてからコミットします。"
   },
   "architect": {
     "needs": "特定されたニーズ",
@@ -1980,7 +2019,11 @@
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "clear": "Clear terminal",
     "interrupt": "Interrupt terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "ターミナルを検索",
+    "searchPlaceholder": "ターミナルを検索",
+    "searchPrevious": "前の一致",
+    "searchNext": "次の一致"
   },
   "notify": {
     "connectionFailed": "Connection failed",

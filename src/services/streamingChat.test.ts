@@ -1358,6 +1358,15 @@ describe('streamingChat tool rendering helpers', () => {
     expect(codeError.retryable).toBe(false);
     expect(__testables.isContextOverflowError('model_context_window_exceeded', 400)).toBe(true);
     expect(__testables.isContextOverflowError('400 (no body)', 400)).toBe(true);
+    expect(
+      __testables.isContextOverflowError(
+        'input token count 120000 exceeds the maximum of 64000',
+        400,
+      ),
+    ).toBe(true);
+    expect(
+      __testables.isContextOverflowError('input is too long for requested model', 400),
+    ).toBe(true);
   });
 
   it('preserves provider error details for UI presentation', async () => {

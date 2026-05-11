@@ -471,7 +471,22 @@
     "questionnaireFreeTextHint": "Choose one option or answer freely",
     "questionnaireFreeTextPlaceholder": "Or type your own answer",
     "questionnaireSubmit": "Submit",
-    "questionnaireNext": "Next"
+    "questionnaireNext": "Next",
+    "compactionBoundary": "Kontext kompaktiert",
+    "compactionProgressTitle": "Kontext wird kompaktiert...",
+    "streamingCompactionActivity": "Kontext wird kompaktiert...",
+    "compactNow": "Jetzt kompaktieren",
+    "loadingModels": "Modelle werden geladen",
+    "agentCodeReplayTitle": "Zum Code-Checkpoint zurückkehren?",
+    "agentCodeReplayDescription": "Änderungen, die Macro nach dieser Nachricht vorgenommen hat, werden vor dem erneuten Versuch gelöscht. Seit dem letzten Checkpoint geänderte Dateien sind unten markiert.",
+    "agentCodeReplayConfirmEdit": "Wiederherstellen und speichern",
+    "agentCodeReplayConfirmRegenerate": "Wiederherstellen und erneut starten",
+    "agentCodeReplayExternalChangesDetected": "Einige Dateien wurden seit dem letzten gespeicherten Punkt geändert. Bestätigen stellt nur die aufgelisteten Dateien wieder her.",
+    "agentCodeReplayFileCreated": "erstellt",
+    "agentCodeReplayFileDeleted": "gelöscht",
+    "agentCodeReplayFileModified": "geändert",
+    "agentCodeReplayExternalFileChanged": "geändert",
+    "agentCodeReplayExternalWarning": "Nur Dateien, die von Macros Bearbeitungswerkzeugen verfolgt werden, werden wiederhergestellt, einschließlich vom Agent erstellter unversionierter Dateien."
   },
   "settings": {
     "title": "Einstellungen",
@@ -664,7 +679,20 @@
     "terminalApp": "Terminal",
     "terminalAppDesc": "Used when clicking the terminal quick action for a subproject.",
     "fileExplorerApp": "File explorer",
-    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject."
+    "fileExplorerAppDesc": "Used when clicking the file explorer quick action for a subproject.",
+    "compaction": {
+      "title": "Kompaktierung langer Sitzungen",
+      "description": "Reserviert Modellkontext und kompaktiert ältere toollastige Runden, bevor die Sitzung überläuft.",
+      "auto": "Automatische Kompaktierung",
+      "autoDesc": "Kompaktiert vor einem Provider-Überlauf.",
+      "prune": "Alte Tool-Ausgaben kürzen",
+      "pruneDesc": "Große alte Tool-Kontexte zuerst zusammenfassen.",
+      "manualVisible": "Kompaktierungsaktion anzeigen",
+      "manualVisibleDesc": "Fügt im Chat-Kopf eine Schaltfläche für manuelle Kompaktierung hinzu.",
+      "reservedTokens": "Reservierte Tokens",
+      "reservedTokensDesc": "Leer behält die automatische Reserve von 20 %/20k bei.",
+      "autoPlaceholder": "Auto"
+    }
   },
   "project": {
     "projects": "Projekte",
@@ -1295,7 +1323,18 @@
     "allConflictsResolved": "All conflicts resolved",
     "conflictMarkersFooter": "Remove all conflict markers before saving.",
     "resolveConflictFileHint": "Choose current or incoming blocks, then save the resolved file.",
-    "saveResolution": "Save resolution"
+    "saveResolution": "Save resolution",
+    "taskTodoToggle": "Aufgaben-Checkliste anzeigen",
+    "taskTodoDropdownLabel": "Aufgaben-Checkliste",
+    "taskTodoProgressCompact": "{{done}}/{{total}}",
+    "commitMessageGenerationDetails": "Details",
+    "retryGenerationHelp": "Mit dem aktuellen Commit-Modell erneut versuchen.",
+    "writeCommitMessagesManually": "Manuell schreiben",
+    "writeCommitMessagesManuallyHelp": "Den Commit-Editor statt KI verwenden.",
+    "commitModelSettings": "Commit-Modell-Einstellungen",
+    "commitModelSettingsHelp": "Das Modell für Commit-Nachrichten ändern.",
+    "commitMessageManualTitle": "Commit-Nachrichten schreiben",
+    "commitMessageManualDescription": "Schreibe für jedes Repository eine Conventional-Commit-Nachricht und committe dann."
   },
   "architect": {
     "needs": "Identifizierte Bedürfnisse",
@@ -1980,7 +2019,11 @@
     "disconnectedDescription": "This terminal session is no longer attached to a live process.",
     "clear": "Clear terminal",
     "interrupt": "Interrupt terminal",
-    "reconnect": "Reconnect"
+    "reconnect": "Reconnect",
+    "search": "Terminal durchsuchen",
+    "searchPlaceholder": "Terminal durchsuchen",
+    "searchPrevious": "Vorheriger Treffer",
+    "searchNext": "Nächster Treffer"
   },
   "notify": {
     "connectionFailed": "Connection failed",

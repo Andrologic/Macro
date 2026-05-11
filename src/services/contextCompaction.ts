@@ -9,12 +9,17 @@ import type {
   ContextFootprintThreshold,
   ConversationCompactionState,
   CompactionSummarySource,
+  ModelContextLimitSource,
   ToolContextDigestEntry,
   ToolContextDigestKind,
 } from '../types';
 import type { Citation } from '../stores/useCitationsStore';
 import type { StreamMessage, StreamMessageContent } from './streamingChat';
 import type { MacroToolRegistryEntry } from '../shared/macroToolRegistry';
+import {
+  resolveModelContextLimits,
+  resolveUsableContextTokens,
+} from './modelContextLimits';
 
 const CHARS_PER_TOKEN = 4;
 export const CONTEXT_COMPACTION_POLICY_VERSION = 3;
@@ -57,6 +62,7 @@ export interface ContextBudgetPolicy {
 export interface ResolvedContextBudgetPolicy {
   reservedTokens: number;
   usableContextTokens: number;
+  maxOutputTokens: number;
   hardStopRatio: number;
 }
 
@@ -67,6 +73,10 @@ export interface EstimateConversationFootprintParams {
   citations: Citation[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ModelContextLimitSource;
+  isContextLimitAuthoritative?: boolean;
   previousModelContextWindowTokens?: number | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   mode?: CompactionMode;
@@ -89,6 +99,10 @@ export interface MaybeCompactConversationParams {
   citations: Citation[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ModelContextLimitSource;
+  isContextLimitAuthoritative?: boolean;
   previousModelContextWindowTokens?: number | null;
   providerId?: string | null;
   modelId?: string | null;
@@ -337,31 +351,38 @@ const getCompactionThresholds = (
 });
 
 export const isContextFootprintOverUsableBudget = (
-  footprint: Pick<ContextFootprint, 'isHardStop' | 'usableContextRatio'>
+  footprint: Pick<
+    ContextFootprint,
+    'isHardStop' | 'usableContextRatio' | 'isContextLimitAuthoritative'
+  >
 ): boolean =>
-  footprint.isHardStop || footprint.usableContextRatio >= 1;
+  footprint.isContextLimitAuthoritative === false
+    ? false
+    : footprint.isHardStop || footprint.usableContextRatio >= 1;
 
 const exceedsUsableContext = isContextFootprintOverUsableBudget;
 
 export const resolveContextBudgetPolicy = (
   modelContextWindowTokens: number,
-  policy?: ContextBudgetPolicy
+  policy?: ContextBudgetPolicy,
+  limits?: {
+    inputLimitTokens?: number | null;
+    outputLimitTokens?: number | null;
+  }
 ): ResolvedContextBudgetPolicy => {
   const contextWindow = Math.max(1, Math.trunc(modelContextWindowTokens || 1));
-  const automaticReservedTokens = Math.min(
-    20_000,
-    Math.floor(contextWindow * 0.2)
-  );
   const explicitReservedTokens =
     typeof policy?.reservedTokens === 'number' &&
     Number.isFinite(policy.reservedTokens) &&
     policy.reservedTokens >= 0
       ? Math.trunc(policy.reservedTokens)
       : null;
-  const reservedTokens = Math.min(
-    contextWindow - 1,
-    Math.max(0, explicitReservedTokens ?? automaticReservedTokens)
-  );
+  const budget = resolveUsableContextTokens({
+    contextTokens: contextWindow,
+    inputTokens: limits?.inputLimitTokens,
+    outputTokens: limits?.outputLimitTokens,
+    explicitReservedTokens,
+  });
   const hardStopRatio =
     typeof policy?.hardStopRatio === 'number' &&
     Number.isFinite(policy.hardStopRatio) &&
@@ -371,8 +392,9 @@ export const resolveContextBudgetPolicy = (
       : 0.98;
 
   return {
-    reservedTokens,
-    usableContextTokens: Math.max(1, contextWindow - reservedTokens),
+    reservedTokens: budget.reservedTokens,
+    usableContextTokens: budget.usableContextTokens,
+    maxOutputTokens: budget.maxOutputTokens,
     hardStopRatio,
   };
 };
@@ -451,6 +473,7 @@ const normalizeCompactionTrigger = (
   mode: ContextCompactionKind
 ): ContextCompactionTrigger | null => {
   if (mode === 'manual') return 'manual';
+  if (mode === 'model_switch') return 'model_switch';
   if (mode === 'safety_prestream') return 'safety_prestream';
   if (mode === 'stream_overflow' || mode === 'overflow_recovery') {
     return 'stream_overflow';
@@ -465,6 +488,7 @@ const isContextOverflowCompactionTrigger = (
 const isAggressiveCompactionMode = (mode: ContextCompactionKind): boolean =>
   mode === 'overflow_recovery' ||
   mode === 'stream_overflow' ||
+  mode === 'model_switch' ||
   mode === 'safety_prestream';
 
 const resolveInitialCompactionPass = (
@@ -1212,41 +1236,10 @@ export const resolveModelContextWindowTokens = (params: {
   baseUrl?: string | null;
   modelId?: string | null;
   modelContextWindowTokens?: number | null;
-}): number => {
-  if (
-    typeof params.modelContextWindowTokens === 'number' &&
-    Number.isFinite(params.modelContextWindowTokens) &&
-    params.modelContextWindowTokens > 0
-  ) {
-    return Math.trunc(params.modelContextWindowTokens);
-  }
-
-  const providerType = (params.providerType || '').trim().toLowerCase();
-  const providerId = (params.providerId || '').trim().toLowerCase();
-  const baseUrl = (params.baseUrl || '').trim().toLowerCase();
-  const modelId = (params.modelId || '').trim().toLowerCase();
-  const isOpenCodeGo =
-    providerId === 'opencode-go' ||
-    baseUrl.includes('opencode.ai/zen/go') ||
-    baseUrl.includes('opencode.ai/zen/v1');
-  if (isOpenCodeGo && (modelId.includes('kimi') || modelId.includes('k2'))) {
-    return 128_000;
-  }
-
-  switch (providerType) {
-    case 'chatgpt':
-    case 'copilot':
-      return 128_000;
-    case 'openai':
-    case 'openrouter':
-    case 'anthropic':
-      return 64_000;
-    case 'ollama':
-    case 'lmstudio':
-    default:
-      return 16_000;
-  }
-};
+  inputLimitTokens?: number | null;
+  outputLimitTokens?: number | null;
+  contextWindowSource?: ModelContextLimitSource | null;
+}): number => resolveModelContextLimits(params).contextTokens;
 
 export const estimateConversationFootprint = (
   params: EstimateConversationFootprintParams
@@ -1254,7 +1247,11 @@ export const estimateConversationFootprint = (
   const thresholds = getCompactionThresholds(params.thresholds);
   const budget = resolveContextBudgetPolicy(
     params.modelContextWindowTokens,
-    params.budgetPolicy
+    params.budgetPolicy,
+    {
+      inputLimitTokens: params.inputLimitTokens,
+      outputLimitTokens: params.outputLimitTokens,
+    }
   );
   const mode = params.mode || 'blocking';
   const previousModelContextWindowTokens =
@@ -1366,7 +1363,10 @@ export const estimateConversationFootprint = (
     budget.usableContextTokens > 0
       ? hiddenContextTokens / budget.usableContextTokens
       : 0;
-  const isHardStop = totalContextRatio >= budget.hardStopRatio;
+  const isContextLimitAuthoritative =
+    params.isContextLimitAuthoritative !== false;
+  const isHardStop =
+    isContextLimitAuthoritative && totalContextRatio >= budget.hardStopRatio;
   const resolvedThreshold = resolveThreshold(
     usableContextRatio,
     hiddenContextRatio,
@@ -1395,6 +1395,10 @@ export const estimateConversationFootprint = (
     summaryTokens,
     latestUserContextTokens,
     modelContextWindowTokens: params.modelContextWindowTokens,
+    inputLimitTokens: params.inputLimitTokens,
+    outputLimitTokens: params.outputLimitTokens,
+    contextLimitSource: params.contextLimitSource,
+    isContextLimitAuthoritative,
     previousModelContextWindowTokens,
     modelContextWindowShrank,
     marginTokens: budget.usableContextTokens - totalEstimatedTokens,
@@ -1418,6 +1422,10 @@ const buildCompactionState = async (params: {
   preparedMessages: StreamMessage[];
   toolDefinitions: MacroToolRegistryEntry[];
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ModelContextLimitSource;
+  isContextLimitAuthoritative?: boolean;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   budgetPolicy?: ContextBudgetPolicy;
   currentCompactionState?: ConversationCompactionState | null;
@@ -1529,6 +1537,10 @@ const buildCompactionState = async (params: {
       citations: params.citations,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      inputLimitTokens: params.inputLimitTokens,
+      outputLimitTokens: params.outputLimitTokens,
+      contextLimitSource: params.contextLimitSource,
+      isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       mode: 'blocking',
@@ -1541,7 +1553,11 @@ const buildCompactionState = async (params: {
     prunedToolContextMessageIds: params.prunedToolContextMessageIds ?? [],
     reservedTokens: resolveContextBudgetPolicy(
       params.modelContextWindowTokens,
-      params.budgetPolicy
+      params.budgetPolicy,
+      {
+        inputLimitTokens: params.inputLimitTokens,
+        outputLimitTokens: params.outputLimitTokens,
+      }
     ).reservedTokens,
     footprintBefore: params.footprintBefore,
     degradedReason: null,
@@ -1590,6 +1606,10 @@ export const maybeCompactConversation = async (
     citations: params.citations,
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
+    inputLimitTokens: params.inputLimitTokens,
+    outputLimitTokens: params.outputLimitTokens,
+    contextLimitSource: params.contextLimitSource,
+    isContextLimitAuthoritative: params.isContextLimitAuthoritative,
     previousModelContextWindowTokens: params.previousModelContextWindowTokens,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
     mode,
@@ -1679,6 +1699,10 @@ export const maybeCompactConversation = async (
       preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      inputLimitTokens: params.inputLimitTokens,
+      outputLimitTokens: params.outputLimitTokens,
+      contextLimitSource: params.contextLimitSource,
+      isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: params.forceCompaction ? null : activeState,
@@ -1731,6 +1755,10 @@ export const maybeCompactConversation = async (
       preparedMessages,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      inputLimitTokens: params.inputLimitTokens,
+      outputLimitTokens: params.outputLimitTokens,
+      contextLimitSource: params.contextLimitSource,
+      isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: null,

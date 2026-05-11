@@ -599,6 +599,7 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.textContent).toContain('Payload');
+    expect(document.body.textContent).toContain('Limite modèle');
     expect(document.body.textContent).toContain('Budget utile');
     expect(document.body.textContent).toContain('Marge');
     expect(document.body.textContent).toContain('Contexte total');
@@ -613,5 +614,34 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(onCompactNow).toHaveBeenCalled();
+  });
+
+  it('labels fallback context windows as estimated limits', async () => {
+    const base = buildDiagnostics();
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            isContextLimitAuthoritative: false,
+            footprintAfter: {
+              ...base.footprintAfter!,
+              contextLimitSource: 'macro_fallback',
+              isContextLimitAuthoritative: false,
+            },
+          })}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Limite estimée');
+    expect(document.body.textContent).not.toContain('Limite modèle');
   });
 });

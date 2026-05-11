@@ -1,12 +1,27 @@
 import { create } from 'zustand';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { ProviderConfig, AIProvider, AIModel, ProviderSettings, ReasoningEffort } from '../types';
+import {
+  ProviderConfig,
+  AIProvider,
+  AIModel,
+  ProviderSettings,
+  ReasoningEffort,
+} from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
-  fetchModelsFromProvider,
   probeModelsEndpoint,
   probeProviderReachability,
 } from '../services/providerApi';
+import {
+  buildCatalogModelContextLimitOverlay,
+  buildProviderModelContextLimitOverlay,
+  enrichModelWithCatalogContextLimits,
+  inferProviderContextWindowTokens,
+  inferProviderInputLimitTokens,
+  inferProviderOutputLimitTokens,
+  mergeProviderModelContextLimitOverlays,
+} from '../services/providerModelContextLimits';
+import { refreshModelContextCatalog } from '../services/modelContextCatalog';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from '../services/reasoningCatalog';
 import {
@@ -44,25 +59,6 @@ const isFreePricing = (pricing?: { prompt?: string; completion?: string; request
 const computeIsFreeModel = (model: AIModel): boolean => {
   if (model.id.endsWith(':free')) return true;
   return isFreePricing(model.pricing);
-};
-
-const inferContextWindowTokens = (
-  model: Pick<
-    Awaited<ReturnType<typeof fetchModelsFromProvider>>['models'][number],
-    'id' | 'context_window' | 'context_window_tokens' | 'max_input_tokens'
-  >,
-): number | null => {
-  const candidates = [
-    model.context_window_tokens,
-    model.context_window,
-    model.max_input_tokens,
-  ];
-  for (const value of candidates) {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      return Math.trunc(value);
-    }
-  }
-  return null;
 };
 
 const sortModelsByName = (models: AIModel[]): AIModel[] =>
@@ -108,6 +104,16 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
     isEnabled: model.is_enabled,
     isManual: model.is_manual,
     contextWindowTokens: model.context_window_tokens ?? undefined,
+    inputLimitTokens: model.input_limit_tokens ?? undefined,
+    outputLimitTokens: model.output_limit_tokens ?? undefined,
+    contextWindowSource:
+      (model.context_window_source as AIModel['contextWindowSource'] | null) ??
+      (model.context_window_tokens
+        ? model.is_manual
+          ? 'user_override'
+          : 'model_metadata'
+        : undefined),
+    contextLimitsUpdatedAt: model.context_limits_updated_at ?? undefined,
     first_seen_at: model.first_seen_at,
     last_seen_at: model.last_seen_at,
     db_id: model.id,
@@ -115,6 +121,35 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
   };
   return { ...normalized, isFree: computeIsFreeModel(normalized) };
 };
+
+const enrichModelsWithCatalogContextLimits = (
+  models: AIModel[],
+  params: {
+    providerType?: string | null;
+    providerId?: string | null;
+    baseUrl?: string | null;
+  }
+): AIModel[] =>
+  models.map((model) =>
+    enrichModelWithCatalogContextLimits(model, params),
+  );
+
+const toDbProviderModelInput = (model: AIModel): tauriIpc.DbProviderModelInput => ({
+  model_id: model.id,
+  name: model.name || model.id,
+  description: model.description ?? null,
+  owned_by: model.owned_by ?? null,
+  pricing_prompt: model.pricing?.prompt ?? null,
+  pricing_completion: model.pricing?.completion ?? null,
+  pricing_request: model.pricing?.request ?? null,
+  reasoning_efforts: model.reasoningEfforts ?? null,
+  default_reasoning_effort: model.defaultReasoningEffort ?? null,
+  context_window_tokens: model.contextWindowTokens ?? null,
+  input_limit_tokens: model.inputLimitTokens ?? null,
+  output_limit_tokens: model.outputLimitTokens ?? null,
+  context_window_source: model.contextWindowSource ?? null,
+  context_limits_updated_at: model.contextLimitsUpdatedAt ?? null,
+});
 
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   const enabled = models.find((m) => m.isEnabled !== false);
@@ -563,6 +598,11 @@ interface ProviderStore {
     nextModelId: string,
     name: string
   ) => Promise<void>;
+  recordProviderModelContextOverflowLimit: (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number,
+  ) => Promise<void>;
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
@@ -892,12 +932,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   loadProviderModels: async (providerId: string) => {
     const { modelsByProvider, providerConfigs } = get();
-    const providerType = providerConfigs.find((provider) => provider.id === providerId)?.providerType;
+    const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
+    const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
+        void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
-        const normalized = models.map((model) => normalizeDbModel(model, providerType));
+        const normalized = enrichModelsWithCatalogContextLimits(
+          models.map((model) => normalizeDbModel(model, providerType)),
+          {
+            providerType,
+            providerId,
+            baseUrl: providerConfig?.baseUrl,
+          },
+        );
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -979,10 +1028,37 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
 
       try {
+        void refreshModelContextCatalog();
         const updated = tauriIpc.isTauriAvailable()
           ? await tauriIpc.aiSyncProviderModels(providerId)
           : [];
-        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        let normalized = enrichModelsWithCatalogContextLimits(
+          updated.map((model) => normalizeDbModel(model, config.providerType)),
+          {
+            providerType: config.providerType,
+            providerId,
+            baseUrl: config.baseUrl,
+          },
+        );
+        if (tauriIpc.isTauriAvailable()) {
+          const hasCatalogEnrichment = normalized.some(
+            (model) => model.contextWindowSource === 'models_dev',
+          );
+          if (hasCatalogEnrichment) {
+            const persisted = await tauriIpc.upsertProviderModels({
+              providerId,
+              models: normalized.map(toDbProviderModelInput),
+            });
+            normalized = enrichModelsWithCatalogContextLimits(
+              persisted.map((model) => normalizeDbModel(model, config.providerType)),
+              {
+                providerType: config.providerType,
+                providerId,
+                baseUrl: config.baseUrl,
+              },
+            );
+          }
+        }
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -1088,6 +1164,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
 
       if (tauriIpc.isTauriAvailable()) {
+        void refreshModelContextCatalog();
         const updated = await tauriIpc.upsertProviderModels({
           providerId,
           models: result.models.map((model) => {
@@ -1096,6 +1173,28 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               modelId: model.id,
               supportedParameters: model.supported_parameters,
             });
+            const providerContextWindowTokens = inferProviderContextWindowTokens(model);
+            const providerInputLimitTokens = inferProviderInputLimitTokens(model);
+            const providerOutputLimitTokens = inferProviderOutputLimitTokens(model);
+            const catalogOverlay = providerContextWindowTokens
+              ? {}
+              : buildCatalogModelContextLimitOverlay({
+                  providerType: config.providerType,
+                  providerId,
+                  baseUrl: config.baseUrl,
+                  modelId: model.id,
+                });
+            const contextWindowTokens =
+              providerContextWindowTokens ??
+              catalogOverlay.contextWindowTokens ??
+              null;
+            const contextWindowSource = providerContextWindowTokens
+              ? 'provider_metadata'
+              : catalogOverlay.contextWindowSource ?? null;
+            const contextLimitsUpdatedAt =
+              contextWindowSource === 'provider_metadata'
+                ? new Date().toISOString()
+                : catalogOverlay.contextLimitsUpdatedAt ?? null;
 
             return {
               model_id: model.id,
@@ -1107,12 +1206,28 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               pricing_request: model.pricing?.request ?? null,
               reasoning_efforts: reasoningCapability.reasoningEfforts,
               default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
-              context_window_tokens: inferContextWindowTokens(model),
+              context_window_tokens: contextWindowTokens,
+              input_limit_tokens:
+                providerInputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
+              output_limit_tokens:
+                providerOutputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
+              context_window_source: contextWindowSource,
+              context_limits_updated_at: contextLimitsUpdatedAt,
             };
           }),
         });
 
-        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        const normalized = enrichModelsWithCatalogContextLimits(
+          mergeProviderModelContextLimitOverlays(
+            updated.map((model) => normalizeDbModel(model, config.providerType)),
+            result.models,
+          ),
+          {
+            providerType: config.providerType,
+            providerId,
+            baseUrl: config.baseUrl,
+          },
+        );
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -1161,12 +1276,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return normalized;
       }
 
+      void refreshModelContextCatalog();
       const models: AIModel[] = result.models.map((m) => {
         const reasoningCapability = getReasoningCapabilityForModel({
           providerType: config.providerType,
           modelId: m.id,
           supportedParameters: m.supported_parameters,
         });
+        const providerOverlay = buildProviderModelContextLimitOverlay(m);
+        const catalogOverlay = providerOverlay.contextWindowTokens
+          ? {}
+          : buildCatalogModelContextLimitOverlay({
+              providerType: config.providerType,
+              providerId,
+              baseUrl: config.baseUrl,
+              modelId: m.id,
+            });
         const normalized = {
           id: m.id,
           name: m.name || m.id,
@@ -1182,6 +1307,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
           isEnabled: true,
           nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
+          ...catalogOverlay,
+          ...providerOverlay,
         } satisfies AIModel;
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
@@ -1443,6 +1570,67 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }),
       });
     }
+  },
+
+  recordProviderModelContextOverflowLimit: async (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number,
+  ) => {
+    if (!Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return;
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel) return;
+    const observedLimit = Math.trunc(contextWindowTokens);
+    if (currentModel.contextWindowSource === 'user_override') {
+      return;
+    }
+    if (
+      currentModel.contextWindowTokens &&
+      observedLimit >= currentModel.contextWindowTokens
+    ) {
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const nextModel: AIModel = {
+      ...currentModel,
+      contextWindowTokens: observedLimit,
+      contextWindowSource: 'provider_overflow_error',
+      contextLimitsUpdatedAt: updatedAt,
+    };
+    const providerType = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    )?.providerType;
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
   },
 
   deleteManualModel: async (providerId: string, modelId: string) => {

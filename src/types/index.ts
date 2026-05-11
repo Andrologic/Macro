@@ -438,6 +438,68 @@ export interface PendingToolApproval {
   rememberKey: string;
 }
 
+export interface AgentCodeCheckpointFileSnapshot {
+  exists: boolean;
+  content: string | null;
+  isBinary?: boolean;
+  size?: number;
+  encoding?: string | null;
+  language?: string | null;
+}
+
+export type AgentCodeCheckpointFileStatus = 'created' | 'modified' | 'deleted';
+
+export interface AgentCodeCheckpointFile {
+  path: string;
+  realPath: string;
+  projectId?: string | null;
+  mountName?: string | null;
+  workspacePath?: string | null;
+  workspaceScope?: string | null;
+  allowOutsideWorkspace?: boolean;
+  status: AgentCodeCheckpointFileStatus;
+  before: AgentCodeCheckpointFileSnapshot;
+  after: AgentCodeCheckpointFileSnapshot;
+}
+
+export interface AgentCodeCheckpoint {
+  id: string;
+  conversationId: string;
+  turnId?: string | null;
+  assistantMessageId: string;
+  toolCallId: string;
+  toolName: string;
+  sequence: number;
+  createdAt: string;
+  files: AgentCodeCheckpointFile[];
+}
+
+export type AgentCodeReplayFileAction = 'modify' | 'delete' | 'restore';
+
+export interface AgentCodeReplayPreviewFile {
+  path: string;
+  realPath: string;
+  action: AgentCodeReplayFileAction;
+  status: AgentCodeCheckpointFileStatus;
+  projectId?: string | null;
+  mountName?: string | null;
+  workspacePath?: string | null;
+  workspaceScope?: string | null;
+  allowOutsideWorkspace?: boolean;
+  target: AgentCodeCheckpointFileSnapshot;
+  expectedCurrent?: AgentCodeCheckpointFileSnapshot;
+  current?: AgentCodeCheckpointFileSnapshot;
+  hasExternalChanges?: boolean;
+}
+
+export interface AgentCodeReplayPreview {
+  conversationId: string;
+  messageId: string;
+  targetCheckpointId: string | null;
+  affectedFiles: AgentCodeReplayPreviewFile[];
+  hasExternalChanges?: boolean;
+}
+
 export interface ConversationApprovalGrant {
   toolId: string;
   rememberKey: string;
@@ -460,6 +522,14 @@ export type ContextFootprintReason =
   | 'model_window_shrank'
   | 'manual_compaction_required';
 
+export type ModelContextLimitSource =
+  | 'model_metadata'
+  | 'provider_metadata'
+  | 'user_override'
+  | 'models_dev'
+  | 'provider_overflow_error'
+  | 'macro_fallback';
+
 export interface ContextFootprint {
   totalEstimatedTokens: number;
   serializedPayloadTokens?: number;
@@ -474,6 +544,10 @@ export interface ContextFootprint {
   summaryTokens?: number;
   latestUserContextTokens?: number;
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ModelContextLimitSource;
+  isContextLimitAuthoritative?: boolean;
   previousModelContextWindowTokens?: number;
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
@@ -492,6 +566,7 @@ export interface ContextFootprint {
 export type ContextCompactionKind =
   | 'background'
   | 'blocking'
+  | 'model_switch'
   | 'overflow_recovery'
   | 'safety_prestream'
   | 'stream_overflow'
@@ -499,6 +574,7 @@ export type ContextCompactionKind =
 
 export type ContextCompactionTrigger =
   | 'manual'
+  | 'model_switch'
   | 'safety_prestream'
   | 'stream_overflow';
 
@@ -624,6 +700,7 @@ export type ConversationExecutionPhase =
 export interface ConversationRuntimeState {
   phase: ConversationExecutionPhase;
   sessionId: string | null;
+  turnId?: string | null;
   assistantMessageId?: string | null;
   abortController?: AbortController | null;
   lastError?: string | null;
@@ -633,6 +710,7 @@ export interface ConversationRuntimeState {
 
 export interface ChatMessage {
   id: string;
+  turn_id?: string | null;
   task_id: string;
   conversation_id: string;
   role: MessageRole;
@@ -648,6 +726,18 @@ export interface ChatMessage {
   provider_input_items?: unknown[];
   provider_turn_state?: ProviderTurnState;
   completion_reason?: ChatCompletionReason;
+}
+
+export interface ProviderReplayEnvelope {
+  provider: string;
+  protocol: string;
+  conversationId: string;
+  messageId: string;
+  turnId?: string | null;
+  modelId?: string | null;
+  items: unknown[];
+  validity?: 'valid' | 'invalid' | 'compacted';
+  createdAt: string;
 }
 
 export interface Conversation {
@@ -718,6 +808,10 @@ export interface AIModel {
   isManual?: boolean;
   nativeToolCalling?: boolean;
   contextWindowTokens?: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextWindowSource?: ModelContextLimitSource;
+  contextLimitsUpdatedAt?: string;
   first_seen_at?: string;
   last_seen_at?: string;
   db_id?: string;

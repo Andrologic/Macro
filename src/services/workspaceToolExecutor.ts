@@ -1,6 +1,10 @@
 import * as tauriIpc from "./tauriIpc";
 import type { AppMode } from "../types";
-import type { ProjectMount } from "../types";
+import type {
+  AgentCodeCheckpointFile,
+  AgentCodeCheckpointFileSnapshot,
+  ProjectMount,
+} from "../types";
 import { isMacroScopedPath, isMetadataRelativePath } from "./toolModePolicy";
 import {
   canUseRemoteKernel,
@@ -41,6 +45,10 @@ export interface ExecuteWorkspaceToolOptions {
   groupId?: string | null;
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
+  onCodeCheckpoint?: (checkpoint: {
+    toolName: string;
+    files: AgentCodeCheckpointFile[];
+  }) => void | Promise<void>;
 }
 
 export const isWriteTool = (toolName: string): boolean =>
@@ -195,13 +203,199 @@ const formatToolError = (error: unknown): string => {
   return String(error);
 };
 
+type CheckpointCaptureOptions = {
+  displayPath: string;
+  realPath: string;
+  projectId?: string | null;
+  mountName?: string | null;
+  workspacePath?: string | null;
+  workspaceScope?: tauriIpc.WorkspaceScope;
+  allowOutsideWorkspace?: boolean;
+};
+
+const readCheckpointSnapshot = async (
+  options: CheckpointCaptureOptions,
+): Promise<AgentCodeCheckpointFileSnapshot> => {
+  const exists = await tauriIpc.fsExists(options.realPath, {
+    workspaceScope: options.workspaceScope,
+    workspacePath: options.workspacePath,
+  });
+  if (!exists) {
+    return {
+      exists: false,
+      content: null,
+      isBinary: false,
+      size: 0,
+      encoding: null,
+      language: null,
+    };
+  }
+
+  const content = await tauriIpc.fsReadFileWithOptions({
+    path: options.realPath,
+    allowOutsideWorkspace: options.allowOutsideWorkspace,
+    workspaceScope: options.workspaceScope,
+    workspacePath: options.workspacePath,
+  });
+  if (content.is_binary) {
+    throw new Error(
+      `Cannot checkpoint binary file ${options.displayPath}; refusing to make an unrewindable agent edit.`,
+    );
+  }
+  return {
+    exists: true,
+    content: content.content,
+    isBinary: false,
+    size: content.size,
+    encoding: content.encoding,
+    language: content.language,
+  };
+};
+
+const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
+  exists: false,
+  content: null,
+  isBinary: false,
+  size: 0,
+  encoding: null,
+  language: null,
+});
+
+const snapshotFromReadResult = (
+  result: Awaited<ReturnType<typeof tauriIpc.fsReadFileWithOptions>>,
+): AgentCodeCheckpointFileSnapshot => ({
+  exists: true,
+  content: result.content,
+  isBinary: false,
+  size: result.size,
+  encoding: result.encoding,
+  language: result.language,
+});
+
+const buildCheckpointFile = (
+  options: CheckpointCaptureOptions & {
+    before: AgentCodeCheckpointFileSnapshot;
+    after: AgentCodeCheckpointFileSnapshot;
+  },
+): AgentCodeCheckpointFile => ({
+  path: options.displayPath,
+  realPath: options.realPath,
+  projectId: options.projectId ?? null,
+  mountName: options.mountName ?? null,
+  workspacePath: options.workspacePath ?? null,
+  workspaceScope: options.workspaceScope ?? null,
+  allowOutsideWorkspace: options.allowOutsideWorkspace,
+  status: !options.before.exists
+    ? "created"
+    : !options.after.exists
+      ? "deleted"
+      : "modified",
+  before: options.before,
+  after: options.after,
+});
+
+const restoreCheckpointSnapshot = async (
+  options: CheckpointCaptureOptions,
+  snapshot: AgentCodeCheckpointFileSnapshot,
+): Promise<void> => {
+  const commonOptions = {
+    workspaceScope: options.workspaceScope,
+    workspacePath: options.workspacePath,
+  };
+
+  if (!snapshot.exists) {
+    if (await tauriIpc.fsExists(options.realPath, commonOptions)) {
+      await tauriIpc.fsDelete({
+        path: options.realPath,
+        ...commonOptions,
+      });
+    }
+    return;
+  }
+
+  if (snapshot.content === null) {
+    throw new Error(
+      `Cannot restore ${options.displayPath}: checkpoint content is missing.`,
+    );
+  }
+
+  await tauriIpc.fsWriteFile({
+    path: options.realPath,
+    content: snapshot.content,
+    createDirs: true,
+    allowOutsideWorkspace: options.allowOutsideWorkspace,
+    ...commonOptions,
+  });
+};
+
+const publishCodeCheckpoint = async (
+  options: ExecuteWorkspaceToolOptions,
+  toolName: string,
+  files: AgentCodeCheckpointFile[],
+): Promise<void> => {
+  if (!options.onCodeCheckpoint || files.length === 0) {
+    return;
+  }
+  await options.onCodeCheckpoint({ toolName, files });
+};
+
+const executeCheckpointedFileMutation = async <T>(
+  options: {
+    executeOptions: ExecuteWorkspaceToolOptions;
+    toolName: string;
+    checkpointOptions: CheckpointCaptureOptions;
+    before?: AgentCodeCheckpointFileSnapshot;
+    after?:
+      | AgentCodeCheckpointFileSnapshot
+      | ((result: T) => AgentCodeCheckpointFileSnapshot);
+    mutation: () => Promise<T>;
+  },
+): Promise<T> => {
+  const before =
+    options.before ?? (await readCheckpointSnapshot(options.checkpointOptions));
+  const result = await options.mutation();
+  const after =
+    typeof options.after === "function"
+      ? options.after(result)
+      : options.after ?? (await readCheckpointSnapshot(options.checkpointOptions));
+
+  const checkpointFile = buildCheckpointFile({
+    ...options.checkpointOptions,
+    before,
+    after,
+  });
+
+  try {
+    await publishCodeCheckpoint(options.executeOptions, options.toolName, [
+      checkpointFile,
+    ]);
+  } catch (error) {
+    try {
+      await restoreCheckpointSnapshot(options.checkpointOptions, before);
+    } catch (rollbackError) {
+      throw new Error(
+        `Failed to record code checkpoint for ${options.checkpointOptions.displayPath}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+      );
+    }
+    throw new Error(
+      `Failed to record code checkpoint for ${options.checkpointOptions.displayPath}; mutation was reverted: ${formatToolError(error)}`,
+    );
+  }
+  return result;
+};
+
 const rollbackPatchWriteChanges = async (
   snapshots: PatchWriteRollbackSnapshot[],
 ): Promise<void> => {
   for (const snapshot of [...snapshots].reverse()) {
     if (!snapshot.existed) {
       try {
-        if (await tauriIpc.fsExists(snapshot.change.realPath, snapshot.change.existsOptions)) {
+        if (
+          await tauriIpc.fsExists(
+            snapshot.change.realPath,
+            snapshot.change.existsOptions,
+          )
+        ) {
           await tauriIpc.fsDelete({
             path: snapshot.change.realPath,
             ...snapshot.change.deleteOptions,
@@ -236,12 +430,15 @@ const rollbackPatchWriteChanges = async (
 
 const commitPatchWriteChangesWithRollback = async (
   changes: PatchWriteCommitChange[],
-): Promise<void> => {
+): Promise<PatchWriteRollbackSnapshot[]> => {
   const snapshots: PatchWriteRollbackSnapshot[] = [];
 
   try {
     for (const change of changes) {
-      const existed = await tauriIpc.fsExists(change.realPath, change.existsOptions);
+      const existed = await tauriIpc.fsExists(
+        change.realPath,
+        change.existsOptions,
+      );
       const content = existed
         ? (
             await tauriIpc.fsReadFileWithOptions({
@@ -279,6 +476,8 @@ const commitPatchWriteChangesWithRollback = async (
     }
     throw error;
   }
+
+  return snapshots;
 };
 
 const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
@@ -1504,7 +1703,10 @@ export const executeWorkspaceTool = async (
       "glob",
       "grep",
     ]);
-    if (workspaceToolIds.has(toolName)) {
+    const shouldUseBackendWorkspaceTool =
+      workspaceToolIds.has(toolName) &&
+      (!isWriteTool(toolName) || !options.onCodeCheckpoint || useRemoteKernel);
+    if (shouldUseBackendWorkspaceTool) {
       try {
         const backendResult = await executeBackendTool(toolName, args);
 
@@ -1744,31 +1946,50 @@ export const executeWorkspaceTool = async (
           return error;
         }
 
-        if (!target.candidate?.workspacePath) {
+        const candidate = target.candidate;
+        const workspacePath = candidate?.workspacePath;
+        if (!candidate || !workspacePath) {
           return "Error executing write: select a subproject with project_id or a mount-prefixed path before writing.";
         }
 
         const resolved = formatResolvedWorkspacePath(
-          target.candidate,
+          candidate,
           target.relativePath,
           mode,
         );
         assertPathAllowed(mode, resolved.virtualPath);
         const realPath = joinPathWithinWorkspace(
-          target.candidate.workspacePath,
+          workspacePath,
           target.relativePath,
         );
-        const writeResult = await tauriIpc.fsWriteFile({
-          path: realPath,
-          content,
-          createDirs: rawArgs.create_dirs !== false,
+        const checkpointOptions: CheckpointCaptureOptions = {
+          displayPath: resolved.virtualPath,
+          realPath,
+          projectId: candidate.id,
+          mountName: candidate.mountName,
+          workspacePath,
           allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
-        });
-        const readback = await tauriIpc.fsReadFileWithOptions({
-          path: realPath,
-          allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
+        };
+        const { writeResult, readback } = await executeCheckpointedFileMutation({
+          executeOptions: options,
+          toolName,
+          checkpointOptions,
+          after: (result) => snapshotFromReadResult(result.readback),
+          mutation: async () => {
+            const result = await tauriIpc.fsWriteFile({
+              path: realPath,
+              content,
+              createDirs: rawArgs.create_dirs !== false,
+              allowOutsideWorkspace: true,
+              workspacePath,
+            });
+            const validation = await tauriIpc.fsReadFileWithOptions({
+              path: realPath,
+              allowOutsideWorkspace: true,
+              workspacePath,
+            });
+            return { writeResult: result, readback: validation };
+          },
         });
         return buildStructuredWriteResponse({
           path: resolved.virtualPath,
@@ -1786,8 +2007,8 @@ export const executeWorkspaceTool = async (
             encoding: readback.encoding,
             language: readback.language,
           },
-          projectId: target.candidate.id,
-          mountName: target.candidate.mountName,
+          projectId: candidate.id,
+          mountName: candidate.mountName,
           realPath: resolved.realPath,
           rawPath: resolved.virtualPath,
         });
@@ -1814,24 +2035,34 @@ export const executeWorkspaceTool = async (
           return error;
         }
 
-        if (!target.candidate?.workspacePath) {
+        const candidate = target.candidate;
+        const workspacePath = candidate?.workspacePath;
+        if (!candidate || !workspacePath) {
           return "Error executing edit: select a subproject with project_id or a mount-prefixed path before editing.";
         }
 
         const resolved = formatResolvedWorkspacePath(
-          target.candidate,
+          candidate,
           target.relativePath,
           mode,
         );
         assertPathAllowed(mode, resolved.virtualPath);
         const realPath = joinPathWithinWorkspace(
-          target.candidate.workspacePath,
+          workspacePath,
           target.relativePath,
         );
+        const checkpointOptions: CheckpointCaptureOptions = {
+          displayPath: resolved.virtualPath,
+          realPath,
+          projectId: candidate.id,
+          mountName: candidate.mountName,
+          workspacePath,
+          allowOutsideWorkspace: true,
+        };
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
           allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
+          workspacePath,
         });
         if (current.is_binary) {
           return `Cannot edit binary file: ${resolved.virtualPath}`;
@@ -1849,17 +2080,26 @@ export const executeWorkspaceTool = async (
           ? current.content.split(oldText).join(newText)
           : current.content.replace(oldText, newText);
 
-        await tauriIpc.fsWriteFile({
-          path: realPath,
-          content: updated,
-          createDirs: true,
-          allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
-        });
-        const readback = await tauriIpc.fsReadFileWithOptions({
-          path: realPath,
-          allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
+        const readback = await executeCheckpointedFileMutation({
+          executeOptions: options,
+          toolName,
+          checkpointOptions,
+          before: snapshotFromReadResult(current),
+          after: snapshotFromReadResult,
+          mutation: async () => {
+            await tauriIpc.fsWriteFile({
+              path: realPath,
+              content: updated,
+              createDirs: true,
+              allowOutsideWorkspace: true,
+              workspacePath,
+            });
+            return tauriIpc.fsReadFileWithOptions({
+              path: realPath,
+              allowOutsideWorkspace: true,
+              workspacePath,
+            });
+          },
         });
         const stats = computeLineChangeStats(current.content, updated);
         return buildStructuredWriteResponse({
@@ -1879,8 +2119,8 @@ export const executeWorkspaceTool = async (
             language: readback.language,
           },
           replacements: replaceAll ? occurrences : 1,
-          projectId: target.candidate.id,
-          mountName: target.candidate.mountName,
+          projectId: candidate.id,
+          mountName: candidate.mountName,
           realPath: resolved.realPath,
           rawPath: resolved.virtualPath,
         });
@@ -1903,22 +2143,24 @@ export const executeWorkspaceTool = async (
           return error;
         }
 
-        if (!target.candidate?.workspacePath) {
+        const candidate = target.candidate;
+        const workspacePath = candidate?.workspacePath;
+        if (!candidate || !workspacePath) {
           return "Error executing delete: select a subproject with project_id or a mount-prefixed path before deleting.";
         }
 
         const resolved = formatResolvedWorkspacePath(
-          target.candidate,
+          candidate,
           target.relativePath,
           mode,
         );
         assertPathAllowed(mode, resolved.virtualPath);
         const realPath = joinPathWithinWorkspace(
-          target.candidate.workspacePath,
+          workspacePath,
           target.relativePath,
         );
         const targetStats = await tauriIpc.fsStat(realPath, {
-          workspacePath: target.candidate.workspacePath,
+          workspacePath,
         });
         if (targetStats.kind !== "file") {
           return `Cannot delete directory with delete tool: ${resolved.virtualPath}. Only files are supported.`;
@@ -1927,15 +2169,34 @@ export const executeWorkspaceTool = async (
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
           allowOutsideWorkspace: true,
-          workspacePath: target.candidate.workspacePath,
+          workspacePath,
         });
+        if (current.is_binary) {
+          return `Cannot delete binary file with checkpointing: ${resolved.virtualPath}`;
+        }
         const deletions = current.is_binary
           ? 0
           : countLogicalLines(current.content);
 
-        await tauriIpc.fsDelete({
-          path: realPath,
-          workspacePath: target.candidate.workspacePath,
+        await executeCheckpointedFileMutation({
+          executeOptions: options,
+          toolName,
+          checkpointOptions: {
+            displayPath: resolved.virtualPath,
+            realPath,
+            projectId: candidate.id,
+            mountName: candidate.mountName,
+            workspacePath,
+            allowOutsideWorkspace: true,
+          },
+          before: snapshotFromReadResult(current),
+          after: missingCheckpointSnapshot(),
+          mutation: async () => {
+            await tauriIpc.fsDelete({
+              path: realPath,
+              workspacePath,
+            });
+          },
         });
 
         return buildStructuredWriteResponse({
@@ -1954,8 +2215,8 @@ export const executeWorkspaceTool = async (
             encoding: null,
             language: null,
           },
-          projectId: target.candidate.id,
-          mountName: target.candidate.mountName,
+          projectId: candidate.id,
+          mountName: candidate.mountName,
           realPath: resolved.realPath,
           rawPath: resolved.virtualPath,
         });
@@ -1977,6 +2238,7 @@ export const executeWorkspaceTool = async (
           target: PatchTarget;
           status: "created" | "updated" | "deleted";
           newContent: string | null;
+          before: AgentCodeCheckpointFileSnapshot;
           created: boolean;
           bytesWritten: number;
           additions: number;
@@ -2030,6 +2292,7 @@ export const executeWorkspaceTool = async (
               target: patchTarget,
               status: "created",
               newContent,
+              before: missingCheckpointSnapshot(),
               created: true,
               bytesWritten: newContent.length,
               additions: countLogicalLines(newContent),
@@ -2045,10 +2308,14 @@ export const executeWorkspaceTool = async (
           });
 
           if (operation.kind === "delete") {
+            if (current.is_binary) {
+              return `Cannot delete binary file with checkpointing: ${patchTarget.displayPath}`;
+            }
             pendingChanges.push({
               target: patchTarget,
               status: "deleted",
               newContent: null,
+              before: snapshotFromReadResult(current),
               created: false,
               bytesWritten: 0,
               additions: 0,
@@ -2077,6 +2344,7 @@ export const executeWorkspaceTool = async (
             target: patchTarget,
             status: "updated",
             newContent,
+            before: snapshotFromReadResult(current),
             created: false,
             bytesWritten: newContent.length,
             additions: stats.additions,
@@ -2084,7 +2352,7 @@ export const executeWorkspaceTool = async (
           });
         }
 
-        await commitPatchWriteChangesWithRollback(
+        const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
           pendingChanges.map((change) => ({
             displayPath: change.target.displayPath,
             realPath: change.target.realPath,
@@ -2109,9 +2377,11 @@ export const executeWorkspaceTool = async (
         const files: PatchChangeRecord[] = [];
         const validationFiles: PatchValidationRecord[] = [];
         const errors: string[] = [];
+        const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
         for (const change of pendingChanges) {
           let validation: PatchValidationRecord;
+          let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
           if (change.newContent === null) {
             validation = {
               path: change.target.displayPath,
@@ -2122,6 +2392,7 @@ export const executeWorkspaceTool = async (
               encoding: null,
               language: null,
             };
+            afterCheckpoint = missingCheckpointSnapshot();
           } else {
             try {
               const readback = await tauriIpc.fsReadFileWithOptions({
@@ -2138,6 +2409,7 @@ export const executeWorkspaceTool = async (
                 encoding: readback.encoding,
                 language: readback.language,
               };
+              afterCheckpoint = snapshotFromReadResult(readback);
             } catch (error) {
               errors.push(
                 `Validation failed for ${change.target.displayPath}: ${formatToolError(error)}`,
@@ -2151,21 +2423,59 @@ export const executeWorkspaceTool = async (
                 encoding: null,
                 language: null,
               };
+              afterCheckpoint = {
+                exists: true,
+                content: change.newContent,
+                isBinary: false,
+                size: change.newContent.length,
+                encoding: null,
+                language: null,
+              };
             }
           }
           validationFiles.push(validation);
-        files.push({
-          path: change.target.displayPath,
-          status: change.status,
+          files.push({
+            path: change.target.displayPath,
+            status: change.status,
             additions: change.additions,
             deletions: change.deletions,
             created: change.created,
             bytes_written: change.bytesWritten,
-          validation,
-          project_id: change.target.candidate.id,
-          mount_name: change.target.candidate.mountName,
-        });
-      }
+            validation,
+            project_id: change.target.candidate.id,
+            mount_name: change.target.candidate.mountName,
+            real_path: change.target.realPath,
+          });
+          checkpointFiles.push(
+            buildCheckpointFile({
+              displayPath: change.target.displayPath,
+              realPath: change.target.realPath,
+              projectId: change.target.candidate.id,
+              mountName: change.target.candidate.mountName,
+              workspacePath: change.target.candidate.workspacePath,
+              allowOutsideWorkspace: true,
+              before: change.before,
+              after: afterCheckpoint,
+            }),
+          );
+        }
+
+        if (errors.length === 0) {
+          try {
+            await publishCodeCheckpoint(options, toolName, checkpointFiles);
+          } catch (error) {
+            try {
+              await rollbackPatchWriteChanges(rollbackSnapshots);
+            } catch (rollbackError) {
+              throw new Error(
+                `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+              );
+            }
+            throw new Error(
+              `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+            );
+          }
+        }
 
         return JSON.stringify(
           {
@@ -3110,19 +3420,36 @@ export const executeWorkspaceTool = async (
         : resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
       assertPathAllowed(mode, resolvedPath);
       const createDirs = args.create_dirs !== false;
-      const writeResult = await tauriIpc.fsWriteFile({
-        path,
-        content,
-        createDirs,
+      const checkpointOptions: CheckpointCaptureOptions = {
+        displayPath: resolvedPath,
+        realPath: path,
+        workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         allowOutsideWorkspace:
           !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-      });
-      const readback = await tauriIpc.fsReadFileWithOptions({
-        path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+      };
+      const { writeResult, readback } = await executeCheckpointedFileMutation({
+        executeOptions: options,
+        toolName,
+        checkpointOptions,
+        after: (result) => snapshotFromReadResult(result.readback),
+        mutation: async () => {
+          const result = await tauriIpc.fsWriteFile({
+            path,
+            content,
+            createDirs,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          });
+          const validation = await tauriIpc.fsReadFileWithOptions({
+            path,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          });
+          return { writeResult: result, readback: validation };
+        },
       });
       return buildStructuredWriteResponse({
         path: resolvedPath,
@@ -3183,20 +3510,37 @@ export const executeWorkspaceTool = async (
         ? current.content.split(oldText).join(newText)
         : current.content.replace(oldText, newText);
 
-      const writeResult = await tauriIpc.fsWriteFile({
-        path,
-        content: updated,
-        createDirs: true,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-      });
       const stats = computeLineChangeStats(current.content, updated);
-      const readback = await tauriIpc.fsReadFileWithOptions({
-        path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+      const { writeResult, readback } = await executeCheckpointedFileMutation({
+        executeOptions: options,
+        toolName,
+        checkpointOptions: {
+          displayPath: resolvedPath,
+          realPath: path,
+          workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+          workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          allowOutsideWorkspace:
+            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        },
+        before: snapshotFromReadResult(current),
+        after: (result) => snapshotFromReadResult(result.readback),
+        mutation: async () => {
+          const result = await tauriIpc.fsWriteFile({
+            path,
+            content: updated,
+            createDirs: true,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          });
+          const validation = await tauriIpc.fsReadFileWithOptions({
+            path,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          });
+          return { writeResult: result, readback: validation };
+        },
       });
       return buildStructuredWriteResponse({
         path: resolvedPath,
@@ -3245,12 +3589,31 @@ export const executeWorkspaceTool = async (
           !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
       });
+      if (current.is_binary) {
+        return `Cannot delete binary file with checkpointing: ${resolvedPath}`;
+      }
       const deletions = current.is_binary ? 0 : countLogicalLines(current.content);
 
-      await tauriIpc.fsDelete({
-        path,
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-        workspacePath: effectiveWorkspacePath,
+      await executeCheckpointedFileMutation({
+        executeOptions: options,
+        toolName,
+        checkpointOptions: {
+          displayPath: resolvedPath,
+          realPath: path,
+          workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+          workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          allowOutsideWorkspace:
+            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        },
+        before: snapshotFromReadResult(current),
+        after: missingCheckpointSnapshot(),
+        mutation: async () => {
+          await tauriIpc.fsDelete({
+            path,
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          });
+        },
       });
 
       return buildStructuredWriteResponse({
@@ -3290,6 +3653,7 @@ export const executeWorkspaceTool = async (
         realPath: string;
         status: "created" | "updated" | "deleted";
         newContent: string | null;
+        before: AgentCodeCheckpointFileSnapshot;
         additions: number;
         deletions: number;
         created: boolean;
@@ -3319,6 +3683,7 @@ export const executeWorkspaceTool = async (
             realPath,
             status: "created",
             newContent,
+            before: missingCheckpointSnapshot(),
             additions: countLogicalLines(newContent),
             deletions: 0,
             created: true,
@@ -3335,11 +3700,15 @@ export const executeWorkspaceTool = async (
         });
 
         if (operation.kind === "delete") {
+          if (current.is_binary) {
+            return `Cannot delete binary file with checkpointing: ${resolvedPath}`;
+          }
           pendingChanges.push({
             path: resolvedPath,
             realPath,
             status: "deleted",
             newContent: null,
+            before: snapshotFromReadResult(current),
             additions: 0,
             deletions: countLogicalLines(current.content),
             created: false,
@@ -3368,6 +3737,7 @@ export const executeWorkspaceTool = async (
           realPath,
           status: "updated",
           newContent,
+          before: snapshotFromReadResult(current),
           additions: stats.additions,
           deletions: stats.deletions,
           created: false,
@@ -3375,7 +3745,7 @@ export const executeWorkspaceTool = async (
         });
       }
 
-      await commitPatchWriteChangesWithRollback(
+      const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
         pendingChanges.map((change) => ({
           displayPath: change.path,
           realPath: change.realPath,
@@ -3406,9 +3776,11 @@ export const executeWorkspaceTool = async (
       const files: PatchChangeRecord[] = [];
       const validationFiles: PatchValidationRecord[] = [];
       const errors: string[] = [];
+      const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
       for (const change of pendingChanges) {
         let validation: PatchValidationRecord;
+        let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
         if (change.newContent === null) {
           validation = {
             path: change.path,
@@ -3419,6 +3791,7 @@ export const executeWorkspaceTool = async (
             encoding: null,
             language: null,
           };
+          afterCheckpoint = missingCheckpointSnapshot();
         } else {
           try {
             const readback = await tauriIpc.fsReadFileWithOptions({
@@ -3436,6 +3809,7 @@ export const executeWorkspaceTool = async (
               encoding: readback.encoding,
               language: readback.language,
             };
+            afterCheckpoint = snapshotFromReadResult(readback);
           } catch (error) {
             errors.push(
               `Validation failed for ${change.path}: ${formatToolError(error)}`,
@@ -3446,6 +3820,14 @@ export const executeWorkspaceTool = async (
               readable: false,
               is_binary: false,
               size: 0,
+              encoding: null,
+              language: null,
+            };
+            afterCheckpoint = {
+              exists: true,
+              content: change.newContent,
+              isBinary: false,
+              size: change.newContent.length,
               encoding: null,
               language: null,
             };
@@ -3460,7 +3842,37 @@ export const executeWorkspaceTool = async (
           created: change.created,
           bytes_written: change.bytesWritten,
           validation,
+          real_path: change.realPath,
         });
+        checkpointFiles.push(
+          buildCheckpointFile({
+            displayPath: change.path,
+            realPath: change.realPath,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            before: change.before,
+            after: afterCheckpoint,
+          }),
+        );
+      }
+
+      if (errors.length === 0) {
+        try {
+          await publishCodeCheckpoint(options, toolName, checkpointFiles);
+        } catch (error) {
+          try {
+            await rollbackPatchWriteChanges(rollbackSnapshots);
+          } catch (rollbackError) {
+            throw new Error(
+              `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+            );
+          }
+          throw new Error(
+            `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+          );
+        }
       }
 
       return JSON.stringify(

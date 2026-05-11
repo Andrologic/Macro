@@ -3607,7 +3607,9 @@ pub async fn db_toggle_pin_conversation(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbCreateMessageParams {
+    id: Option<String>,
     conversation_id: String,
+    turn_id: Option<String>,
     role: String,
     content: String,
     token_count: Option<i32>,
@@ -3639,7 +3641,9 @@ pub async fn db_create_message(
     repository::create_message(
         &pool,
         CreateMessageInput {
+            id: params.id,
             conversation_id: params.conversation_id,
+            turn_id: params.turn_id,
             role: params.role,
             content: params.content,
             token_count: params.token_count,
@@ -3670,6 +3674,7 @@ pub async fn db_import_messages(
 #[serde(rename_all = "camelCase")]
 pub struct DbUpdateMessageParams {
     id: String,
+    turn_id: Option<String>,
     content: String,
     token_count: Option<i32>,
     tool_traces_json: Option<String>,
@@ -3689,6 +3694,7 @@ pub async fn db_update_message(
         &pool,
         repository::UpdateMessageContentInput {
             id: &params.id,
+            turn_id: params.turn_id,
             content: &params.content,
             token_count: params.token_count,
             tool_traces_json: params.tool_traces_json,
