@@ -17,7 +17,7 @@ export type ChatTranscriptCompactionBoundaryItem = {
 export type ChatTranscriptCompactionProgressItem = {
   kind: 'compaction_progress';
   key: string;
-  phase: 'compacting' | 'overflow_recovery';
+  phase: 'compacting' | 'safety_compacting' | 'overflow_recovery' | 'recovering_overflow';
   updatedAt?: string;
 };
 
@@ -43,7 +43,9 @@ export const buildChatTranscriptItems = (
   const shouldInsertBoundary = boundaryIndex >= 0;
   const progressPhase =
     compactionState?.phase === 'compacting' ||
-    compactionState?.phase === 'overflow_recovery'
+    compactionState?.phase === 'safety_compacting' ||
+    compactionState?.phase === 'overflow_recovery' ||
+    compactionState?.phase === 'recovering_overflow'
       ? compactionState.phase
       : null;
 

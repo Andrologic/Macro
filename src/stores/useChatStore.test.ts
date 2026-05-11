@@ -6465,7 +6465,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       conversation_id: 'chat-conv',
       compaction_kind: 'manual',
       compaction_pass: 'forced',
-      summary_format_version: 2,
+      summary_format_version: 3,
       summary_source: 'model',
     });
     expect(upsertInput?.summary_text).toContain('Continue the database migration safely.');
@@ -6473,7 +6473,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
     ).toMatchObject({
       phase: 'compacted',
-      summaryFormatVersion: 2,
+      summaryFormatVersion: 3,
       summarySource: 'model',
     });
   });
@@ -6638,7 +6638,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       degraded_reason: null,
       compaction_kind: 'manual',
       compaction_pass: 'ultra',
-      summary_format_version: 2,
+      summary_format_version: 3,
       summary_source: 'fallback',
       created_at: '2026-04-14T10:00:00.000Z',
       updated_at: '2026-04-14T10:05:00.000Z',
@@ -6660,7 +6660,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toMatchObject({
       phase: 'compacted',
       summaryText: 'Current objective: continue safely.',
-      summaryFormatVersion: 2,
+      summaryFormatVersion: 3,
       summarySource: 'fallback',
     });
   });

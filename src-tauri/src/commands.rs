@@ -4050,6 +4050,18 @@ pub async fn db_upsert_conversation_compaction_state(
 }
 
 #[tauri::command]
+pub async fn db_insert_conversation_compaction_event(
+    pool: State<'_, DbPool>,
+    input: InsertConversationCompactionEventInput,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::insert_conversation_compaction_event(&pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_delete_conversation_compaction_state(
     pool: State<'_, DbPool>,
     conversation_id: String,

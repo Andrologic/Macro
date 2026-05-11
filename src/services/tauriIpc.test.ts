@@ -152,6 +152,41 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("records conversation compaction events through db_insert_conversation_compaction_event", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.dbInsertConversationCompactionEvent({
+      conversation_id: "conv-1",
+      trigger: "safety_prestream",
+      provider_id: "provider-1",
+      model_id: "model-small",
+      model_context_window_tokens: 8000,
+      tokens_before: 9000,
+      tokens_after: 1200,
+      status: "success",
+      reason: "model_window_shrank",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_insert_conversation_compaction_event",
+        payload: {
+          input: {
+            conversation_id: "conv-1",
+            trigger: "safety_prestream",
+            provider_id: "provider-1",
+            model_id: "model-small",
+            model_context_window_tokens: 8000,
+            tokens_before: 9000,
+            tokens_after: 1200,
+            status: "success",
+            reason: "model_window_shrank",
+          },
+        },
+      },
+    ]);
+  });
+
   it("passes the stable conversation id through ai_stream_chat", async () => {
     const tauriIpc = await loadTauriIpc();
 

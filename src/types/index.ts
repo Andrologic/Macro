@@ -456,7 +456,9 @@ export type ContextFootprintReason =
   | 'hidden_context_ratio'
   | 'tool_turn_count'
   | 'post_compaction_overflow'
-  | 'hard_stop_ratio';
+  | 'hard_stop_ratio'
+  | 'model_window_shrank'
+  | 'manual_compaction_required';
 
 export interface ContextFootprint {
   totalEstimatedTokens: number;
@@ -472,6 +474,9 @@ export interface ContextFootprint {
   summaryTokens?: number;
   latestUserContextTokens?: number;
   modelContextWindowTokens: number;
+  previousModelContextWindowTokens?: number;
+  modelContextWindowShrank?: boolean;
+  marginTokens?: number;
   reservedTokens: number;
   usableContextTokens: number;
   threshold: ContextFootprintThreshold;
@@ -488,10 +493,18 @@ export type ContextCompactionKind =
   | 'background'
   | 'blocking'
   | 'overflow_recovery'
+  | 'safety_prestream'
+  | 'stream_overflow'
   | 'manual';
+
+export type ContextCompactionTrigger =
+  | 'manual'
+  | 'safety_prestream'
+  | 'stream_overflow';
 
 export type CompactionPass = 'normal' | 'forced' | 'ultra';
 export type CompactionSummarySource = 'model' | 'fallback';
+export type CompactionCheckpointHealth = 'ok' | 'degraded' | 'fallback';
 
 export type ToolContextDigestKind =
   | 'file_read'
@@ -532,6 +545,14 @@ export interface ConversationCompactionState {
   compactionPass?: CompactionPass;
   summaryFormatVersion?: number;
   summarySource?: CompactionSummarySource;
+  policyVersion?: number;
+  fingerprintInputsJson?: string;
+  sourceHashesJson?: string;
+  modelContextWindowTokens?: number;
+  providerId?: string | null;
+  modelId?: string | null;
+  checkpointHealth?: CompactionCheckpointHealth;
+  lastTrigger?: ContextCompactionTrigger;
 }
 
 export interface ChatGptProviderTurnState {

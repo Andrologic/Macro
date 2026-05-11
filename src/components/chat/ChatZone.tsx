@@ -748,7 +748,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     : undefined;
   const isCompactionProgressActive =
     activeCompactionStatus?.phase === 'compacting' ||
+    activeCompactionStatus?.phase === 'safety_compacting' ||
     activeCompactionStatus?.phase === 'overflow_recovery' ||
+    activeCompactionStatus?.phase === 'recovering_overflow' ||
     selectedConversationRuntime.phase === 'overflow_recovery';
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
   const runContextDiagnosticsRefresh = useCallback(async () => {
