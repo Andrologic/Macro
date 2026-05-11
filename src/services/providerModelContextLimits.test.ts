@@ -17,25 +17,39 @@ describe('providerModelContextLimits', () => {
     catalogTestables.reset();
   });
 
-  it('prefers explicit context window metadata before input limits', () => {
+  it('prefers explicit context window metadata and never treats max_input_tokens as a context window', () => {
     expect(
       inferProviderContextWindowTokens({
         context_window_tokens: 200_000,
         context_window: 128_000,
+        context_length: 100_000,
         max_input_tokens: 64_000,
       }),
     ).toBe(200_000);
     expect(
       inferProviderContextWindowTokens({
         context_window: 128_000,
+        context_length: 100_000,
         max_input_tokens: 64_000,
       }),
     ).toBe(128_000);
     expect(
       inferProviderContextWindowTokens({
+        context_length: 256_000,
         max_input_tokens: 64_000,
       }),
-    ).toBe(64_000);
+    ).toBe(256_000);
+    expect(
+      inferProviderContextWindowTokens({
+        top_provider: { context_length: 300_000 },
+        max_input_tokens: 64_000,
+      }),
+    ).toBe(300_000);
+    expect(
+      inferProviderContextWindowTokens({
+        max_input_tokens: 64_000,
+      }),
+    ).toBeNull();
   });
 
   it('reads input and output limit aliases from provider models', () => {
@@ -55,6 +69,11 @@ describe('providerModelContextLimits', () => {
     expect(
       inferProviderOutputLimitTokens({ max_completion_tokens: 4_000 }),
     ).toBe(4_000);
+    expect(
+      inferProviderOutputLimitTokens({
+        top_provider: { max_completion_tokens: 6_000 },
+      }),
+    ).toBe(6_000);
   });
 
   it('builds and merges AI model overlays without changing unrelated models', () => {
@@ -92,6 +111,36 @@ describe('providerModelContextLimits', () => {
       id: 'model-b',
       name: 'Model B',
       provider_id: 'provider-1',
+    });
+  });
+
+  it('preserves user context overrides while merging provider metadata', () => {
+    const merged = mergeProviderModelContextLimitOverlays(
+      [
+        {
+          id: 'model-a',
+          name: 'Model A',
+          provider_id: 'provider-1',
+          contextWindowTokens: 16_000,
+          contextWindowSource: 'user_override',
+          inputLimitTokens: 12_000,
+        },
+      ],
+      [
+        {
+          id: 'model-a',
+          context_length: 200_000,
+          max_input_tokens: 180_000,
+          max_output_tokens: 16_000,
+        },
+      ],
+    );
+
+    expect(merged[0]).toMatchObject({
+      contextWindowTokens: 16_000,
+      contextWindowSource: 'user_override',
+      inputLimitTokens: 180_000,
+      outputLimitTokens: 16_000,
     });
   });
 
@@ -135,5 +184,54 @@ describe('providerModelContextLimits', () => {
         { providerType: 'openai' },
       ).contextWindowTokens,
     ).toBe(64_000);
+  });
+
+  it('lets fresh catalog metadata replace stale provider overflow limits', () => {
+    catalogTestables.writeCachedCatalog({
+      fetchedAt: '2026-05-11T00:00:00.000Z',
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'gpt-test': {
+              id: 'gpt-test',
+              limit: { context: 111_000, output: 12_000 },
+            },
+          },
+        },
+      },
+    });
+
+    const staleOverflow = enrichModelWithCatalogContextLimits(
+      {
+        id: 'gpt-test',
+        name: 'GPT Test',
+        provider_id: 'provider-1',
+        contextWindowTokens: 64_000,
+        contextWindowSource: 'provider_overflow_error',
+        contextLimitsUpdatedAt: '2020-01-01T00:00:00.000Z',
+      },
+      { providerType: 'openai' },
+    );
+    const freshOverflow = enrichModelWithCatalogContextLimits(
+      {
+        id: 'gpt-test',
+        name: 'GPT Test',
+        provider_id: 'provider-1',
+        contextWindowTokens: 64_000,
+        contextWindowSource: 'provider_overflow_error',
+        contextLimitsUpdatedAt: new Date().toISOString(),
+      },
+      { providerType: 'openai' },
+    );
+
+    expect(staleOverflow).toMatchObject({
+      contextWindowTokens: 111_000,
+      contextWindowSource: 'models_dev',
+    });
+    expect(freshOverflow).toMatchObject({
+      contextWindowTokens: 64_000,
+      contextWindowSource: 'provider_overflow_error',
+    });
   });
 });

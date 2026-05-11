@@ -25,6 +25,7 @@ describe('modelContextLimits', () => {
       outputTokens: 64_000,
       source: 'provider_metadata',
       isAuthoritative: true,
+      confidence: 'verified',
     });
   });
 
@@ -33,16 +34,19 @@ describe('modelContextLimits', () => {
       contextLimitsToFootprintFields({
         contextTokens: 200_000,
         inputTokens: 180_000,
-        outputTokens: 16_000,
-        source: 'provider_metadata',
-        isAuthoritative: true,
-      }),
+      outputTokens: 16_000,
+      source: 'provider_metadata',
+      isAuthoritative: true,
+      confidence: 'verified',
+    }),
     ).toEqual({
       modelContextWindowTokens: 200_000,
       inputLimitTokens: 180_000,
       outputLimitTokens: 16_000,
       contextLimitSource: 'provider_metadata',
       isContextLimitAuthoritative: true,
+      contextLimitConfidence: 'verified',
+      contextLimitWarning: undefined,
     });
   });
 
@@ -55,6 +59,8 @@ describe('modelContextLimits', () => {
     expect(limits.contextTokens).toBe(64_000);
     expect(limits.source).toBe('macro_fallback');
     expect(limits.isAuthoritative).toBe(false);
+    expect(limits.confidence).toBe('fallback');
+    expect(limits.warning).toContain('Limite estimée par Macro');
   });
 
   it('uses the OpenCode Go Kimi enrichment as an authoritative model source', () => {
@@ -68,6 +74,22 @@ describe('modelContextLimits', () => {
     expect(limits.contextTokens).toBe(128_000);
     expect(limits.source).toBe('models_dev');
     expect(limits.isAuthoritative).toBe(true);
+    expect(limits.confidence).toBe('catalog');
+  });
+
+  it('marks provider overflow learned limits as temporary diagnostics', () => {
+    const limits = resolveModelContextLimits({
+      providerType: 'openai',
+      modelId: 'model-with-overflow',
+      modelContextWindowTokens: 96_000,
+      contextWindowSource: 'provider_overflow_error',
+      contextLimitsUpdatedAt: '2026-05-11T00:00:00.000Z',
+    });
+
+    expect(limits.source).toBe('provider_overflow_error');
+    expect(limits.isAuthoritative).toBe(true);
+    expect(limits.confidence).toBe('learned');
+    expect(limits.warning).toContain('erreur provider');
   });
 
   it('caps output reservation at the OpenCode maximum', () => {

@@ -151,6 +151,13 @@ const toDbProviderModelInput = (model: AIModel): tauriIpc.DbProviderModelInput =
   context_limits_updated_at: model.contextLimitsUpdatedAt ?? null,
 });
 
+const modelContextFieldsChanged = (left: AIModel, right: AIModel): boolean =>
+  left.contextWindowTokens !== right.contextWindowTokens ||
+  left.inputLimitTokens !== right.inputLimitTokens ||
+  left.outputLimitTokens !== right.outputLimitTokens ||
+  left.contextWindowSource !== right.contextWindowSource ||
+  left.contextLimitsUpdatedAt !== right.contextLimitsUpdatedAt;
+
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   const enabled = models.find((m) => m.isEnabled !== false);
   return enabled?.id ?? null;
@@ -589,6 +596,7 @@ interface ProviderStore {
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   loadProviderModels: (providerId: string) => Promise<AIModel[]>;
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
+  refreshLoadedModelContextCatalog: (providerId?: string) => Promise<void>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
   addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
@@ -717,6 +725,69 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   selectedSupportsReasoningEffort: () => {
     const state = get();
     return state.getAvailableReasoningEfforts(state.selectedProviderId, state.selectedModelId).length > 0;
+  },
+
+  refreshLoadedModelContextCatalog: async (providerId?: string) => {
+    await refreshModelContextCatalog();
+
+    const state = get();
+    const providerIds = providerId
+      ? [providerId]
+      : Object.keys(state.modelsByProvider);
+    const nextModelsByProvider = { ...state.modelsByProvider };
+    const changedModelsByProvider: Record<string, AIModel[]> = {};
+
+    for (const currentProviderId of providerIds) {
+      const models = state.modelsByProvider[currentProviderId] || [];
+      if (models.length === 0) continue;
+
+      const providerConfig = state.providerConfigs.find(
+        (provider) => provider.id === currentProviderId,
+      );
+      const enriched = models.map((model) =>
+        enrichModelWithCatalogContextLimits(
+          model,
+          {
+            providerType: providerConfig?.providerType,
+            providerId: currentProviderId,
+            baseUrl: providerConfig?.baseUrl,
+          },
+          { refreshCatalogSource: true },
+        ),
+      );
+      const changed = enriched.filter((model, index) =>
+        modelContextFieldsChanged(models[index] ?? model, model),
+      );
+      if (changed.length === 0) continue;
+
+      nextModelsByProvider[currentProviderId] = sortModelsByName(enriched);
+      changedModelsByProvider[currentProviderId] = changed;
+    }
+
+    if (Object.keys(changedModelsByProvider).length === 0) {
+      return;
+    }
+
+    set({ modelsByProvider: nextModelsByProvider });
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    await Promise.all(
+      Object.entries(changedModelsByProvider).map(
+        async ([currentProviderId, changedModels]) => {
+          const reliableCatalogModels = changedModels.filter(
+            (model) => model.contextWindowSource === 'models_dev',
+          );
+          if (reliableCatalogModels.length === 0) return;
+          await tauriIpc.upsertProviderModels({
+            providerId: currentProviderId,
+            models: reliableCatalogModels.map(toDbProviderModelInput),
+          });
+        },
+      ),
+    );
   },
 
   initialize: async () => {
@@ -969,6 +1040,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1085,6 +1157,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1168,6 +1241,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const updated = await tauriIpc.upsertProviderModels({
           providerId,
           models: result.models.map((model) => {
+            const existingModel = (modelsByProvider[providerId] || []).find(
+              (candidate) => candidate.id === model.id,
+            );
             const reasoningCapability = getReasoningCapabilityForModel({
               providerType: config.providerType,
               modelId: model.id,
@@ -1195,6 +1271,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               contextWindowSource === 'provider_metadata'
                 ? new Date().toISOString()
                 : catalogOverlay.contextLimitsUpdatedAt ?? null;
+            const userOverrideContext =
+              existingModel?.contextWindowSource === 'user_override' &&
+              existingModel.contextWindowTokens
+                ? {
+                    contextWindowTokens: existingModel.contextWindowTokens,
+                    contextWindowSource: 'user_override' as const,
+                    contextLimitsUpdatedAt:
+                      existingModel.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
+                  }
+                : null;
 
             return {
               model_id: model.id,
@@ -1206,13 +1292,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               pricing_request: model.pricing?.request ?? null,
               reasoning_efforts: reasoningCapability.reasoningEfforts,
               default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
-              context_window_tokens: contextWindowTokens,
+              context_window_tokens:
+                userOverrideContext?.contextWindowTokens ?? contextWindowTokens,
               input_limit_tokens:
                 providerInputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
               output_limit_tokens:
                 providerOutputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
-              context_window_source: contextWindowSource,
-              context_limits_updated_at: contextLimitsUpdatedAt,
+              context_window_source:
+                userOverrideContext?.contextWindowSource ?? contextWindowSource,
+              context_limits_updated_at:
+                userOverrideContext?.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
             };
           }),
         });
@@ -1254,6 +1343,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1278,6 +1368,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       void refreshModelContextCatalog();
       const models: AIModel[] = result.models.map((m) => {
+        const existingModel = (modelsByProvider[providerId] || []).find(
+          (candidate) => candidate.id === m.id,
+        );
         const reasoningCapability = getReasoningCapabilityForModel({
           providerType: config.providerType,
           modelId: m.id,
@@ -1309,6 +1402,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
           ...catalogOverlay,
           ...providerOverlay,
+          ...(existingModel?.contextWindowSource === 'user_override' &&
+          existingModel.contextWindowTokens
+            ? {
+                contextWindowTokens: existingModel.contextWindowTokens,
+                contextWindowSource: existingModel.contextWindowSource,
+                contextLimitsUpdatedAt: existingModel.contextLimitsUpdatedAt,
+              }
+            : {}),
         } satisfies AIModel;
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
@@ -1321,6 +1422,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }),
         isLoadingModels: false,
       }));
+      void get().refreshLoadedModelContextCatalog(providerId);
 
       return models;
     } catch (error) {

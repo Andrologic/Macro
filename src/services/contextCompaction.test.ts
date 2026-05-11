@@ -600,6 +600,8 @@ describe('buildCompactedMessagesForRequest', () => {
       citations,
       toolDefinitions,
       modelContextWindowTokens: 1000,
+      contextLimitSource: 'provider_metadata',
+      isContextLimitAuthoritative: true,
       mode: 'manual',
       forceCompaction: true,
       generateSummary: async () => 'Current objective: answer from parser context.',
@@ -625,6 +627,15 @@ describe('buildCompactedMessagesForRequest', () => {
         systemMessage: 'You are Macro.',
         toolDefinitions,
         modelContextWindowTokens: 1000,
+      }),
+    ).toBe(false);
+    expect(
+      validateCompactionState(compacted.compactionState, orderedMessages, {
+        citations,
+        systemMessage: 'You are Macro.',
+        toolDefinitions,
+        modelContextWindowTokens: 1000,
+        contextLimitSource: 'models_dev',
       }),
     ).toBe(false);
   });
@@ -899,12 +910,16 @@ describe('buildCompactedMessagesForRequest', () => {
       modelContextWindowTokens: 64_000,
       contextLimitSource: 'macro_fallback',
       isContextLimitAuthoritative: false,
+      contextLimitConfidence: 'fallback',
+      contextLimitWarning: 'Fallback non autoritaire.',
       estimateSerializedPayloadTokens: () => 80_000,
       mode: 'blocking',
     });
 
     expect(footprint.contextLimitSource).toBe('macro_fallback');
     expect(footprint.isContextLimitAuthoritative).toBe(false);
+    expect(footprint.contextLimitConfidence).toBe('fallback');
+    expect(footprint.contextLimitWarning).toBe('Fallback non autoritaire.');
     expect(footprint.usableContextRatio).toBeGreaterThan(1);
     expect(footprint.isHardStop).toBe(false);
     expect(isContextFootprintOverUsableBudget(footprint)).toBe(false);

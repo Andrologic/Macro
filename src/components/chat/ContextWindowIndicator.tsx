@@ -36,6 +36,63 @@ const getContextLimitLabel = (
     ? 'Limite estimée'
     : 'Limite modèle';
 
+const getContextLimitSourceLabel = (
+  diagnostics?: ConversationContextDiagnostics,
+): string => {
+  switch (diagnostics?.contextLimitSource) {
+    case 'user_override':
+      return 'Override utilisateur';
+    case 'provider_metadata':
+      return 'Provider';
+    case 'model_metadata':
+      return 'Modèle';
+    case 'models_dev':
+      return 'Models.dev';
+    case 'provider_overflow_error':
+      return 'Erreur provider';
+    case 'macro_fallback':
+      return 'Fallback Macro';
+    default:
+      return 'Inconnue';
+  }
+};
+
+const getContextLimitConfidenceLabel = (
+  diagnostics?: ConversationContextDiagnostics,
+): string => {
+  switch (diagnostics?.contextLimitConfidence) {
+    case 'configured':
+      return 'Configurée';
+    case 'verified':
+      return 'Vérifiée';
+    case 'catalog':
+      return 'Catalogue';
+    case 'learned':
+      return 'Apprise';
+    case 'fallback':
+      return 'Fallback';
+    default:
+      return diagnostics?.isContextLimitAuthoritative === false
+        ? 'Faible'
+        : 'Standard';
+  }
+};
+
+const getContextLimitWarning = (
+  diagnostics?: ConversationContextDiagnostics,
+): string | null => {
+  if (diagnostics?.contextLimitWarning) {
+    return diagnostics.contextLimitWarning;
+  }
+  if (diagnostics?.isContextLimitAuthoritative === false) {
+    return "Cette limite n'est pas autoritaire; Macro ne déclenche pas de compaction automatique uniquement sur cette valeur.";
+  }
+  if (diagnostics?.contextLimitSource === 'provider_overflow_error') {
+    return "Cette limite vient d'une erreur provider et pourra être remplacée par une métadonnée plus fraîche.";
+  }
+  return null;
+};
+
 const getPressureRatio = (diagnostics?: ConversationContextDiagnostics): number =>
   Math.min(
     Math.max(diagnostics?.usableRatio ?? diagnostics?.ratio ?? 0, 0),
@@ -232,6 +289,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     effectiveDiagnostics?.modelContextWindowTokens ??
     footprint?.modelContextWindowTokens;
   const contextLimitLabel = getContextLimitLabel(effectiveDiagnostics);
+  const contextLimitSourceLabel = getContextLimitSourceLabel(effectiveDiagnostics);
+  const contextLimitConfidenceLabel = getContextLimitConfidenceLabel(effectiveDiagnostics);
+  const contextLimitWarning = getContextLimitWarning(effectiveDiagnostics);
   const modelWindowShrank =
     Boolean(effectiveDiagnostics?.modelContextWindowShrank) ||
     Boolean(footprint?.modelContextWindowShrank);
@@ -363,9 +423,17 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             <Metric label={contextLimitLabel} value={formatCompactTokens(modelWindowTokens)} />
             <Metric label="Budget utile" value={formatCompactTokens(footprint?.usableContextTokens)} />
             <Metric label="Marge" value={formatCompactTokens(remainingTokens)} />
+            <Metric label="Source limite" value={contextLimitSourceLabel} />
+            <Metric label="Confiance" value={contextLimitConfidenceLabel} />
             <Metric label="Contexte total" value={formatPercent(totalRatio)} />
             <Metric label="Checkpoint" value={checkpointLabel} />
           </div>
+
+          {contextLimitWarning ? (
+            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+              {contextLimitWarning}
+            </div>
+          ) : null}
 
           {modelWindowShrank ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">

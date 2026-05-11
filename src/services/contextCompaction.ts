@@ -9,6 +9,7 @@ import type {
   ContextFootprintThreshold,
   ConversationCompactionState,
   CompactionSummarySource,
+  ModelContextLimitConfidence,
   ModelContextLimitSource,
   ToolContextDigestEntry,
   ToolContextDigestKind,
@@ -77,6 +78,8 @@ export interface EstimateConversationFootprintParams {
   outputLimitTokens?: number;
   contextLimitSource?: ModelContextLimitSource;
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
   previousModelContextWindowTokens?: number | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   mode?: CompactionMode;
@@ -103,6 +106,8 @@ export interface MaybeCompactConversationParams {
   outputLimitTokens?: number;
   contextLimitSource?: ModelContextLimitSource;
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
   previousModelContextWindowTokens?: number | null;
   providerId?: string | null;
   modelId?: string | null;
@@ -167,6 +172,25 @@ export const buildContextTooLargeErrorMessage = (
   )} / ${formatTokens(footprint.modelContextWindowTokens)}. Largest parts: ${
     contributors || 'unknown'
   }.`;
+};
+
+export const buildManualCompactionRequiredErrorMessage = (
+  footprint?: ContextFootprint
+): string => {
+  const base =
+    'Automatic context compaction is disabled and the selected model cannot receive the current request safely. Run manual compaction, remove context, or switch to a larger-context model before sending.';
+  if (!footprint) {
+    return base;
+  }
+
+  const formatTokens = (value?: number): string =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? `${Math.round(value).toLocaleString()} tokens`
+      : 'unknown';
+
+  return `${base} Estimated payload: ${formatTokens(
+    footprint.totalEstimatedTokens
+  )} / usable budget ${formatTokens(footprint.usableContextTokens)}.`;
 };
 
 const DEFAULT_THRESHOLDS: CompactionThresholds = {
@@ -1171,9 +1195,28 @@ export const validateCompactionState = (
     systemMessage?: string;
     toolDefinitions?: MacroToolRegistryEntry[];
     modelContextWindowTokens?: number;
+    providerId?: string | null;
+    modelId?: string | null;
+    contextLimitSource?: ModelContextLimitSource;
   } = {}
 ): boolean => {
   if (!state) return false;
+  if (options.providerId && state.providerId && state.providerId !== options.providerId) {
+    return false;
+  }
+  if (options.modelId && state.modelId && state.modelId !== options.modelId) {
+    return false;
+  }
+  const stateContextLimitSource =
+    state.footprintAfter?.contextLimitSource ??
+    state.footprintBefore?.contextLimitSource;
+  if (
+    options.contextLimitSource &&
+    stateContextLimitSource &&
+    stateContextLimitSource !== options.contextLimitSource
+  ) {
+    return false;
+  }
   const boundaryIndex = findMessageIndexById(orderedMessages, state.upToMessageId);
   if (boundaryIndex < 0) return false;
 
@@ -1399,6 +1442,8 @@ export const estimateConversationFootprint = (
     outputLimitTokens: params.outputLimitTokens,
     contextLimitSource: params.contextLimitSource,
     isContextLimitAuthoritative,
+    contextLimitConfidence: params.contextLimitConfidence,
+    contextLimitWarning: params.contextLimitWarning,
     previousModelContextWindowTokens,
     modelContextWindowShrank,
     marginTokens: budget.usableContextTokens - totalEstimatedTokens,
@@ -1426,6 +1471,10 @@ const buildCompactionState = async (params: {
   outputLimitTokens?: number;
   contextLimitSource?: ModelContextLimitSource;
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
+  providerId?: string | null;
+  modelId?: string | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   budgetPolicy?: ContextBudgetPolicy;
   currentCompactionState?: ConversationCompactionState | null;
@@ -1452,6 +1501,9 @@ const buildCompactionState = async (params: {
       systemMessage: params.systemMessage,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      providerId: params.providerId,
+      modelId: params.modelId,
+      contextLimitSource: params.contextLimitSource,
     })
   ) {
     return params.currentCompactionState;
@@ -1541,6 +1593,8 @@ const buildCompactionState = async (params: {
       outputLimitTokens: params.outputLimitTokens,
       contextLimitSource: params.contextLimitSource,
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
+      contextLimitConfidence: params.contextLimitConfidence,
+      contextLimitWarning: params.contextLimitWarning,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       mode: 'blocking',
@@ -1571,6 +1625,8 @@ const buildCompactionState = async (params: {
       buildSourceHashes(params.citations, sourcePassageIds)
     ),
     modelContextWindowTokens: params.modelContextWindowTokens,
+    providerId: params.providerId ?? null,
+    modelId: params.modelId ?? null,
     checkpointHealth,
     lastTrigger: trigger ?? undefined,
   };
@@ -1610,6 +1666,8 @@ export const maybeCompactConversation = async (
     outputLimitTokens: params.outputLimitTokens,
     contextLimitSource: params.contextLimitSource,
     isContextLimitAuthoritative: params.isContextLimitAuthoritative,
+    contextLimitConfidence: params.contextLimitConfidence,
+    contextLimitWarning: params.contextLimitWarning,
     previousModelContextWindowTokens: params.previousModelContextWindowTokens,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
     mode,
@@ -1644,6 +1702,9 @@ export const maybeCompactConversation = async (
       systemMessage: params.systemMessage,
       toolDefinitions: params.toolDefinitions,
       modelContextWindowTokens: params.modelContextWindowTokens,
+      providerId: params.providerId,
+      modelId: params.modelId,
+      contextLimitSource: params.contextLimitSource,
     }
   )
     ? params.currentCompactionState || null
@@ -1703,6 +1764,10 @@ export const maybeCompactConversation = async (
       outputLimitTokens: params.outputLimitTokens,
       contextLimitSource: params.contextLimitSource,
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
+      contextLimitConfidence: params.contextLimitConfidence,
+      contextLimitWarning: params.contextLimitWarning,
+      providerId: params.providerId,
+      modelId: params.modelId,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: params.forceCompaction ? null : activeState,
@@ -1759,6 +1824,8 @@ export const maybeCompactConversation = async (
       outputLimitTokens: params.outputLimitTokens,
       contextLimitSource: params.contextLimitSource,
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
+      contextLimitConfidence: params.contextLimitConfidence,
+      contextLimitWarning: params.contextLimitWarning,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: null,

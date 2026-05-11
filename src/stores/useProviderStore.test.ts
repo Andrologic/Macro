@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { CopilotStatusDto } from '../services/tauriIpc';
+import { __testables as catalogTestables } from '../services/modelContextCatalog';
 
 let importCounter = 0;
 
@@ -258,6 +259,7 @@ describe('useProviderStore secret resolution', () => {
     fetchModelsFromProviderMock.mockClear();
     probeModelsEndpointMock.mockClear();
     probeProviderReachabilityMock.mockClear();
+    catalogTestables.reset();
     tauriEventHandlers.clear();
   });
 
@@ -804,6 +806,139 @@ describe('useProviderStore secret resolution', () => {
         contextWindowSource: 'provider_metadata',
       },
     ]);
+  });
+
+  it('refreshes loaded models from the context catalog and persists reliable enrichments', async () => {
+    const providerStore = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'gpt-catalog': {
+              id: 'gpt-catalog',
+              limit: { context: 222_000, input: 200_000, output: 16_000 },
+            },
+          },
+        },
+      },
+    });
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-catalog',
+            name: 'GPT Catalog',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .refreshLoadedModelContextCatalog('provider-openai');
+
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ][0]
+    ).toMatchObject({
+      contextWindowTokens: 222_000,
+      inputLimitTokens: 200_000,
+      outputLimitTokens: 16_000,
+      contextWindowSource: 'models_dev',
+    });
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'gpt-catalog',
+          context_window_tokens: 222_000,
+          context_window_source: 'models_dev',
+        }),
+      ],
+    });
+  });
+
+  it('preserves user context overrides when provider scans return metadata', async () => {
+    const providerStore = await loadProviderStore();
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [
+        {
+          id: 'manual-model',
+          name: 'Manual Model',
+          context_length: 200_000,
+          max_input_tokens: 180_000,
+        },
+      ],
+    }));
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'manual-model',
+            name: 'Manual Model',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 16_000,
+            contextWindowSource: 'user_override',
+            contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'manual-model',
+          context_window_tokens: 16_000,
+          input_limit_tokens: 180_000,
+          context_window_source: 'user_override',
+        }),
+      ],
+    });
   });
 
   it('applies fresh Copilot runtime status when download completes', async () => {

@@ -530,6 +530,13 @@ export type ModelContextLimitSource =
   | 'provider_overflow_error'
   | 'macro_fallback';
 
+export type ModelContextLimitConfidence =
+  | 'verified'
+  | 'configured'
+  | 'catalog'
+  | 'learned'
+  | 'fallback';
+
 export interface ContextFootprint {
   totalEstimatedTokens: number;
   serializedPayloadTokens?: number;
@@ -548,6 +555,8 @@ export interface ContextFootprint {
   outputLimitTokens?: number;
   contextLimitSource?: ModelContextLimitSource;
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
   previousModelContextWindowTokens?: number;
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
