@@ -10,6 +10,9 @@ pub struct Conversation {
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_message: Option<String>,
@@ -195,6 +198,9 @@ pub struct CreateConversationInput {
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

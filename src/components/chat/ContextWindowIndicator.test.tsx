@@ -151,8 +151,19 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.querySelector('[data-testid="context-window-compacting"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-testid="context-window-compacting-spinner"]')).not.toBeNull();
-    expect(document.body.querySelector('svg')?.getAttribute('class')).toContain('animate-spin');
+    const spinner = document.body.querySelector(
+      '[data-testid="context-window-compacting-spinner"]',
+    );
+    expect(spinner).not.toBeNull();
+    expect(spinner?.getAttribute('role')).toBe('status');
+    expect(
+      document.body
+        .querySelector('[data-testid="context-window-compacting"]')
+        ?.getAttribute('class'),
+    ).toContain('animate-spin');
+    expect(document.body.querySelector('svg')?.getAttribute('class')).not.toContain(
+      'animate-spin',
+    );
   });
 
   it('shows a compacting label in the popover while compaction is active', async () => {
@@ -168,7 +179,7 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Compaction en cours');
+    expect(document.body.textContent).toContain('Compactage en cours');
   });
 
   it('does not show a live measurement label in the popover', async () => {
@@ -351,9 +362,43 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Contexte non mesuré');
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
     expect(document.body.textContent).toContain('0 messages · 0 sources');
     expect(document.body.textContent).not.toContain('42 messages · 6 sources');
+  });
+
+  it('uses a neutral label for ready and compacted states', async () => {
+    await act(async () => {
+      root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
+    expect(document.body.textContent).not.toContain('Contexte compacté');
+    expect(document.body.textContent).not.toContain('Contexte disponible');
+
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            phase: 'idle',
+            footprintBefore: undefined,
+          })}
+        />,
+      );
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
+    expect(document.body.textContent).not.toContain('Contexte compacté');
+    expect(document.body.textContent).not.toContain('Contexte disponible');
   });
 
   it('does not reuse previous metrics for an estimating diagnostic from another model', async () => {

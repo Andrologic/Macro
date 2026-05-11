@@ -610,6 +610,9 @@ type ChatSnapshotConversationRecord = {
   task_id: string | null;
   group_id: string | null;
   project_id: string | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  reasoning_effort?: string | null;
   last_message: string | null;
   message_count: number;
   updated_at: string;
@@ -953,6 +956,7 @@ const gitBranchListMock = mock(async (repoPath: string) => (
 ));
 const dbGetConversationCompactionStateMock = mock(async () => null);
 const dbUpsertConversationCompactionStateMock = mock(async () => undefined);
+const updateConversationAISelectionMock = mock(async () => undefined);
 let dbConversationCounter = 0;
 let dbMessageCounter = 0;
 const createConversationMock = mock(async (params?: {
@@ -961,6 +965,9 @@ const createConversationMock = mock(async (params?: {
   taskId?: string | null;
   groupId?: string | null;
   projectId?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 }) => ({
   id: `db-conversation-${++dbConversationCounter}`,
   title: params?.title ?? 'New Conversation',
@@ -969,9 +976,14 @@ const createConversationMock = mock(async (params?: {
   task_id: params?.taskId ?? null,
   group_id: params?.groupId ?? null,
   project_id: params?.projectId ?? null,
+  provider_id: params?.providerId ?? null,
+  model_id: params?.modelId ?? null,
+  reasoning_effort: params?.reasoningEffort ?? null,
+  created_at: '2026-03-19T00:00:00.000Z',
   last_message: '',
   message_count: 0,
   updated_at: '2026-03-19T00:00:00.000Z',
+  is_pinned: false,
 }));
 const createMessageMock = mock(
   async (
@@ -1459,6 +1471,7 @@ const registerUseChatStoreMocks = async () => {
     updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     updateConversationDetails: updateConversationDetailsMock,
+    updateConversationAISelection: updateConversationAISelectionMock,
     updateConversationScope: updateConversationScopeMock,
   }));
 
@@ -1569,6 +1582,9 @@ const createConversation = (id: string, projectId = 'project-1'): Conversation =
   task_id: null,
   group_id: 'group-1',
   project_id: projectId,
+  provider_id: null,
+  model_id: null,
+  reasoning_effort: null,
   last_message: '',
   message_count: 0,
   updated_at: '2026-03-19T00:00:00.000Z',
@@ -1586,6 +1602,9 @@ const createChatSnapshotConversation = (
   task_id: overrides.task_id ?? null,
   group_id: overrides.group_id ?? 'group-1',
   project_id: overrides.project_id ?? 'project-1',
+  provider_id: overrides.provider_id ?? null,
+  model_id: overrides.model_id ?? null,
+  reasoning_effort: overrides.reasoning_effort ?? null,
   last_message: overrides.last_message ?? '',
   message_count: overrides.message_count ?? 0,
   updated_at: overrides.updated_at ?? '2026-03-19T00:00:00.000Z',
@@ -2014,6 +2033,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     createMessageMock.mockClear();
     dbGetConversationCompactionStateMock.mockClear();
     dbUpsertConversationCompactionStateMock.mockClear();
+    updateConversationAISelectionMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
     updateConversationScopeMock.mockClear();
@@ -2188,6 +2208,105 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(providerState.selectedProviderId).toBe('provider-2');
     expect(providerState.selectedModelId).toBe('model-2a');
     expect(providerState.selectedReasoningEffort).toBe('high');
+  });
+
+  it('restores the conversation model from the database when preferences are empty', async () => {
+    providerState.modelsByProvider = {
+      'provider-1': [
+        { id: 'model-1a', name: 'Model 1A', isEnabled: true },
+        { id: 'model-1b', name: 'Model 1B', isEnabled: true },
+      ],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {},
+      conversationSelections: {},
+      providerSelectionsByConversationId: {},
+      providerSelectionsByMode: {},
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a', {
+        provider_id: 'provider-1',
+        model_id: 'model-1b',
+        reasoning_effort: 'low',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-a');
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1b');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+
+    const storedSelections = await loadAiSelectionsPreference();
+    expect(storedSelections).toMatchObject({
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1b',
+          reasoningEffort: 'low',
+        },
+      },
+    });
+  });
+
+  it('prefers the database conversation model over a stale preference entry', async () => {
+    providerState.modelsByProvider = {
+      'provider-1': [
+        { id: 'model-1a', name: 'Model 1A', isEnabled: true },
+        { id: 'model-1b', name: 'Model 1B', isEnabled: true },
+      ],
+    };
+
+    await saveAiSelectionsPreference({
+      version: 2,
+      modeSelections: {},
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1a',
+          reasoningEffort: 'medium',
+          updatedAt: '2026-03-18T00:00:00.000Z',
+        },
+      },
+      providerSelectionsByConversationId: {},
+      providerSelectionsByMode: {},
+    });
+
+    tauriAvailable = true;
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conv-a', {
+        provider_id: 'provider-1',
+        model_id: 'model-1b',
+        reasoning_effort: 'low',
+        updated_at: '2026-03-19T00:00:00.000Z',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+    await useChatStore.getState().reapplySelectionForCurrentContext();
+
+    expect(providerState.selectedProviderId).toBe('provider-1');
+    expect(providerState.selectedModelId).toBe('model-1b');
+    expect(providerState.selectedReasoningEffort).toBe('low');
+
+    const storedSelections = await loadAiSelectionsPreference();
+    expect(storedSelections).toMatchObject({
+      conversationSelections: {
+        'conv-a': {
+          providerId: 'provider-1',
+          modelId: 'model-1b',
+          reasoningEffort: 'low',
+        },
+      },
+    });
   });
 
   it('marks restoreStatus as resolving while a manual conversation switch restores the AI selection', async () => {

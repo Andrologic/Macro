@@ -36,6 +36,9 @@ export interface DbConversation {
   task_id: string | null;
   group_id: string | null;
   project_id: string | null;
+  provider_id: string | null;
+  model_id: string | null;
+  reasoning_effort: string | null;
   created_at: string;
   updated_at: string;
   last_message: string | null;
@@ -1116,6 +1119,9 @@ export async function createConversation(params?: {
   taskId?: string | null;
   groupId?: string | null;
   projectId?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<DbConversation> {
   return invoke<DbConversation>("db_create_conversation", {
     title: params?.title,
@@ -1123,6 +1129,9 @@ export async function createConversation(params?: {
     taskId: params?.taskId ?? null,
     groupId: params?.groupId ?? null,
     projectId: params?.projectId ?? null,
+    providerId: params?.providerId ?? null,
+    modelId: params?.modelId ?? null,
+    reasoningEffort: params?.reasoningEffort ?? null,
   });
 }
 
@@ -1158,6 +1167,20 @@ export async function updateConversationScope(params: {
     taskId: params.taskId ?? null,
     groupId: params.groupId ?? null,
     projectId: params.projectId ?? null,
+  });
+}
+
+export async function updateConversationAISelection(params: {
+  id: string;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
+}): Promise<void> {
+  return invoke("db_update_conversation_ai_selection", {
+    id: params.id,
+    providerId: params.providerId ?? null,
+    modelId: params.modelId ?? null,
+    reasoningEffort: params.reasoningEffort ?? null,
   });
 }
 

@@ -3472,6 +3472,9 @@ pub async fn db_create_conversation(
     task_id: Option<String>,
     group_id: Option<String>,
     project_id: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    reasoning_effort: Option<String>,
 ) -> CommandResult<Conversation> {
     let pool = get_pool(&pool).await?;
 
@@ -3483,7 +3486,31 @@ pub async fn db_create_conversation(
             task_id,
             group_id,
             project_id,
+            provider_id,
+            model_id,
+            reasoning_effort,
         },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_update_conversation_ai_selection(
+    pool: State<'_, DbPool>,
+    id: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    reasoning_effort: Option<String>,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::update_conversation_ai_selection(
+        &pool,
+        &id,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        reasoning_effort.as_deref(),
     )
     .await
     .map_err(Into::into)

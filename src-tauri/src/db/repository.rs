@@ -36,7 +36,9 @@ fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> 
 pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id,
+               provider_id, model_id, reasoning_effort,
+               created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC, id ASC
         "#,
@@ -54,6 +56,9 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
             task_id: row.get("task_id"),
             group_id: row.get("group_id"),
             project_id: row.get("project_id"),
+            provider_id: row.get("provider_id"),
+            model_id: row.get("model_id"),
+            reasoning_effort: row.get("reasoning_effort"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             last_message: row.get("last_message"),
@@ -68,7 +73,9 @@ pub async fn list_conversations(pool: &SqlitePool) -> DbResult<Vec<Conversation>
 pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Conversation>> {
     let row = sqlx::query(
         r#"
-        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id,
+               provider_id, model_id, reasoning_effort,
+               created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         WHERE id = ?
         "#,
@@ -85,6 +92,9 @@ pub async fn get_conversation(pool: &SqlitePool, id: &str) -> DbResult<Option<Co
         task_id: row.get("task_id"),
         group_id: row.get("group_id"),
         project_id: row.get("project_id"),
+        provider_id: row.get("provider_id"),
+        model_id: row.get("model_id"),
+        reasoning_effort: row.get("reasoning_effort"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         last_message: row.get("last_message"),
@@ -105,8 +115,12 @@ pub async fn create_conversation(
 
     sqlx::query(
         r#"
-        INSERT INTO conversations (id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, message_count, is_pinned)
-        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)
+        INSERT INTO conversations (
+            id, title, description, scope_mode, task_id, group_id, project_id,
+            provider_id, model_id, reasoning_effort,
+            created_at, updated_at, message_count, is_pinned
+        )
+        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
         "#,
     )
     .bind(&id)
@@ -115,6 +129,9 @@ pub async fn create_conversation(
     .bind(&input.task_id)
     .bind(&input.group_id)
     .bind(&input.project_id)
+    .bind(&input.provider_id)
+    .bind(&input.model_id)
+    .bind(&input.reasoning_effort)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -128,6 +145,9 @@ pub async fn create_conversation(
         task_id: input.task_id,
         group_id: input.group_id,
         project_id: input.project_id,
+        provider_id: input.provider_id,
+        model_id: input.model_id,
+        reasoning_effort: input.reasoning_effort,
         created_at: now.clone(),
         updated_at: now,
         last_message: None,
@@ -260,6 +280,30 @@ pub async fn update_conversation_scope(
     .bind(task_id)
     .bind(group_id)
     .bind(project_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn update_conversation_ai_selection(
+    pool: &SqlitePool,
+    id: &str,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        UPDATE conversations
+        SET provider_id = ?, model_id = ?, reasoning_effort = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(provider_id)
+    .bind(model_id)
+    .bind(reasoning_effort)
     .bind(id)
     .execute(pool)
     .await?;
@@ -580,7 +624,9 @@ pub async fn get_chat_bootstrap_snapshot(
     let mut transaction = pool.begin().await?;
     let conversation_rows = sqlx::query(
         r#"
-        SELECT id, title, description, scope_mode, task_id, group_id, project_id, created_at, updated_at, last_message, message_count, is_pinned
+        SELECT id, title, description, scope_mode, task_id, group_id, project_id,
+               provider_id, model_id, reasoning_effort,
+               created_at, updated_at, last_message, message_count, is_pinned
         FROM conversations
         ORDER BY is_pinned DESC, updated_at DESC, id ASC
         "#,
@@ -598,6 +644,9 @@ pub async fn get_chat_bootstrap_snapshot(
             task_id: row.get("task_id"),
             group_id: row.get("group_id"),
             project_id: row.get("project_id"),
+            provider_id: row.get("provider_id"),
+            model_id: row.get("model_id"),
+            reasoning_effort: row.get("reasoning_effort"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             last_message: row.get("last_message"),
@@ -2483,6 +2532,9 @@ mod tests {
                 task_id: None,
                 group_id: None,
                 project_id: None,
+                provider_id: None,
+                model_id: None,
+                reasoning_effort: None,
             },
         )
         .await

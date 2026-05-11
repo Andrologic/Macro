@@ -38,7 +38,7 @@ const getPressureRatio = (diagnostics?: ConversationContextDiagnostics): number 
 const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   if (!diagnostics) {
     return {
-      label: 'Contexte non mesuré',
+      label: 'Fenêtre de contexte',
       accentClassName: 'text-muted-foreground',
     };
   }
@@ -50,7 +50,7 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   }
   if (diagnostics.status === 'estimating') {
     return {
-      label: 'Contexte non mesuré',
+      label: 'Fenêtre de contexte',
       accentClassName: 'text-muted-foreground',
     };
   }
@@ -68,7 +68,7 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
     diagnostics.phase === 'recovering_overflow'
   ) {
     return {
-      label: 'Compaction en cours',
+      label: 'Compactage en cours',
       accentClassName: 'text-primary',
     };
   }
@@ -81,18 +81,18 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   const pressureRatio = getPressureRatio(diagnostics);
   if (diagnostics.phase === 'degraded' || pressureRatio >= 0.9) {
     return {
-      label: diagnostics.phase === 'degraded' ? 'Contexte dégradé' : 'Contexte élevé',
+      label: diagnostics.phase === 'degraded' ? 'Contexte réduit' : 'Fenêtre presque pleine',
       accentClassName: 'text-amber-500',
     };
   }
   if (diagnostics.phase === 'compacted') {
     return {
-      label: 'Contexte compacté',
+      label: 'Fenêtre de contexte',
       accentClassName: 'text-primary',
     };
   }
   return {
-    label: 'Contexte disponible',
+    label: 'Fenêtre de contexte',
     accentClassName: 'text-primary',
   };
 };
@@ -239,7 +239,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     canCompactNow &&
     !isCompacting &&
     effectiveDiagnostics?.status !== 'error';
-  const statusLabel = isCompacting ? 'Compaction en cours' : tone.label;
+  const statusLabel = isCompacting ? 'Compactage en cours' : tone.label;
 
   return (
     <div ref={containerRef} className="relative">
@@ -256,10 +256,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       >
         <span className="relative flex h-5 w-5 items-center justify-center rounded-full">
           <svg
-            className={cn(
-              'absolute inset-0 h-5 w-5 -rotate-90 overflow-visible',
-              isCompacting && 'animate-spin',
-            )}
+            className="absolute inset-0 h-5 w-5 -rotate-90 overflow-visible"
             viewBox="0 0 24 24"
             aria-hidden="true"
           >
@@ -272,21 +269,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               strokeWidth="2.5"
               className="opacity-15"
             />
-            {isCompacting ? (
-              <circle
-                cx="12"
-                cy="12"
-                r="9"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                pathLength="100"
-                strokeDasharray="18 100"
-                className="opacity-40"
-                data-testid="context-window-compacting"
-              />
-            ) : null}
             <circle
               cx="12"
               cy="12"
@@ -297,15 +279,39 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               strokeLinecap="round"
               pathLength="100"
               strokeDasharray={`${progress} 100`}
+              className={cn(isCompacting && 'opacity-35')}
               data-testid="context-window-fill"
             />
           </svg>
           {isCompacting ? (
             <span
-              className="relative flex h-4 w-4 items-center justify-center rounded-full bg-background/85"
+              className="absolute inset-0 flex items-center justify-center"
+              role="status"
+              aria-label="Compactage en cours"
               data-testid="context-window-compacting-spinner"
             >
-              <SpinnerIcon size={12} className="text-primary" label="Compaction en cours" />
+              <svg
+                className="absolute inset-0 h-5 w-5 -rotate-90 animate-spin overflow-visible motion-reduce:animate-none"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                data-testid="context-window-compacting"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  pathLength="100"
+                  strokeDasharray="18 100"
+                  className="opacity-75"
+                />
+              </svg>
+              <span className="flex h-3 w-3 items-center justify-center rounded-full bg-background/85">
+                <span className="h-1.5 w-1.5 rounded-full bg-current/75" />
+              </span>
             </span>
           ) : (
             <span className="absolute h-1.5 w-1.5 rounded-full bg-current/70" />
