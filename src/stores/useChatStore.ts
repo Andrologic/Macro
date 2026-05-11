@@ -174,6 +174,7 @@ import {
 import {
   buildContextTooLargeErrorMessage,
   buildCompactedMessagesForRequest,
+  COMPACTED_CONVERSATION_STATE_MARKER,
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
   resolveModelContextWindowTokens,
@@ -238,6 +239,14 @@ type StreamContextDiagnosticsBaselineSeed = Omit<
   StreamContextDiagnosticsBaseline,
   "sessionId" | "assistantMessageId" | "orderedMessages"
 >;
+
+interface LiveStreamDiagnosticsPayload {
+  systemMessage: string;
+  preparedMessages: StreamMessage[];
+  orderedMessages: ChatMessage[];
+  citations: Citation[];
+  baseline: StreamContextDiagnosticsBaseline;
+}
 
 const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
   let buffer = "";
@@ -5363,13 +5372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildLiveStreamDiagnosticsPayload = (
     liveEstimate: LiveStreamContextEstimate,
-  ): {
-    systemMessage: string;
-    preparedMessages: StreamMessage[];
-    orderedMessages: ChatMessage[];
-    citations: Citation[];
-    baseline: StreamContextDiagnosticsBaseline;
-  } | null => {
+  ): LiveStreamDiagnosticsPayload | null => {
     const baseline = liveEstimate.baseline;
     if (!baseline) {
       return null;
@@ -5444,8 +5447,208 @@ export const useChatStore = create<ChatStore>((set, get) => {
       (message) =>
         message.role === "system" &&
         typeof message.content === "string" &&
-        message.content.includes("[COMPACTED CONVERSATION STATE]"),
+        message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER),
     );
+
+  const isProviderRuntimeError = (runtime: ConversationRuntimeState): boolean =>
+    runtime.lastErrorOrigin === "provider" ||
+    runtime.lastErrorDisplayTarget === "transcript";
+
+  const publishConversationContextDiagnostics = (
+    conversationId: string,
+    diagnostics: ConversationContextDiagnostics,
+  ) => {
+    set((state) => ({
+      contextDiagnosticsByConversationId: {
+        ...state.contextDiagnosticsByConversationId,
+        [conversationId]: diagnostics,
+      },
+    }));
+  };
+
+  const markConversationContextDiagnosticsEstimating = (
+    conversationId: string,
+  ) => {
+    set((state) => {
+      const previous = state.contextDiagnosticsByConversationId[conversationId];
+      return {
+        contextDiagnosticsByConversationId: {
+          ...state.contextDiagnosticsByConversationId,
+          [conversationId]: {
+            status: "estimating",
+            source: "full",
+            conversationId,
+            updatedAt: new Date().toISOString(),
+            providerId: previous?.providerId,
+            providerType: previous?.providerType,
+            modelId: previous?.modelId,
+            phase: previous?.phase,
+            decision: previous?.decision,
+            compactionPass: previous?.compactionPass,
+            summaryFormatVersion: previous?.summaryFormatVersion,
+            summarySource: previous?.summarySource,
+            footprintBefore: previous?.footprintBefore,
+            footprintAfter: previous?.footprintAfter,
+            ratio: previous?.ratio ?? 0,
+            usableRatio: previous?.usableRatio ?? 0,
+            isHardStop: previous?.isHardStop ?? false,
+            counts: previous?.counts ?? EMPTY_CONTEXT_DIAGNOSTICS_COUNTS,
+            breakdown: previous?.breakdown ?? [],
+            topContributors: previous?.topContributors ?? [],
+          },
+        },
+      };
+    });
+  };
+
+  const resolveContextDiagnosticsProviderContext = (
+    providerContext?: ConversationContextDiagnosticsProviderContext,
+  ): ConversationContextDiagnosticsProviderContext => {
+    const providerState = useProviderStore.getState();
+    const providerId =
+      providerContext?.providerId ?? providerState.selectedProviderId;
+    const modelId = providerContext?.modelId ?? providerState.selectedModelId;
+    if (!providerId || !modelId) {
+      throw buildSendError("Select a provider and model to inspect context.");
+    }
+
+    const configuredProvider = providerState.providerConfigs.find(
+      (provider) => provider.id === providerId,
+    );
+    const providerType =
+      providerContext?.providerType ?? configuredProvider?.providerType;
+    if (!providerType) {
+      throw buildSendError("Provider configuration not found.");
+    }
+
+    return {
+      providerId,
+      providerType,
+      baseUrl: providerContext?.baseUrl ?? configuredProvider?.baseUrl ?? "",
+      modelId,
+    };
+  };
+
+  const isLiveStreamEstimateCurrent = (
+    conversationId: string,
+    liveEstimate: LiveStreamContextEstimate,
+  ): boolean => {
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    const current =
+      get().liveStreamContextEstimatesByConversationId[conversationId];
+    return (
+      runtime.phase === "streaming" &&
+      runtime.sessionId === liveEstimate.sessionId &&
+      runtime.assistantMessageId === liveEstimate.assistantMessageId &&
+      current?.sessionId === liveEstimate.sessionId &&
+      current.assistantMessageId === liveEstimate.assistantMessageId &&
+      current.version === liveEstimate.version
+    );
+  };
+
+  const resolveActiveLiveStreamDiagnosticsPayload = (
+    conversationId: string,
+  ): {
+    runtime: ConversationRuntimeState;
+    liveEstimate: LiveStreamContextEstimate;
+    payload: LiveStreamDiagnosticsPayload;
+  } | null => {
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    const liveEstimate =
+      get().liveStreamContextEstimatesByConversationId[conversationId];
+    if (
+      !liveEstimate ||
+      !liveEstimate.baseline ||
+      runtime.phase !== "streaming" ||
+      runtime.sessionId !== liveEstimate.sessionId ||
+      runtime.assistantMessageId !== liveEstimate.assistantMessageId ||
+      liveEstimate.baseline.sessionId !== liveEstimate.sessionId ||
+      liveEstimate.baseline.assistantMessageId !==
+        liveEstimate.assistantMessageId
+    ) {
+      return null;
+    }
+
+    const payload = buildLiveStreamDiagnosticsPayload(liveEstimate);
+    if (!payload) {
+      return null;
+    }
+
+    return { runtime, liveEstimate, payload };
+  };
+
+  const buildLiveStreamContextDiagnostics = async (
+    conversationId: string,
+  ): Promise<{
+    liveEstimate: LiveStreamContextEstimate;
+    diagnostics: ConversationContextDiagnostics;
+  } | null> => {
+    const liveContext = resolveActiveLiveStreamDiagnosticsPayload(conversationId);
+    if (!liveContext) {
+      return null;
+    }
+    const { liveEstimate, payload, runtime } = liveContext;
+
+    const budgetPolicy = await loadContextBudgetPolicy();
+    if (!isLiveStreamEstimateCurrent(conversationId, liveEstimate)) {
+      return null;
+    }
+
+    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+      estimateChatCompletionSerializedPayloadTokens({
+        messages,
+        providerType: payload.baseline.providerType,
+        providerId: payload.baseline.providerId,
+        baseUrl: payload.baseline.baseUrl,
+        modelId: payload.baseline.modelId,
+      });
+    const footprint = estimateConversationFootprint({
+      systemMessage: payload.systemMessage,
+      preparedMessages: payload.preparedMessages,
+      orderedMessages: payload.orderedMessages,
+      citations: payload.citations,
+      toolDefinitions: payload.baseline.toolDefinitions,
+      modelContextWindowTokens: payload.baseline.modelContextWindowTokens,
+      estimateSerializedPayloadTokens,
+      mode: "blocking",
+      budgetPolicy,
+    });
+    const hasCompactedPayload = liveStreamBaselineHasCompaction(payload.baseline);
+    const phase: ConversationContextDiagnostics["phase"] =
+      isProviderRuntimeError(runtime)
+        ? "provider_error"
+        : footprint.isHardStop
+          ? "too_large"
+          : hasCompactedPayload
+            ? "compacted"
+            : "idle";
+
+    return {
+      liveEstimate,
+      diagnostics: buildContextDiagnosticsFromFootprint({
+        conversationId,
+        providerId: payload.baseline.providerId,
+        providerType: payload.baseline.providerType,
+        modelId: payload.baseline.modelId,
+        status: "ready",
+        source: "live_stream",
+        phase,
+        decision: footprint.isHardStop
+          ? "hard_stop"
+          : payload.baseline.compactionDecision ?? "send",
+        footprintAfter: footprint,
+        orderedMessages: payload.orderedMessages,
+        preparedMessages: payload.preparedMessages,
+        citations: payload.citations,
+      }),
+    };
+  };
 
   const recalcConversation = (
     conversationId: string,
@@ -7380,18 +7583,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const mode = options?.mode ?? "full";
     if (mode === "live_stream") {
-      const liveEstimate =
-        get().liveStreamContextEstimatesByConversationId[conversationId];
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        conversationId,
-      );
-      if (
-        !liveEstimate ||
-        runtime.phase !== "streaming" ||
-        runtime.sessionId !== liveEstimate.sessionId ||
-        runtime.assistantMessageId !== liveEstimate.assistantMessageId
-      ) {
+      const liveContext = resolveActiveLiveStreamDiagnosticsPayload(conversationId);
+      if (!liveContext) {
         return;
       }
     }
@@ -7401,36 +7594,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     contextDiagnosticsRequestIds.set(conversationId, requestId);
 
     if (mode === "full") {
-      set((state) => {
-        const previous = state.contextDiagnosticsByConversationId[conversationId];
-        return {
-          contextDiagnosticsByConversationId: {
-            ...state.contextDiagnosticsByConversationId,
-            [conversationId]: {
-              status: "estimating",
-              source: "full",
-              conversationId,
-              updatedAt: new Date().toISOString(),
-              providerId: previous?.providerId,
-              providerType: previous?.providerType,
-              modelId: previous?.modelId,
-              phase: previous?.phase,
-              decision: previous?.decision,
-              compactionPass: previous?.compactionPass,
-              summaryFormatVersion: previous?.summaryFormatVersion,
-              summarySource: previous?.summarySource,
-              footprintBefore: previous?.footprintBefore,
-              footprintAfter: previous?.footprintAfter,
-              ratio: previous?.ratio ?? 0,
-              usableRatio: previous?.usableRatio ?? 0,
-              isHardStop: previous?.isHardStop ?? false,
-              counts: previous?.counts ?? EMPTY_CONTEXT_DIAGNOSTICS_COUNTS,
-              breakdown: previous?.breakdown ?? [],
-              topContributors: previous?.topContributors ?? [],
-            },
-          },
-        };
-      });
+      markConversationContextDiagnosticsEstimating(conversationId);
     }
 
     const isStale = () =>
@@ -7438,118 +7602,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     try {
       if (mode === "live_stream") {
-        const runtime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        const liveEstimate =
-          get().liveStreamContextEstimatesByConversationId[conversationId];
+        const liveDiagnostics =
+          await buildLiveStreamContextDiagnostics(conversationId);
+        if (!liveDiagnostics) return;
+
         if (
-          !liveEstimate ||
-          !liveEstimate.baseline ||
-          runtime.phase !== "streaming" ||
-          runtime.sessionId !== liveEstimate.sessionId ||
-          runtime.assistantMessageId !== liveEstimate.assistantMessageId ||
-          liveEstimate.baseline.sessionId !== liveEstimate.sessionId ||
-          liveEstimate.baseline.assistantMessageId !==
-            liveEstimate.assistantMessageId
+          isStale() ||
+          !isLiveStreamEstimateCurrent(
+            conversationId,
+            liveDiagnostics.liveEstimate,
+          )
         ) {
           return;
         }
-
-        const payload = buildLiveStreamDiagnosticsPayload(liveEstimate);
-        if (!payload) {
-          return;
-        }
-
-        const budgetPolicy = await loadContextBudgetPolicy();
-        const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-          estimateChatCompletionSerializedPayloadTokens({
-            messages,
-            providerType: payload.baseline.providerType,
-            providerId: payload.baseline.providerId,
-            baseUrl: payload.baseline.baseUrl,
-            modelId: payload.baseline.modelId,
-          });
-
-        if (isStale()) {
-          return;
-        }
-
-        const footprint = estimateConversationFootprint({
-          systemMessage: payload.systemMessage,
-          preparedMessages: payload.preparedMessages,
-          orderedMessages: payload.orderedMessages,
-          citations: payload.citations,
-          toolDefinitions: payload.baseline.toolDefinitions,
-          modelContextWindowTokens: payload.baseline.modelContextWindowTokens,
-          estimateSerializedPayloadTokens,
-          mode: "blocking",
-          budgetPolicy,
-        });
-        const isProviderError =
-          runtime.lastErrorOrigin === "provider" ||
-          runtime.lastErrorDisplayTarget === "transcript";
-        const hasCompactedPayload = liveStreamBaselineHasCompaction(payload.baseline);
-        const phase: ConversationContextDiagnostics["phase"] = isProviderError
-          ? "provider_error"
-          : footprint.isHardStop
-            ? "too_large"
-            : hasCompactedPayload
-              ? "compacted"
-              : "idle";
-        const diagnostics = buildContextDiagnosticsFromFootprint({
+        publishConversationContextDiagnostics(
           conversationId,
-          providerId: payload.baseline.providerId,
-          providerType: payload.baseline.providerType,
-          modelId: payload.baseline.modelId,
-          status: "ready",
-          source: "live_stream",
-          phase,
-          decision: footprint.isHardStop
-            ? "hard_stop"
-            : payload.baseline.compactionDecision ?? "send",
-          footprintAfter: footprint,
-          orderedMessages: payload.orderedMessages,
-          preparedMessages: payload.preparedMessages,
-          citations: payload.citations,
-        });
-
-        if (isStale()) {
-          return;
-        }
-        set((state) => ({
-          contextDiagnosticsByConversationId: {
-            ...state.contextDiagnosticsByConversationId,
-            [conversationId]: diagnostics,
-          },
-        }));
+          liveDiagnostics.diagnostics,
+        );
         return;
       }
 
       await ensureMessagesLoadedForConversation(conversationId);
       await ensureToolsLoaded();
 
-      const providerState = useProviderStore.getState();
-      const { providerConfigs } = providerState;
-      const selectedProviderId =
-        options?.providerContext?.providerId ?? providerState.selectedProviderId;
-      const selectedModelId =
-        options?.providerContext?.modelId ?? providerState.selectedModelId;
-      if (!selectedProviderId || !selectedModelId) {
-        throw buildSendError("Select a provider and model to inspect context.");
-      }
-
-      const configuredProvider = providerConfigs.find(
-        (provider) => provider.id === selectedProviderId,
+      const providerContext = resolveContextDiagnosticsProviderContext(
+        options?.providerContext,
       );
-      const providerType =
-        options?.providerContext?.providerType ?? configuredProvider?.providerType;
-      const providerBaseUrl =
-        options?.providerContext?.baseUrl ?? configuredProvider?.baseUrl ?? "";
-      if (!providerType) {
-        throw buildSendError("Provider configuration not found.");
-      }
 
       const conversation = get().conversations.find(
         (candidate) => candidate.id === conversationId,
@@ -7575,19 +7653,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversationId,
       );
       const modelContextWindowTokens = getSelectedModelContextWindowTokens(
-        selectedProviderId,
-        selectedModelId,
-        providerType,
+        providerContext.providerId,
+        providerContext.modelId,
+        providerContext.providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
 
       const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
         estimateChatCompletionSerializedPayloadTokens({
           messages,
-          providerType,
-          providerId: selectedProviderId,
-          baseUrl: providerBaseUrl,
-          modelId: selectedModelId,
+          providerType: providerContext.providerType,
+          providerId: providerContext.providerId,
+          baseUrl: providerContext.baseUrl,
+          modelId: providerContext.modelId,
         });
 
       if (isStale()) {
@@ -7598,10 +7676,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         get().conversationRuntimeById,
         conversationId,
       );
-      const isProviderError =
-        runtime.lastErrorOrigin === "provider" ||
-        runtime.lastErrorDisplayTarget === "transcript";
-
       const result = await buildCompactedMessagesForRequest({
         systemMessage: preparedRequest.systemMessage,
         preparedMessages: preparedRequest.preparedMessages,
@@ -7621,21 +7695,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
-      const phase: ConversationContextDiagnostics["phase"] = isProviderError
-        ? "provider_error"
-        : result.footprintAfter.isHardStop
-          ? "too_large"
-          : result.degraded
-            ? "degraded"
-            : result.compactionState
-              ? "compacted"
-              : "idle";
+      const phase: ConversationContextDiagnostics["phase"] =
+        isProviderRuntimeError(runtime)
+          ? "provider_error"
+          : result.footprintAfter.isHardStop
+            ? "too_large"
+            : result.degraded
+              ? "degraded"
+              : result.compactionState
+                ? "compacted"
+                : "idle";
 
       const diagnostics = buildContextDiagnosticsFromFootprint({
         conversationId,
-        providerId: selectedProviderId,
-        providerType,
-        modelId: selectedModelId,
+        providerId: providerContext.providerId,
+        providerType: providerContext.providerType,
+        modelId: providerContext.modelId,
         status: "ready",
         source: "full",
         phase,
@@ -7653,12 +7728,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         compactionState: result.compactionState ?? currentCompactionState,
       });
 
-      set((state) => ({
-        contextDiagnosticsByConversationId: {
-          ...state.contextDiagnosticsByConversationId,
-          [conversationId]: diagnostics,
-        },
-      }));
+      publishConversationContextDiagnostics(conversationId, diagnostics);
     } catch (error) {
       if (isStale()) {
         return;
@@ -7688,12 +7758,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         citations: [],
         error: normalized.message,
       });
-      set((state) => ({
-        contextDiagnosticsByConversationId: {
-          ...state.contextDiagnosticsByConversationId,
-          [conversationId]: diagnostics,
-        },
-      }));
+      publishConversationContextDiagnostics(conversationId, diagnostics);
     }
   };
 

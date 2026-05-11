@@ -16,6 +16,8 @@ import type { MacroToolRegistryEntry } from '../shared/macroToolRegistry';
 
 const CHARS_PER_TOKEN = 4;
 const SOURCE_PASSAGE_VERSION = 1;
+export const COMPACTED_CONVERSATION_STATE_MARKER =
+  '[COMPACTED CONVERSATION STATE]';
 export const COMPACTION_SUMMARY_FORMAT_VERSION = 2;
 const EMERGENCY_TOOL_CONTEXT_CHARS = 1200;
 const MAX_DIGEST_ITEMS = 18;
@@ -904,7 +906,7 @@ const buildCompactionSystemMessage = (
     .join('\n');
 
   return [
-    '[COMPACTED CONVERSATION STATE]',
+    COMPACTED_CONVERSATION_STATE_MARKER,
     'Use this compacted state as authoritative prior context for older turns.',
     `Summary schema: v${state.summaryFormatVersion ?? 1}; source: ${
       state.summarySource ?? 'unknown'
@@ -1102,7 +1104,7 @@ export const estimateConversationFootprint = (
     (message) =>
       message.role === 'system' &&
       typeof message.content === 'string' &&
-      message.content.includes('[COMPACTED CONVERSATION STATE]')
+      message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
   );
   const hiddenContextTokens =
     preparedHiddenContextTokens > 0
@@ -1129,7 +1131,7 @@ export const estimateConversationFootprint = (
       (message) =>
         message.role === 'system' &&
         typeof message.content === 'string' &&
-        message.content.includes('[COMPACTED CONVERSATION STATE]')
+        message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
     )
     .reduce((total, message) => total + estimateTokensForStreamContent(message.content), 0);
   const latestPreparedUserMessage = [...params.preparedMessages]
