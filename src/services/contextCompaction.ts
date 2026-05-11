@@ -1095,10 +1095,21 @@ export const estimateConversationFootprint = (
     (total, message) => total + estimateTokensForText(message.hidden_context || ''),
     0
   );
+  const hasProviderInputItems = params.preparedMessages.some(
+    (message) => (message.provider_input_items?.length ?? 0) > 0
+  );
+  const hasCompactedState = params.preparedMessages.some(
+    (message) =>
+      message.role === 'system' &&
+      typeof message.content === 'string' &&
+      message.content.includes('[COMPACTED CONVERSATION STATE]')
+  );
   const hiddenContextTokens =
     preparedHiddenContextTokens > 0
       ? preparedHiddenContextTokens
-      : originalHiddenContextTokens;
+      : hasProviderInputItems || hasCompactedState
+        ? 0
+        : originalHiddenContextTokens;
   const citationTokens = params.citations.reduce(
     (total, citation) =>
       total +

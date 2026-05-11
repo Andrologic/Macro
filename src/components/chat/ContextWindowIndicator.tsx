@@ -48,6 +48,12 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
       accentClassName: 'text-destructive',
     };
   }
+  if (diagnostics.status === 'estimating') {
+    return {
+      label: 'Contexte non mesuré',
+      accentClassName: 'text-muted-foreground',
+    };
+  }
   if (diagnostics.isHardStop || diagnostics.phase === 'too_large') {
     return {
       label: 'Contexte trop volumineux',
@@ -77,6 +83,19 @@ const prefersReducedMotion = (): boolean =>
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const diagnosticsMatchStableContext = (
+  current: ConversationContextDiagnostics | undefined,
+  stable: ConversationContextDiagnostics | undefined,
+): boolean => {
+  if (!current || !stable) return false;
+  return (
+    current.conversationId === stable.conversationId &&
+    current.providerId === stable.providerId &&
+    current.modelId === stable.modelId &&
+    current.source === stable.source
+  );
+};
 
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   diagnostics,
@@ -122,7 +141,8 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const effectiveDiagnostics =
     diagnostics?.status === 'estimating' &&
     !diagnostics.footprintAfter &&
-    !diagnostics.footprintBefore
+    !diagnostics.footprintBefore &&
+    diagnosticsMatchStableContext(diagnostics, lastStableDiagnostics)
       ? lastStableDiagnostics
       : diagnostics;
   const tone = resolveTone(effectiveDiagnostics);

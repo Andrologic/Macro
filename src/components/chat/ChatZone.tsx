@@ -762,11 +762,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     contextRefreshInFlightRef.current = true;
     try {
-      await refreshConversationContextDiagnostics(selectedConversationId);
+      await refreshConversationContextDiagnostics(selectedConversationId, {
+        mode: isContextStreaming ? 'live_stream' : 'full',
+      });
     } finally {
       contextRefreshInFlightRef.current = false;
     }
   }, [
+    isContextStreaming,
     refreshConversationContextDiagnostics,
     selectedConversationId,
     shouldShowContextControlsForActiveContext,
