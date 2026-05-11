@@ -7034,6 +7034,75 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().lastError).toBeNull();
   });
 
+  it('does not run safety prestream compaction when automatic compaction is disabled', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_compaction.auto', JSON.stringify(false));
+    providerState.modelsByProvider = {
+      'provider-1': [
+        {
+          id: 'model-1',
+          name: 'Small context model',
+          isEnabled: true,
+          contextWindowTokens: 8000,
+          outputLimitTokens: 1200,
+        } as never,
+      ],
+    };
+
+    const { useChatStore } = await loadChatStore();
+    const oldContext = 'ancien contexte utile\n'.repeat(5000);
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: `Analyse ce gros historique.\n${oldContext}`,
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: `Historique analysé.\n${oldContext}`,
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Continue avec une réponse courte.',
+    });
+    await flushAsyncWork();
+
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'needs_manual_compaction',
+      kind: 'safety_prestream',
+      reason: 'manual_compaction_required',
+    });
+    expect(useChatStore.getState().lastError).toContain(
+      'Automatic context compaction is disabled',
+    );
+  });
+
   it('blocks clearly when the latest user request is too large to compact away', async () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;

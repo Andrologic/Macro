@@ -2,20 +2,50 @@ import type { AIModel, ModelContextLimitSource } from '../types';
 import { lookupModelContextCatalogLimit } from './modelContextCatalog';
 import type { ProviderModel } from './providerApi';
 
+export const PROVIDER_OVERFLOW_CONTEXT_LIMIT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 const toPositiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.trunc(value)
     : undefined;
 
+const isProviderOverflowLimitFresh = (updatedAt?: string): boolean => {
+  if (!updatedAt) return false;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp <= PROVIDER_OVERFLOW_CONTEXT_LIMIT_TTL_MS;
+};
+
+const shouldKeepExistingContextWindow = (model: AIModel): boolean => {
+  if (!model.contextWindowTokens) return false;
+  switch (model.contextWindowSource) {
+    case 'user_override':
+    case 'provider_metadata':
+    case 'model_metadata':
+    case 'models_dev':
+      return true;
+    case 'provider_overflow_error':
+      return isProviderOverflowLimitFresh(model.contextLimitsUpdatedAt);
+    case 'macro_fallback':
+    default:
+      return false;
+  }
+};
+
 export const inferProviderContextWindowTokens = (
   model: Pick<
     ProviderModel,
-    'context_window' | 'context_window_tokens' | 'max_input_tokens'
+    | 'context_window'
+    | 'context_window_tokens'
+    | 'context_length'
+    | 'max_input_tokens'
+    | 'top_provider'
   >
 ): number | null =>
   toPositiveInteger(model.context_window_tokens) ??
   toPositiveInteger(model.context_window) ??
-  toPositiveInteger(model.max_input_tokens) ??
+  toPositiveInteger(model.context_length) ??
+  toPositiveInteger(model.top_provider?.context_length) ??
   null;
 
 export const inferProviderInputLimitTokens = (
@@ -25,17 +55,23 @@ export const inferProviderInputLimitTokens = (
 export const inferProviderOutputLimitTokens = (
   model: Pick<
     ProviderModel,
-    'max_output_tokens' | 'output_tokens' | 'max_completion_tokens'
+    'max_output_tokens' | 'output_tokens' | 'max_completion_tokens' | 'top_provider'
   >
 ): number | undefined =>
   toPositiveInteger(model.max_output_tokens) ??
   toPositiveInteger(model.output_tokens) ??
-  toPositiveInteger(model.max_completion_tokens);
+  toPositiveInteger(model.max_completion_tokens) ??
+  toPositiveInteger(model.top_provider?.max_output_tokens) ??
+  toPositiveInteger(model.top_provider?.max_completion_tokens);
 
 export const inferProviderContextWindowSource = (
   model: Pick<
     ProviderModel,
-    'context_window' | 'context_window_tokens' | 'max_input_tokens'
+    | 'context_window'
+    | 'context_window_tokens'
+    | 'context_length'
+    | 'max_input_tokens'
+    | 'top_provider'
   >
 ): ModelContextLimitSource | undefined =>
   inferProviderContextWindowTokens(model) ? 'provider_metadata' : undefined;
@@ -96,9 +132,15 @@ export const enrichModelWithCatalogContextLimits = (
     providerType?: string | null;
     providerId?: string | null;
     baseUrl?: string | null;
-  }
+  },
+  options: {
+    refreshCatalogSource?: boolean;
+  } = {}
 ): AIModel => {
-  if (model.contextWindowTokens && model.contextWindowSource !== 'macro_fallback') {
+  if (
+    shouldKeepExistingContextWindow(model) &&
+    !(options.refreshCatalogSource && model.contextWindowSource === 'models_dev')
+  ) {
     return model;
   }
   const overlay = buildCatalogModelContextLimitOverlay({
@@ -121,6 +163,16 @@ export const mergeProviderModelContextLimitOverlays = (
 
   return models.map((model) => {
     const overlay = overlaysById.get(model.id);
-    return overlay ? { ...model, ...overlay } : model;
+    if (!overlay) return model;
+    if (model.contextWindowSource === 'user_override') {
+      const {
+        contextWindowTokens: _contextWindowTokens,
+        contextWindowSource: _contextWindowSource,
+        contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
+        ...nonWindowOverlay
+      } = overlay;
+      return { ...model, ...nonWindowOverlay };
+    }
+    return { ...model, ...overlay };
   });
 };

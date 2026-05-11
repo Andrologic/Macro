@@ -24,6 +24,9 @@ const buildDiagnostics = (
   providerId: 'provider-1',
   providerType: 'opencode',
   modelId: 'kimi-k2.6',
+  contextLimitSource: 'provider_metadata',
+  isContextLimitAuthoritative: true,
+  contextLimitConfidence: 'verified',
   phase: 'compacted',
   decision: 'send',
   compactionPass: 'forced',
@@ -44,6 +47,9 @@ const buildDiagnostics = (
     summaryTokens: 0,
     latestUserContextTokens: 2_000,
     modelContextWindowTokens: 128_000,
+    contextLimitSource: 'provider_metadata',
+    isContextLimitAuthoritative: true,
+    contextLimitConfidence: 'verified',
     reservedTokens: 20_000,
     usableContextTokens: 108_000,
     threshold: 'blocking',
@@ -69,6 +75,9 @@ const buildDiagnostics = (
     summaryTokens: 5_000,
     latestUserContextTokens: 2_000,
     modelContextWindowTokens: 128_000,
+    contextLimitSource: 'provider_metadata',
+    isContextLimitAuthoritative: true,
+    contextLimitConfidence: 'verified',
     reservedTokens: 20_000,
     usableContextTokens: 108_000,
     threshold: 'blocking',
@@ -602,6 +611,9 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('Limite modèle');
     expect(document.body.textContent).toContain('Budget utile');
     expect(document.body.textContent).toContain('Marge');
+    expect(document.body.textContent).toContain('Source limite');
+    expect(document.body.textContent).toContain('Provider');
+    expect(document.body.textContent).toContain('Vérifiée');
     expect(document.body.textContent).toContain('Contexte total');
     expect(document.body.textContent).toContain('42 messages · 6 sources');
     expect(document.body.textContent).not.toContain('Le fil a déjà été compacté');
@@ -623,10 +635,15 @@ describe('ContextWindowIndicator', () => {
         <ContextWindowIndicator
           diagnostics={buildDiagnostics({
             isContextLimitAuthoritative: false,
+            contextLimitSource: 'macro_fallback',
+            contextLimitConfidence: 'fallback',
+            contextLimitWarning: 'Limite estimée par Macro.',
             footprintAfter: {
               ...base.footprintAfter!,
               contextLimitSource: 'macro_fallback',
               isContextLimitAuthoritative: false,
+              contextLimitConfidence: 'fallback',
+              contextLimitWarning: 'Limite estimée par Macro.',
             },
           })}
         />,
@@ -642,6 +659,8 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.textContent).toContain('Limite estimée');
+    expect(document.body.textContent).toContain('Fallback Macro');
+    expect(document.body.textContent).toContain('Limite estimée par Macro.');
     expect(document.body.textContent).not.toContain('Limite modèle');
   });
 });

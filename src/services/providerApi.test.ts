@@ -150,6 +150,45 @@ describe('providerApi fetchModelsFromProvider', () => {
     expect(result.models[0]?.supported_parameters).toEqual(['reasoning', 'tools']);
   });
 
+  it('keeps OpenRouter context length metadata from provider model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'openai/gpt-5',
+            name: 'GPT-5',
+            context_length: 200_000,
+            top_provider: {
+              context_length: 131_072,
+              max_completion_tokens: 16_000,
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      providerId: 'openrouter',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'openai/gpt-5',
+      context_length: 200_000,
+      top_provider: {
+        context_length: 131_072,
+        max_completion_tokens: 16_000,
+      },
+    });
+  });
+
   it('falls back to chat completions when the models endpoint is unsupported', async () => {
     tauriFetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (String(input).endsWith('/models')) {

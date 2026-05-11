@@ -1,4 +1,4 @@
-import type { ModelContextLimitSource } from '../types';
+import type { ModelContextLimitConfidence, ModelContextLimitSource } from '../types';
 import { lookupModelContextCatalogLimit } from './modelContextCatalog';
 
 export const OUTPUT_TOKEN_MAX = 32_000;
@@ -11,7 +11,11 @@ export interface ModelContextLimits {
   source: ModelContextLimitSource;
   isAuthoritative: boolean;
   updatedAt?: string;
+  confidence: ModelContextLimitConfidence;
+  warning?: string;
 }
+
+export type ResolvedModelContextLimits = ModelContextLimits;
 
 export interface ContextLimitFootprintFields {
   modelContextWindowTokens: number;
@@ -19,6 +23,8 @@ export interface ContextLimitFootprintFields {
   outputLimitTokens?: number;
   contextLimitSource: ModelContextLimitSource;
   isContextLimitAuthoritative: boolean;
+  contextLimitConfidence: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
 }
 
 export interface ResolveModelContextLimitsParams {
@@ -51,6 +57,57 @@ const toPositiveInteger = (value: unknown): number | undefined =>
 const normalize = (value?: string | null): string =>
   (value || '').trim().toLowerCase();
 
+const resolveConfidenceForSource = (
+  source: ModelContextLimitSource
+): ModelContextLimitConfidence => {
+  switch (source) {
+    case 'user_override':
+      return 'configured';
+    case 'provider_metadata':
+    case 'model_metadata':
+      return 'verified';
+    case 'models_dev':
+      return 'catalog';
+    case 'provider_overflow_error':
+      return 'learned';
+    case 'macro_fallback':
+      return 'fallback';
+  }
+};
+
+const resolveWarningForSource = (
+  source: ModelContextLimitSource
+): string | undefined => {
+  if (source === 'macro_fallback') {
+    return "Limite estimée par Macro faute de métadonnée provider fiable; elle ne déclenche pas de compaction automatique à elle seule.";
+  }
+  if (source === 'provider_overflow_error') {
+    return "Limite apprise après une erreur provider; elle peut être remplacée par une métadonnée provider plus fraîche.";
+  }
+  return undefined;
+};
+
+const buildResolvedLimits = (params: {
+  contextTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  source: ModelContextLimitSource;
+  updatedAt?: string | null;
+}): ModelContextLimits => {
+  const confidence = resolveConfidenceForSource(params.source);
+  const warning = resolveWarningForSource(params.source);
+  return {
+    contextTokens: params.contextTokens,
+    inputTokens: params.inputTokens,
+    outputTokens: params.outputTokens,
+    source: params.source,
+    isAuthoritative: params.source !== 'macro_fallback',
+    confidence,
+    ...(params.updatedAt ? { updatedAt: params.updatedAt } : {}),
+    ...(warning ? { warning } : {}),
+  };
+};
+
 export const resolveMaxOutputTokens = (outputTokens?: number | null): number => {
   const normalized = toPositiveInteger(outputTokens);
   return Math.min(normalized ?? OUTPUT_TOKEN_MAX, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX;
@@ -69,38 +126,33 @@ export const resolveModelContextLimits = (
 
   if (explicitContextTokens) {
     const source = params.contextWindowSource ?? 'provider_metadata';
-    return {
+    return buildResolvedLimits({
       contextTokens: explicitContextTokens,
       inputTokens,
       outputTokens,
       source,
-      isAuthoritative: source !== 'macro_fallback',
-      ...(params.contextLimitsUpdatedAt
-        ? { updatedAt: params.contextLimitsUpdatedAt }
-        : {}),
-    };
+      updatedAt: params.contextLimitsUpdatedAt,
+    });
   }
 
   const modelsDevLimit = lookupModelContextCatalogLimit(params);
   if (modelsDevLimit) {
-    return {
+    return buildResolvedLimits({
       contextTokens: modelsDevLimit.contextTokens,
       inputTokens: inputTokens ?? modelsDevLimit.inputTokens,
       outputTokens: outputTokens ?? modelsDevLimit.outputTokens,
       source: 'models_dev',
-      isAuthoritative: true,
       updatedAt: modelsDevLimit.updatedAt,
-    };
+    });
   }
 
   const providerType = normalize(params.providerType);
-  return {
+  return buildResolvedLimits({
     contextTokens: MACRO_FALLBACK_CONTEXT_WINDOWS[providerType] ?? 16_000,
     inputTokens,
     outputTokens,
     source: 'macro_fallback',
-    isAuthoritative: false,
-  };
+  });
 };
 
 export const contextLimitsToFootprintFields = (
@@ -111,6 +163,8 @@ export const contextLimitsToFootprintFields = (
   outputLimitTokens: limits.outputTokens,
   contextLimitSource: limits.source,
   isContextLimitAuthoritative: limits.isAuthoritative,
+  contextLimitConfidence: limits.confidence,
+  contextLimitWarning: limits.warning,
 });
 
 export const resolveUsableContextTokens = (params: {

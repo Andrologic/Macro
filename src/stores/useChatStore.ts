@@ -180,6 +180,7 @@ import {
 } from "../services/chatQuestionnaires";
 import {
   buildContextTooLargeErrorMessage,
+  buildManualCompactionRequiredErrorMessage,
   buildCompactedMessagesForRequest,
   COMPACTED_CONVERSATION_STATE_MARKER,
   estimateConversationFootprint,
@@ -296,6 +297,8 @@ interface StreamContextDiagnosticsBaseline {
   outputLimitTokens?: number;
   contextLimitSource?: ContextFootprint["contextLimitSource"];
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ContextFootprint["contextLimitConfidence"];
+  contextLimitWarning?: string;
   allowedToolIds: string[];
   toolDefinitions: MacroToolRegistryEntry[];
   messagesForRequest: StreamMessage[];
@@ -623,6 +626,8 @@ const buildContextDiagnosticsFromFootprint = (params: {
     modelContextWindowTokens: footprint?.modelContextWindowTokens,
     contextLimitSource: footprint?.contextLimitSource,
     isContextLimitAuthoritative: footprint?.isContextLimitAuthoritative,
+    contextLimitConfidence: footprint?.contextLimitConfidence,
+    contextLimitWarning: footprint?.contextLimitWarning,
     previousModelContextWindowTokens: footprint?.previousModelContextWindowTokens,
     modelContextWindowShrank: footprint?.modelContextWindowShrank,
     marginTokens: footprint?.marginTokens,
@@ -1303,6 +1308,8 @@ export interface ConversationContextDiagnostics {
   modelContextWindowTokens?: number;
   contextLimitSource?: ContextFootprint["contextLimitSource"];
   isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ContextFootprint["contextLimitConfidence"];
+  contextLimitWarning?: string;
   previousModelContextWindowTokens?: number;
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
@@ -4265,6 +4272,60 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const buildCompactionDecisionAuditMetadata = (params: {
+    trigger?: ConversationCompactionState["lastTrigger"] | ContextCompactionKind;
+    status?: "success" | "failed" | "blocked" | "degraded" | "skipped";
+    footprintBefore?: ContextFootprint | null;
+    footprintAfter?: ContextFootprint | null;
+    footprint?: ContextFootprint | null;
+    footprintFields?: ContextLimitFootprintFields;
+    budgetPolicy?: ContextBudgetPolicy | null;
+    reason?: string | null;
+    result?: string | null;
+  }): Record<string, unknown> => {
+    const footprint = params.footprintAfter ?? params.footprint ?? params.footprintBefore;
+    return {
+      trigger: params.trigger ?? null,
+      status: params.status ?? null,
+      result: params.result ?? null,
+      reason: params.reason ?? footprint?.reason ?? null,
+      contextLimitSource:
+        footprint?.contextLimitSource ??
+        params.footprintFields?.contextLimitSource ??
+        null,
+      isContextLimitAuthoritative:
+        footprint?.isContextLimitAuthoritative ??
+        params.footprintFields?.isContextLimitAuthoritative ??
+        null,
+      contextLimitConfidence:
+        footprint?.contextLimitConfidence ??
+        params.footprintFields?.contextLimitConfidence ??
+        null,
+      contextLimitWarning:
+        footprint?.contextLimitWarning ??
+        params.footprintFields?.contextLimitWarning ??
+        null,
+      modelContextWindowTokens:
+        footprint?.modelContextWindowTokens ??
+        params.footprintFields?.modelContextWindowTokens ??
+        null,
+      inputLimitTokens:
+        footprint?.inputLimitTokens ?? params.footprintFields?.inputLimitTokens ?? null,
+      outputLimitTokens:
+        footprint?.outputLimitTokens ?? params.footprintFields?.outputLimitTokens ?? null,
+      usableContextTokens: footprint?.usableContextTokens ?? null,
+      reservedTokens:
+        footprint?.reservedTokens ?? params.budgetPolicy?.reservedTokens ?? null,
+      totalEstimatedTokens: footprint?.totalEstimatedTokens ?? null,
+      tokensBefore: params.footprintBefore?.totalEstimatedTokens ?? null,
+      tokensAfter: params.footprintAfter?.totalEstimatedTokens ?? null,
+      usableContextRatio: footprint?.usableContextRatio ?? null,
+      totalContextRatio: footprint?.totalContextRatio ?? null,
+      threshold: footprint?.threshold ?? null,
+      autoCompactionEnabled: params.budgetPolicy?.auto !== false,
+    };
+  };
+
   const prepareCompactionSummaryMessages = (
     input: SummaryGenerationInput,
     options: Partial<CompactionSummaryAttemptOptions> = {},
@@ -4588,6 +4649,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? "context_overflow"
           : "compaction_error",
         reason: toServiceError(error).message,
+        metadata: buildCompactionDecisionAuditMetadata({
+          trigger: getCompactionEventTrigger(params.mode),
+          status: "failed",
+          footprintFields,
+          budgetPolicy,
+          reason: toServiceError(error).message,
+          result: "compaction_error",
+        }),
       });
       throw error;
     }
@@ -4614,6 +4683,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         tokensAfter: result.footprintAfter.totalEstimatedTokens,
         status: result.degraded ? "degraded" : "success",
         reason: result.footprintAfter.reason,
+        metadata: buildCompactionDecisionAuditMetadata({
+          trigger:
+            result.compactionState?.lastTrigger ??
+            getCompactionEventTrigger(params.mode),
+          status: result.degraded ? "degraded" : "success",
+          footprintBefore: result.footprintBefore,
+          footprintAfter: result.footprintAfter,
+          footprintFields,
+          budgetPolicy,
+          reason: result.footprintAfter.reason,
+          result: result.usedExistingCompaction
+            ? "used_existing_compaction"
+            : "created_or_refreshed_compaction",
+        }),
       });
     } else if (hasCompaction) {
       setConversationCompactionStatus(
@@ -4740,6 +4823,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
         budgetPolicy,
       });
       if (!isContextFootprintOverUsableBudget(footprint)) {
+        return;
+      }
+
+      if (budgetPolicy.auto === false) {
+        setConversationCompactionStatus(params.conversationId, {
+          ...previousStatus,
+          phase: "needs_manual_compaction",
+          updatedAt: new Date().toISOString(),
+          reason: "manual_compaction_required",
+          kind: "model_switch",
+          footprintAfter: {
+            ...footprint,
+            reason: "manual_compaction_required",
+          },
+        });
+        await recordConversationCompactionEvent({
+          conversationId: params.conversationId,
+          trigger: "model_switch",
+          providerId: params.nextProviderId,
+          modelId: params.nextModelId,
+          modelContextWindowTokens: footprint.modelContextWindowTokens,
+          tokensBefore: footprint.totalEstimatedTokens,
+          tokensAfter: footprint.totalEstimatedTokens,
+          status: "skipped",
+          reason: "manual_compaction_required",
+          metadata: buildCompactionDecisionAuditMetadata({
+            trigger: "model_switch",
+            status: "skipped",
+            footprintAfter: {
+              ...footprint,
+              reason: "manual_compaction_required",
+            },
+            footprintFields,
+            budgetPolicy,
+            reason: "manual_compaction_required",
+            result: "auto_compaction_disabled",
+          }),
+        });
+        void refreshConversationContextDiagnostics(params.conversationId, {
+          mode: "full",
+          providerContext: {
+            providerId: params.nextProviderId,
+            providerType: nextProvider.providerType,
+            baseUrl: nextProvider.baseUrl ?? "",
+            modelId: params.nextModelId,
+          },
+        });
         return;
       }
 
@@ -6277,6 +6407,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       outputLimitTokens: payload.baseline.outputLimitTokens,
       contextLimitSource: payload.baseline.contextLimitSource,
       isContextLimitAuthoritative: payload.baseline.isContextLimitAuthoritative,
+      contextLimitConfidence: payload.baseline.contextLimitConfidence,
+      contextLimitWarning: payload.baseline.contextLimitWarning,
       estimateSerializedPayloadTokens,
       mode: "blocking",
       budgetPolicy,
@@ -7742,7 +7874,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         forceCompaction: overrides.forceCompaction ?? params.forceCompaction,
         forcePrune: overrides.forcePrune ?? params.forcePrune,
       });
+    const autoCompactionEnabled = budgetPolicy.auto !== false;
     let needsSafetyPrestream =
+      autoCompactionEnabled &&
       !params.compactionMode &&
       isContextFootprintOverUsableBudget(initialFootprint);
     let compactedRequest: MaybeCompactConversationResult;
@@ -7756,6 +7890,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     } else {
       compactedRequest = await compactPreparedRequest();
       needsSafetyPrestream =
+        autoCompactionEnabled &&
         !params.compactionMode &&
         isContextFootprintOverUsableBudget(compactedRequest.footprintAfter);
       if (needsSafetyPrestream) {
@@ -7776,33 +7911,60 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const latestRequestTooLarge =
         latestUserContextTokens > 0 &&
         latestUserContextTokens >= compactedRequest.footprintAfter.usableContextTokens;
+      const autoCompactionBlocked =
+        !autoCompactionEnabled &&
+        !params.compactionMode &&
+        isContextFootprintOverUsableBudget(compactedRequest.footprintAfter) &&
+        !latestRequestTooLarge;
+      const blockedFootprint: ContextFootprint = autoCompactionBlocked
+        ? {
+            ...compactedRequest.footprintAfter,
+            reason: "manual_compaction_required",
+          }
+        : compactedRequest.footprintAfter;
       setConversationCompactionStatus(params.conversationId, {
         phase:
-          needsSafetyPrestream && !latestRequestTooLarge
+          (needsSafetyPrestream || autoCompactionBlocked) && !latestRequestTooLarge
             ? "needs_manual_compaction"
             : "too_large",
         updatedAt: new Date().toISOString(),
-        reason: compactedRequest.footprintAfter.reason,
-        kind: needsSafetyPrestream
+        reason: blockedFootprint.reason,
+        kind: needsSafetyPrestream || autoCompactionBlocked
           ? "safety_prestream"
           : params.compactionMode ?? "blocking",
-        footprintAfter: compactedRequest.footprintAfter,
+        footprintAfter: blockedFootprint,
       });
       await recordConversationCompactionEvent({
         conversationId: params.conversationId,
-        trigger: needsSafetyPrestream
+        trigger: needsSafetyPrestream || autoCompactionBlocked
           ? "safety_prestream"
           : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
         providerId: params.providerId,
         modelId: params.modelId,
-        modelContextWindowTokens: compactedRequest.footprintAfter.modelContextWindowTokens,
+        modelContextWindowTokens: blockedFootprint.modelContextWindowTokens,
         tokensBefore: compactedRequest.footprintBefore.totalEstimatedTokens,
-        tokensAfter: compactedRequest.footprintAfter.totalEstimatedTokens,
-        status: "blocked",
-        reason: compactedRequest.footprintAfter.reason,
+        tokensAfter: blockedFootprint.totalEstimatedTokens,
+        status: autoCompactionBlocked ? "skipped" : "blocked",
+        reason: blockedFootprint.reason,
+        metadata: buildCompactionDecisionAuditMetadata({
+          trigger: needsSafetyPrestream || autoCompactionBlocked
+            ? "safety_prestream"
+            : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
+          status: autoCompactionBlocked ? "skipped" : "blocked",
+          footprintBefore: compactedRequest.footprintBefore,
+          footprintAfter: blockedFootprint,
+          footprintFields,
+          budgetPolicy,
+          reason: blockedFootprint.reason,
+          result: autoCompactionBlocked
+            ? "auto_compaction_disabled"
+            : "context_too_large",
+        }),
       });
       throw buildSendError(
-        buildContextTooLargeErrorMessage(compactedRequest.footprintAfter),
+        autoCompactionBlocked
+          ? buildManualCompactionRequiredErrorMessage(blockedFootprint)
+          : buildContextTooLargeErrorMessage(blockedFootprint),
       );
     }
     const fileToolContext = useCitationsStore

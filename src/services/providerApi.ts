@@ -18,10 +18,17 @@ export interface ProviderModel {
   description?: string;
   context_window?: number;
   context_window_tokens?: number;
+  context_length?: number;
   max_input_tokens?: number;
   max_output_tokens?: number;
   output_tokens?: number;
   max_completion_tokens?: number;
+  top_provider?: {
+    context_length?: number;
+    max_completion_tokens?: number;
+    max_input_tokens?: number;
+    max_output_tokens?: number;
+  };
   supported_parameters?: string[];
   pricing?: {
     prompt?: string;
@@ -127,6 +134,17 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
 
   return payload.data.map((model) => {
     const entry = (model ?? {}) as ProviderModel;
+    const topProvider =
+      entry.top_provider &&
+      typeof entry.top_provider === 'object' &&
+      !Array.isArray(entry.top_provider)
+        ? {
+            context_length: entry.top_provider.context_length,
+            max_completion_tokens: entry.top_provider.max_completion_tokens,
+            max_input_tokens: entry.top_provider.max_input_tokens,
+            max_output_tokens: entry.top_provider.max_output_tokens,
+          }
+        : undefined;
     return {
       id: entry.id,
       name: entry.name || entry.id,
@@ -135,10 +153,12 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
       description: entry.description,
       context_window: entry.context_window,
       context_window_tokens: entry.context_window_tokens,
+      context_length: entry.context_length,
       max_input_tokens: entry.max_input_tokens,
       max_output_tokens: entry.max_output_tokens,
       output_tokens: entry.output_tokens,
       max_completion_tokens: entry.max_completion_tokens,
+      ...(topProvider ? { top_provider: topProvider } : {}),
       ...(Array.isArray(entry.supported_parameters)
         ? {
             supported_parameters: entry.supported_parameters.filter(
