@@ -65,7 +65,7 @@ type MockChatState = {
   >;
   contextDiagnosticsByConversationId: Record<string, unknown>;
   getConversationRuntime: (conversationId: string) => {
-    phase: 'idle' | 'preparing' | 'streaming' | 'error';
+    phase: 'idle' | 'preparing' | 'overflow_recovery' | 'streaming' | 'error';
     sessionId: string | null;
     assistantMessageId?: string | null;
     lastError?: string | null;
@@ -672,7 +672,7 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('Type your message');
   });
 
-  it('renders a compaction boundary in the transcript without a header badge', async () => {
+  it('renders a vertical compaction boundary in the transcript', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -700,9 +700,9 @@ describe('ChatZone', () => {
 
     const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
     expect(boundary).not.toBeNull();
-    expect(boundary?.textContent).toContain('Contexte automatiquement compacté');
-    expect(boundary?.querySelector('[data-icon="archive"]')).not.toBeNull();
-    expect(requireContainer().textContent).not.toContain('Contexte compacté');
+    expect(boundary?.textContent).toContain('Contexte compacté');
+    expect(boundary?.getAttribute('data-chat-compaction-boundary-orientation')).toBe('vertical');
+    expect(boundary?.querySelector('[data-icon="archive"]')).toBeNull();
   });
 
   it('keeps the compaction boundary visible when the compacted message is last', async () => {
@@ -759,6 +759,41 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain('Compression du contexte en cours');
     expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
+  });
+
+  it('replaces the streaming cursor with inline compaction activity', async () => {
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: '',
+        }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'recovering_overflow',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const inlineActivity = requireContainer().querySelector(
+      '[data-chat-streaming-compaction-activity="true"]',
+    );
+    expect(inlineActivity).not.toBeNull();
+    expect(inlineActivity?.textContent).toContain('Compactage du contexte en cours');
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).not.toBeNull();
+    expect(inlineActivity?.querySelector('.chat-streaming-compaction__wave')).not.toBeNull();
+    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
   it('renders overflow recovery progress clearly in the transcript', async () => {

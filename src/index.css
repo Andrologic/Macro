@@ -653,6 +653,24 @@
     filter: saturate(1.22) brightness(1.14);
     will-change: transform, opacity;
   }
+
+  .chat-streaming-compaction__wave {
+    animation: chatCompactionWavePropagate 1.8s cubic-bezier(0.16, 0.72, 0.28, 1) infinite;
+    transform-origin: center;
+    opacity: 0;
+    transform: scale(0.34);
+    border: 0;
+    background:
+      radial-gradient(
+        circle,
+        color-mix(in srgb, currentColor 78%, transparent) 0%,
+        color-mix(in srgb, currentColor 48%, transparent) 44%,
+        color-mix(in srgb, currentColor 22%, transparent) 74%,
+        transparent 100%
+      );
+    filter: saturate(1.18) brightness(1.1);
+    will-change: transform, opacity;
+  }
 }
 
 @keyframes separatorExpand {
@@ -703,11 +721,32 @@
   }
 }
 
+@keyframes chatCompactionWavePropagate {
+  0% {
+    opacity: 0.62;
+    transform: scale(0.34);
+  }
+  58% {
+    opacity: 0.2;
+    transform: scale(0.78);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-status-awaiting-response__wave {
     animation: none;
     opacity: 0.38;
     transform: scale(var(--task-status-wave-mid-scale, 0.68));
+  }
+
+  .chat-streaming-compaction__wave {
+    animation: none;
+    opacity: 0.26;
+    transform: scale(0.78);
   }
 }
 

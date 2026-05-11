@@ -55,12 +55,14 @@ import {
 import {
   buildChatTranscriptItems,
   getTranscriptMessageIndexById,
+  isChatTranscriptCompactionProgressPhase,
   type ChatTranscriptItem,
   type ChatTranscriptMessageItem,
 } from './transcriptItems';
 import {
   CompactionBoundaryRow,
   CompactionProgressRow,
+  StreamingCompactionActivity,
 } from './CompactionTranscriptUi';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 
@@ -193,6 +195,7 @@ interface ChatMessageRowProps {
   virtualMessage: RenderedMessageItem;
   measureElement: (el: HTMLElement | null) => void;
   streamingAssistantMessageId: string | null;
+  isStreamingCompactionActive?: boolean;
   showToolTraces: boolean;
   isEditing: boolean;
   editingValue: string;
@@ -272,6 +275,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
   streamingAssistantMessageId,
+  isStreamingCompactionActive = false,
   showToolTraces,
   isEditing,
   editingValue,
@@ -435,10 +439,14 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 </div>
               )}
               {isStreamingMessage && message.role === 'assistant' && (
-                <span
-                  data-chat-assistant-activity="true"
-                  className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
-                />
+                isStreamingCompactionActive ? (
+                  <StreamingCompactionActivity />
+                ) : (
+                  <span
+                    data-chat-assistant-activity="true"
+                    className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
+                  />
+                )
               )}
             </div>
           )}
@@ -746,13 +754,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const contextDiagnostics = selectedConversationId
     ? contextDiagnosticsByConversationId[selectedConversationId]
     : undefined;
-  const isCompactionProgressActive =
-    activeCompactionStatus?.phase === 'compacting' ||
-    activeCompactionStatus?.phase === 'safety_compacting' ||
-    activeCompactionStatus?.phase === 'overflow_recovery' ||
-    activeCompactionStatus?.phase === 'recovering_overflow' ||
-    selectedConversationRuntime.phase === 'overflow_recovery';
+  const activeCompactionPhase = activeCompactionStatus?.phase ?? null;
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
+  const isContextOverflowRecovering =
+    selectedConversationRuntime.phase === 'overflow_recovery';
+  const runtimeAssistantMessageId =
+    selectedConversationRuntime.assistantMessageId ?? null;
+  const isStreamingCompactionActive =
+    Boolean(runtimeAssistantMessageId) &&
+    (isContextStreaming || isContextOverflowRecovering) &&
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase);
+  const showStandaloneCompactionProgress =
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase) &&
+    !isStreamingCompactionActive;
+  const showCompactionBoundary = Boolean(activeCompactionStatus?.upToMessageId);
+  const isCompactionProgressActive =
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase) ||
+    isContextOverflowRecovering;
   const runContextDiagnosticsRefresh = useCallback(async () => {
     if (
       !selectedConversationId ||
@@ -780,16 +798,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () =>
       buildChatTranscriptItems(currentMessages, {
         conversationId: selectedConversationId,
-        upToMessageId: activeCompactionStatus?.upToMessageId,
+        upToMessageId: showCompactionBoundary
+          ? activeCompactionStatus?.upToMessageId
+          : null,
         updatedAt: activeCompactionStatus?.updatedAt,
-        phase: activeCompactionStatus?.phase,
+        phase: showStandaloneCompactionProgress ? activeCompactionPhase : null,
       }),
     [
       activeCompactionStatus?.upToMessageId,
       activeCompactionStatus?.updatedAt,
-      activeCompactionStatus?.phase,
+      activeCompactionPhase,
       currentMessages,
       selectedConversationId,
+      showCompactionBoundary,
+      showStandaloneCompactionProgress,
     ]
   );
 
@@ -921,7 +943,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : null;
   const composerError = composerRuntimeError ?? lastError;
   const activeAssistantMessageId =
-    isBusySending ? selectedConversationRuntime.assistantMessageId ?? null : null;
+    isBusySending || isContextOverflowRecovering ? runtimeAssistantMessageId : null;
 
   const promptHistory = useMemo(() => {
     return currentMessages
@@ -1859,6 +1881,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
                     streamingAssistantMessageId={activeAssistantMessageId}
+                    isStreamingCompactionActive={
+                      isStreamingCompactionActive &&
+                      message.id === activeAssistantMessageId
+                    }
                     showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}
