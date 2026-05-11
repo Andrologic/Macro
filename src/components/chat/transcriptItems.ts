@@ -14,10 +14,16 @@ export type ChatTranscriptCompactionBoundaryItem = {
   updatedAt?: string;
 };
 
+export type ChatTranscriptCompactionProgressPhase =
+  | 'compacting'
+  | 'safety_compacting'
+  | 'overflow_recovery'
+  | 'recovering_overflow';
+
 export type ChatTranscriptCompactionProgressItem = {
   kind: 'compaction_progress';
   key: string;
-  phase: 'compacting' | 'safety_compacting' | 'overflow_recovery' | 'recovering_overflow';
+  phase: ChatTranscriptCompactionProgressPhase;
   updatedAt?: string;
 };
 
@@ -25,6 +31,14 @@ export type ChatTranscriptItem =
   | ChatTranscriptMessageItem
   | ChatTranscriptCompactionBoundaryItem
   | ChatTranscriptCompactionProgressItem;
+
+export const isChatTranscriptCompactionProgressPhase = (
+  phase: string | null | undefined,
+): phase is ChatTranscriptCompactionProgressPhase =>
+  phase === 'compacting' ||
+  phase === 'safety_compacting' ||
+  phase === 'overflow_recovery' ||
+  phase === 'recovering_overflow';
 
 export const buildChatTranscriptItems = (
   messages: ChatMessage[],
@@ -41,13 +55,11 @@ export const buildChatTranscriptItems = (
     ? messages.findIndex((message) => message.id === boundaryMessageId)
     : -1;
   const shouldInsertBoundary = boundaryIndex >= 0;
-  const progressPhase =
-    compactionState?.phase === 'compacting' ||
-    compactionState?.phase === 'safety_compacting' ||
-    compactionState?.phase === 'overflow_recovery' ||
-    compactionState?.phase === 'recovering_overflow'
-      ? compactionState.phase
-      : null;
+  const progressPhase = isChatTranscriptCompactionProgressPhase(
+    compactionState?.phase,
+  )
+    ? compactionState.phase
+    : null;
 
   messages.forEach((message, messageIndex) => {
     items.push({
