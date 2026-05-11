@@ -251,6 +251,77 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(JSON.stringify(compacted.messages)).not.toContain('tool_calls');
   });
 
+  it('does not double-count hidden tool context when provider input items carry the tool result', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the runtime.'),
+      makeMessage('a1', 'assistant', 'Runtime output summarized.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/runtime.ts">\n${'runtime output\n'.repeat(200)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      role: 'assistant',
+      content: 'Runtime output summarized.',
+      provider_input_items: [
+        {
+          type: 'function_call_output',
+          call_id: 'call_read',
+          output: 'runtime output\n'.repeat(200),
+        },
+      ],
+    };
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 16_000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.hiddenContextTokens).toBe(0);
+    expect(footprint.providerInputTokens).toBeGreaterThan(0);
+  });
+
+  it('does not reintroduce pruned hidden context when measuring a compacted payload', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect old files.'),
+      makeMessage('a1', 'assistant', 'Old result.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/old.ts">\n${'old output\n'.repeat(200)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Continue from the summary.'),
+    ];
+    const preparedMessages: StreamMessage[] = [
+      {
+        role: 'system',
+        content:
+          '[COMPACTED CONVERSATION STATE]\n\nOlder tool output was summarized.',
+      },
+      {
+        role: 'user',
+        content: 'Continue from the summary.',
+      },
+    ];
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions,
+      modelContextWindowTokens: 16_000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.hiddenContextTokens).toBe(0);
+    expect(footprint.summaryTokens).toBeGreaterThan(0);
+  });
+
   it('moves compacted provider tool-call details into plain context', async () => {
     const hugeReasoning = `Need context.\n${'native reasoning payload\n'.repeat(1200)}`;
     const orderedMessages = [

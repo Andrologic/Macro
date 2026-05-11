@@ -310,6 +310,97 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.querySelector('[data-testid="context-window-refreshing"]')).toBeNull();
   });
 
+  it('does not reuse previous metrics for an estimating diagnostic from another conversation', async () => {
+    await act(async () => {
+      root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            status: 'estimating',
+            conversationId: 'conv-2',
+            footprintBefore: undefined,
+            footprintAfter: undefined,
+            ratio: 0,
+            usableRatio: 0,
+            counts: {
+              messages: 0,
+              visibleLines: 0,
+              hiddenContextLines: 0,
+              providerInputItems: 0,
+              providerInputItemLines: 0,
+              reasoningContentLines: 0,
+              toolResultLines: 0,
+              citations: 0,
+              activeFiles: 0,
+              toolFacts: 0,
+            },
+          })}
+        />,
+      );
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Contexte non mesuré');
+    expect(document.body.textContent).toContain('0 messages · 0 sources');
+    expect(document.body.textContent).not.toContain('42 messages · 6 sources');
+  });
+
+  it('does not reuse previous metrics for an estimating diagnostic from another model', async () => {
+    await act(async () => {
+      root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            status: 'estimating',
+            modelId: 'other-model',
+            footprintBefore: undefined,
+            footprintAfter: undefined,
+            ratio: 0,
+            usableRatio: 0,
+            counts: {
+              messages: 1,
+              visibleLines: 0,
+              hiddenContextLines: 0,
+              providerInputItems: 0,
+              providerInputItemLines: 0,
+              reasoningContentLines: 0,
+              toolResultLines: 0,
+              citations: 0,
+              activeFiles: 0,
+              toolFacts: 0,
+            },
+          })}
+        />,
+      );
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('1 messages · 0 sources');
+    expect(document.body.textContent).not.toContain('42 messages · 6 sources');
+  });
+
   it('keeps manual compaction available below the automatic threshold', async () => {
     const onCompactNow = mock(() => undefined);
     await act(async () => {

@@ -1284,6 +1284,10 @@ describe('ChatZone', () => {
     });
 
     expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledTimes(1);
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenLastCalledWith(
+      'conv-1',
+      { mode: 'live_stream' },
+    );
 
     await act(async () => {
       Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button'))

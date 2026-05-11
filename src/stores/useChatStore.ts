@@ -155,7 +155,10 @@ import {
   resolveProjectWorkspaceState,
 } from "../services/projectWorkspaceState";
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
-import { resolveProjectExecutionContext } from "../services/projectExecutionContext";
+import {
+  resolveProjectExecutionContext,
+  type ProjectExecutionContext,
+} from "../services/projectExecutionContext";
 import { parseMessageQuickReplies } from "../services/chatQuickReplies";
 import {
   buildQuestionnaireResponseArtifacts,
@@ -171,11 +174,9 @@ import {
 import {
   buildContextTooLargeErrorMessage,
   buildCompactedMessagesForRequest,
-  buildMessagesWithCompactionState,
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
   resolveModelContextWindowTokens,
-  validateCompactionState,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
   type MaybeCompactConversationResult,
@@ -191,6 +192,7 @@ import {
 import {
   filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
+  type MacroToolRegistryEntry,
 } from "../shared/macroToolRegistry";
 
 const METADATA_MAX_TITLE_LENGTH = 72;
@@ -213,6 +215,29 @@ interface LiveContextDiagnosticsRefreshState {
   pending: boolean;
   lastStartedAt: number;
 }
+
+interface StreamContextDiagnosticsBaseline {
+  sessionId: string;
+  conversationId: string;
+  assistantMessageId: string;
+  modeAtSend: AppMode;
+  providerId: string;
+  providerType: string;
+  baseUrl: string;
+  modelId: string;
+  modelContextWindowTokens: number;
+  allowedToolIds: string[];
+  toolDefinitions: MacroToolRegistryEntry[];
+  messagesForRequest: StreamMessage[];
+  orderedMessages: ChatMessage[];
+  citations: Citation[];
+  compactionDecision?: ContextCompactionDecision;
+}
+
+type StreamContextDiagnosticsBaselineSeed = Omit<
+  StreamContextDiagnosticsBaseline,
+  "sessionId" | "assistantMessageId" | "orderedMessages"
+>;
 
 const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
   let buffer = "";
@@ -324,6 +349,23 @@ const countStreamContentLines = (content: StreamMessage["content"]): number => {
   }, 0);
 };
 
+const countPreparedToolContextLines = (
+  messages: StreamMessage[],
+): number =>
+  messages.reduce((total, message) => {
+    if (typeof message.content !== "string") {
+      return total;
+    }
+    const matches = message.content.matchAll(
+      /<tool_context\b[\s\S]*?<\/tool_context>/gi,
+    );
+    let nextTotal = total;
+    for (const match of matches) {
+      nextTotal += countTextLines(match[0]);
+    }
+    return nextTotal;
+  }, 0);
+
 const safeJsonLineCount = (value: unknown): number => {
   try {
     return countTextLines(JSON.stringify(value, null, 2));
@@ -422,10 +464,19 @@ const buildContextDiagnosticsFromFootprint = (params: {
     (message) => message.provider_input_items ?? [],
   );
   const providerInputInspection = inspectProviderInputValue(providerInputItems);
-  const hiddenContextLines = params.orderedMessages.reduce(
+  const preparedToolContextLines = countPreparedToolContextLines(
+    params.preparedMessages,
+  );
+  const historicalHiddenContextLines = params.orderedMessages.reduce(
     (total, message) => total + countTextLines(message.hidden_context),
     0,
   );
+  const hiddenContextLines =
+    preparedToolContextLines > 0
+      ? preparedToolContextLines
+      : providerInputItems.length > 0
+        ? 0
+        : historicalHiddenContextLines;
   const visibleLines = params.preparedMessages.reduce(
     (total, message) => total + countStreamContentLines(message.content),
     0,
@@ -1150,6 +1201,12 @@ export interface ConversationCompactionStatus {
 export type ConversationContextDiagnosticsStatus = "estimating" | "ready" | "error";
 export type ConversationContextDiagnosticsSource = "full" | "live_stream";
 export type ConversationContextDiagnosticsRefreshMode = ConversationContextDiagnosticsSource;
+export interface ConversationContextDiagnosticsProviderContext {
+  providerId: string;
+  providerType: string;
+  baseUrl: string;
+  modelId: string;
+}
 
 export interface ConversationContextDiagnosticsBreakdownItem {
   id: string;
@@ -1198,6 +1255,7 @@ export interface LiveStreamContextEstimate {
   sessionId: string;
   assistantMessageId: string;
   version: number;
+  baseline?: StreamContextDiagnosticsBaseline;
   visibleContent: string;
   visibleContentLength: number;
   hiddenContext?: string;
@@ -1310,7 +1368,10 @@ interface ChatStore {
   compactConversationNow: (conversationId: string) => Promise<void>;
   refreshConversationContextDiagnostics: (
     conversationId: string,
-    options?: { mode?: ConversationContextDiagnosticsRefreshMode },
+    options?: {
+      mode?: ConversationContextDiagnosticsRefreshMode;
+      providerContext?: ConversationContextDiagnosticsProviderContext;
+    },
   ) => Promise<void>;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string) => void;
@@ -2093,6 +2154,111 @@ export const useChatStore = create<ChatStore>((set, get) => {
       workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
     });
+  };
+
+  const resolveConversationImplementTask = (
+    conversationId: string,
+    executionContext: ProjectExecutionContext,
+    selectedTaskId?: string | null,
+  ): ImplementTask | undefined => {
+    const taskState = useTaskStore.getState();
+    const conversationTaskId =
+      get().conversations.find((conversation) => conversation.id === conversationId)
+        ?.task_id ?? null;
+    const taskId =
+      conversationTaskId ||
+      executionContext.taskId ||
+      selectedTaskId ||
+      null;
+    return taskId ? taskState.getTaskById(taskId) : undefined;
+  };
+
+  const canPromoteContextProjectsForTask = (
+    task: ImplementTask | undefined,
+  ): task is ImplementTask =>
+    Boolean(
+      task &&
+        task.task_source === "architect" &&
+        task.plan_id &&
+        (task.plan_storage_branch || task.plan_target_branch),
+    );
+
+  const formatContextPromotionUnavailableToolResult = (
+    toolName: string,
+    projectIds: string[],
+  ): string => {
+    const appState = useAppStore.getState();
+    const labels = projectIds
+      .map((projectId) => {
+        const project = appState.getProjectById(projectId);
+        return project?.name || projectId;
+      })
+      .join(", ");
+    return (
+      `Cannot execute ${toolName} on context-only ` +
+      `project${projectIds.length === 1 ? "" : "s"} ${labels}: ` +
+      "context promotion is only available for Architect tasks."
+    );
+  };
+
+  const resolveContextPromotionRequest = (params: {
+    conversationId: string;
+    executionContext: ProjectExecutionContext;
+    selectedTaskId?: string | null;
+    toolName: string;
+    args: Record<string, unknown>;
+  }): {
+    task: ImplementTask | undefined;
+    projectIds: string[];
+    unavailableResult: string | null;
+  } => {
+    const task = resolveConversationImplementTask(
+      params.conversationId,
+      params.executionContext,
+      params.selectedTaskId,
+    );
+    const explicitProjectTargets = resolveExplicitMutatingToolProjectTargets(
+      params.toolName,
+      params.args,
+      {
+        workspacePath: params.executionContext.workspacePath,
+        defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
+        projectId: params.executionContext.projectId,
+        focusedProjectId: params.executionContext.focusedProjectId,
+        groupId: params.executionContext.groupId,
+        projectMounts: params.executionContext.projectMounts,
+        virtualRootEnabled: params.executionContext.virtualRootEnabled,
+        workspacePathsByProjectId: params.executionContext.workspacePathsByProjectId,
+      },
+    );
+    const contextProjectIdSet = new Set(
+      task?.context_project_ids?.length
+        ? task.context_project_ids
+        : params.executionContext.contextProjectIds,
+    );
+    const actionableProjectIdSet = new Set(params.executionContext.actionableProjectIds);
+    const projectIds = explicitProjectTargets.filter(
+      (projectId) =>
+        contextProjectIdSet.has(projectId) &&
+        !actionableProjectIdSet.has(projectId),
+    );
+
+    if (projectIds.length === 0) {
+      return { task, projectIds, unavailableResult: null };
+    }
+
+    if (!canPromoteContextProjectsForTask(task)) {
+      return {
+        task,
+        projectIds,
+        unavailableResult: formatContextPromotionUnavailableToolResult(
+          params.toolName,
+          projectIds,
+        ),
+      };
+    }
+
+    return { task, projectIds, unavailableResult: null };
   };
 
   const updateAssistantToolTraceStatus = (
@@ -4656,36 +4822,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       let promotedProjectIdsForTool: string[] = [];
 
       if (mode === "Implement") {
-        const selectedTaskId = appState.selectedTaskId;
-        const selectedTask = selectedTaskId
-          ? useTaskStore.getState().getTaskById(selectedTaskId)
-          : undefined;
-        const explicitProjectTargets = resolveExplicitMutatingToolProjectTargets(
-          normalizedToolName,
+        const promotionRequest = resolveContextPromotionRequest({
+          conversationId,
+          executionContext,
+          selectedTaskId: appState.selectedTaskId,
+          toolName: normalizedToolName,
           args,
-          {
-            workspacePath: executionContext.workspacePath,
-            defaultWorkspacePath: executionContext.defaultWorkspacePath,
-            projectId: executionContext.projectId,
-            focusedProjectId: executionContext.focusedProjectId,
-            groupId: executionContext.groupId,
-            projectMounts: executionContext.projectMounts,
-            virtualRootEnabled: executionContext.virtualRootEnabled,
-            workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
-          },
-        );
-        const contextProjectIdSet = new Set(selectedTask?.context_project_ids || []);
-        const actionableProjectIdSet = new Set(executionContext.actionableProjectIds);
-        const promotableProjectIds = explicitProjectTargets.filter(
-          (projectId) =>
-            contextProjectIdSet.has(projectId) &&
-            !actionableProjectIdSet.has(projectId),
-        );
+        });
 
-        if (selectedTask && promotableProjectIds.length > 0) {
+        if (promotionRequest.unavailableResult) {
+          return promotionRequest.unavailableResult;
+        }
+
+        if (promotionRequest.task && promotionRequest.projectIds.length > 0) {
           const promotion = await useTaskStore
             .getState()
-            .promoteTaskContextProjects(selectedTask.id, promotableProjectIds, {
+            .promoteTaskContextProjects(promotionRequest.task.id, promotionRequest.projectIds, {
               triggerTool: normalizedToolName,
             });
           promotedProjectIdsForTool = promotion?.promotedProjectIds || [];
@@ -4807,6 +4959,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : item,
     );
   };
+
+  const cloneStreamMessage = (message: StreamMessage): StreamMessage => ({
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part) =>
+          part.type === "image_url"
+            ? {
+                type: "image_url" as const,
+                image_url: { ...part.image_url },
+              }
+            : { ...part },
+        )
+      : message.content,
+    provider_input_items: cloneProviderInputItems(message.provider_input_items),
+  });
+
+  const cloneChatMessageForDiagnostics = (message: ChatMessage): ChatMessage => ({
+    ...message,
+    tool_traces: message.tool_traces
+      ? message.tool_traces.map((trace) => ({ ...trace }))
+      : message.tool_traces,
+    provider_input_items: cloneProviderInputItems(message.provider_input_items),
+  });
+
+  const cloneCitationForDiagnostics = (citation: Citation): Citation => ({
+    ...citation,
+  });
+
+  const cloneStreamContextDiagnosticsBaseline = (
+    baseline: StreamContextDiagnosticsBaseline,
+  ): StreamContextDiagnosticsBaseline => ({
+    ...baseline,
+    allowedToolIds: [...baseline.allowedToolIds],
+    toolDefinitions: baseline.toolDefinitions.map((tool) => ({ ...tool })),
+    messagesForRequest: baseline.messagesForRequest.map(cloneStreamMessage),
+    orderedMessages: baseline.orderedMessages.map(cloneChatMessageForDiagnostics),
+    citations: baseline.citations.map(cloneCitationForDiagnostics),
+  });
 
   const buildProviderInputItemsFromContent = (
     role: "user" | "assistant",
@@ -5171,68 +5361,91 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const overlayLiveStreamContextEstimate = (
-    preparedRequest: Awaited<ReturnType<typeof prepareMessagesForRequest>>,
-    liveEstimate: LiveStreamContextEstimate | undefined,
-  ): Awaited<ReturnType<typeof prepareMessagesForRequest>> => {
-    if (!liveEstimate) {
-      return preparedRequest;
+  const buildLiveStreamDiagnosticsPayload = (
+    liveEstimate: LiveStreamContextEstimate,
+  ): {
+    systemMessage: string;
+    preparedMessages: StreamMessage[];
+    orderedMessages: ChatMessage[];
+    citations: Citation[];
+    baseline: StreamContextDiagnosticsBaseline;
+  } | null => {
+    const baseline = liveEstimate.baseline;
+    if (!baseline) {
+      return null;
     }
 
-    const messageIndex = preparedRequest.orderedMessages.findIndex(
-      (message) => message.id === liveEstimate.assistantMessageId,
-    );
-    if (messageIndex < 0) {
-      return preparedRequest;
-    }
-
-    const existingOrderedMessage = preparedRequest.orderedMessages[messageIndex];
-    const existingPreparedMessage = preparedRequest.preparedMessages[messageIndex];
-    if (
-      !existingOrderedMessage ||
-      existingOrderedMessage.role !== "assistant" ||
-      !existingPreparedMessage
-    ) {
-      return preparedRequest;
-    }
-
+    const [systemMessageCandidate, ...payloadMessages] =
+      baseline.messagesForRequest.map(cloneStreamMessage);
+    const systemMessage =
+      typeof systemMessageCandidate?.content === "string"
+        ? systemMessageCandidate.content
+        : "";
     const liveContent = liveEstimate.visibleContent;
     const modelContent = sanitizeAssistantContentForModel(liveContent);
     const providerInputItems =
       cloneProviderInputItems(liveEstimate.providerInputItems) ??
       buildProviderInputItemsFromContent("assistant", modelContent);
+    const livePreparedMessage: StreamMessage = {
+      role: "assistant",
+      content: modelContent,
+      ...(providerInputItems ? { provider_input_items: providerInputItems } : {}),
+      ...(liveEstimate.providerTurnState
+        ? { provider_turn_state: liveEstimate.providerTurnState }
+        : {}),
+    };
+    const preparedMessages = [...payloadMessages, livePreparedMessage];
 
-    const orderedMessages = preparedRequest.orderedMessages.map((message, index) =>
-      index === messageIndex
-        ? {
-            ...message,
-            content: liveContent,
-            tool_traces: liveEstimate.toolTraces,
-            hidden_context: liveEstimate.hiddenContext,
-            provider_input_items: providerInputItems,
-            provider_turn_state: liveEstimate.providerTurnState ?? message.provider_turn_state,
-          }
-        : message,
-    );
-    const preparedMessages = preparedRequest.preparedMessages.map((message, index) =>
-      index === messageIndex
-        ? {
-            ...message,
-            content: modelContent,
-            ...(providerInputItems ? { provider_input_items: providerInputItems } : {}),
-            ...(liveEstimate.providerTurnState
-              ? { provider_turn_state: liveEstimate.providerTurnState }
-              : {}),
-          }
-        : message,
-    );
+    let didUpdateAssistantMessage = false;
+    const orderedMessages = baseline.orderedMessages.map((message) => {
+      if (message.id !== liveEstimate.assistantMessageId) {
+        return cloneChatMessageForDiagnostics(message);
+      }
+      didUpdateAssistantMessage = true;
+      return {
+        ...cloneChatMessageForDiagnostics(message),
+        content: liveContent,
+        tool_traces: liveEstimate.toolTraces.map((trace) => ({ ...trace })),
+        hidden_context: liveEstimate.hiddenContext,
+        provider_input_items: providerInputItems,
+        provider_turn_state:
+          liveEstimate.providerTurnState ?? message.provider_turn_state,
+      };
+    });
+
+    if (!didUpdateAssistantMessage) {
+      orderedMessages.push({
+        id: liveEstimate.assistantMessageId,
+        task_id: "",
+        conversation_id: baseline.conversationId,
+        role: "assistant",
+        content: liveContent,
+        timestamp: liveEstimate.updatedAt,
+        tool_traces: liveEstimate.toolTraces.map((trace) => ({ ...trace })),
+        hidden_context: liveEstimate.hiddenContext,
+        provider_input_items: providerInputItems,
+        provider_turn_state: liveEstimate.providerTurnState,
+      });
+    }
 
     return {
-      ...preparedRequest,
-      orderedMessages,
+      systemMessage,
       preparedMessages,
+      orderedMessages,
+      citations: baseline.citations.map(cloneCitationForDiagnostics),
+      baseline,
     };
   };
+
+  const liveStreamBaselineHasCompaction = (
+    baseline: StreamContextDiagnosticsBaseline,
+  ): boolean =>
+    baseline.messagesForRequest.some(
+      (message) =>
+        message.role === "system" &&
+        typeof message.content === "string" &&
+        message.content.includes("[COMPACTED CONVERSATION STATE]"),
+    );
 
   const recalcConversation = (
     conversationId: string,
@@ -6592,6 +6805,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       allowedToolIds,
       showToolTraces,
       messagesForRequest: compactedRequest.messages,
+      contextDiagnosticsBaselineSeed: {
+        conversationId: params.conversationId,
+        modeAtSend: params.modeAtSend,
+        providerId: params.providerId,
+        providerType: params.providerConfig.providerType,
+        baseUrl: params.providerConfig.baseUrl ?? "",
+        modelId: params.modelId,
+        modelContextWindowTokens: getSelectedModelContextWindowTokens(
+          params.providerId,
+          params.modelId,
+          params.providerConfig.providerType,
+        ),
+        allowedToolIds,
+        toolDefinitions: getToolDefinitionsForIds(allowedToolIds),
+        messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
+        citations: preparedRequest.citations.map(cloneCitationForDiagnostics),
+        compactionDecision: compactedRequest.decision,
+      } satisfies StreamContextDiagnosticsBaselineSeed,
       executionContext: preparedRequest.executionContext,
       fileToolContext,
       internalAgentProfile,
@@ -7005,6 +7236,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerConfig: params.providerConfig,
         internalAgentProfile: streamLaunch.internalAgentProfile,
         messagesForRequest: streamLaunch.messagesForRequest,
+        contextDiagnosticsBaselineSeed:
+          streamLaunch.contextDiagnosticsBaselineSeed,
         executionContext: streamLaunch.executionContext,
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
@@ -7136,7 +7369,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const refreshConversationContextDiagnostics = async (
     conversationId: string,
-    options?: { mode?: ConversationContextDiagnosticsRefreshMode },
+    options?: {
+      mode?: ConversationContextDiagnosticsRefreshMode;
+      providerContext?: ConversationContextDiagnosticsProviderContext;
+    },
   ): Promise<void> => {
     if (!conversationId) {
       return;
@@ -7201,23 +7437,117 @@ export const useChatStore = create<ChatStore>((set, get) => {
       contextDiagnosticsRequestIds.get(conversationId) !== requestId;
 
     try {
+      if (mode === "live_stream") {
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        const liveEstimate =
+          get().liveStreamContextEstimatesByConversationId[conversationId];
+        if (
+          !liveEstimate ||
+          !liveEstimate.baseline ||
+          runtime.phase !== "streaming" ||
+          runtime.sessionId !== liveEstimate.sessionId ||
+          runtime.assistantMessageId !== liveEstimate.assistantMessageId ||
+          liveEstimate.baseline.sessionId !== liveEstimate.sessionId ||
+          liveEstimate.baseline.assistantMessageId !==
+            liveEstimate.assistantMessageId
+        ) {
+          return;
+        }
+
+        const payload = buildLiveStreamDiagnosticsPayload(liveEstimate);
+        if (!payload) {
+          return;
+        }
+
+        const budgetPolicy = await loadContextBudgetPolicy();
+        const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+          estimateChatCompletionSerializedPayloadTokens({
+            messages,
+            providerType: payload.baseline.providerType,
+            providerId: payload.baseline.providerId,
+            baseUrl: payload.baseline.baseUrl,
+            modelId: payload.baseline.modelId,
+          });
+
+        if (isStale()) {
+          return;
+        }
+
+        const footprint = estimateConversationFootprint({
+          systemMessage: payload.systemMessage,
+          preparedMessages: payload.preparedMessages,
+          orderedMessages: payload.orderedMessages,
+          citations: payload.citations,
+          toolDefinitions: payload.baseline.toolDefinitions,
+          modelContextWindowTokens: payload.baseline.modelContextWindowTokens,
+          estimateSerializedPayloadTokens,
+          mode: "blocking",
+          budgetPolicy,
+        });
+        const isProviderError =
+          runtime.lastErrorOrigin === "provider" ||
+          runtime.lastErrorDisplayTarget === "transcript";
+        const hasCompactedPayload = liveStreamBaselineHasCompaction(payload.baseline);
+        const phase: ConversationContextDiagnostics["phase"] = isProviderError
+          ? "provider_error"
+          : footprint.isHardStop
+            ? "too_large"
+            : hasCompactedPayload
+              ? "compacted"
+              : "idle";
+        const diagnostics = buildContextDiagnosticsFromFootprint({
+          conversationId,
+          providerId: payload.baseline.providerId,
+          providerType: payload.baseline.providerType,
+          modelId: payload.baseline.modelId,
+          status: "ready",
+          source: "live_stream",
+          phase,
+          decision: footprint.isHardStop
+            ? "hard_stop"
+            : payload.baseline.compactionDecision ?? "send",
+          footprintAfter: footprint,
+          orderedMessages: payload.orderedMessages,
+          preparedMessages: payload.preparedMessages,
+          citations: payload.citations,
+        });
+
+        if (isStale()) {
+          return;
+        }
+        set((state) => ({
+          contextDiagnosticsByConversationId: {
+            ...state.contextDiagnosticsByConversationId,
+            [conversationId]: diagnostics,
+          },
+        }));
+        return;
+      }
+
       await ensureMessagesLoadedForConversation(conversationId);
       await ensureToolsLoaded();
 
       const providerState = useProviderStore.getState();
-      const {
-        selectedProviderId,
-        selectedModelId,
-        providerConfigs,
-      } = providerState;
+      const { providerConfigs } = providerState;
+      const selectedProviderId =
+        options?.providerContext?.providerId ?? providerState.selectedProviderId;
+      const selectedModelId =
+        options?.providerContext?.modelId ?? providerState.selectedModelId;
       if (!selectedProviderId || !selectedModelId) {
         throw buildSendError("Select a provider and model to inspect context.");
       }
 
-      const providerConfig = providerConfigs.find(
+      const configuredProvider = providerConfigs.find(
         (provider) => provider.id === selectedProviderId,
       );
-      if (!providerConfig) {
+      const providerType =
+        options?.providerContext?.providerType ?? configuredProvider?.providerType;
+      const providerBaseUrl =
+        options?.providerContext?.baseUrl ?? configuredProvider?.baseUrl ?? "";
+      if (!providerType) {
         throw buildSendError("Provider configuration not found.");
       }
 
@@ -7247,16 +7577,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const modelContextWindowTokens = getSelectedModelContextWindowTokens(
         selectedProviderId,
         selectedModelId,
-        providerConfig.providerType,
+        providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
 
       const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
         estimateChatCompletionSerializedPayloadTokens({
           messages,
-          providerType: providerConfig.providerType,
+          providerType,
           providerId: selectedProviderId,
-          baseUrl: providerConfig.baseUrl,
+          baseUrl: providerBaseUrl,
           modelId: selectedModelId,
         });
 
@@ -7271,84 +7601,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const isProviderError =
         runtime.lastErrorOrigin === "provider" ||
         runtime.lastErrorDisplayTarget === "transcript";
-      if (mode === "live_stream") {
-        const liveEstimate =
-          get().liveStreamContextEstimatesByConversationId[conversationId];
-        if (
-          !liveEstimate ||
-          runtime.phase !== "streaming" ||
-          runtime.sessionId !== liveEstimate.sessionId ||
-          runtime.assistantMessageId !== liveEstimate.assistantMessageId
-        ) {
-          return;
-        }
-
-        const livePreparedRequest = overlayLiveStreamContextEstimate(
-          preparedRequest,
-          liveEstimate,
-        );
-        const validCompactionState = validateCompactionState(
-          currentCompactionState,
-          livePreparedRequest.orderedMessages,
-        )
-          ? currentCompactionState
-          : null;
-        const payloadMessages = buildMessagesWithCompactionState(
-          livePreparedRequest.systemMessage,
-          livePreparedRequest.preparedMessages,
-          livePreparedRequest.orderedMessages,
-          livePreparedRequest.citations,
-          validCompactionState,
-        );
-        const footprint = estimateConversationFootprint({
-          systemMessage: livePreparedRequest.systemMessage,
-          preparedMessages: payloadMessages.slice(1),
-          orderedMessages: livePreparedRequest.orderedMessages,
-          citations: livePreparedRequest.citations,
-          toolDefinitions,
-          modelContextWindowTokens,
-          estimateSerializedPayloadTokens,
-          mode: "blocking",
-          budgetPolicy,
-        });
-        const phase: ConversationContextDiagnostics["phase"] = isProviderError
-          ? "provider_error"
-          : footprint.isHardStop
-            ? "too_large"
-            : validCompactionState
-              ? "compacted"
-              : "idle";
-        const diagnostics = buildContextDiagnosticsFromFootprint({
-          conversationId,
-          providerId: selectedProviderId,
-          providerType: providerConfig.providerType,
-          modelId: selectedModelId,
-          status: "ready",
-          source: "live_stream",
-          phase,
-          decision: footprint.isHardStop ? "hard_stop" : "send",
-          compactionPass: validCompactionState?.compactionPass,
-          summaryFormatVersion: validCompactionState?.summaryFormatVersion,
-          summarySource: validCompactionState?.summarySource,
-          footprintBefore: validCompactionState?.footprintBefore,
-          footprintAfter: footprint,
-          orderedMessages: livePreparedRequest.orderedMessages,
-          preparedMessages: payloadMessages.slice(1),
-          citations: livePreparedRequest.citations,
-          compactionState: validCompactionState,
-        });
-
-        if (isStale()) {
-          return;
-        }
-        set((state) => ({
-          contextDiagnosticsByConversationId: {
-            ...state.contextDiagnosticsByConversationId,
-            [conversationId]: diagnostics,
-          },
-        }));
-        return;
-      }
 
       const result = await buildCompactedMessagesForRequest({
         systemMessage: preparedRequest.systemMessage,
@@ -7382,7 +7634,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const diagnostics = buildContextDiagnosticsFromFootprint({
         conversationId,
         providerId: selectedProviderId,
-        providerType: providerConfig.providerType,
+        providerType,
         modelId: selectedModelId,
         status: "ready",
         source: "full",
@@ -7499,6 +7751,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     sessionId: string;
     assistantMessageId: string;
     snapshot: LiveStreamContextSnapshot;
+    baseline?: StreamContextDiagnosticsBaseline;
     leading?: boolean;
   }) => {
     let didRecord = false;
@@ -7514,7 +7767,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const previous =
         state.liveStreamContextEstimatesByConversationId[params.conversationId];
-      const version = Math.max(previous?.version ?? 0, params.snapshot.version);
+      if (
+        previous &&
+        previous.sessionId === params.sessionId &&
+        previous.assistantMessageId === params.assistantMessageId &&
+        params.snapshot.version < previous.version
+      ) {
+        return state;
+      }
+      const version = params.snapshot.version;
+      const baseline = params.baseline
+        ? cloneStreamContextDiagnosticsBaseline(params.baseline)
+        : previous?.baseline
+          ? cloneStreamContextDiagnosticsBaseline(previous.baseline)
+          : undefined;
       didRecord = true;
       return {
         liveStreamContextEstimatesByConversationId: {
@@ -7523,6 +7789,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sessionId: params.sessionId,
             assistantMessageId: params.assistantMessageId,
             version,
+            baseline,
             visibleContent: params.snapshot.visibleContent,
             visibleContentLength: params.snapshot.visibleContentLength,
             hiddenContext: params.snapshot.hiddenContext,
@@ -7560,6 +7827,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     >;
     internalAgentProfile?: InternalAgentProfile | null;
     messagesForRequest: StreamMessage[];
+    contextDiagnosticsBaselineSeed: StreamContextDiagnosticsBaselineSeed;
     executionContext: {
       workspacePath: string | null;
       defaultWorkspacePath: string | null;
@@ -7607,11 +7875,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const tokenBatcher = createTokenBatcher((tokenChunk) => {
       get().appendToMessage(params.assistantMessage.id, tokenChunk);
     });
+    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
+      ...params.contextDiagnosticsBaselineSeed,
+      sessionId: params.sessionId,
+      assistantMessageId: params.assistantMessage.id,
+      orderedMessages: getOrderedConversationMessages(
+        params.conversationId,
+      ).map(cloneChatMessageForDiagnostics),
+    };
     recordLiveStreamContextEstimate({
       conversationId: params.conversationId,
       sessionId: params.sessionId,
       assistantMessageId: params.assistantMessage.id,
       leading: true,
+      baseline: contextDiagnosticsBaseline,
       snapshot: {
         version: 0,
         visibleContent: params.assistantMessage.content,
@@ -7736,6 +8013,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         startAssistantStream({
           ...params,
           messagesForRequest: streamLaunch.messagesForRequest,
+          contextDiagnosticsBaselineSeed:
+            streamLaunch.contextDiagnosticsBaselineSeed,
           executionContext: streamLaunch.executionContext,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
@@ -7980,6 +8259,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             clearLiveStreamContextEstimate(params.conversationId);
             void refreshConversationContextDiagnostics(params.conversationId, {
               mode: "full",
+              providerContext: {
+                providerId: params.selectedProviderId,
+                providerType: params.providerConfig.providerType,
+                baseUrl: params.providerConfig.baseUrl ?? "",
+                modelId: params.selectedModelId,
+              },
             });
 
             void persistAssistantStreamResult(params.conversationId, result).catch(
@@ -10965,6 +11250,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerConfig: providerConfigForUse,
             internalAgentProfile: streamLaunch.internalAgentProfile,
             messagesForRequest: streamLaunch.messagesForRequest,
+            contextDiagnosticsBaselineSeed:
+              streamLaunch.contextDiagnosticsBaselineSeed,
             executionContext: streamLaunch.executionContext,
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
@@ -10988,7 +11275,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             assistantMessage.id,
             error,
             {
-            setSendState: true,
+              setSendState: true,
             },
           );
         }

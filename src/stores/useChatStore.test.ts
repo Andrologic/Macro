@@ -1728,6 +1728,33 @@ const setArchitectStoreState = (
   useChatStore.setState(createArchitectStoreState(params));
 };
 
+const createImplementStoreState = (params: {
+  conversationId: string;
+  taskId: string;
+  title?: string;
+}) =>
+  createIdleChatStoreState({
+    conversations: [
+      {
+        ...createConversation(params.conversationId),
+        scope_mode: 'Implement',
+        task_id: params.taskId,
+        title: params.title ?? 'Task - Implement checkout',
+      },
+    ],
+    messages: [],
+    selectedConversationId: params.conversationId,
+    selectedConversationIdsByMode: { Implement: params.conversationId },
+    sendState: 'idle',
+  });
+
+const setImplementStoreState = (
+  useChatStore: { setState: (state: Record<string, unknown>) => void },
+  params: Parameters<typeof createImplementStoreState>[0]
+) => {
+  useChatStore.setState(createImplementStoreState(params));
+};
+
 const flushAsyncWork = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -1742,16 +1769,40 @@ const createDeferred = <T = void>() => {
   return { promise, resolve };
 };
 
-const getLatestArchitectToolHandler = () => {
+const getLatestStreamOptions = <T extends Record<string, unknown> = Record<string, unknown>>() => {
   const lastCall = ((streamChatMock as unknown as {
     mock: { calls: Array<Array<unknown>> };
-  }).mock.calls.at(-1)?.[0] ?? null) as {
+  }).mock.calls.at(-1)?.[0] ?? null) as T | null;
+  expect(lastCall).not.toBeNull();
+  if (!lastCall) {
+    throw new Error('Expected streamChat options');
+  }
+  return lastCall;
+};
+
+const waitForConversationDiagnostics = async (
+  useChatStore: Awaited<ReturnType<typeof loadChatStore>>['useChatStore'],
+  conversationId: string,
+) => {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const diagnostics =
+      useChatStore.getState().contextDiagnosticsByConversationId[conversationId];
+    if (diagnostics?.status === 'ready' || diagnostics?.status === 'error') {
+      return diagnostics;
+    }
+    await flushAsyncWork();
+  }
+  return useChatStore.getState().contextDiagnosticsByConversationId[conversationId];
+};
+
+const getLatestArchitectToolHandler = () => {
+  const lastCall = getLatestStreamOptions<{
     onToolCall?: (
       toolName: string,
       args: Record<string, unknown>,
       toolCallId?: string
     ) => Promise<unknown>;
-  } | null;
+  }>();
   expect(lastCall?.onToolCall).toBeDefined();
   if (!lastCall?.onToolCall) {
     throw new Error('Expected Architect tool handler');
@@ -5975,7 +6026,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         };
         options.onError?.(new Error('Assistant unavailable.'));
         return { usage: null };
-      }) as typeof streamChatMock)
+      }) as unknown as typeof streamChatMock)
       .mockImplementationOnce((async (...args: unknown[]) => {
         const options = (args[0] ?? {}) as {
           onComplete?: (result: {
@@ -5992,7 +6043,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           usage: null,
         });
         return { usage: null };
-      }) as typeof streamChatMock);
+      }) as unknown as typeof streamChatMock);
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -6826,6 +6877,227 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           !('completion_reason' in message)
       )
     ).toBe(true);
+  });
+
+  it('keeps live context diagnostics pinned to the provider and model used to launch the stream', async () => {
+    appState.mode = 'Chat';
+    providerState.providerConfigs = [
+      { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-1', providerType: 'openai' },
+      { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000 } as never],
+      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000 } as never],
+    };
+    providerState.selectedProviderId = 'provider-1';
+    providerState.selectedModelId = 'model-1';
+
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = args[0] as {
+        onLiveContextUpdate?: (snapshot: {
+          version: number;
+          visibleContent: string;
+          visibleContentLength: number;
+          toolTraces: unknown[];
+        }) => void;
+      };
+      options.onLiveContextUpdate?.({
+        version: 1,
+        visibleContent: 'Réponse partielle',
+        visibleContentLength: 'Réponse partielle'.length,
+        toolTraces: [],
+      });
+    }) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Mesure ce stream.',
+    });
+    await flushAsyncWork();
+
+    providerState.selectedProviderId = 'provider-2';
+    providerState.selectedModelId = 'model-2';
+    await useChatStore.getState().refreshConversationContextDiagnostics('chat-conv', {
+      mode: 'live_stream',
+    });
+
+    const diagnostics =
+      useChatStore.getState().contextDiagnosticsByConversationId['chat-conv'];
+    expect(diagnostics).toMatchObject({
+      source: 'live_stream',
+      providerId: 'provider-1',
+      providerType: 'openai',
+      modelId: 'model-1',
+    });
+    expect(diagnostics?.footprintAfter?.modelContextWindowTokens).toBe(32_000);
+  });
+
+  it('keeps live context diagnostics isolated from context changes made after send', async () => {
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = args[0] as {
+        onLiveContextUpdate?: (snapshot: {
+          version: number;
+          visibleContent: string;
+          visibleContentLength: number;
+          toolTraces: unknown[];
+        }) => void;
+      };
+      options.onLiveContextUpdate?.({
+        version: 1,
+        visibleContent: 'Réponse en cours',
+        visibleContentLength: 'Réponse en cours'.length,
+        toolTraces: [],
+      });
+    }) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Ne mesure que le contexte initial.',
+    });
+    await flushAsyncWork();
+
+    useChatStore.setState({
+      composerContextRefs: [
+        {
+          kind: 'need',
+          id: 'need-after-send',
+          title: 'Late context ref',
+          subtitle: 'Should not affect live diagnostics',
+          data: { description: 'Added after the stream started.' },
+        },
+      ],
+    });
+    citationRecords.push({
+      id: 'late-citation',
+      type: 'file',
+      scope: 'context',
+      source: 'src/late.ts',
+      title: 'Late file',
+      snippet: 'This source was attached after send.',
+      content: 'This source was attached after send.',
+      messageId: 'late-message',
+      conversationId: 'chat-conv',
+      timestamp: '2026-05-10T00:00:00.000Z',
+      path: 'src/late.ts',
+    });
+
+    await useChatStore.getState().refreshConversationContextDiagnostics('chat-conv', {
+      mode: 'live_stream',
+    });
+
+    const diagnostics =
+      useChatStore.getState().contextDiagnosticsByConversationId['chat-conv'];
+    expect(diagnostics?.counts.citations).toBe(0);
+    expect(JSON.stringify(diagnostics?.breakdown ?? [])).not.toContain('Late file');
+  });
+
+  it('ignores older live context snapshots after a newer version is recorded', async () => {
+    appState.mode = 'Chat';
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Teste les versions live.',
+    });
+    await flushAsyncWork();
+
+    const streamOptions = getLatestStreamOptions<{
+      onLiveContextUpdate?: (snapshot: {
+        version: number;
+        visibleContent: string;
+        visibleContentLength: number;
+        toolTraces: unknown[];
+      }) => void;
+    }>();
+    streamOptions.onLiveContextUpdate?.({
+      version: 2,
+      visibleContent: 'snapshot récent',
+      visibleContentLength: 'snapshot récent'.length,
+      toolTraces: [],
+    });
+    streamOptions.onLiveContextUpdate?.({
+      version: 1,
+      visibleContent: 'snapshot ancien',
+      visibleContentLength: 'snapshot ancien'.length,
+      toolTraces: [],
+    });
+
+    expect(
+      useChatStore.getState().liveStreamContextEstimatesByConversationId['chat-conv']
+        ?.visibleContent,
+    ).toBe('snapshot récent');
+  });
+
+  it('uses the completed stream provider for the final full context refresh', async () => {
+    appState.mode = 'Chat';
+    providerState.providerConfigs = [
+      { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-1', providerType: 'openai' },
+      { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
+    ];
+    providerState.modelsByProvider = {
+      'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000 } as never],
+      'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000 } as never],
+    };
+    providerState.selectedProviderId = 'provider-1';
+    providerState.selectedModelId = 'model-1';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = args[0] as {
+        onComplete?: (result: {
+          visibleContent: string;
+          toolTraces: unknown[];
+          hiddenContext?: string;
+        }) => void;
+      };
+      providerState.selectedProviderId = 'provider-2';
+      providerState.selectedModelId = 'model-2';
+      options.onComplete?.({
+        visibleContent: 'Réponse finale.',
+        toolTraces: [],
+        hiddenContext: undefined,
+      });
+    }) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Termine puis mesure.',
+    });
+
+    const diagnostics = await waitForConversationDiagnostics(useChatStore, 'chat-conv');
+    expect(diagnostics).toMatchObject({
+      source: 'full',
+      providerId: 'provider-1',
+      providerType: 'openai',
+      modelId: 'model-1',
+    });
+    expect(diagnostics?.footprintAfter?.modelContextWindowTokens).toBe(32_000);
   });
 
   it('moves an implement task to awaiting response when the assistant reply contains valid quick replies', async () => {
@@ -8299,25 +8571,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).mockImplementationOnce(() => new Promise<never>(() => undefined));
 
     const { useChatStore } = await loadChatStore();
-    useChatStore.setState({
-      conversations: [
-        {
-          ...createConversation('implement-conv'),
-          scope_mode: 'Implement',
-          task_id: 'task-1',
-          title: 'Task - Implement checkout',
-        },
-      ],
-      messages: [],
-      selectedConversationId: 'implement-conv',
-      selectedConversationIdsByMode: { Implement: 'implement-conv' },
-      isLoading: false,
-      isStreaming: false,
-      sendState: 'idle',
-      lastError: null,
-      abortController: null,
-      messageImagesByMessageId: {},
-      composerContextRefs: [],
+    setImplementStoreState(useChatStore, {
+      conversationId: 'implement-conv',
+      taskId: 'task-1',
     });
 
     const result = await useChatStore.getState().sendMessage({
@@ -8773,6 +9029,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
+        plan_storage_branch: 'develop',
+        plan_target_branch: 'develop',
         project_ids: ['project-1'],
         context_project_ids: ['project-2'],
         execution_targets: [
@@ -8842,6 +9100,174 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     const parsed = JSON.parse(sessionJson);
     expect(parsed.cwd).toBe('C:/repos/api/.macro/worktrees/task-1');
+  });
+
+  it('returns a controlled tool result instead of promoting context for standalone tasks', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        status: 'InProgress',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/quick-export',
+            worktreeKey: 'manual-task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    setImplementStoreState(useChatStore, {
+      conversationId: 'manual-conv',
+      taskId: 'manual-task-1',
+      title: 'Manual feature',
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ouvre un terminal sur le projet API.',
+      taskId: 'manual-task-1',
+    });
+
+    taskStoreState.promoteTaskContextProjects.mockClear();
+    terminalCreateSessionFromChatMock.mockClear();
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-2',
+    });
+
+    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalled();
+    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
+    expect(String(result)).toContain('Cannot execute terminal_create_session');
+    expect(String(result)).toContain('context promotion is only available for Architect tasks');
+    expect(useChatStore.getState().lastError).toBeNull();
+  });
+
+  it('does not promote a standalone conversation even when the selected task is architect', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        id: 'task-1',
+        status: 'InProgress',
+        plan_storage_branch: 'develop',
+        plan_target_branch: 'develop',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+      }),
+      createManualFeatureTask({
+        draft: false,
+        status: 'InProgress',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+        assigned_branch: 'feature/quick-export',
+        branch_name: 'feature/quick-export',
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/quick-export',
+            worktreeKey: 'manual-task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    setImplementStoreState(useChatStore, {
+      conversationId: 'manual-conv',
+      taskId: 'manual-task-1',
+      title: 'Manual feature',
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'manual-conv',
+      content: 'Ouvre un terminal sur le projet API.',
+      taskId: 'manual-task-1',
+    });
+
+    taskStoreState.promoteTaskContextProjects.mockClear();
+    terminalCreateSessionFromChatMock.mockClear();
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-2',
+    });
+
+    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalled();
+    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
+    expect(String(result)).toContain('Cannot execute terminal_create_session');
+  });
+
+  it('uses the conversation architect task for context promotion when selection is stale', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'manual-task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createManualFeatureTask({
+        draft: false,
+        status: 'InProgress',
+      }),
+      createImplementTask({
+        id: 'task-1',
+        status: 'InProgress',
+        plan_storage_branch: 'develop',
+        plan_target_branch: 'develop',
+        project_ids: ['project-1'],
+        context_project_ids: ['project-2'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/implement-checkout',
+            worktreeKey: 'task-1-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    setImplementStoreState(useChatStore, {
+      conversationId: 'implement-conv',
+      taskId: 'task-1',
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Ouvre un terminal sur le projet API.',
+      taskId: 'task-1',
+    });
+
+    taskStoreState.promoteTaskContextProjects.mockClear();
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const result = await onToolCall('terminal_create_session', {
+      project_id: 'project-2',
+    });
+
+    expect(taskStoreState.promoteTaskContextProjects).toHaveBeenCalledWith(
+      'task-1',
+      ['project-2'],
+      { triggerTool: 'terminal_create_session' }
+    );
+    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalledWith(
+      'manual-task-1',
+      ['project-2'],
+      { triggerTool: 'terminal_create_session' }
+    );
+    expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
+      projectId: 'project-2',
+      cwd: null,
+    });
+    expect(String(result)).toContain('[macro_scope_promotion]');
   });
 
   it('returns the user denial reason when a pending tool approval is rejected', async () => {
@@ -9126,7 +9552,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       });
       options.onError?.(providerError);
       return { usage: null };
-    }) as typeof streamChatMock);
+    }) as unknown as typeof streamChatMock);
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
