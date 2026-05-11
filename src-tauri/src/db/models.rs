@@ -52,6 +52,14 @@ pub struct ConversationCompactionStateRecord {
     pub compaction_pass: Option<String>,
     pub summary_format_version: Option<i32>,
     pub summary_source: Option<String>,
+    pub policy_version: Option<i32>,
+    pub fingerprint_inputs_json: Option<String>,
+    pub source_hashes_json: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub checkpoint_health: Option<String>,
+    pub last_trigger: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -313,6 +321,29 @@ pub struct UpsertConversationCompactionStateInput {
     pub compaction_pass: Option<String>,
     pub summary_format_version: Option<i32>,
     pub summary_source: Option<String>,
+    pub policy_version: Option<i32>,
+    pub fingerprint_inputs_json: Option<String>,
+    pub source_hashes_json: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub checkpoint_health: Option<String>,
+    pub last_trigger: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertConversationCompactionEventInput {
+    pub conversation_id: String,
+    pub trigger: String,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub tokens_before: Option<i32>,
+    pub tokens_after: Option<i32>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub reason: Option<String>,
+    pub metadata_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

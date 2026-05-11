@@ -475,6 +475,7 @@ pub fn run() {
             commands::db_upsert_provider_models,
             commands::db_get_conversation_compaction_state,
             commands::db_upsert_conversation_compaction_state,
+            commands::db_insert_conversation_compaction_event,
             commands::db_delete_conversation_compaction_state,
             commands::db_set_provider_model_enabled,
             commands::db_set_all_provider_models_enabled,

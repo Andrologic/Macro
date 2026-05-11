@@ -76,6 +76,14 @@ export interface DbConversationCompactionState {
   compaction_pass?: string | null;
   summary_format_version?: number | null;
   summary_source?: string | null;
+  policy_version?: number | null;
+  fingerprint_inputs_json?: string | null;
+  source_hashes_json?: string | null;
+  model_context_window_tokens?: number | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  checkpoint_health?: string | null;
+  last_trigger?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -548,6 +556,28 @@ export interface DbUpsertConversationCompactionStateInput {
   compaction_pass?: string | null;
   summary_format_version?: number | null;
   summary_source?: string | null;
+  policy_version?: number | null;
+  fingerprint_inputs_json?: string | null;
+  source_hashes_json?: string | null;
+  model_context_window_tokens?: number | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  checkpoint_health?: string | null;
+  last_trigger?: string | null;
+}
+
+export interface DbInsertConversationCompactionEventInput {
+  conversation_id: string;
+  trigger: string;
+  provider_id?: string | null;
+  model_id?: string | null;
+  model_context_window_tokens?: number | null;
+  tokens_before?: number | null;
+  tokens_after?: number | null;
+  status: string;
+  error_code?: string | null;
+  reason?: string | null;
+  metadata_json?: string | null;
 }
 
 export interface AiChatMessageImageUrl {
@@ -1209,6 +1239,12 @@ export async function dbDeleteConversationCompactionState(
   return invoke("db_delete_conversation_compaction_state", {
     conversationId,
   });
+}
+
+export async function dbInsertConversationCompactionEvent(
+  input: DbInsertConversationCompactionEventInput,
+): Promise<void> {
+  return invoke("db_insert_conversation_compaction_event", { input });
 }
 
 export async function createMessage(

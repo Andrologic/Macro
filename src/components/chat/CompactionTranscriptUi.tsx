@@ -40,10 +40,12 @@ export const CompactionBoundaryRow: React.FC<{
 export const CompactionProgressRow: React.FC<{
   virtualItem: CompactionBoundaryVirtualItem;
   measureElement: (el: HTMLElement | null) => void;
-  phase?: 'compacting' | 'overflow_recovery';
+  phase?: 'compacting' | 'safety_compacting' | 'overflow_recovery' | 'recovering_overflow';
 }> = ({ virtualItem, measureElement, phase = 'compacting' }) => {
   const { t } = useTranslation();
-  const isOverflowRecovery = phase === 'overflow_recovery';
+  const isOverflowRecovery =
+    phase === 'overflow_recovery' || phase === 'recovering_overflow';
+  const isSafetyPrestream = phase === 'safety_compacting';
 
   return (
     <div
@@ -62,6 +64,8 @@ export const CompactionProgressRow: React.FC<{
           <span className="truncate">
             {isOverflowRecovery
               ? t('chat.compactionOverflowProgress', 'Récupération après dépassement de contexte...')
+              : isSafetyPrestream
+                ? t('chat.compactionSafetyProgress', 'Compression nécessaire avant envoi...')
               : t('chat.compactionProgressTitle', 'Compression du contexte en cours...')}
           </span>
         </span>

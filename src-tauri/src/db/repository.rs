@@ -1459,7 +1459,9 @@ pub async fn get_conversation_compaction_state(
                version, pruned_tool_context_message_ids_json, reserved_tokens,
                footprint_before_json, footprint_after_json, degraded_reason,
                compaction_kind, compaction_pass, summary_format_version,
-               summary_source, created_at, updated_at
+               summary_source, policy_version, fingerprint_inputs_json,
+               source_hashes_json, model_context_window_tokens, provider_id,
+               model_id, checkpoint_health, last_trigger, created_at, updated_at
         FROM conversation_compactions
         WHERE conversation_id = ?
         "#,
@@ -1515,6 +1517,38 @@ pub async fn get_conversation_compaction_state(
             .try_get::<Option<String>, _>("summary_source")
             .ok()
             .flatten(),
+        policy_version: row
+            .try_get::<Option<i32>, _>("policy_version")
+            .ok()
+            .flatten(),
+        fingerprint_inputs_json: row
+            .try_get::<Option<String>, _>("fingerprint_inputs_json")
+            .ok()
+            .flatten(),
+        source_hashes_json: row
+            .try_get::<Option<String>, _>("source_hashes_json")
+            .ok()
+            .flatten(),
+        model_context_window_tokens: row
+            .try_get::<Option<i32>, _>("model_context_window_tokens")
+            .ok()
+            .flatten(),
+        provider_id: row
+            .try_get::<Option<String>, _>("provider_id")
+            .ok()
+            .flatten(),
+        model_id: row
+            .try_get::<Option<String>, _>("model_id")
+            .ok()
+            .flatten(),
+        checkpoint_health: row
+            .try_get::<Option<String>, _>("checkpoint_health")
+            .ok()
+            .flatten(),
+        last_trigger: row
+            .try_get::<Option<String>, _>("last_trigger")
+            .ok()
+            .flatten(),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }))
@@ -1536,9 +1570,11 @@ pub async fn upsert_conversation_compaction_state(
             version, pruned_tool_context_message_ids_json, reserved_tokens,
             footprint_before_json, footprint_after_json, degraded_reason,
             compaction_kind, compaction_pass, summary_format_version,
-            summary_source, created_at, updated_at
+            summary_source, policy_version, fingerprint_inputs_json,
+            source_hashes_json, model_context_window_tokens, provider_id,
+            model_id, checkpoint_health, last_trigger, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             up_to_message_id = excluded.up_to_message_id,
             summary_text = excluded.summary_text,
@@ -1558,6 +1594,14 @@ pub async fn upsert_conversation_compaction_state(
             compaction_pass = excluded.compaction_pass,
             summary_format_version = excluded.summary_format_version,
             summary_source = excluded.summary_source,
+            policy_version = excluded.policy_version,
+            fingerprint_inputs_json = excluded.fingerprint_inputs_json,
+            source_hashes_json = excluded.source_hashes_json,
+            model_context_window_tokens = excluded.model_context_window_tokens,
+            provider_id = excluded.provider_id,
+            model_id = excluded.model_id,
+            checkpoint_health = excluded.checkpoint_health,
+            last_trigger = excluded.last_trigger,
             updated_at = excluded.updated_at
         "#,
     )
@@ -1585,6 +1629,14 @@ pub async fn upsert_conversation_compaction_state(
     .bind(&input.compaction_pass)
     .bind(input.summary_format_version)
     .bind(&input.summary_source)
+    .bind(input.policy_version)
+    .bind(&input.fingerprint_inputs_json)
+    .bind(&input.source_hashes_json)
+    .bind(input.model_context_window_tokens)
+    .bind(&input.provider_id)
+    .bind(&input.model_id)
+    .bind(&input.checkpoint_health)
+    .bind(&input.last_trigger)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -1593,6 +1645,47 @@ pub async fn upsert_conversation_compaction_state(
     get_conversation_compaction_state(pool, &conversation_id)
         .await?
         .ok_or_else(|| sqlx::Error::RowNotFound.into())
+}
+
+pub async fn insert_conversation_compaction_event(
+    pool: &SqlitePool,
+    input: InsertConversationCompactionEventInput,
+) -> DbResult<()> {
+    let now = chrono::Utc::now();
+    let id = format!(
+        "compaction-event-{}-{}",
+        input.conversation_id,
+        now.timestamp_nanos_opt().unwrap_or_default()
+    );
+    let created_at = now.to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO conversation_compaction_events (
+            id, conversation_id, trigger, provider_id, model_id,
+            model_context_window_tokens, tokens_before, tokens_after,
+            status, error_code, reason, metadata_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&id)
+    .bind(&input.conversation_id)
+    .bind(&input.trigger)
+    .bind(&input.provider_id)
+    .bind(&input.model_id)
+    .bind(input.model_context_window_tokens)
+    .bind(input.tokens_before)
+    .bind(input.tokens_after)
+    .bind(&input.status)
+    .bind(&input.error_code)
+    .bind(&input.reason)
+    .bind(&input.metadata_json)
+    .bind(&created_at)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn delete_conversation_compaction_state(

@@ -54,6 +54,24 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
       accentClassName: 'text-muted-foreground',
     };
   }
+  if (
+    diagnostics.phase === 'blocked' ||
+    diagnostics.phase === 'needs_manual_compaction'
+  ) {
+    return {
+      label: 'Compaction nécessaire',
+      accentClassName: 'text-destructive',
+    };
+  }
+  if (
+    diagnostics.phase === 'safety_compacting' ||
+    diagnostics.phase === 'recovering_overflow'
+  ) {
+    return {
+      label: 'Compaction en cours',
+      accentClassName: 'text-primary',
+    };
+  }
   if (diagnostics.isHardStop || diagnostics.phase === 'too_large') {
     return {
       label: 'Contexte trop volumineux',
@@ -63,7 +81,7 @@ const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
   const pressureRatio = getPressureRatio(diagnostics);
   if (diagnostics.phase === 'degraded' || pressureRatio >= 0.9) {
     return {
-      label: 'Contexte élevé',
+      label: diagnostics.phase === 'degraded' ? 'Contexte dégradé' : 'Contexte élevé',
       accentClassName: 'text-amber-500',
     };
   }
@@ -202,6 +220,20 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       ? effectiveDiagnostics.footprintBefore.totalEstimatedTokens -
         effectiveDiagnostics.footprintAfter.totalEstimatedTokens
       : undefined;
+  const modelWindowTokens =
+    effectiveDiagnostics?.modelContextWindowTokens ??
+    footprint?.modelContextWindowTokens;
+  const modelWindowShrank =
+    Boolean(effectiveDiagnostics?.modelContextWindowShrank) ||
+    Boolean(footprint?.modelContextWindowShrank);
+  const checkpointLabel =
+    effectiveDiagnostics?.summaryFormatVersion
+      ? `v${effectiveDiagnostics.summaryFormatVersion}${
+          effectiveDiagnostics.summarySource
+            ? ` · ${effectiveDiagnostics.summarySource}`
+            : ''
+        }`
+      : 'Aucun';
   const canCompact =
     Boolean(onCompactNow) &&
     canCompactNow &&
@@ -313,10 +345,18 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
 
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <Metric label="Payload" value={formatCompactTokens(footprint?.serializedPayloadTokens ?? footprint?.totalEstimatedTokens)} />
+            <Metric label="Fenêtre max" value={formatCompactTokens(modelWindowTokens)} />
             <Metric label="Budget utile" value={formatCompactTokens(footprint?.usableContextTokens)} />
             <Metric label="Marge" value={formatCompactTokens(remainingTokens)} />
             <Metric label="Contexte total" value={formatPercent(totalRatio)} />
+            <Metric label="Checkpoint" value={checkpointLabel} />
           </div>
+
+          {modelWindowShrank ? (
+            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+              Le modèle sélectionné a une fenêtre plus petite que le dernier checkpoint connu.
+            </div>
+          ) : null}
 
           <section className="mt-3 space-y-2">
             {effectiveDiagnostics?.footprintBefore && effectiveDiagnostics?.footprintAfter ? (

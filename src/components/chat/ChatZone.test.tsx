@@ -57,7 +57,7 @@ type MockChatState = {
   conversationCompactionStatusById: Record<
     string,
     {
-      phase: 'compacting' | 'overflow_recovery' | 'compacted' | 'degraded' | 'too_large';
+      phase: 'compacting' | 'safety_compacting' | 'overflow_recovery' | 'recovering_overflow' | 'compacted' | 'degraded' | 'too_large' | 'needs_manual_compaction' | 'blocked';
       upToMessageId?: string | null;
       updatedAt?: string | null;
       summaryText?: string | null;

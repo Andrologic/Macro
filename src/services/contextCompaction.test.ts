@@ -12,6 +12,7 @@ import {
   parseHiddenToolContext,
   pruneToolContextBlocks,
   resolveModelContextWindowTokens,
+  validateCompactionState,
 } from './contextCompaction';
 
 const makeMessage = (
@@ -370,7 +371,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions,
       modelContextWindowTokens: 1000,
-      mode: 'overflow_recovery',
+      mode: 'stream_overflow',
       forceCompaction: true,
       forcePrune: true,
       generateSummary: async () => 'Current objective: answer from compacted provider history.',
@@ -414,7 +415,7 @@ describe('buildCompactedMessagesForRequest', () => {
       toolDefinitions: [],
       modelContextWindowTokens: 1000,
       budgetPolicy: { reservedTokens: 0 },
-      mode: 'blocking',
+      mode: 'safety_prestream',
       estimateSerializedPayloadTokens,
       generateSummary: async () => 'Current objective: answer from compacted provider history.',
     });
@@ -481,6 +482,38 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
   });
 
+  it('does not create automatic summary compaction in blocking mode even when the payload is full', async () => {
+    let summaryRequested = false;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'First request.'),
+      makeMessage('a1', 'assistant', 'First answer.'),
+      makeMessage('u2', 'user', 'Second request.'),
+      makeMessage('a2', 'assistant', 'Second answer.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 100,
+      budgetPolicy: { reservedTokens: 0 },
+      mode: 'blocking',
+      estimateSerializedPayloadTokens: () => 120,
+      generateSummary: async () => {
+        summaryRequested = true;
+        return 'This summary must not be created automatically.';
+      },
+    });
+
+    expect(summaryRequested).toBe(false);
+    expect(result.compactionState).toBeNull();
+    expect(result.decision).toBe('hard_stop');
+    expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
+  });
+
   it('keeps the last two user turns raw and injects a compacted system message', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),
@@ -514,7 +547,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations,
       toolDefinitions,
       modelContextWindowTokens: 1000,
-      mode: 'blocking',
+      mode: 'safety_prestream',
       forceCompaction: true,
       generateSummary: async () =>
         'Current objective: propose the fix.\n\nSummary:\nOlder parser investigation is compacted.',
@@ -531,6 +564,68 @@ describe('buildCompactedMessagesForRequest', () => {
       'user',
     ]);
     expect(result.usedExistingCompaction).toBe(false);
+  });
+
+  it('invalidates v3 checkpoints when source passage content changes', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the parser.'),
+      makeMessage('a1', 'assistant', 'Parser uses createParser.', {
+        hidden_context:
+          '<tool_context tool="read" detail="src/parser.ts">\nFILE: src/parser.ts\nconst parser = createParser();\n</tool_context>',
+      }),
+      makeMessage('u2', 'user', 'Continue.'),
+      makeMessage('a2', 'assistant', 'Continuing.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+    const citations: Citation[] = [
+      {
+        id: 'cite-used',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'src/parser.ts',
+        title: 'Parser init',
+        snippet: 'const parser = createParser();',
+        messageId: 'a1',
+        conversationId: 'conv-1',
+        kind: 'used',
+        timestamp: '2026-04-05T00:00:00.000Z',
+      },
+    ];
+
+    const compacted = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations,
+      toolDefinitions,
+      modelContextWindowTokens: 1000,
+      mode: 'manual',
+      forceCompaction: true,
+      generateSummary: async () => 'Current objective: answer from parser context.',
+    });
+    const changedCitations = [
+      {
+        ...citations[0]!,
+        snippet: 'const parser = createDifferentParser();',
+      },
+    ];
+
+    expect(
+      validateCompactionState(compacted.compactionState, orderedMessages, {
+        citations,
+        systemMessage: 'You are Macro.',
+        toolDefinitions,
+        modelContextWindowTokens: 1000,
+      }),
+    ).toBe(true);
+    expect(
+      validateCompactionState(compacted.compactionState, orderedMessages, {
+        citations: changedCitations,
+        systemMessage: 'You are Macro.',
+        toolDefinitions,
+        modelContextWindowTokens: 1000,
+      }),
+    ).toBe(false);
   });
 
   it('falls back to emergency trimming when post-compaction context is still too large', async () => {
@@ -555,7 +650,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions,
       modelContextWindowTokens: 6000,
-      mode: 'blocking',
+      mode: 'safety_prestream',
       forcePrune: false,
       generateSummary: async () => 'Current objective: summarize the debug results.',
     });
@@ -593,7 +688,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions,
       modelContextWindowTokens: 100,
-      mode: 'overflow_recovery',
+      mode: 'stream_overflow',
       forceCompaction: true,
       forcePrune: true,
       generateSummary: async () => 'Current objective: answer from the trace.',
@@ -633,7 +728,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions: [],
       modelContextWindowTokens: 80,
-      mode: 'blocking',
+      mode: 'safety_prestream',
       budgetPolicy: { prune: false, reservedTokens: 0 },
       generateSummary: async () => 'Current objective: answer from the compacted trace.',
     });
@@ -641,7 +736,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.decision).toBe('send');
     expect(result.compactionState?.upToMessageId).toBe('a2');
     expect(result.compactionState?.compactionPass).toBe('ultra');
-    expect(result.compactionState?.summaryFormatVersion).toBe(2);
+    expect(result.compactionState?.summaryFormatVersion).toBe(3);
     expect(result.compactionState?.summarySource).toBe('model');
     expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
   });
@@ -669,7 +764,7 @@ describe('buildCompactedMessagesForRequest', () => {
     });
 
     expect(result.compactionState?.summarySource).toBe('fallback');
-    expect(result.compactionState?.summaryFormatVersion).toBe(2);
+    expect(result.compactionState?.summaryFormatVersion).toBe(3);
     expect(result.compactionState?.summaryText).toContain('Remember that the migration');
   });
 
@@ -715,7 +810,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions: [],
       modelContextWindowTokens: 90,
-      mode: 'blocking',
+      mode: 'safety_prestream',
       budgetPolicy: { prune: false, reservedTokens: 0 },
       generateSummary: async () => 'Current objective: answer from compacted context.',
     });
@@ -724,6 +819,59 @@ describe('buildCompactedMessagesForRequest', () => {
       .find((message) => message.role === 'user');
 
     expect(latestUserMessage?.provider_input_items).toEqual(latestProviderItems);
+  });
+
+  it('marks a smaller selected model window in the footprint', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Continue with a smaller model.'),
+    ];
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 100,
+      previousModelContextWindowTokens: 1000,
+      budgetPolicy: { reservedTokens: 0 },
+      mode: 'blocking',
+      estimateSerializedPayloadTokens: () => 120,
+    });
+
+    expect(footprint.modelContextWindowShrank).toBe(true);
+    expect(footprint.previousModelContextWindowTokens).toBe(1000);
+    expect(footprint.reason).toBe('model_window_shrank');
+    expect(footprint.marginTokens).toBeLessThan(0);
+  });
+
+  it('estimates image data conservatively instead of as tiny placeholders', () => {
+    const base64Image = `data:image/png;base64,${'a'.repeat(6000)}`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect this image.'),
+    ];
+    const preparedMessages: StreamMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image_url', image_url: { url: base64Image } },
+        ],
+      },
+    ];
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 8000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.imagePlaceholderTokens).toBeGreaterThan(1000);
+    expect(footprint.visibleMessageTokens).toBeGreaterThan(1000);
   });
 
   it('uses a larger fallback window for OpenCode Go Kimi when model metadata is missing', () => {

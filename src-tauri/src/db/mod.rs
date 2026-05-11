@@ -486,6 +486,14 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
             compaction_pass TEXT,
             summary_format_version INTEGER,
             summary_source TEXT,
+            policy_version INTEGER,
+            fingerprint_inputs_json TEXT,
+            source_hashes_json TEXT,
+            model_context_window_tokens INTEGER,
+            provider_id TEXT,
+            model_id TEXT,
+            checkpoint_health TEXT,
+            last_trigger TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
@@ -514,6 +522,14 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         ("compaction_pass", "TEXT"),
         ("summary_format_version", "INTEGER"),
         ("summary_source", "TEXT"),
+        ("policy_version", "INTEGER"),
+        ("fingerprint_inputs_json", "TEXT"),
+        ("source_hashes_json", "TEXT"),
+        ("model_context_window_tokens", "INTEGER"),
+        ("provider_id", "TEXT"),
+        ("model_id", "TEXT"),
+        ("checkpoint_health", "TEXT"),
+        ("last_trigger", "TEXT"),
     ];
     for (column, definition) in optional_columns {
         if !columns.contains(column) {
@@ -529,6 +545,38 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         r#"
         CREATE INDEX IF NOT EXISTS idx_conversation_compactions_updated_at
         ON conversation_compactions(updated_at DESC);
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_compaction_events (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            provider_id TEXT,
+            model_id TEXT,
+            model_context_window_tokens INTEGER,
+            tokens_before INTEGER,
+            tokens_after INTEGER,
+            status TEXT NOT NULL,
+            error_code TEXT,
+            reason TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversation_compaction_events_conversation
+        ON conversation_compaction_events(conversation_id, created_at DESC);
         "#,
     )
     .execute(pool)
