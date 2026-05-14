@@ -6,6 +6,7 @@ import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import type { TaskStatus } from '../../types';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 let useAppStore!: typeof UseAppStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
@@ -321,6 +322,7 @@ describe('TaskQueue', () => {
   };
 
   beforeEach(async () => {
+    installTauriRuntimeMock();
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
     initialChatState = useChatStore.getState();
@@ -353,6 +355,7 @@ describe('TaskQueue', () => {
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
+    removeTauriRuntimeMock();
     mock.restore();
   });
 

@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 
 const actualArchitectPlanService = await import('../services/architectPlanService');
 const actualArchitectGitFlowService = await import('../services/architectGitFlowService');
 const actualArchitectGitNaming = await import('../services/architectGitNaming');
+const actualServices = await import('../services');
 const actualTauriIpc = await import('../services/tauriIpc');
 
 let isolatedTaskStoreImportCounter = 0;
@@ -320,8 +322,40 @@ const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const listTasksMock = mock(async () => ({
+  tasks: [
+    buildArchitectTask({
+      status: planState.nodes[0]?.status === 'completed' ? 'Completed' : 'InReview',
+      archived_at: planState.nodes[0]?.archivedAt ?? null,
+      archive_reason: planState.nodes[0]?.archiveReason ?? null,
+      merged_at: planState.nodes[0]?.mergedAt ?? null,
+    }),
+  ],
+  plans: [],
+  hasStandaloneTasks: false,
+  source: 'desktop',
+}));
+
+mock.module('../services', () => ({
+  ...actualServices,
+  services: {
+    ...actualServices.services,
+    listTasks: listTasksMock,
+  },
+}));
+
+mock.module('../services/index', () => ({
+  ...actualServices,
+  services: {
+    ...actualServices.services,
+    listTasks: listTasksMock,
+  },
+}));
+
 describe('useTaskStore.finishTask', () => {
   beforeEach(() => {
+    installTauriRuntimeMock();
+
     planState = {
       id: 'plan-1',
       slug: 'plan-1',
@@ -400,6 +434,7 @@ describe('useTaskStore.finishTask', () => {
     syncManualFeatureMetadataFromTaskMock.mockClear();
     commitManualFeatureMetadataMock.mockClear();
     removeManualFeatureMetadataMock.mockClear();
+    listTasksMock.mockClear();
     appStoreState.selectedTaskId = 'task-1';
     appStoreState.activeArchitectPlanId = 'plan-1';
     appStoreState.activePlanContext = {
@@ -411,6 +446,10 @@ describe('useTaskStore.finishTask', () => {
     appStoreState.setPredictedBranches.mockClear();
     appStoreState.setActivePlanContext.mockClear();
     appStoreState.setActiveArchitectPlanId.mockClear();
+  });
+
+  afterEach(() => {
+    removeTauriRuntimeMock();
   });
 
   it('archives architect tasks after merging them into the plan branch', async () => {

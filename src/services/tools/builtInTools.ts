@@ -1,7 +1,7 @@
-import type { Tool, MCPServer } from '../types';
+import type { Tool, MCPServer } from '../../types';
 
 // Internal Tools - Only real, functional tools
-export const mockInternalTools: Tool[] = [
+export const BUILT_IN_TOOLS: Tool[] = [
   // Web Search Tool (uses Tavily/Brave API)
   {
     id: 'web_search',
@@ -675,7 +675,7 @@ export const mockInternalTools: Tool[] = [
 ];
 
 // MCP Servers - Empty by default (users can configure their own)
-export const mockMCPServers: MCPServer[] = [];
+export const BUILT_IN_MCP_SERVERS: MCPServer[] = [];
 
 // Default settings
 export const defaultToolSettings: Record<string, boolean> = {

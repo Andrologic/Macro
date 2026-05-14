@@ -257,7 +257,6 @@ Create a `.env` file in the project root:
 
 ```env
 VITE_BACKEND_TRANSPORT=desktop  # 'desktop' (default) or 'remote'
-VITE_DATA_PROVIDER=mock         # desktop only: 'mock' in browser, 'ipc' in Tauri
 
 # Remote backend (used when VITE_BACKEND_TRANSPORT=remote)
 VITE_REMOTE_API_BASE_URL=http://localhost:3000
@@ -270,7 +269,7 @@ VITE_REMOTE_TIMEOUT_MS=15000
 Remote transport contract:
 
 - `VITE_BACKEND_TRANSPORT=remote` is sufficient to switch the `services` layer to the remote provider.
-- `VITE_DATA_PROVIDER` is only used for desktop transport. If it is set while `VITE_BACKEND_TRANSPORT=remote`, it is ignored.
+- `VITE_BACKEND_TRANSPORT=desktop` requires the Tauri IPC runtime. Use `remote` for web/mobile shells.
 - The current remote mode is intentionally minimal. It supports workspace bootstrap, task catalog, Git tree/history, remote tool policy/validation/execution, and local browser persistence for tool/MCP preferences.
 - Project creation/import/edit flows, Git worktree flows, file preview from the Git tree, and local implementation actions remain desktop-only in this pass.
 

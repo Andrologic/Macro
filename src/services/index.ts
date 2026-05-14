@@ -1,7 +1,6 @@
 import type { ServiceProvider } from './contracts/serviceProvider';
 import {
   getServiceRuntime,
-  type ResolvedServiceRuntime,
   type ServiceProviderName,
 } from './serviceRuntime';
 
@@ -20,7 +19,6 @@ export type {
   ResolvedServiceRuntime,
   ServiceProviderName,
   ServiceRuntimeCapabilities,
-  ServiceRuntimeWarning,
   ServiceTransport,
 } from './serviceRuntime';
 
@@ -29,7 +27,6 @@ type ServiceProviderModule = {
 };
 
 let providerPromise: Promise<ServiceProvider> | null = null;
-let runtimeWarningsLogged = false;
 
 const loadServiceProviderModule = async (
   targetProvider: ServiceProviderName
@@ -38,28 +35,12 @@ const loadServiceProviderModule = async (
     return import('./providers/remote');
   }
 
-  if (targetProvider === 'mock') {
-    return import('./providers/mock');
-  }
-
   return import('./providers/ipc');
-};
-
-const logRuntimeWarnings = (runtime: ResolvedServiceRuntime): void => {
-  if (!import.meta.env.DEV || runtimeWarningsLogged || runtime.warnings.length === 0) {
-    return;
-  }
-
-  runtimeWarningsLogged = true;
-  runtime.warnings.forEach((warning) => {
-    console.warn(`[services] ${warning.message}`);
-  });
 };
 
 const getServiceProvider = async (): Promise<ServiceProvider> => {
   if (!providerPromise) {
     const runtime = getServiceRuntime();
-    logRuntimeWarnings(runtime);
     providerPromise = loadServiceProviderModule(runtime.effectiveProvider).then(
       (module) => module.provider
     );

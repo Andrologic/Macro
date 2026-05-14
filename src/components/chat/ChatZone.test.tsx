@@ -6,6 +6,7 @@ import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
+import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -634,6 +635,7 @@ describe('ChatZone', () => {
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
+    installTauriRuntimeMock();
     if (!globalThis.requestAnimationFrame) {
       globalThis.requestAnimationFrame = (callback: FrameRequestCallback) =>
         setTimeout(() => callback(performance.now()), 0) as unknown as number;

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 
 let isolatedImportCounter = 0;
 
@@ -27,14 +28,11 @@ const loadPreferencesModule = async () => {
 
 const setTauriAvailability = (enabled: boolean) => {
   if (enabled) {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {},
-    });
+    installTauriRuntimeMock();
     return;
   }
 
-  Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+  removeTauriRuntimeMock();
 };
 
 describe('preferences legacy cleanup', () => {

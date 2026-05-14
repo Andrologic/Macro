@@ -3,6 +3,7 @@ import type { CopilotStatusDto } from '../services/tauriIpc';
 import { __testables as catalogTestables } from '../services/modelContextCatalog';
 
 let importCounter = 0;
+let tauriAvailable = true;
 
 type TauriEventHandler = (event: { payload: unknown }) => void;
 
@@ -182,7 +183,7 @@ const loadProviderStore = async () => {
   }));
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
-    isTauriAvailable: () => true,
+    isTauriAvailable: () => tauriAvailable,
     listProviderConfigs: listProviderConfigsMock,
     revealProviderApiKey: revealProviderApiKeyMock,
     updateProviderConfig: updateProviderConfigMock,
@@ -214,10 +215,14 @@ const loadProviderStore = async () => {
     probeModelsEndpoint: probeModelsEndpointMock,
     probeProviderReachability: probeProviderReachabilityMock,
   }));
-  mock.module('../services/aiConfig', () => ({
-    loadAIConfigFile: async () => null,
-    findProviderConfig: () => undefined,
-  }));
+mock.module('../services/aiConfig', () => ({
+  loadAIConfigFile: async () => null,
+  findProviderConfig: () => undefined,
+  getProviderConfig: async () =>
+    (globalThis as typeof globalThis & {
+      __CHAT_COMPLETIONS_PROVIDER_CONFIG__?: { apiKey?: string; baseUrl?: string };
+    }).__CHAT_COMPLETIONS_PROVIDER_CONFIG__ ?? {},
+}));
   mock.module('../services/preferences', () => ({
     ...actualPreferences,
     loadPreference: loadPreferenceMock,
@@ -233,6 +238,7 @@ const loadProviderStore = async () => {
 
 describe('useProviderStore secret resolution', () => {
   beforeEach(() => {
+    tauriAvailable = true;
     useAppStoreMock.setState({ mode: 'Chat' });
     loadPreferenceMock.mockClear();
     savePreferenceMock.mockClear();
@@ -423,6 +429,52 @@ describe('useProviderStore secret resolution', () => {
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects provider mutations outside desktop IPC', async () => {
+    tauriAvailable = false;
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [],
+      lastError: null,
+    });
+
+    await expect(
+      providerStore.useProviderStore.getState().createProviderConfig({
+        name: 'Created Provider',
+        providerType: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-api-key',
+        isEnabled: true,
+        isLocal: false,
+      })
+    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+    await expect(
+      providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+        apiKey: 'test-api-key',
+      })
+    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+    await expect(
+      providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai')
+    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+
+    expect(createProviderConfigMock).not.toHaveBeenCalled();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
+    expect(providerStore.useProviderStore.getState().lastError).toBe(
+      'Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.'
+    );
   });
 
   it('invalidates previous reachability when the base URL changes', async () => {

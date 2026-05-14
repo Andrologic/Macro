@@ -67,6 +67,14 @@ const sortModelsByName = (models: AIModel[]): AIModel[] =>
   );
 
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
+const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
+  'Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.';
+
+const requireProviderConfigurationIpc = (): void => {
+  if (!ipcIsTauriAvailable()) {
+    throw new Error(PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC);
+  }
+};
 
 const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
   !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
@@ -286,6 +294,34 @@ const toProviderStatus = (
   }
 
   return connectionStatus === 'online' ? 'online' : 'offline';
+};
+
+const toAIProvider = (
+  config: ProviderConfig,
+  connectionStatus: 'online' | 'offline' | 'checking' | undefined = undefined
+): AIProvider =>
+  applyNativeToolCallingToProvider(
+    {
+      id: config.id,
+      name: config.name,
+      status: toProviderStatus(config, connectionStatus),
+      baseUrl: config.baseUrl,
+      isLocal: config.isLocal,
+      isEnabled: config.isEnabled,
+    },
+    config.providerType
+  );
+
+const normalizeCreatedProviderConfig = (
+  config: tauriIpc.DbProviderConfig,
+  apiKey?: string
+): ProviderConfig => {
+  const trimmedApiKey = apiKey?.trim();
+  return applyNativeToolCallingToProviderConfig({
+    ...normalizeDbProviderConfig(config),
+    apiKey: trimmedApiKey ? apiKey : undefined,
+    apiKeyLoaded: !!trimmedApiKey,
+  });
 };
 
 export type ProviderReachabilityStatus =
@@ -898,18 +934,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               : null,
         });
         
-        const providers: AIProvider[] = providerConfigs.map((c) =>
-          applyNativeToolCallingToProvider(
-            {
-              id: c.id,
-              name: c.name,
-              status: toProviderStatus(c, get().connectionStatus[c.id]),
-              baseUrl: c.baseUrl,
-              isLocal: c.isLocal,
-              isEnabled: c.isEnabled,
-            },
-            c.providerType
-          )
+        const providers: AIProvider[] = providerConfigs.map((config) =>
+          toAIProvider(config, get().connectionStatus[config.id])
         );
 
         set({
@@ -925,70 +951,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           get().loadProviderSettings(provider.id);
         }
       } else {
-        // Fallback mock providers for development without Tauri
-        const mockConfigs = [
-          { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
-          { id: 'copilot', name: 'GitHub Copilot', providerType: 'copilot', baseUrl: 'copilot://cli', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'login_required' },
-          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
-          { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
-        ] satisfies ProviderConfig[];
-        const providerConfigs = await mergeLocalProviderConfig(
-          mockConfigs.map(applyNativeToolCallingToProviderConfig)
-        );
-        const currentSelectedProviderId = get().selectedProviderId;
-        const currentSelectedModelId = get().selectedModelId;
-        const currentSelectedProvider = providerConfigs.find(
-          (provider) => provider.id === currentSelectedProviderId
-        );
-        const nextSelectedProviderId =
-          currentSelectedProvider && providerHasCredentials(currentSelectedProvider)
-            ? currentSelectedProvider.id
-            : null;
-        const nextSelectedModelId =
-          nextSelectedProviderId === currentSelectedProviderId
-            ? currentSelectedModelId
-            : null;
-        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
-          providerId: nextSelectedProviderId,
-          modelId: nextSelectedModelId,
-          modelsByProvider: get().modelsByProvider,
-          unsupported: get().reasoningUnsupportedModelKeys,
-          requested:
-            nextSelectedProviderId === currentSelectedProviderId
-              ? get().selectedReasoningEffort
-              : null,
-        });
-        
-        const providers: AIProvider[] = providerConfigs.map((c) =>
-          applyNativeToolCallingToProvider(
-            {
-              id: c.id,
-              name: c.name,
-              status: toProviderStatus(c, get().connectionStatus[c.id]),
-              baseUrl: c.baseUrl,
-              isLocal: c.isLocal,
-              isEnabled: c.isEnabled,
-            },
-            c.providerType
-          )
-        );
-
         set({
-          providerConfigs,
-          providers,
+          providerConfigs: [],
+          providers: [],
           isLoading: false,
-          selectedProviderId: nextSelectedProviderId,
-          selectedModelId: nextSelectedModelId,
-          selectedReasoningEffort: nextSelectedReasoningEffort,
+          selectedProviderId: null,
+          selectedModelId: null,
+          selectedReasoningEffort: null,
         });
-
-        for (const provider of providerConfigs) {
-          get().loadProviderSettings(provider.id);
-        }
+        throw new Error(PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load providers';
@@ -2035,6 +2006,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
     try {
+      requireProviderConfigurationIpc();
+
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
       const providerType = updates.providerType ?? currentConfig?.providerType;
       const currentApiKey = currentConfig?.apiKey?.trim() ?? '';
@@ -2056,17 +2029,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }
         : updates;
 
-      if (ipcIsTauriAvailable()) {
-        await ipcUpdateProviderConfig({
-          id,
-          name: persistedUpdates.name,
-          providerType: persistedUpdates.providerType,
-          baseUrl: persistedUpdates.baseUrl,
-          apiKey: persistedUpdates.apiKey,
-          isLocal: persistedUpdates.isLocal,
-          isEnabled: persistedUpdates.isEnabled,
-        });
-      }
+      await ipcUpdateProviderConfig({
+        id,
+        name: persistedUpdates.name,
+        providerType: persistedUpdates.providerType,
+        baseUrl: persistedUpdates.baseUrl,
+        apiKey: persistedUpdates.apiKey,
+        isLocal: persistedUpdates.isLocal,
+        isEnabled: persistedUpdates.isEnabled,
+      });
 
       // Update local state
       set((state) => ({
@@ -2112,73 +2083,26 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
     try {
-      if (ipcIsTauriAvailable()) {
-        const created = await ipcCreateProviderConfig({
-          name: config.name,
-          providerType: config.providerType,
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-          isLocal: config.isLocal,
-        });
+      requireProviderConfigurationIpc();
 
-        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
-          id: created.id,
-          name: created.name,
-          providerType: created.provider_type,
-          baseUrl: created.base_url,
-          apiKey: config.apiKey?.trim() ? config.apiKey : undefined,
-          hasStoredApiKey: created.has_stored_api_key,
-          apiKeyLoaded: !!config.apiKey?.trim(),
-          isEnabled: created.is_enabled,
-          isLocal: created.is_local,
-        });
+      const created = await ipcCreateProviderConfig({
+        name: config.name,
+        providerType: config.providerType,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        isLocal: config.isLocal,
+      });
 
-        const newProvider: AIProvider = applyNativeToolCallingToProvider(
-          {
-            id: created.id,
-            name: created.name,
-            status: 'offline',
-            baseUrl: created.base_url,
-            isLocal: created.is_local,
-            isEnabled: created.is_enabled,
-          },
-          created.provider_type
-        );
+      const newConfig = normalizeCreatedProviderConfig(created, config.apiKey);
+      const newProvider = toAIProvider(newConfig);
 
-        set((state) => ({
-          providerConfigs: [...state.providerConfigs, newConfig],
-          providers: [...state.providers, newProvider],
-          providerReachabilityById: { ...state.providerReachabilityById, [created.id]: undefined },
-        }));
+      set((state) => ({
+        providerConfigs: [...state.providerConfigs, newConfig],
+        providers: [...state.providers, newProvider],
+        providerReachabilityById: { ...state.providerReachabilityById, [created.id]: undefined },
+      }));
 
-        await get().loadProviderSettings(created.id);
-      } else {
-        // Mock creation for development
-        const id = `provider_${Date.now()}`;
-        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
-          id,
-          ...config,
-          hasStoredApiKey: !!config.apiKey?.trim(),
-          apiKeyLoaded: !!config.apiKey?.trim(),
-        });
-        const newProvider: AIProvider = applyNativeToolCallingToProvider(
-          {
-            id,
-            name: config.name,
-            status: 'offline',
-            baseUrl: config.baseUrl,
-            isLocal: config.isLocal,
-            isEnabled: config.isEnabled,
-          },
-          config.providerType
-        );
-
-        set((state) => ({
-          providerConfigs: [...state.providerConfigs, newConfig],
-          providers: [...state.providers, newProvider],
-          providerReachabilityById: { ...state.providerReachabilityById, [id]: undefined },
-        }));
-      }
+      await get().loadProviderSettings(created.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create provider';
       set({ lastError: message });
@@ -2188,9 +2112,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   deleteProviderConfig: async (id: string) => {
     try {
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.deleteProviderConfig(id);
-      }
+      requireProviderConfigurationIpc();
+
+      await tauriIpc.deleteProviderConfig(id);
 
       set((state) => ({
         providerConfigs: state.providerConfigs.filter((c) => c.id !== id),

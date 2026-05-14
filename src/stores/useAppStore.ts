@@ -291,7 +291,7 @@ const isAppMode = (value: unknown): value is AppMode =>
   value === "Implement" ||
   value === "Chat";
 
-const isLegacyWorkspaceMockPath = (path?: string): boolean => {
+const isLegacyPlaceholderWorkspacePath = (path?: string): boolean => {
   const normalized = normalizePath(path || "");
   return normalized.startsWith("/path/to/");
 };
@@ -1069,13 +1069,13 @@ const ensureAutoPlanForSelection = async (input: {
   }
 };
 
-const pruneLegacyWorkspaceMocks = (groups: ProjectGroup[]): ProjectGroup[] => {
+const pruneLegacyPlaceholderWorkspaces = (groups: ProjectGroup[]): ProjectGroup[] => {
   return groups
     .map((group) => ({
       ...group,
       projects: group.projects.filter(
         (project) =>
-          !isLegacyWorkspaceMockPath(project.path) &&
+          !isLegacyPlaceholderWorkspacePath(project.path) &&
           !isImplicitWorkspaceRootPath(project.path),
       ),
     }))
@@ -1087,7 +1087,7 @@ const pruneLegacyRememberedProjects = (
 ): RememberedProject[] =>
   projects.filter(
     (project) =>
-      !isLegacyWorkspaceMockPath(project.path) &&
+      !isLegacyPlaceholderWorkspacePath(project.path) &&
       !isImplicitWorkspaceRootPath(project.path),
   );
 
@@ -3867,7 +3867,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
-      const prunedProjectGroups = pruneLegacyWorkspaceMocks(
+      const prunedProjectGroups = pruneLegacyPlaceholderWorkspaces(
         bootstrapProjectGroups,
       );
 

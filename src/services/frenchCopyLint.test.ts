@@ -5,7 +5,6 @@ import { join } from 'node:path';
 const SRC_ROOT = join(process.cwd(), 'src');
 const INCLUDED_DIRECTORIES = new Set(['components', 'stores', 'services']);
 const IGNORED_DIRECTORY_NAMES = new Set([
-  'mock-data',
   'i18n',
   'contracts',
   'providers',

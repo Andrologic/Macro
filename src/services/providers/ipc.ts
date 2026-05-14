@@ -30,9 +30,9 @@ import type {
 } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
-import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
 import { normalizeArchitectToolId } from '../architectToolNames';
-import { sendChat as sendChatFallback } from './mock';
+import { sendChatCompletion } from './chatCompletions';
 import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 import { parseToolTracesJson } from '../toolTraceState';
 
@@ -268,7 +268,7 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
 
 export const sendChat = async (
   request: ChatCompletionRequestDto
-): Promise<ChatCompletionResponseDto> => sendChatFallback(request);
+): Promise<ChatCompletionResponseDto> => sendChatCompletion(request);
 
 export const previewProjectGitSetup = async (data: {
   path?: string;
@@ -488,7 +488,7 @@ export const closeProject = async (data: {
 export const getToolSettings = async (): Promise<ToolSettingsDto> => {
   const enabledMap = loadLocalToolSettings();
   const tools = Object.fromEntries(
-    mockInternalTools.map((tool) => {
+    BUILT_IN_TOOLS.map((tool) => {
       const enabled = enabledMap[tool.id] ?? tool.config?.enabled !== false;
       return [
         tool.id,
@@ -514,7 +514,7 @@ export const updateToolSettings = async (settings: ToolSettingsDto): Promise<voi
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
   const enabledMap = loadLocalMcpSettings();
   const servers = Object.fromEntries(
-    mockMCPServers.map((server) => {
+    BUILT_IN_MCP_SERVERS.map((server) => {
       const enabled = enabledMap[server.id] ?? false;
       return [
         server.id,

@@ -7,7 +7,6 @@ type FetchCall = {
 
 const ENV_KEYS = [
   'VITE_BACKEND_TRANSPORT',
-  'VITE_DATA_PROVIDER',
   'VITE_REMOTE_API_BASE_URL',
   'VITE_REMOTE_BACKEND_URL',
   'VITE_REMOTE_API_PREFIX',
@@ -66,7 +65,7 @@ describe('services index', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('routes bootstrap through HTTP in remote mode without VITE_DATA_PROVIDER', async () => {
+  it('routes bootstrap through HTTP in remote mode', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
     setEnv('VITE_REMOTE_API_PREFIX', '/custom');
@@ -78,9 +77,8 @@ describe('services index', () => {
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/workspace/bootstrap');
   });
 
-  it('keeps the remote provider active even when VITE_DATA_PROVIDER=mock', async () => {
+  it('keeps the remote provider active with desktop-only environment noise present', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
-    setEnv('VITE_DATA_PROVIDER', 'mock');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
     setEnv('VITE_REMOTE_API_PREFIX', '/api/v2');
 
@@ -91,13 +89,7 @@ describe('services index', () => {
     expect(runtime).toMatchObject({
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
-      requestedProvider: 'mock',
     });
-    expect(runtime.warnings).toEqual([
-      expect.objectContaining({
-        code: 'REMOTE_PROVIDER_IGNORED',
-      }),
-    ]);
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v2/workspace/bootstrap');
   });
 });

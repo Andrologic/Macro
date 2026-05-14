@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
@@ -12,6 +12,7 @@ import {
   buildPlanFinalizationFailureState,
   toBlockedPlanFinalizationState,
 } from '../services/planFinalization';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
@@ -26,6 +27,12 @@ const gitWorktreeRemoveMock = mock(async () => ({
 const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
   worktreeKey: params.worktreeKey,
   worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
+const gitWorktreeCreateMock = mock(async (params: { repoPath: string; taskId: string; branchName: string }) => ({
+  taskId: params.taskId,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.taskId}`,
   branchName: params.branchName,
   status: 'reused' as const,
 }));
@@ -137,6 +144,7 @@ mock.module('../services/tauriIpc', () => ({
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -162,6 +170,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -227,6 +236,14 @@ const flushPromises = async () => {
     await Promise.resolve();
   }
 };
+
+beforeEach(() => {
+  installTauriRuntimeMock();
+});
+
+afterEach(() => {
+  removeTauriRuntimeMock();
+});
 
 const blockedRepository = {
   id: 'api::/repos/api',
@@ -419,6 +436,7 @@ describe('useTaskStore merge workflow review loading', () => {
     gitStartMergeResolutionMock.mockClear();
     gitCompleteMergeMock.mockClear();
     gitBranchWorktreeCreateMock.mockClear();
+    gitWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
@@ -1503,9 +1521,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
 describe('useTaskStore remote runtime guards', () => {
   it('rejects task status mutations with the stable remote unsupported error', async () => {
     const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
-    const previousProvider = process.env.VITE_DATA_PROVIDER;
     process.env.VITE_BACKEND_TRANSPORT = 'remote';
-    delete process.env.VITE_DATA_PROVIDER;
 
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
@@ -1532,12 +1548,6 @@ describe('useTaskStore remote runtime guards', () => {
         delete process.env.VITE_BACKEND_TRANSPORT;
       } else {
         process.env.VITE_BACKEND_TRANSPORT = previousTransport;
-      }
-
-      if (previousProvider === undefined) {
-        delete process.env.VITE_DATA_PROVIDER;
-      } else {
-        process.env.VITE_DATA_PROVIDER = previousProvider;
       }
     }
   });
