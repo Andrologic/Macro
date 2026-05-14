@@ -9,7 +9,14 @@ use crate::fs::{
 };
 use crate::git::GitState;
 use crate::WorkspaceRoot;
+use flate2::read::GzDecoder;
+use serde::Serialize;
+use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tar::Archive;
+use tauri::Manager;
+use walkdir::WalkDir;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -17,6 +24,8 @@ use std::os::windows::fs::MetadataExt;
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+const MAX_EXTENSION_ARCHIVE_UNPACKED_BYTES: u64 = 250 * 1024 * 1024;
+const MAX_EXTENSION_ARCHIVE_ENTRIES: usize = 10_000;
 
 // Default ignored directories/patterns
 static DEFAULT_IGNORED: [&str; 12] = [
@@ -987,6 +996,287 @@ pub async fn fs_move(
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionArchiveExtractionDto {
+    pub extension_root_path: String,
+    pub manifest_path: String,
+    pub manifest_text: String,
+}
+
+fn validate_archive_relative_path(path: &Path) -> Result<PathBuf, BackendError> {
+    let mut safe = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(BackendError::Validation(format!(
+                    "Extension archive contains unsafe path '{}'",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    if safe.as_os_str().is_empty() {
+        return Err(BackendError::Validation(
+            "Extension archive contains an empty path".to_string(),
+        ));
+    }
+
+    Ok(safe)
+}
+
+fn sanitize_extension_archive_stem(archive_path: &Path) -> String {
+    let stem = archive_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("extension");
+    let sanitized = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "extension".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn find_extracted_extension_manifest(
+    extraction_dir: &Path,
+) -> Result<(PathBuf, String), BackendError> {
+    let mut manifests = WalkDir::new(extraction_dir)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == "macro.extension.json")
+        .map(|entry| entry.into_path())
+        .collect::<Vec<_>>();
+
+    manifests.sort();
+
+    if manifests.is_empty() {
+        return Err(BackendError::Validation(
+            "Extension archive does not contain macro.extension.json at its root or package root"
+                .to_string(),
+        ));
+    }
+    if manifests.len() > 1 {
+        return Err(BackendError::Validation(
+            "Extension archive contains multiple macro.extension.json files".to_string(),
+        ));
+    }
+
+    let manifest_path = manifests.remove(0);
+    let manifest_text =
+        std::fs::read_to_string(&manifest_path).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to read extracted extension manifest '{}': {}",
+                manifest_path.display(),
+                error
+            ),
+            source: error,
+        })?;
+
+    Ok((manifest_path, manifest_text))
+}
+
+fn extract_extension_tgz_internal(
+    app_handle: &tauri::AppHandle,
+    archive_path: String,
+) -> Result<ExtensionArchiveExtractionDto, BackendError> {
+    let archive_path = PathBuf::from(archive_path);
+    if archive_path.extension().and_then(|value| value.to_str()) != Some("tgz") {
+        return Err(BackendError::Validation(
+            "Macro extension archives must use the .tgz extension".to_string(),
+        ));
+    }
+
+    let archive_file = std::fs::File::open(&archive_path).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to open extension archive '{}': {}",
+            archive_path.display(),
+            error
+        ),
+        source: error,
+    })?;
+
+    let app_data_dir =
+        app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to resolve app data directory: {}", error),
+            })?;
+    let extensions_root = app_data_dir.join("extensions").join("archives");
+    std::fs::create_dir_all(&extensions_root).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to create extension archive directory '{}': {}",
+            extensions_root.display(),
+            error
+        ),
+        source: error,
+    })?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| BackendError::Internal {
+            message: format!("System clock is before UNIX epoch: {}", error),
+        })?
+        .as_millis();
+    let extraction_dir = extensions_root.join(format!(
+        "{}-{}",
+        sanitize_extension_archive_stem(&archive_path),
+        timestamp
+    ));
+    std::fs::create_dir_all(&extraction_dir).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to create extension extraction directory '{}': {}",
+            extraction_dir.display(),
+            error
+        ),
+        source: error,
+    })?;
+
+    let extract_result = (|| {
+        let decoder = GzDecoder::new(archive_file);
+        let mut archive = Archive::new(decoder);
+        let mut total_size = 0_u64;
+        let mut entry_count = 0_usize;
+
+        for entry in archive.entries().map_err(|error| {
+            BackendError::Validation(format!(
+                "Failed to read extension archive entries: {}",
+                error
+            ))
+        })? {
+            entry_count += 1;
+            if entry_count > MAX_EXTENSION_ARCHIVE_ENTRIES {
+                return Err(BackendError::Validation(format!(
+                    "Extension archive contains more than {} entries",
+                    MAX_EXTENSION_ARCHIVE_ENTRIES
+                )));
+            }
+
+            let mut entry = entry.map_err(|error| {
+                BackendError::Validation(format!(
+                    "Failed to read extension archive entry: {}",
+                    error
+                ))
+            })?;
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_symlink() || entry_type.is_hard_link() {
+                return Err(BackendError::Validation(
+                    "Extension archive may not contain symlinks or hard links".to_string(),
+                ));
+            }
+            if !entry_type.is_file() && !entry_type.is_dir() {
+                continue;
+            }
+
+            let size = entry.header().size().map_err(|error| {
+                BackendError::Validation(format!("Failed to read archive entry size: {}", error))
+            })?;
+            total_size = total_size.saturating_add(size);
+            if total_size > MAX_EXTENSION_ARCHIVE_UNPACKED_BYTES {
+                return Err(BackendError::Validation(format!(
+                    "Extension archive expands beyond {} bytes",
+                    MAX_EXTENSION_ARCHIVE_UNPACKED_BYTES
+                )));
+            }
+
+            let entry_path = entry
+                .path()
+                .map_err(|error| {
+                    BackendError::Validation(format!(
+                        "Failed to read archive entry path: {}",
+                        error
+                    ))
+                })?
+                .into_owned();
+            let safe_path = validate_archive_relative_path(&entry_path)?;
+            let target_path = extraction_dir.join(safe_path);
+
+            if entry_type.is_dir() {
+                std::fs::create_dir_all(&target_path).map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to create extension archive directory '{}': {}",
+                        target_path.display(),
+                        error
+                    ),
+                    source: error,
+                })?;
+                continue;
+            }
+
+            if let Some(parent) = target_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to create extension archive parent '{}': {}",
+                        parent.display(),
+                        error
+                    ),
+                    source: error,
+                })?;
+            }
+            entry
+                .unpack(&target_path)
+                .map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to unpack extension archive entry '{}': {}",
+                        target_path.display(),
+                        error
+                    ),
+                    source: error,
+                })?;
+        }
+
+        let (manifest_path, manifest_text) = find_extracted_extension_manifest(&extraction_dir)?;
+        let extension_root = manifest_path
+            .parent()
+            .ok_or_else(|| {
+                BackendError::Validation(
+                    "Extracted extension manifest does not have a parent directory".to_string(),
+                )
+            })?
+            .to_path_buf();
+
+        Ok(ExtensionArchiveExtractionDto {
+            extension_root_path: extension_root.to_string_lossy().to_string(),
+            manifest_path: manifest_path.to_string_lossy().to_string(),
+            manifest_text,
+        })
+    })();
+
+    if extract_result.is_err() {
+        let _ = std::fs::remove_dir_all(&extraction_dir);
+    }
+
+    extract_result
+}
+
+#[tauri::command]
+pub async fn extension_extract_tgz(
+    app_handle: tauri::AppHandle,
+    archive_path: String,
+) -> Result<ExtensionArchiveExtractionDto, BackendError> {
+    tokio::task::spawn_blocking(move || extract_extension_tgz_internal(&app_handle, archive_path))
+        .await
+        .map_err(to_join_error)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1570,5 +1860,20 @@ mod tests {
             result,
             Err(BackendError::FilesystemNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn test_extension_archive_path_rejects_traversal() {
+        let result = validate_archive_relative_path(Path::new("../macro.extension.json"));
+
+        assert!(matches!(result, Err(BackendError::Validation(_))));
+    }
+
+    #[test]
+    fn test_extension_archive_path_allows_package_manifest() {
+        let result =
+            validate_archive_relative_path(Path::new("package/macro.extension.json")).unwrap();
+
+        assert_eq!(result, PathBuf::from("package/macro.extension.json"));
     }
 }

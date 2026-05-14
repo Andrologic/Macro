@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   AppMode,
+  BuiltInAppMode,
   AgentCodeCheckpoint,
   AgentCodeCheckpointFile,
   AgentCodeReplayPreview,
@@ -935,6 +936,9 @@ const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
   }
   return "Implement";
 };
+
+const isBuiltInAppMode = (mode: AppMode): mode is BuiltInAppMode =>
+  mode === "Architect" || mode === "Implement" || mode === "Chat";
 
 const normalizeReasoningEffort = (value: unknown): ReasoningEffort | null =>
   typeof value === "string" && REASONING_EFFORT_VALUES.has(value as ReasoningEffort)
@@ -6012,9 +6016,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const appMode = appState.mode;
     const agentType = appMode === "Implement" ? appState.agentType : null;
-    const modePrompt = await loadPreference<string>(
-      MODE_PROMPT_KEYS_BY_MODE[appMode]
-    );
+    const modePromptKey = isBuiltInAppMode(appMode)
+      ? MODE_PROMPT_KEYS_BY_MODE[appMode]
+      : null;
+    const modePrompt = modePromptKey
+      ? await loadPreference<string>(modePromptKey)
+      : null;
 
     if (modePrompt) {
       systemInstructions.unshift(modePrompt);

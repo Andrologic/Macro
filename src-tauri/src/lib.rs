@@ -429,6 +429,7 @@ pub fn run() {
             commands::fs::fs_create_dir,
             commands::fs::fs_copy,
             commands::fs::fs_move,
+            commands::fs::extension_extract_tgz,
             // Git commands
             commands::git::git_status,
             commands::git::git_fetch,

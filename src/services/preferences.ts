@@ -6,7 +6,7 @@
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";
-import type { AppMode, ToolRiskLevel } from "../types";
+import type { BuiltInAppMode, ToolRiskLevel } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
@@ -90,6 +90,9 @@ export const PREF_KEYS = {
   ONBOARDING_STATE: "onboardingState",
   SMART_COMMIT_MODEL_CONFIG: "smartCommitModelConfig",
   SMART_COMMIT_PROMPT: "smartCommitPrompt",
+  EXTENSION_INSTALLS: "extensionInstalls",
+  EXTENSION_TRUST_GRANTS: "extensionTrustGrants",
+  EXTENSION_TRUST_DECISIONS: "extensionTrustDecisions",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -158,7 +161,7 @@ export type PromptPreferenceDefinition = {
   scope: "mode" | "internal_profile";
 };
 
-export const MODE_PROMPT_KEYS_BY_MODE: Record<AppMode, PromptPreferenceKey> = {
+export const MODE_PROMPT_KEYS_BY_MODE: Record<BuiltInAppMode, PromptPreferenceKey> = {
   Architect: PREF_KEYS.PROMPT_ARCHITECT,
   Implement: PREF_KEYS.PROMPT_IMPLEMENT,
   Chat: PREF_KEYS.PROMPT_CHAT,
@@ -308,6 +311,9 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   },
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
+  [PREF_KEYS.EXTENSION_INSTALLS]: [],
+  [PREF_KEYS.EXTENSION_TRUST_GRANTS]: {},
+  [PREF_KEYS.EXTENSION_TRUST_DECISIONS]: {},
 };
 
 // Store instance (singleton)

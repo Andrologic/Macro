@@ -102,6 +102,7 @@ export type SettingsTab =
   | "providers"
   | "models"
   | "tools"
+  | "extensions"
   | "shortcuts"
   | "prompts"
   | "architect";
@@ -289,7 +290,8 @@ const normalizePath = (value: string): string =>
 const isAppMode = (value: unknown): value is AppMode =>
   value === "Architect" ||
   value === "Implement" ||
-  value === "Chat";
+  value === "Chat" ||
+  (typeof value === "string" && /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+/.test(value));
 
 const isLegacyPlaceholderWorkspacePath = (path?: string): boolean => {
   const normalized = normalizePath(path || "");
@@ -3965,7 +3967,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const resolvedMode: AppMode = isAppMode(sessionMode)
         ? sessionMode
-        : ["Architect", "Implement", "Chat"].includes(lastActiveMode)
+        : isAppMode(lastActiveMode)
           ? lastActiveMode
           : "Implement";
       const resolvedAgentType: AgentType = ["build", "plan"].includes(
