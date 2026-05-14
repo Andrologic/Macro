@@ -73,7 +73,7 @@ interface ChatZoneProps {
 }
 
 interface ContextControlsVisibilityInput {
-  mode: 'Chat' | 'Architect' | 'Implement';
+  mode: string;
   selectedConversationId?: string | null;
   selectedTaskId?: string | null;
   activeArchitectPlanId?: string | null;

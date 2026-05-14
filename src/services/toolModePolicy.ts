@@ -2,6 +2,7 @@ import type { AppMode } from "../types";
 import {
   getArchitectChatActionToolIds,
 } from "./architectToolSurface";
+import { macroContributionRegistry } from "./extensions";
 
 export interface ToolModePolicy {
   allowedToolIds: string[];
@@ -64,6 +65,15 @@ const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
 export const getToolModePolicy = (
   mode: AppMode,
 ): ToolModePolicy => {
+  const extensionMode = macroContributionRegistry.getMode(mode);
+  if (extensionMode?.contribution.toolPolicy) {
+    return {
+      allowedToolIds: extensionMode.contribution.toolPolicy.allowedToolIds ?? [],
+      enforceMacroOnlyWrites:
+        extensionMode.contribution.toolPolicy.enforceMacroOnlyWrites === true,
+    };
+  }
+
   if (mode === "Architect") {
     return {
       allowedToolIds: [
