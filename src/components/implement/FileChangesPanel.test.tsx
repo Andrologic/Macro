@@ -15,6 +15,7 @@ import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
+import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 let FileChangesPanel!: typeof FileChangesPanelComponent;
 let useAppStore!: typeof UseAppStoreHook;
@@ -499,6 +500,7 @@ describe('FileChangesPanel', () => {
 
   beforeEach(async () => {
     mock.restore();
+    installTauriRuntimeMock();
     resizeObserverWidth = 640;
     globalThis.ResizeObserver = ResizeObserverTestMock as unknown as typeof ResizeObserver;
     notifySuccessMock = mock(() => undefined);
@@ -567,7 +569,6 @@ describe('FileChangesPanel', () => {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
     delete process.env.VITE_BACKEND_TRANSPORT;
-    delete process.env.VITE_DATA_PROVIDER;
     window.localStorage.removeItem('macro_smartCommitModelConfig');
     mock.restore();
   });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { mockInternalTools } from '../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../services/tools/builtInTools';
 import type { MCPServer, Tool } from '../types';
 
 const CHAT_TOOLBOX_IDS = [
@@ -37,7 +37,7 @@ let importCounter = 0;
 
 const buildToolSettings = (): Record<string, Tool> =>
   Object.fromEntries(
-    mockInternalTools.map((tool) => [
+    BUILT_IN_TOOLS.map((tool) => [
       tool.id,
       {
         ...tool,

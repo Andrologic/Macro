@@ -1,38 +1,37 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import {
+  DESKTOP_IPC_UNAVAILABLE_MESSAGE,
   resolveServiceRuntime,
   resolveServiceRuntimeCapabilities,
 } from './serviceRuntime';
 
 describe('serviceRuntime', () => {
-  it('resolves browser desktop to the mock provider', () => {
-    const runtime = resolveServiceRuntime({
+  afterEach(() => {
+    removeTauriRuntimeMock();
+  });
+
+  it('rejects browser desktop without falling back to mock data', () => {
+    expect(() => resolveServiceRuntime({
       env: {
         VITE_BACKEND_TRANSPORT: 'desktop',
       },
       tauriAvailable: false,
-    });
-
-    expect(runtime).toMatchObject({
-      effectiveTransport: 'desktop',
-      effectiveProvider: 'mock',
-      requestedProvider: null,
-    });
-    expect(resolveServiceRuntimeCapabilities(runtime).projectMutation).toBe(true);
+    })).toThrow(DESKTOP_IPC_UNAVAILABLE_MESSAGE);
   });
 
   it('resolves Tauri desktop to the ipc provider', () => {
+    installTauriRuntimeMock();
+
     const runtime = resolveServiceRuntime({
       env: {
         VITE_BACKEND_TRANSPORT: 'desktop',
       },
-      tauriAvailable: true,
     });
 
     expect(runtime).toMatchObject({
       effectiveTransport: 'desktop',
       effectiveProvider: 'ipc',
-      requestedProvider: null,
     });
   });
 
@@ -47,7 +46,6 @@ describe('serviceRuntime', () => {
     expect(runtime).toMatchObject({
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
-      requestedProvider: null,
     });
     expect(resolveServiceRuntimeCapabilities(runtime)).toMatchObject({
       bootstrap: true,
@@ -65,11 +63,10 @@ describe('serviceRuntime', () => {
     });
   });
 
-  it('forces the remote provider and records a warning when VITE_DATA_PROVIDER=mock', () => {
+  it('forces the remote provider without requiring Tauri IPC', () => {
     const runtime = resolveServiceRuntime({
       env: {
         VITE_BACKEND_TRANSPORT: 'remote',
-        VITE_DATA_PROVIDER: 'mock',
       },
       tauriAvailable: false,
     });
@@ -77,12 +74,6 @@ describe('serviceRuntime', () => {
     expect(runtime).toMatchObject({
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
-      requestedProvider: 'mock',
     });
-    expect(runtime.warnings).toEqual([
-      expect.objectContaining({
-        code: 'REMOTE_PROVIDER_IGNORED',
-      }),
-    ]);
   });
 });

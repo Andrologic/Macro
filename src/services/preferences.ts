@@ -2,7 +2,7 @@
  * Preferences Service
  *
  * Handles persistent storage of user preferences using Tauri Store plugin
- * with localStorage fallback for non-Tauri environments (mock mode).
+ * with localStorage fallback for non-Tauri environments.
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";

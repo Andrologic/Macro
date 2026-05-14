@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
-import { mockInternalTools } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../../services/tools/builtInTools';
 import { normalizeArchitectToolId } from '../../services/architectToolNames';
 import { Icon, type IconName } from '../ui/Icon';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/Accordion';
@@ -40,7 +40,7 @@ const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
 );
 
 const TOOL_TRACE_ICON_BY_NAME = new Map<string, IconName>(
-  mockInternalTools.flatMap((tool) => {
+  BUILT_IN_TOOLS.flatMap((tool) => {
     const normalizedId = normalizeArchitectToolId(tool.id);
     return normalizedId === tool.id
       ? [[tool.id, tool.icon]]

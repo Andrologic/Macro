@@ -1391,7 +1391,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     );
   }
 
-  // If no mock data at all, show empty state (should only happen if filter removes everything and we don't want to show empty graph)
+  // If no strategy data is available, show an empty state.
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
   if (layoutData.nodes.length === 0) {

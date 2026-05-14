@@ -1,4 +1,4 @@
-import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
 import type { MCPServer, Tool } from '../../types';
 import { normalizeArchitectToolId } from '../architectToolNames';
 import type { MCPServerSettingsDto, ToolSettingsDto } from '../contracts/dtos';
@@ -80,7 +80,7 @@ export const buildToolSettingsPayload = (): ToolSettingsDto => {
   writeStoredToolEnablement(enabledTools);
 
   const tools: Record<string, Tool> = {};
-  mockInternalTools.forEach((tool) => {
+  BUILT_IN_TOOLS.forEach((tool) => {
     const enabled = enabledTools[tool.id] !== false;
     tools[tool.id] = {
       ...tool,
@@ -111,7 +111,7 @@ export const writeStoredMCPServerEnablement = (servers: Record<string, boolean>)
 export const buildMCPServerSettingsPayload = (): MCPServerSettingsDto => {
   const enabledServers = readStoredMCPServerEnablement();
   const servers: Record<string, MCPServer> = Object.fromEntries(
-    mockMCPServers.map((server) => [
+    BUILT_IN_MCP_SERVERS.map((server) => [
       server.id,
       {
         ...server,

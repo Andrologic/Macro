@@ -32,8 +32,8 @@ L'architecture repose sur quatre principes :
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
 - desktop local avec backend Tauri embarque
-- desktop local avec simulation ou provider mock pour certaines phases de developpement
 - client desktop connecte a un kernel distant
+- client web/mobile connecte a un kernel distant
 
 ---
 
@@ -68,7 +68,7 @@ Les stores centralisent les decisions d'orchestration cote interface.
 La couche services frontend encapsule les acces aux sources de donnees et aux outils.
 
 Elle fournit :
-- une abstraction de provider (`mock`, `ipc`, `remote`)
+- une abstraction de provider (`ipc`, `remote`)
 - des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
 
 Elle a pour role d'isoler le reste de l'interface des details du transport.
@@ -269,13 +269,11 @@ Les composants doivent surtout afficher, recueillir des intentions utilisateur e
 
 La couche `services/index.ts` selectionne dynamiquement le provider de donnees selon :
 
-- le provider cible (`mock` ou `ipc`)
 - le transport cible (`desktop` ou `remote`)
 - la disponibilite effective du runtime Tauri
 
 Cette abstraction permet :
 
-- de travailler sur un frontend simule
 - d'utiliser Tauri en mode desktop
 - de parler a un backend distant sans reecrire le reste de l'application
 

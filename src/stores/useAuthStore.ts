@@ -17,32 +17,29 @@ interface AuthStore {
   setLastError: (error: string | null) => void;
 }
 
-// Mock user for development
-const mockUser: User = {
-  id: 'user-1',
-  email: 'user@example.com',
-  name: 'Demo User',
-  avatar: undefined,
-  preferences: {
-    theme: 'dark',
-    language: 'en',
-    notifications: true,
-    emailUpdates: false,
-  },
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
+const AUTH_UNAVAILABLE_MESSAGE =
+  'Authentication is not implemented in this runtime.';
+
+const unauthenticatedState = {
+  authStatus: 'unauthenticated' as const,
+  user: null,
+  session: null,
 };
 
-const mockSession: Session = {
-  user: mockUser,
-  token: 'mock-token-' + Date.now(),
-  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
+type SetAuthStoreState = (state: Partial<AuthStore>) => void;
+
+const rejectAuthUnavailable = (set: SetAuthStoreState): never => {
+  const error = new Error(AUTH_UNAVAILABLE_MESSAGE);
+  set({
+    ...unauthenticatedState,
+    isLoading: false,
+    lastError: error.message,
+  });
+  throw error;
 };
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  authStatus: 'loading',
-  user: null,
-  session: null,
+  ...unauthenticatedState,
   isLoading: false,
   lastError: null,
 
@@ -50,102 +47,27 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   setLastError: (error) => set({ lastError: error }),
 
-  login: async (credentials: AuthCredentials) => {
+  login: async (_credentials: AuthCredentials) => {
     set({ isLoading: true, lastError: null });
-    try {
-      // Mock login - in production, this would call an IPC service
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      
-      // Simple mock validation
-      if (credentials.email && credentials.password) {
-        set({
-          authStatus: 'authenticated',
-          user: mockUser,
-          session: mockSession,
-          isLoading: false,
-        });
-      } else {
-        throw new Error('Invalid credentials');
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Login failed';
-      set({
-        authStatus: 'unauthenticated',
-        user: null,
-        session: null,
-        isLoading: false,
-        lastError: message,
-      });
-      throw error;
-    }
+    rejectAuthUnavailable(set);
   },
 
   logout: async () => {
     set({ isLoading: true, lastError: null });
-    try {
-      // Mock logout - in production, this would call an IPC service
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      
-      set({
-        authStatus: 'unauthenticated',
-        user: null,
-        session: null,
-        isLoading: false,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Logout failed';
-      set({
-        isLoading: false,
-        lastError: message,
-      });
-      throw error;
-    }
+    set({
+      ...unauthenticatedState,
+      isLoading: false,
+    });
   },
 
-  register: async (credentials: AuthCredentials & { name: string }) => {
+  register: async (_credentials: AuthCredentials & { name: string }) => {
     set({ isLoading: true, lastError: null });
-    try {
-      // Mock registration - in production, this would call an IPC service
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      
-      const newUser: User = {
-        ...mockUser,
-        email: credentials.email,
-        name: credentials.name,
-        id: 'user-' + Date.now(),
-      };
-
-      const newSession: Session = {
-        user: newUser,
-        token: 'mock-token-' + Date.now(),
-        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      };
-
-      set({
-        authStatus: 'authenticated',
-        user: newUser,
-        session: newSession,
-        isLoading: false,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Registration failed';
-      set({
-        authStatus: 'unauthenticated',
-        user: null,
-        session: null,
-        isLoading: false,
-        lastError: message,
-      });
-      throw error;
-    }
+    rejectAuthUnavailable(set);
   },
 
   updatePreferences: async (preferences: Partial<UserPreferences>) => {
     set({ isLoading: true, lastError: null });
     try {
-      // Mock update - in production, this would call an IPC service
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      
       const state = get();
       if (!state.user) {
         set({ isLoading: false });
@@ -178,46 +100,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   checkSession: async () => {
     set({ isLoading: true, lastError: null });
-    try {
-      // Mock session check - in production, this would call an IPC service
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      
-      // For mock purposes, check if we have a session in localStorage
-      const savedSession = localStorage.getItem('mockSession');
-      if (savedSession) {
-        const parsedSession: Session = JSON.parse(savedSession);
-        set({
-          authStatus: 'authenticated',
-          user: parsedSession.user,
-          session: parsedSession,
-          isLoading: false,
-        });
-      } else {
-        set({
-          authStatus: 'unauthenticated',
-          user: null,
-          session: null,
-          isLoading: false,
-        });
-      }
-    } catch (error) {
-      set({
-        authStatus: 'unauthenticated',
-        user: null,
-        session: null,
-        isLoading: false,
-      });
-    }
+    set({
+      ...unauthenticatedState,
+      isLoading: false,
+    });
   },
 }));
-
-// Subscribe to session changes to persist to localStorage
-useAuthStore.subscribe(
-  (state) => {
-    if (state.session) {
-      localStorage.setItem('mockSession', JSON.stringify(state.session));
-    } else {
-      localStorage.removeItem('mockSession');
-    }
-  }
-);
