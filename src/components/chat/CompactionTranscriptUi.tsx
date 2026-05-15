@@ -108,6 +108,10 @@ export const CompactionProgressRow: React.FC<{
       style={{ transform: `translateY(${virtualItem.start}px)` }}
       role="status"
       aria-live="polite"
+      aria-label={t(
+        'chat.compactionProgressDescription',
+        'Génération du résumé de contexte en cours. Cela peut prendre quelques secondes.',
+      )}
     >
       <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground">
         <span className="h-px flex-1 bg-gradient-to-r from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
@@ -132,6 +136,10 @@ export const StreamingCompactionActivity: React.FC = () => {
       className="ml-1 inline-flex max-w-full items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary align-baseline shadow-sm"
       role="status"
       aria-live="polite"
+      aria-label={t(
+        'chat.compactionProgressDescription',
+        'Génération du résumé de contexte en cours. Cela peut prendre quelques secondes.',
+      )}
     >
       <CompactionActivitySpinner />
       <CompactionWaveText>

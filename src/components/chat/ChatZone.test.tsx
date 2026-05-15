@@ -58,7 +58,7 @@ type MockChatState = {
   conversationCompactionStatusById: Record<
     string,
     {
-      phase: 'compacting' | 'safety_compacting' | 'model_switch_compacting' | 'overflow_recovery' | 'recovering_overflow' | 'compacted' | 'degraded' | 'too_large' | 'needs_manual_compaction' | 'blocked';
+      phase: 'compacting' | 'safety_compacting' | 'model_switch_compacting' | 'recovering_overflow' | 'compacted' | 'degraded' | 'too_large' | 'needs_manual_compaction' | 'blocked';
       upToMessageId?: string | null;
       updatedAt?: string | null;
       summaryText?: string | null;
@@ -1012,7 +1012,7 @@ describe('ChatZone', () => {
       ],
       conversationCompactionStatusById: {
         'conv-1': {
-          phase: 'overflow_recovery',
+          phase: 'recovering_overflow',
           updatedAt: '2026-05-10T08:31:00.000Z',
         },
       },
@@ -1025,7 +1025,7 @@ describe('ChatZone', () => {
     const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('overflow_recovery');
+    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('recovering_overflow');
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();

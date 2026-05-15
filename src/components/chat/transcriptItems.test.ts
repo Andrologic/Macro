@@ -126,7 +126,7 @@ describe('buildChatTranscriptItems', () => {
     );
     const nextItems = buildChatTranscriptItems(
       [makeMessage('u1')],
-      { conversationId: 'conv-1', phase: 'overflow_recovery', updatedAt: '2026-05-09T11:00:00.000Z' },
+      { conversationId: 'conv-1', phase: 'recovering_overflow', updatedAt: '2026-05-09T11:00:00.000Z' },
     );
 
     expect(items.at(-1)?.key).toBe('compaction-progress:conv-1');

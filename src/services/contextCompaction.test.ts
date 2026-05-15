@@ -112,10 +112,10 @@ describe('buildContextTooLargeErrorMessage', () => {
       toolTurnCount: 8,
     });
 
-    expect(message).toContain('Estimated payload: 14,500 tokens / 12,000 tokens');
-    expect(message).toContain('provider history: 9,000 tokens');
-    expect(message).toContain('messages: 6,000 tokens');
-    expect(message).toContain('latest request: 3,000 tokens');
+    expect(message).toMatch(/Estimated payload: 14[\s,]500 tokens \/ 12[\s,]000 tokens/);
+    expect(message).toMatch(/provider history: 9[\s,]000 tokens/);
+    expect(message).toMatch(/messages: 6[\s,]000 tokens/);
+    expect(message).toMatch(/latest request: 3[\s,]000 tokens/);
   });
 });
 

@@ -755,19 +755,6 @@ const buildToolDigest = (
   return Array.from(deduped.values()).slice(0, MAX_DIGEST_ITEMS);
 };
 
-const estimateHiddenContextTokensFromPreparedMessages = (
-  messages: StreamMessage[]
-): number => {
-  let hiddenTokens = 0;
-  for (const message of messages) {
-    if (typeof message.content !== 'string') continue;
-    for (const match of message.content.matchAll(TOOL_CONTEXT_BLOCK_REGEX)) {
-      hiddenTokens += estimateTokensForText(match[0] || '');
-    }
-  }
-  return hiddenTokens;
-};
-
 const getRecentUserTurnStartIndex = (orderedMessages: ChatMessage[]): number => {
   const userIndexes = orderedMessages.reduce<number[]>((indexes, message, index) => {
     if (message.role === 'user') {
@@ -1322,27 +1309,25 @@ export const estimateConversationFootprint = (
     (total, message) => total + estimateTokensForStreamMessage(message),
     0
   );
-  const preparedHiddenContextTokens =
-    estimateHiddenContextTokensFromPreparedMessages(params.preparedMessages);
-  const originalHiddenContextTokens = params.orderedMessages.reduce(
-    (total, message) => total + estimateTokensForText(message.hidden_context || ''),
-    0
-  );
-  const hasProviderInputItems = params.preparedMessages.some(
-    (message) => (message.provider_input_items?.length ?? 0) > 0
-  );
   const hasCompactedState = params.preparedMessages.some(
     (message) =>
       message.role === 'system' &&
       typeof message.content === 'string' &&
       message.content.includes(COMPACTED_CONVERSATION_STATE_MARKER)
   );
-  const hiddenContextTokens =
-    preparedHiddenContextTokens > 0
-      ? preparedHiddenContextTokens
-      : hasProviderInputItems || hasCompactedState
-        ? 0
-        : originalHiddenContextTokens;
+
+  const hiddenContextTokens = (() => {
+    if (hasCompactedState) return 0;
+    let total = 0;
+    for (const message of params.preparedMessages) {
+      if ((message.provider_input_items?.length ?? 0) > 0) continue;
+      if (typeof message.content !== 'string') continue;
+      for (const match of message.content.matchAll(TOOL_CONTEXT_BLOCK_REGEX)) {
+        total += estimateTokensForText(match[0] || '');
+      }
+    }
+    return total;
+  })();
   const citationTokens = params.citations.reduce(
     (total, citation) =>
       total +
@@ -1597,7 +1582,7 @@ const buildCompactionState = async (params: {
       contextLimitWarning: params.contextLimitWarning,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       budgetPolicy: params.budgetPolicy,
-      mode: 'blocking',
+      mode: params.compactionKind ?? 'blocking',
     }).totalEstimatedTokens,
     estimatedTokensAfter: 0,
     fingerprint: '',
@@ -1797,6 +1782,8 @@ export const maybeCompactConversation = async (
         footprintAfter,
         updatedAt: new Date().toISOString(),
       };
+    } else {
+      usedExistingCompaction = Boolean(activeState);
     }
   }
 
@@ -1805,6 +1792,12 @@ export const maybeCompactConversation = async (
     degraded = true;
     messages = applyEmergencyMessageCompaction(messages, compactionPass);
     footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
+    activeState = {
+      ...activeState,
+      estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
+      footprintAfter,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   if (footprintAfter.isHardStop && compactionAllowed) {

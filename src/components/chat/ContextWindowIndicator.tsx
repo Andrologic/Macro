@@ -476,6 +476,15 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 type="button"
                 onClick={onCompactNow}
                 disabled={!canCompact}
+                title={
+                  !canCompact
+                    ? isCompacting
+                      ? 'Compactage en cours...'
+                      : effectiveDiagnostics?.status === 'error'
+                        ? 'Diagnostics en erreur'
+                        : 'Action non disponible'
+                    : undefined
+                }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 text-xs text-primary transition-colors hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isCompacting ? <SpinnerIcon size={13} /> : <Icon name="archive" size={13} />}
