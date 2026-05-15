@@ -747,13 +747,36 @@ const updateArchitectPlanMock = mock(async (params: {
   architectPlans.set(params.planId, updated);
   return updated;
 });
-const sendChatNonStreamingMock = mock(
-  async () =>
-    JSON.stringify({
-      title: 'Checkout refresh',
-      description: 'Refresh checkout state and cart recovery.',
-    })
-);
+type SendChatNonStreaming = typeof import('../services/streamingChat').sendChatNonStreaming;
+
+const defaultSendChatNonStreamingImpl: SendChatNonStreaming = async () =>
+  JSON.stringify({
+    title: 'Checkout refresh',
+    description: 'Refresh checkout state and cart recovery.',
+  });
+let sendChatNonStreamingImpl: SendChatNonStreaming = defaultSendChatNonStreamingImpl;
+const sendChatNonStreamingOnceImpls: SendChatNonStreaming[] = [];
+const resetSendChatNonStreamingImplementation = () => {
+  sendChatNonStreamingImpl = defaultSendChatNonStreamingImpl;
+  sendChatNonStreamingOnceImpls.length = 0;
+};
+const setSendChatNonStreamingImplementation = (
+  implementation: SendChatNonStreaming,
+) => {
+  sendChatNonStreamingImpl = implementation;
+};
+const queueSendChatNonStreamingImplementation = (
+  implementation: SendChatNonStreaming,
+) => {
+  sendChatNonStreamingOnceImpls.push(implementation);
+};
+const sendChatNonStreamingMock = mock((async (
+  ...args: Parameters<SendChatNonStreaming>
+) => {
+  const implementation =
+    sendChatNonStreamingOnceImpls.shift() ?? sendChatNonStreamingImpl;
+  return implementation(...args);
+}) as SendChatNonStreaming);
 const streamChatMock = mock(async () => ({ usage: null }));
 const estimateChatCompletionSerializedPayloadTokensMock = mock(
   (params: { messages: unknown[] }) =>
@@ -2085,6 +2108,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     replaceNeedsForPlanMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
+    resetSendChatNonStreamingImplementation();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => [
       'read_file',
@@ -4048,7 +4072,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('opens architect plan naming recovery after three failed AI naming attempts', async () => {
-    sendChatNonStreamingMock.mockImplementation(async () => {
+    setSendChatNonStreamingImplementation(async () => {
       throw new Error('model unavailable');
     });
 
@@ -4105,7 +4129,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('retries architect plan naming from recovery until it succeeds', async () => {
-    sendChatNonStreamingMock.mockImplementation(async () => {
+    setSendChatNonStreamingImplementation(async () => {
       throw new Error('model unavailable');
     });
 
@@ -4147,7 +4171,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    sendChatNonStreamingMock.mockImplementation(async () =>
+    setSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         title: 'Checkout refresh',
         description: 'Refresh checkout state and cart recovery.',
@@ -6108,7 +6132,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [createManualFeatureTask()];
 
-    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+    queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
@@ -6171,7 +6195,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [createManualFeatureTask()];
 
-    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+    queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
@@ -6294,7 +6318,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [createManualFeatureTask()];
 
-    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+    queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
@@ -6407,21 +6431,20 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       },
     };
 
-    sendChatNonStreamingMock
-      .mockImplementationOnce(async () =>
-        JSON.stringify({
-          title: 'Quick export',
-          description: 'Add a quick CSV export from the table.',
-          featureSlug: 'quick-export',
-        })
-      )
-      .mockImplementationOnce(async () =>
-        JSON.stringify({
-          title: 'Quick export',
-          description: 'Add a quick CSV export from the table.',
-          featureSlug: 'quick-export-fast',
-        })
-      );
+    queueSendChatNonStreamingImplementation(async () =>
+      JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export',
+      })
+    );
+    queueSendChatNonStreamingImplementation(async () =>
+      JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export-fast',
+      })
+    );
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -6541,7 +6564,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+    queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         currentObjective: 'Continue the database migration safely.',
         userInstructions: ['Keep the migration reversible.'],
@@ -6644,7 +6667,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
     const summaryDeferred = createDeferred<string>();
-    sendChatNonStreamingMock.mockImplementationOnce(async () => summaryDeferred.promise);
+    queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
 
     const { useChatStore } = await loadChatStore();
     const messages = [
@@ -6881,6 +6904,80 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(status?.summarySource).toBeUndefined();
   });
 
+  it('rejects concurrent manual compaction for the same conversation', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const summaryDeferred = createDeferred<string>();
+    queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Keep this migration reversible.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'I will keep it reversible.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Now compact manually.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const firstPromise = useChatStore.getState().compactConversationNow('chat-conv');
+    const secondPromise = useChatStore.getState().compactConversationNow('chat-conv');
+
+    await expect(secondPromise).rejects.toThrow('already in progress');
+
+    summaryDeferred.resolve(
+      JSON.stringify({
+        currentObjective: 'Continue safely.',
+        userInstructions: [],
+        decisions: [],
+        openQuestions: [],
+        activeFiles: [],
+        toolFacts: [],
+        remainingWork: [],
+        summary: 'Safe continuation.',
+      })
+    );
+    await firstPromise;
+  });
+
   it('runs safety prestream compaction before streaming when the projected payload is full', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -6898,7 +6995,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       ],
     };
     const summaryDeferred = createDeferred<string>();
-    sendChatNonStreamingMock.mockImplementationOnce(async () => summaryDeferred.promise);
+    queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
     const oldContext = 'ancien contexte utile\n'.repeat(5000);
     (dbGetConversationCompactionStateMock as unknown as {
       mockImplementationOnce: (
@@ -7153,7 +7250,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    sendChatNonStreamingMock.mockImplementationOnce(async () =>
+    queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         currentObjective: 'Retry after provider context overflow.',
         userInstructions: [],

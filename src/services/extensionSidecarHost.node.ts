@@ -234,7 +234,7 @@ export class BunExtensionSidecarHost {
           return registerExtensionTableDataProvider(extensionId, viewId, provider);
         },
         setSelection: (viewId: string, selection: unknown) => {
-          assertAnyGrantedPermission(extension, [['ui', 'views']], 'native view selection');
+          assertAnyGrantedPermission(extension, [['ui', 'views']], 'native view sélection');
           return setExtensionViewSelection(extensionId, viewId, selection);
         },
         refresh: (viewId: string) => {
@@ -244,7 +244,7 @@ export class BunExtensionSidecarHost {
         onSelectionChanged: (
           listener: (selection: MacroExtensionSelectionEnvelope) => void | Promise<void>,
         ) => {
-          assertAnyGrantedPermission(extension, [['ui', 'views']], 'native view selection');
+          assertAnyGrantedPermission(extension, [['ui', 'views']], 'native view sélection');
           return onExtensionSelectionChanged(listener);
         },
       },

@@ -230,6 +230,7 @@ const conversationCompactionStateCache = new Map<
   string,
   ConversationCompactionState | null
 >();
+const conversationCompactionInProgress = new Set<string>();
 const agentCodeCheckpointLoadPromisesByConversationId = new Map<
   string,
   Promise<AgentCodeCheckpoint[]>
@@ -1261,7 +1262,6 @@ export type ConversationCompactionPhase =
   | "compacting"
   | "safety_compacting"
   | "model_switch_compacting"
-  | "overflow_recovery"
   | "recovering_overflow"
   | "compacted"
   | "degraded"
@@ -3989,7 +3989,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     status?.phase === "compacting" ||
     status?.phase === "safety_compacting" ||
     status?.phase === "model_switch_compacting" ||
-    status?.phase === "overflow_recovery" ||
     status?.phase === "recovering_overflow";
 
   const normalizeSummaryFormatVersion = (
@@ -4707,7 +4706,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.conversationId,
         resolveCompactionStatusFromState(result.compactionState!),
       );
-    } else if (hadCompaction) {
+    } else if (hadCompaction && params.mode !== "blocking") {
       await deleteConversationCompactionState(params.conversationId);
     } else {
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
@@ -8503,6 +8502,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!conversationId) {
       return;
     }
+    if (conversationCompactionInProgress.has(conversationId)) {
+      throw buildSendError(
+        "Compaction is already in progress for this conversation.",
+      );
+    }
+    conversationCompactionInProgress.add(conversationId);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[conversationId] ?? null;
 
@@ -8599,6 +8604,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      conversationCompactionInProgress.delete(conversationId);
     }
   };
 
