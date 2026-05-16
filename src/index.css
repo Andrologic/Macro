@@ -126,44 +126,48 @@
     transform: translateY(1px);
   }
 
+  .chat-compaction-label {
+    display: inline-flex;
+    justify-content: center;
+    max-width: min(24rem, 70vw);
+    text-align: center;
+    white-space: nowrap;
+  }
+
   .chat-compaction-rule--left {
-    left: 0;
-    right: calc(50% + 7rem);
     background: linear-gradient(
       90deg,
-      hsl(var(--primary) / 0.14) 0%,
-      hsl(var(--primary) / 0.24) 42%,
-      hsl(var(--primary) / 0.36) 100%
+      rgb(var(--border) / 0.24) 0%,
+      rgb(var(--muted-foreground) / 0.22) 42%,
+      rgb(var(--muted-foreground) / 0.32) 100%
     );
   }
 
   .chat-compaction-rule--right {
-    left: calc(50% + 7rem);
-    right: 0;
     background: linear-gradient(
       90deg,
-      hsl(var(--primary) / 0.36) 0%,
-      hsl(var(--primary) / 0.24) 58%,
-      hsl(var(--primary) / 0.14) 100%
+      rgb(var(--muted-foreground) / 0.32) 0%,
+      rgb(var(--muted-foreground) / 0.22) 58%,
+      rgb(var(--border) / 0.24) 100%
     );
   }
 
   .chat-compaction-wave-text {
     background-image: linear-gradient(
       90deg,
-      hsl(var(--primary) / 0.58) 0%,
-      hsl(var(--primary) / 0.58) 36%,
-      hsl(var(--primary) / 0.78) 45%,
-      hsl(var(--primary)) 50%,
-      hsl(var(--primary) / 0.78) 55%,
-      hsl(var(--primary) / 0.58) 64%,
-      hsl(var(--primary) / 0.58) 100%
+      rgb(var(--muted-foreground) / 0.58) 0%,
+      rgb(var(--muted-foreground) / 0.58) 36%,
+      rgb(var(--muted-foreground) / 0.78) 45%,
+      rgb(var(--foreground) / 0.86) 50%,
+      rgb(var(--muted-foreground) / 0.78) 55%,
+      rgb(var(--muted-foreground) / 0.58) 64%,
+      rgb(var(--muted-foreground) / 0.58) 100%
     );
     background-size: 260% 100%;
     background-position: 100% 50%;
     background-clip: text;
     -webkit-background-clip: text;
-    color: hsl(var(--primary));
+    color: rgb(var(--muted-foreground));
     -webkit-text-fill-color: transparent;
     animation: chatCompactionTextWave 2.15s linear infinite;
   }

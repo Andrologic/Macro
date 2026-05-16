@@ -32,10 +32,11 @@ const indicatorColors: Record<TaskStatus, string> = {
 
 export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   const { t } = useTranslation();
-  const { currentPlan, setSelectedTask } = useAppStore();
+  const { currentPlan, selectedTaskId, setSelectedTask } = useAppStore();
   const {
     conversations,
     conversationRuntimeById,
+    conversationCompactionStatusById,
     selectedConversationId,
     selectConversation,
     getConversationByTask,
@@ -45,20 +46,30 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
   const mergeWorkflowRuntimeByTaskId = useTaskStore(
     (state) => state.mergeWorkflowRuntimeByTaskId ?? {}
   );
-  const runningTaskIds = useMemo(
-    () =>
-      resolveRunningTaskIds({
-        conversations,
-        conversationRuntimeById,
-      }),
-    [conversationRuntimeById, conversations]
-  );
-
   // Filter tasks by project
   const projectTasks = useMemo(() => {
     if (!currentPlan) return [];
     return currentPlan.tasks.filter((task) => task.project_id === projectId);
   }, [currentPlan, projectId]);
+  const runningTaskIds = useMemo(
+    () =>
+      resolveRunningTaskIds({
+        conversations,
+        tasks: projectTasks,
+        selectedConversationId,
+        selectedTaskId,
+        conversationRuntimeById,
+        conversationCompactionStatusById,
+      }),
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      projectTasks,
+      selectedConversationId,
+      selectedTaskId,
+    ]
+  );
 
   // Sort tasks based on selected option
   const sortedTasks = useMemo(() => {

@@ -473,7 +473,6 @@
     "questionnaireNext": "Suivant",
     "compactionBoundary": "Contexte compacté",
     "compactionProgressTitle": "Compactage du contexte...",
-    "streamingCompactionActivity": "Compactage du contexte...",
     "compactNow": "Compacter maintenant",
     "loadingModels": "Chargement des modèles",
     "agentCodeReplayTitle": "Revenir au point de contrôle du code ?",

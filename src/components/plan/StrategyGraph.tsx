@@ -449,6 +449,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const {
     selectedGroupId,
     selectedProjectId,
+    selectedTaskId,
     projectGroups,
     planNodes,
     predictedBranches,
@@ -464,6 +465,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     useShallow((state) => ({
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
+      selectedTaskId: state.selectedTaskId,
       projectGroups: state.projectGroups,
       planNodes: state.planNodes,
       predictedBranches: state.predictedBranches,
@@ -478,10 +480,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
     }))
   );
-  const { conversations, conversationRuntimeById } = useChatStore(
+  const {
+    conversations,
+    selectedConversationId,
+    conversationRuntimeById,
+    conversationCompactionStatusById,
+  } = useChatStore(
     useShallow((state) => ({
       conversations: state.conversations,
+      selectedConversationId: state.selectedConversationId,
       conversationRuntimeById: state.conversationRuntimeById,
+      conversationCompactionStatusById: state.conversationCompactionStatusById,
     }))
   );
   const tasks = useTaskStore((state) => state.tasks);
@@ -534,9 +543,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     () =>
       resolveRunningTaskIds({
         conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
         conversationRuntimeById,
+        conversationCompactionStatusById,
       }),
-    [conversationRuntimeById, conversations]
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
   );
   const taskStatusById = useMemo(
     () => new Map(tasks.map((task) => [task.id, task.status])),

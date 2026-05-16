@@ -1332,6 +1332,18 @@ export interface ConversationCompactionStatus {
   checkpointHealth?: ConversationCompactionState["checkpointHealth"];
 }
 
+export type SessionCompactionEventStatus = "running" | "completed";
+
+export interface SessionCompactionEvent {
+  id: string;
+  status: SessionCompactionEventStatus;
+  displayAfterMessageId: string | null;
+  logicalUpToMessageId?: string;
+  kind?: ContextCompactionKind;
+  startedAt: string;
+  completedAt?: string;
+}
+
 export type ConversationContextDiagnosticsStatus = "estimating" | "ready" | "error";
 export type ConversationContextDiagnosticsSource = "full" | "live_stream";
 export type ConversationContextDiagnosticsRefreshMode = ConversationContextDiagnosticsSource;
@@ -1427,6 +1439,10 @@ interface ChatStore {
   conversationCompactionStatusById: Record<
     string,
     ConversationCompactionStatus | undefined
+  >;
+  sessionCompactionEventsByConversationId: Record<
+    string,
+    SessionCompactionEvent[] | undefined
   >;
   agentCodeCheckpointsByConversationId: Record<
     string,
@@ -4088,7 +4104,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const markConversationCompactionStarted = (
+  const publishPersistedCompactionStatusIfIdle = (
+    conversationId: string,
+    state: ConversationCompactionState | null,
+  ) => {
+    const currentStatus =
+      get().conversationCompactionStatusById[conversationId] ?? null;
+    if (isTransientCompactionStatus(currentStatus)) {
+      return;
+    }
+    setConversationCompactionStatus(
+      conversationId,
+      state ? resolveCompactionStatusFromState(state) : null,
+    );
+  };
+
+  const resolveCompactionActivityPhase = (
+    kind: ContextCompactionKind,
+  ): ConversationCompactionPhase =>
+    kind === "overflow_recovery" || kind === "stream_overflow"
+      ? "recovering_overflow"
+      : kind === "model_switch"
+        ? "model_switch_compacting"
+        : kind === "safety_prestream"
+          ? "safety_compacting"
+          : "compacting";
+
+  const setConversationCompactionActivityStarted = (
     conversationId: string,
     kind: ContextCompactionKind,
     fallbackStatus?: ConversationCompactionStatus | null,
@@ -4097,17 +4139,166 @@ export const useChatStore = create<ChatStore>((set, get) => {
       get().conversationCompactionStatusById[conversationId] ?? fallbackStatus;
     setConversationCompactionStatus(conversationId, {
       ...previous,
-      phase:
-        kind === "overflow_recovery" || kind === "stream_overflow"
-          ? "recovering_overflow"
-          : kind === "model_switch"
-            ? "model_switch_compacting"
-          : kind === "safety_prestream"
-            ? "safety_compacting"
-            : "compacting",
+      phase: resolveCompactionActivityPhase(kind),
       updatedAt: new Date().toISOString(),
       kind,
     });
+  };
+
+  const getLastConversationMessageId = (conversationId: string): string | null =>
+    getOrderedConversationMessages(conversationId).at(-1)?.id ?? null;
+
+  const createSessionCompactionEventId = (
+    conversationId: string,
+    kind: ContextCompactionKind,
+    displayAfterMessageId: string | null,
+    startedAt: string,
+  ): string =>
+    [
+      "compaction",
+      conversationId,
+      kind,
+      displayAfterMessageId ?? "end",
+      startedAt,
+    ].join(":");
+
+  const startSessionCompactionEvent = (
+    conversationId: string,
+    kind: ContextCompactionKind,
+    displayAfterMessageId?: string | null,
+  ) => {
+    const startedAt = new Date().toISOString();
+    const anchor = displayAfterMessageId ?? getLastConversationMessageId(conversationId);
+    const event: SessionCompactionEvent = {
+      id: createSessionCompactionEventId(conversationId, kind, anchor, startedAt),
+      status: "running",
+      displayAfterMessageId: anchor,
+      kind,
+      startedAt,
+    };
+
+    set((state) => {
+      const existing =
+        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
+      const withoutObsoleteEvents = existing.filter((item) => {
+        if (item.displayAfterMessageId === anchor) {
+          return false;
+        }
+        return !(item.status === "running" && item.kind === kind);
+      });
+      return {
+        sessionCompactionEventsByConversationId: {
+          ...state.sessionCompactionEventsByConversationId,
+          [conversationId]: [...withoutObsoleteEvents, event],
+        },
+      };
+    });
+  };
+
+  const completeLatestSessionCompactionEvent = (
+    conversationId: string,
+    state: ConversationCompactionState,
+    kind?: ContextCompactionKind,
+  ) => {
+    set((storeState) => {
+      const existing =
+        storeState.sessionCompactionEventsByConversationId[conversationId] ?? [];
+      const runningIndex = [...existing]
+        .reverse()
+        .findIndex(
+          (event) =>
+            event.status === "running" &&
+            (kind === undefined || event.kind === kind),
+        );
+      if (runningIndex < 0) {
+        return {};
+      }
+
+      const targetIndex = existing.length - 1 - runningIndex;
+      const nextEvents = existing.map((event, index) =>
+        index === targetIndex
+          ? {
+              ...event,
+              status: "completed" as const,
+              logicalUpToMessageId: state.upToMessageId,
+              completedAt: state.updatedAt,
+            }
+          : event,
+      );
+      return {
+        sessionCompactionEventsByConversationId: {
+          ...storeState.sessionCompactionEventsByConversationId,
+          [conversationId]: nextEvents,
+        },
+      };
+    });
+  };
+
+  const clearLatestRunningSessionCompactionEvent = (
+    conversationId: string,
+    kind?: ContextCompactionKind,
+  ) => {
+    set((state) => {
+      const existing =
+        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
+      const runningIndex = [...existing]
+        .reverse()
+        .findIndex(
+          (event) =>
+            event.status === "running" &&
+            (kind === undefined || event.kind === kind),
+        );
+      if (runningIndex < 0) {
+        return {};
+      }
+
+      const targetIndex = existing.length - 1 - runningIndex;
+      const nextEvents = existing.filter((_, index) => index !== targetIndex);
+      return {
+        sessionCompactionEventsByConversationId: {
+          ...state.sessionCompactionEventsByConversationId,
+          [conversationId]: nextEvents.length > 0 ? nextEvents : undefined,
+        },
+      };
+    });
+  };
+
+  const pruneSessionCompactionEventsBeforeReplay = (
+    events: SessionCompactionEvent[] | undefined,
+    conversationMessages: ChatMessage[],
+    replayMessageId: string,
+  ): SessionCompactionEvent[] | undefined => {
+    if (!events?.length) {
+      return events;
+    }
+
+    const messageIndexById = new Map(
+      conversationMessages.map((message, index) => [message.id, index]),
+    );
+    const replayIndex = messageIndexById.get(replayMessageId);
+    if (replayIndex === undefined) {
+      return undefined;
+    }
+
+    const keptEvents = events.filter((event) => {
+      if (!event.displayAfterMessageId) {
+        return false;
+      }
+      const anchorIndex = messageIndexById.get(event.displayAfterMessageId);
+      return anchorIndex !== undefined && anchorIndex < replayIndex;
+    });
+
+    return keptEvents.length > 0 ? keptEvents : undefined;
+  };
+
+  const markConversationCompactionStarted = (
+    conversationId: string,
+    kind: ContextCompactionKind,
+    fallbackStatus?: ConversationCompactionStatus | null,
+    displayAfterMessageId?: string | null,
+  ) => {
+    startSessionCompactionEvent(conversationId, kind, displayAfterMessageId);
+    setConversationCompactionActivityStarted(conversationId, kind, fallbackStatus);
   };
 
   const mapDbCompactionStateToState = (
@@ -4171,10 +4362,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationCompactionStateCache.has(conversationId)) {
       const cachedState =
         conversationCompactionStateCache.get(conversationId) ?? null;
-      setConversationCompactionStatus(
-        conversationId,
-        cachedState ? resolveCompactionStatusFromState(cachedState) : null,
-      );
+      publishPersistedCompactionStatusIfIdle(conversationId, cachedState);
       return cachedState;
     }
 
@@ -4192,10 +4380,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await tauriIpc.dbGetConversationCompactionState(conversationId);
       const state = record ? mapDbCompactionStateToState(record) : null;
       conversationCompactionStateCache.set(conversationId, state);
-      setConversationCompactionStatus(
-        conversationId,
-        state ? resolveCompactionStatusFromState(state) : null,
-      );
+      publishPersistedCompactionStatusIfIdle(conversationId, state);
       return state;
     } catch (error) {
       console.error("Failed to load conversation compaction state:", error);
@@ -4615,6 +4800,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     mode: ContextCompactionKind;
     forceCompaction?: boolean;
     forcePrune?: boolean;
+    displayAfterMessageId?: string | null;
   }) => {
     const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
     const previousCompactionStatus =
@@ -4677,6 +4863,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.conversationId,
             params.mode,
             statusBeforeNewCompaction,
+            params.displayAfterMessageId,
           );
         },
         generateSummary: (input) =>
@@ -4689,6 +4876,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
       });
     } catch (error) {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
       await recordConversationCompactionEvent({
         conversationId: params.conversationId,
@@ -4722,6 +4910,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mode: params.mode,
     });
     if (shouldPersistCompaction) {
+      if (result.compactionState) {
+        completeLatestSessionCompactionEvent(
+          params.conversationId,
+          result.compactionState,
+          params.mode,
+        );
+      }
       await persistConversationCompactionState(result.compactionState);
       await recordConversationCompactionEvent({
         conversationId: params.conversationId,
@@ -4751,13 +4946,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }),
       });
     } else if (hasCompaction) {
+      completeLatestSessionCompactionEvent(
+        params.conversationId,
+        result.compactionState!,
+        params.mode,
+      );
       setConversationCompactionStatus(
         params.conversationId,
         resolveCompactionStatusFromState(result.compactionState!),
       );
     } else if (hadCompaction && params.mode !== "blocking") {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       await deleteConversationCompactionState(params.conversationId);
     } else {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
     }
 
@@ -4957,6 +5159,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode: "model_switch",
         forceCompaction: true,
         forcePrune: true,
+        displayAfterMessageId:
+          preparedRequest.orderedMessages.at(-1)?.id ?? null,
       });
       void refreshConversationContextDiagnostics(params.conversationId, {
         mode: "full",
@@ -7983,6 +8187,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     compactionMode?: ContextCompactionKind;
     forceCompaction?: boolean;
     forcePrune?: boolean;
+    compactionDisplayAfterMessageId?: string | null;
   }) => {
     try {
       await ensureToolsLoaded();
@@ -8081,6 +8286,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode: overrides.mode ?? params.compactionMode ?? "blocking",
         forceCompaction: overrides.forceCompaction ?? params.forceCompaction,
         forcePrune: overrides.forcePrune ?? params.forcePrune,
+        displayAfterMessageId:
+          params.compactionDisplayAfterMessageId ?? params.replyToMessageId,
       });
     const autoCompactionEnabled = budgetPolicy.auto !== false;
     let needsSafetyPrestream =
@@ -8552,12 +8759,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (params.clearQuestionnaireSession) {
         saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
       }
+      const nextSessionCompactionEvents =
+        pruneSessionCompactionEventsBeforeReplay(
+          current.sessionCompactionEventsByConversationId[
+            params.conversationId
+          ],
+          conversationMessages,
+          params.messageId,
+        );
 
       return {
         ...buildMessageState(trimmedMessages),
         conversations,
         messageImagesByMessageId: nextImages,
         questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+        sessionCompactionEventsByConversationId: {
+          ...current.sessionCompactionEventsByConversationId,
+          [params.conversationId]: nextSessionCompactionEvents,
+        },
         lastError: null,
       };
     });
@@ -8723,6 +8942,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionInProgress.add(conversationId);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[conversationId] ?? null;
+    setConversationCompactionActivityStarted(
+      conversationId,
+      "manual",
+      previousCompactionStatus,
+    );
 
     try {
       await ensureMessagesLoadedForConversation(conversationId);
@@ -8790,6 +9014,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode: "manual",
         forceCompaction: true,
         forcePrune: true,
+        displayAfterMessageId:
+          preparedRequest.orderedMessages.at(-1)?.id ?? null,
       });
 
       if (!result.compactionState) {
@@ -9346,6 +9572,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           compactionMode: "stream_overflow",
           forceCompaction: true,
           forcePrune: true,
+          compactionDisplayAfterMessageId: params.assistantMessage.id,
         });
 
         const runtimeAfterCompaction = getConversationRuntimeSnapshot(
@@ -10663,6 +10890,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
       conversationCompactionStatusById: {},
+      sessionCompactionEventsByConversationId: {},
       agentCodeCheckpointsByConversationId: {},
       contextDiagnosticsByConversationId: {},
       liveStreamContextEstimatesByConversationId: {},
@@ -11070,6 +11298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
     conversationCompactionStatusById: {},
+    sessionCompactionEventsByConversationId: {},
     agentCodeCheckpointsByConversationId: {},
     contextDiagnosticsByConversationId: {},
     liveStreamContextEstimatesByConversationId: {},
@@ -11405,6 +11634,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        sessionCompactionEventsByConversationId: {},
         agentCodeCheckpointsByConversationId: {},
         contextDiagnosticsByConversationId: {},
         liveStreamContextEstimatesByConversationId: {},
@@ -12933,6 +13163,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({
         conversationRuntimeById: {},
         conversationCompactionStatusById: {},
+        sessionCompactionEventsByConversationId: {},
         agentCodeCheckpointsByConversationId: {},
         contextDiagnosticsByConversationId: {},
         liveStreamContextEstimatesByConversationId: {},
@@ -12980,6 +13211,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},
           conversationCompactionStatusById: {},
+          sessionCompactionEventsByConversationId: {},
           agentCodeCheckpointsByConversationId: {},
           contextDiagnosticsByConversationId: {},
           liveStreamContextEstimatesByConversationId: {},

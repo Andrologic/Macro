@@ -474,7 +474,6 @@
     "questionnaireNext": "Next",
     "compactionBoundary": "압축된 컨텍스트",
     "compactionProgressTitle": "컨텍스트 압축 중...",
-    "streamingCompactionActivity": "컨텍스트 압축 중...",
     "compactNow": "지금 압축",
     "loadingModels": "모델 불러오는 중",
     "agentCodeReplayTitle": "코드 체크포인트로 돌아갈까요?",

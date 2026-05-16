@@ -216,7 +216,18 @@ describe('TaskQueue', () => {
 
   const seedStores = (
     taskStatus: TaskStatus,
-    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+    options?: {
+      isStreaming?: boolean;
+      runtimePhase?: 'preparing' | 'streaming';
+      compactionPhase?:
+        | 'compacting'
+        | 'safety_compacting'
+        | 'model_switch_compacting'
+        | 'recovering_overflow'
+        | 'compacted';
+      compactionConversationId?: string;
+      conversationTaskId?: string | null;
+    }
   ) => {
     seedTasks([makeTask('task-1', taskStatus, {
       title: 'Render task status indicator',
@@ -229,7 +240,18 @@ describe('TaskQueue', () => {
 
   const seedTasks = (
     tasks: Array<Record<string, unknown>>,
-    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+    options?: {
+      isStreaming?: boolean;
+      runtimePhase?: 'preparing' | 'streaming';
+      compactionPhase?:
+        | 'compacting'
+        | 'safety_compacting'
+        | 'model_switch_compacting'
+        | 'recovering_overflow'
+        | 'compacted';
+      compactionConversationId?: string;
+      conversationTaskId?: string | null;
+    }
   ) => {
     const runtimePhase = options?.runtimePhase ?? (options?.isStreaming ? 'streaming' : null);
     const conversationRuntimeById = runtimePhase
@@ -275,10 +297,20 @@ describe('TaskQueue', () => {
       conversations: [
         {
           id: 'conversation-1',
-          task_id: 'task-1',
+          task_id:
+            options?.conversationTaskId === undefined
+              ? 'task-1'
+              : options.conversationTaskId,
         },
       ] as never,
       conversationRuntimeById: conversationRuntimeById as never,
+      conversationCompactionStatusById: options?.compactionPhase
+        ? ({
+            [options.compactionConversationId ?? 'conversation-1']: {
+              phase: options.compactionPhase,
+            },
+          } as never)
+        : {},
       isStreaming: runtimePhase === 'streaming',
       selectedConversationId: 'conversation-1',
     });
@@ -316,9 +348,15 @@ describe('TaskQueue', () => {
       text: badge.textContent?.replace(/\s+/g, ' ').trim(),
     }));
 
-  const getTaskContextBadgeIcon = (key: string) => {
+  const getTaskContextBadgeIconIdentity = (key: string) => {
     const badge = document.body.querySelector(`[data-task-context-badge="${key}"]`);
-    return Array.from(badge?.children ?? []).find((child) => child.tagName.toLowerCase() === 'svg');
+    const icon = Array.from(badge?.children ?? []).find((child) =>
+      ['svg', 'span'].includes(child.tagName.toLowerCase())
+    );
+    return {
+      dataIcon: icon?.getAttribute('data-icon') ?? '',
+      className: icon?.getAttribute('class') ?? '',
+    };
   };
 
   beforeEach(async () => {
@@ -598,6 +636,143 @@ describe('TaskQueue', () => {
     ).not.toBeNull();
   });
 
+  it('renders a running indicator while the task conversation is compacting', async () => {
+    seedStores('InProgress', { compactionPhase: 'compacting' });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('updates the task indicator when compaction starts and finishes after render', async () => {
+    seedStores('InProgress');
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      useChatStore.setState({
+        ...useChatStore.getState(),
+        conversationCompactionStatusById: {
+          'conversation-1': { phase: 'compacting' },
+        } as never,
+      });
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      useChatStore.setState({
+        ...useChatStore.getState(),
+        conversationCompactionStatusById: {
+          'conversation-1': { phase: 'compacted' },
+        } as never,
+      });
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
+  it('runs the task indicator when compaction is linked through task conversation_id', async () => {
+    seedTasks([makeTask('task-1', 'InProgress', {
+      title: 'Render task status indicator',
+      description: 'Check the status marker',
+      task_source: 'architect',
+      plan_id: 'plan-1',
+      plan_title: 'Plan One',
+      conversation_id: 'conversation-1',
+    })], {
+      compactionPhase: 'compacting',
+      conversationTaskId: null,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('runs the selected standalone task indicator when compaction has no persisted task link yet', async () => {
+    seedTasks([makeTask('task-1', 'InProgress', {
+      title: 'Standalone task with stale links',
+      description: 'Compaction should still mark it active',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      conversation_id: null,
+    })], {
+      compactionPhase: 'compacting',
+      conversationTaskId: null,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('stops the running indicator when task compaction completes', async () => {
+    seedStores('InProgress', { compactionPhase: 'compacted' });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
+  it('does not mark a task running for another conversation compaction', async () => {
+    seedStores('InProgress', {
+      compactionPhase: 'compacting',
+      compactionConversationId: 'other-conversation',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
   it('renders the architect plan badge in the task footer', async () => {
     seedTasks([
       makeTask('architect-1', 'Pending', {
@@ -635,12 +810,11 @@ describe('TaskQueue', () => {
     expect(getTaskContextBadges()).toEqual([
       { key: 'plan', text: 'Checkout refresh' },
     ]);
-    const icon = getTaskContextBadgeIcon('plan');
-    const iconClassName = icon?.getAttribute('class') ?? '';
-    expect(iconClassName).toContain('lucide-flag');
-    expect(iconClassName).not.toContain('border');
-    expect(iconClassName).not.toContain('rounded-full');
-    expect(iconClassName).not.toContain('bg-');
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('flag');
+    expect(icon.className).not.toContain('border');
+    expect(icon.className).not.toContain('rounded-full');
+    expect(icon.className).not.toContain('bg-');
   });
 
   it('renders hotfix plan badges with the hotfix icon', async () => {
@@ -676,7 +850,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getTaskContextBadgeIcon('plan')?.classList.contains('lucide-zap')).toBe(true);
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('zap');
   });
 
   it('falls back to the feature icon when the plan kind is missing', async () => {
@@ -711,7 +886,8 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    expect(getTaskContextBadgeIcon('plan')?.classList.contains('lucide-sparkles')).toBe(true);
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('sparkles');
   });
 
   it('renders the standalone badge without a plan badge for independent tasks', async () => {

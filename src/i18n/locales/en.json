@@ -474,7 +474,6 @@
     "questionnaireNext": "Next",
     "compactionBoundary": "Compacted context",
     "compactionProgressTitle": "Compacting context...",
-    "streamingCompactionActivity": "Compacting context...",
     "compactNow": "Compact now",
     "loadingModels": "Loading models",
     "agentCodeReplayTitle": "Return to the code checkpoint?",

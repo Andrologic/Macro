@@ -62,7 +62,6 @@ import {
 import {
   CompactionBoundaryRow,
   CompactionProgressRow,
-  StreamingCompactionActivity,
 } from './CompactionTranscriptUi';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { AgentCodeReplayConfirmModal } from './AgentCodeReplayConfirmModal';
@@ -118,6 +117,18 @@ const ComposerFallbackStatus: React.FC = () => (
 );
 
 const EMPTY_RENDER_MESSAGES: ChatMessage[] = [];
+const CHAT_TRANSCRIPT_ITEM_GAP = 24;
+const CHAT_COMPACTION_ROW_ESTIMATED_SIZE = 40;
+const CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION = CHAT_TRANSCRIPT_ITEM_GAP;
+const EMPTY_SESSION_COMPACTION_EVENTS: {
+  id: string;
+  status: 'running' | 'completed';
+  displayAfterMessageId?: string | null;
+  logicalUpToMessageId?: string | null;
+  kind?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}[] = [];
 
 const getAssistantCompletionNotice = (
   completionReason: ChatMessage['completion_reason'] | undefined,
@@ -193,13 +204,12 @@ interface RenderedMessageItem extends Omit<RenderedTranscriptItem, 'item'> {
   item: ChatTranscriptMessageItem;
 }
 
-type AssistantMessageActivity = 'streaming' | 'compacting' | null;
+type AssistantMessageActivity = 'streaming' | null;
 
 interface ChatMessageRowProps {
   virtualMessage: RenderedMessageItem;
   measureElement: (el: HTMLElement | null) => void;
   assistantActivity: AssistantMessageActivity;
-  isStreamingCompactionActive: boolean;
   showToolTraces: boolean;
   isEditing: boolean;
   editingValue: string;
@@ -302,7 +312,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
   assistantActivity,
-  isStreamingCompactionActive,
   showToolTraces,
   isEditing,
   editingValue,
@@ -329,10 +338,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const hasAssistantActivity =
     message.role === 'assistant' &&
-    (assistantActivity !== null || isStreamingCompactionActive);
-  const hasAssistantCompactionActivity =
-    message.role === 'assistant' &&
-    (isStreamingCompactionActive || assistantActivity === 'compacting');
+    assistantActivity !== null;
   const hasAssistantCompletionNotice =
     message.role === 'assistant' &&
     Boolean(message.completion_reason && message.completion_reason !== 'completed');
@@ -439,7 +445,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <MarkdownRenderer
                     content={message.content}
                     toolTraces={showToolTraces ? message.tool_traces : undefined}
-                    isStreaming={assistantActivity === 'streaming' && !hasAssistantCompactionActivity}
+                    isStreaming={assistantActivity === 'streaming'}
                   />
                   <AssistantCompletionNotice
                     completionReason={message.completion_reason}
@@ -471,14 +477,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 </div>
               )}
               {hasAssistantActivity && (
-                hasAssistantCompactionActivity ? (
-                  <StreamingCompactionActivity />
-                ) : (
-                  <span
-                    data-chat-assistant-activity="true"
-                    className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
-                  />
-                )
+                <span
+                  data-chat-assistant-activity="true"
+                  className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
+                />
               )}
             </div>
           )}
@@ -560,7 +562,6 @@ const MemoizedChatMessageRow = React.memo(
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
-    prev.isStreamingCompactionActive === next.isStreamingCompactionActive &&
     prev.showToolTraces === next.showToolTraces &&
     prev.needsByTitle === next.needsByTitle
 );
@@ -653,6 +654,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     selectedConversationRuntime,
     conversationCompactionStatusById,
+    sessionCompactionEventsByConversationId,
     contextDiagnosticsByConversationId,
     messagesByConversationId,
     createConversation,
@@ -695,6 +697,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
     conversationCompactionStatusById: state.conversationCompactionStatusById,
+    sessionCompactionEventsByConversationId:
+      state.sessionCompactionEventsByConversationId,
     contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
     messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
@@ -788,6 +792,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeCompactionStatus = selectedConversationId
     ? conversationCompactionStatusById[selectedConversationId]
     : undefined;
+  const activeSessionCompactionEvents = selectedConversationId
+    ? sessionCompactionEventsByConversationId[selectedConversationId] ??
+      EMPTY_SESSION_COMPACTION_EVENTS
+    : EMPTY_SESSION_COMPACTION_EVENTS;
   const contextDiagnostics = selectedConversationId
     ? contextDiagnosticsByConversationId[selectedConversationId]
     : undefined;
@@ -805,8 +813,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : isManualCompacting
         ? 'compacting'
         : null;
-  const activeTranscriptProgressPhase =
-    activeTranscriptCompactionPhase ?? (isPreparingSend ? 'compacting' : null);
+  const activeTranscriptProgressPhase = activeTranscriptCompactionPhase;
   const shouldShowContextIndicator =
     Boolean(selectedConversationId) &&
     (shouldShowContextControlsForActiveContext ||
@@ -817,24 +824,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     runtimeAssistantMessageId,
     false,
   );
-  const compactionAssistantActivityMessageId = activeTranscriptProgressPhase
-    ? resolveAssistantActivityAnchorId(
-        currentMessages,
-        runtimeAssistantMessageId,
-        Boolean(activeTranscriptCompactionPhase) &&
-          (isBusySending || isContextOverflowRecovering),
-      )
-    : null;
   const streamingAssistantActivityMessageId =
     !activeTranscriptProgressPhase && (isBusySending || isContextOverflowRecovering)
       ? runtimeAssistantActivityAnchorId
       : null;
-  const showInlineCompactionActivity =
-    Boolean(compactionAssistantActivityMessageId);
-  const showStandaloneCompactionProgress =
-    Boolean(activeTranscriptProgressPhase) &&
-    !showInlineCompactionActivity;
-  const showCompactionBoundary = Boolean(activeCompactionStatus?.upToMessageId);
   const runContextDiagnosticsRefresh = useCallback(async () => {
     if (
       !selectedConversationId ||
@@ -862,20 +855,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () =>
       buildChatTranscriptItems(currentMessages, {
         conversationId: selectedConversationId,
-        upToMessageId: showCompactionBoundary
-          ? activeCompactionStatus?.upToMessageId
-          : null,
-        updatedAt: activeCompactionStatus?.updatedAt,
-        phase: showStandaloneCompactionProgress ? activeTranscriptProgressPhase : null,
+        compactionEvents: activeSessionCompactionEvents,
       }),
     [
-      activeCompactionStatus?.upToMessageId,
-      activeCompactionStatus?.updatedAt,
-      activeTranscriptProgressPhase,
+      activeSessionCompactionEvents,
       currentMessages,
       selectedConversationId,
-      showCompactionBoundary,
-      showStandaloneCompactionProgress,
     ]
   );
 
@@ -1274,7 +1259,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     estimateSize: 220,
     overscan: isTranscriptActivityActive ? 10 : 6,
     dynamicHeight: true,
-    gap: 24,
+    gap: CHAT_TRANSCRIPT_ITEM_GAP,
     shouldAdjustScrollPositionOnItemSizeChange:
       separatorState === 'detached'
         ? disableVirtualizerScrollAdjustment
@@ -1298,34 +1283,81 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const renderedMessageItems = useMemo(
     () => {
-      if (virtualMessageItems.length > 0) {
-        return virtualMessageItems;
-      }
+      const sourceItems =
+        virtualMessageItems.length > 0
+          ? virtualMessageItems
+          : (() => {
+              let start = 0;
+              return transcriptItems.map((item, index) => {
+                const size =
+                  item.kind === 'compaction_boundary'
+                    ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
+                    : item.kind === 'compaction_progress'
+                      ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
+                      : 220;
+                const renderedItem = {
+                  index,
+                  key: item.key,
+                  size,
+                  start,
+                  item,
+                };
+                start += size + CHAT_TRANSCRIPT_ITEM_GAP;
+                return renderedItem;
+              });
+            })();
 
-      let start = 0;
-      return transcriptItems.map((item, index) => {
-        const size =
-          item.kind === 'compaction_boundary'
-            ? 64
-            : item.kind === 'compaction_progress'
-              ? 72
-              : 220;
+      let positionAdjustment = 0;
+      return sourceItems.map((item) => {
+        const previousItem = transcriptItems[item.index - 1];
+        const isCompactionItem =
+          item.item.kind === 'compaction_boundary' ||
+          item.item.kind === 'compaction_progress';
+        if (
+          isCompactionItem &&
+          previousItem?.kind === 'message' &&
+          previousItem.message.role === 'assistant'
+        ) {
+          positionAdjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+        }
         const renderedItem = {
-          index,
-          key: item.key,
-          size,
-          start,
-          item,
+          ...item,
+          start: item.start - positionAdjustment,
         };
-        start += size + 24;
+        const nextItem = transcriptItems[item.index + 1];
+        if (isCompactionItem && nextItem) {
+          positionAdjustment += CHAT_TRANSCRIPT_ITEM_GAP;
+        }
         return renderedItem;
       });
     },
     [transcriptItems, virtualMessageItems]
   );
+  const compactionGapAdjustment = useMemo(
+    () =>
+      transcriptItems.reduce((total, item, index) => {
+        if (item.kind !== 'compaction_boundary' && item.kind !== 'compaction_progress') {
+          return total;
+        }
+
+        let adjustment = total;
+        const previousItem = transcriptItems[index - 1];
+        if (
+          previousItem?.kind === 'message' &&
+          previousItem.message.role === 'assistant'
+        ) {
+          adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+        }
+        if (index < transcriptItems.length - 1) {
+          adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
+        }
+        return adjustment;
+      }, 0),
+    [transcriptItems]
+  );
   const renderedMessageTotalSize =
     virtualMessageItems.length > 0
-      ? virtualMessageTotalSize
+      ? Math.max(0, virtualMessageTotalSize - compactionGapAdjustment)
       : Math.max(
           0,
           renderedMessageItems.reduce(
@@ -1941,21 +1973,31 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
               {renderedMessageItems.map((virtualItem) => {
                 if (virtualItem.item.kind === 'compaction_boundary') {
+                  const previousItem = transcriptItems[virtualItem.index - 1];
+                  const compactTopSpacing =
+                    previousItem?.kind === 'message' &&
+                    previousItem.message.role === 'assistant';
                   return (
                     <CompactionBoundaryRow
                       key={virtualItem.key}
                       virtualItem={virtualItem}
                       measureElement={measureMessageElement}
+                      compactTopSpacing={compactTopSpacing}
                     />
                   );
                 }
                 if (virtualItem.item.kind === 'compaction_progress') {
+                  const previousItem = transcriptItems[virtualItem.index - 1];
+                  const compactTopSpacing =
+                    previousItem?.kind === 'message' &&
+                    previousItem.message.role === 'assistant';
                   return (
                     <CompactionProgressRow
                       key={virtualItem.key}
                       virtualItem={virtualItem}
                       measureElement={measureMessageElement}
                       phase={virtualItem.item.phase}
+                      compactTopSpacing={compactTopSpacing}
                     />
                   );
                 }
@@ -1965,11 +2007,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const isEditing = editingMessageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
-                  message.id === compactionAssistantActivityMessageId
-                    ? 'compacting'
-                    : message.id === streamingAssistantActivityMessageId
-                      ? 'streaming'
-                      : null;
+                  message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
 
                 return (
                   <MemoizedChatMessageRow
@@ -1977,7 +2015,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
                     assistantActivity={assistantActivity}
-                    isStreamingCompactionActive={assistantActivity === 'compacting'}
                     showToolTraces
                     isEditing={isEditing}
                     editingValue={editingValue}

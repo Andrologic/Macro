@@ -474,7 +474,6 @@
     "questionnaireNext": "Next",
     "compactionBoundary": "Kontext kompaktiert",
     "compactionProgressTitle": "Kontext wird kompaktiert...",
-    "streamingCompactionActivity": "Kontext wird kompaktiert...",
     "compactNow": "Jetzt kompaktieren",
     "loadingModels": "Modelle werden geladen",
     "agentCodeReplayTitle": "Zum Code-Checkpoint zurückkehren?",
