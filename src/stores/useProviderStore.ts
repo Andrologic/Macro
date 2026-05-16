@@ -647,6 +647,10 @@ interface ProviderStore {
     modelId: string,
     contextWindowTokens: number,
   ) => Promise<void>;
+  resetProviderModelContextOverflowLimit: (
+    providerId: string,
+    modelId: string,
+  ) => Promise<void>;
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
@@ -1692,6 +1696,66 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                 ...nextModel,
                 nativeToolCalling:
                   supportsNativeToolCallingForProviderType(providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
+  },
+
+  resetProviderModelContextOverflowLimit: async (
+    providerId: string,
+    modelId: string,
+  ) => {
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel || currentModel.contextWindowSource !== 'provider_overflow_error') {
+      return;
+    }
+
+    const providerConfig = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    );
+    const {
+      contextWindowTokens: _contextWindowTokens,
+      contextWindowSource: _contextWindowSource,
+      contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
+      ...modelWithoutLearnedLimit
+    } = currentModel;
+    const catalogOverlay = buildCatalogModelContextLimitOverlay({
+      providerType: providerConfig?.providerType,
+      providerId,
+      baseUrl: providerConfig?.baseUrl,
+      modelId,
+    });
+    const nextModel: AIModel = {
+      ...modelWithoutLearnedLimit,
+      ...catalogOverlay,
+    };
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerConfig?.providerType),
                 isFree: computeIsFreeModel(nextModel),
               }
             : model,

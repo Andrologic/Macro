@@ -5,6 +5,7 @@ import type {
   ContextCompactionKind,
   ContextCompactionTrigger,
   ContextFootprint,
+  ContextCompactionDecisionAudit,
   ContextFootprintReason,
   ContextFootprintThreshold,
   ConversationCompactionState,
@@ -57,11 +58,13 @@ export interface ContextBudgetPolicy {
   auto?: boolean;
   prune?: boolean;
   reservedTokens?: number | null;
+  preserveRecentTokens?: number | null;
   hardStopRatio?: number;
 }
 
 export interface ResolvedContextBudgetPolicy {
   reservedTokens: number;
+  outputReserveTokens: number;
   usableContextTokens: number;
   maxOutputTokens: number;
   hardStopRatio: number;
@@ -417,9 +420,70 @@ export const resolveContextBudgetPolicy = (
 
   return {
     reservedTokens: budget.reservedTokens,
+    outputReserveTokens: budget.outputReserveTokens,
     usableContextTokens: budget.usableContextTokens,
     maxOutputTokens: budget.maxOutputTokens,
     hardStopRatio,
+  };
+};
+
+const formatAuditTokens = (value?: number | null): string =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? value >= 1000
+      ? `${Math.round(value / 1000).toLocaleString()}k`
+      : Math.round(value).toLocaleString()
+    : 'unknown';
+
+export const buildContextCompactionDecisionAudit = (params: {
+  providerId?: string | null;
+  providerType?: string | null;
+  modelId?: string | null;
+  trigger?: ContextCompactionDecisionAudit['trigger'];
+  result?: string | null;
+  reason?: string | null;
+  footprint?: ContextFootprint | null;
+  footprintBefore?: ContextFootprint | null;
+  footprintAfter?: ContextFootprint | null;
+  budgetPolicy?: ContextBudgetPolicy | null;
+}): ContextCompactionDecisionAudit => {
+  const footprint = params.footprintAfter ?? params.footprint ?? params.footprintBefore;
+  const modelContextWindowTokens = footprint?.modelContextWindowTokens ?? null;
+  const inputLimitTokens = footprint?.inputLimitTokens ?? null;
+  const outputLimitTokens = footprint?.outputLimitTokens ?? null;
+  const outputReserveTokens = footprint?.outputReserveTokens ?? null;
+  const reservedTokens = footprint?.reservedTokens ?? params.budgetPolicy?.reservedTokens ?? null;
+  const usableContextTokens = footprint?.usableContextTokens ?? null;
+  const formulaBase =
+    typeof inputLimitTokens === 'number' && Number.isFinite(inputLimitTokens)
+      ? `${formatAuditTokens(inputLimitTokens)} input limit - ${formatAuditTokens(reservedTokens)} reserved`
+      : `${formatAuditTokens(modelContextWindowTokens)} context - ${formatAuditTokens(outputReserveTokens)} output reserve`;
+
+  return {
+    providerId: params.providerId ?? null,
+    providerType: params.providerType ?? null,
+    modelId: params.modelId ?? null,
+    trigger: params.trigger ?? null,
+    result: params.result ?? null,
+    reason: params.reason ?? footprint?.reason ?? null,
+    modelContextWindowTokens,
+    inputLimitTokens,
+    outputLimitTokens,
+    outputReserveTokens,
+    reservedTokens,
+    usableContextTokens,
+    totalEstimatedTokens: footprint?.totalEstimatedTokens ?? null,
+    usableContextRatio: footprint?.usableContextRatio ?? null,
+    totalContextRatio: footprint?.totalContextRatio ?? null,
+    threshold: footprint?.threshold ?? null,
+    contextLimitSource: footprint?.contextLimitSource ?? null,
+    isContextLimitAuthoritative: footprint?.isContextLimitAuthoritative ?? null,
+    contextLimitConfidence: footprint?.contextLimitConfidence ?? null,
+    contextLimitWarning: footprint?.contextLimitWarning ?? null,
+    autoCompactionEnabled: params.budgetPolicy?.auto !== false,
+    formula:
+      usableContextTokens !== null
+        ? `${formulaBase} = ${formatAuditTokens(usableContextTokens)} usable`
+        : null,
   };
 };
 
@@ -638,9 +702,14 @@ const findMessageIndexById = (messages: ChatMessage[], messageId: string): numbe
   messages.findIndex((message) => message.id === messageId);
 
 const getCompactionBoundaryIndex = (
-  orderedMessages: ChatMessage[],
-  retainedUserTurns = 2
+  params: {
+    orderedMessages: ChatMessage[];
+    preparedMessages?: StreamMessage[];
+    retainedUserTurns?: number;
+    retainedRecentTokenBudget?: number;
+  }
 ): number => {
+  const { orderedMessages, preparedMessages } = params;
   const userIndexes = orderedMessages.reduce<number[]>((indexes, message, index) => {
     if (message.role === 'user') {
       indexes.push(index);
@@ -648,16 +717,61 @@ const getCompactionBoundaryIndex = (
     return indexes;
   }, []);
 
-  const retainedTurns = Math.max(1, Math.trunc(retainedUserTurns));
+  const retainedTurns = Math.max(1, Math.trunc(params.retainedUserTurns ?? 2));
   if (userIndexes.length <= retainedTurns) {
     return -1;
   }
 
-  let candidateIndex = userIndexes[userIndexes.length - retainedTurns]! - 1;
-  while (candidateIndex >= 0 && orderedMessages[candidateIndex]?.role !== 'assistant') {
-    candidateIndex -= 1;
+  const defaultRetainedStart = userIndexes[userIndexes.length - retainedTurns]!;
+  let retainedStart = defaultRetainedStart;
+  const retainedRecentTokenBudget =
+    typeof params.retainedRecentTokenBudget === 'number' &&
+    Number.isFinite(params.retainedRecentTokenBudget) &&
+    params.retainedRecentTokenBudget > 0
+      ? Math.trunc(params.retainedRecentTokenBudget)
+      : null;
+
+  if (retainedRecentTokenBudget && preparedMessages?.length) {
+    let total = 0;
+    let earliestIncluded = orderedMessages.length;
+    for (let index = orderedMessages.length - 1; index >= defaultRetainedStart; index -= 1) {
+      const orderedMessage = orderedMessages[index];
+      const preparedMessage = preparedMessages[index];
+      const tokenEstimate = preparedMessage
+        ? estimateTokensForStreamMessage(preparedMessage)
+        : estimateTokensForText(
+            `${orderedMessage?.content ?? ''}\n${orderedMessage?.hidden_context ?? ''}`
+          );
+      if (earliestIncluded < orderedMessages.length && total + tokenEstimate > retainedRecentTokenBudget) {
+        break;
+      }
+      total += tokenEstimate;
+      earliestIncluded = index;
+      if (total > retainedRecentTokenBudget) {
+        break;
+      }
+    }
+    if (earliestIncluded < orderedMessages.length) {
+      retainedStart = Math.max(defaultRetainedStart, earliestIncluded);
+    }
   }
-  return candidateIndex;
+
+  return retainedStart > 0 ? retainedStart - 1 : -1;
+};
+
+export const resolveRetainedRecentContextBudget = (
+  usableContextTokens: number,
+  explicitBudget?: number | null
+): number => {
+  if (
+    typeof explicitBudget === 'number' &&
+    Number.isFinite(explicitBudget) &&
+    explicitBudget > 0
+  ) {
+    return Math.max(1, Math.trunc(explicitBudget));
+  }
+  const usable = Math.max(1, Math.trunc(usableContextTokens || 1));
+  return Math.min(32_000, Math.max(8_000, Math.floor(usable * 0.12)));
 };
 
 const parseToolContextAttributes = (rawAttrs: string): Record<string, string> => {
@@ -1433,6 +1547,7 @@ export const estimateConversationFootprint = (
     modelContextWindowShrank,
     marginTokens: budget.usableContextTokens - totalEstimatedTokens,
     reservedTokens: budget.reservedTokens,
+    outputReserveTokens: budget.outputReserveTokens,
     usableContextTokens: budget.usableContextTokens,
     threshold,
     reason,
@@ -1468,12 +1583,15 @@ const buildCompactionState = async (params: {
   compactionKind: ContextCompactionKind;
   compactionPass?: CompactionPass;
   retainedUserTurns?: number;
+  retainedRecentTokenBudget?: number;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ConversationCompactionState | null> => {
-  const boundaryIndex = getCompactionBoundaryIndex(
-    params.orderedMessages,
-    params.retainedUserTurns
-  );
+  const boundaryIndex = getCompactionBoundaryIndex({
+    orderedMessages: params.orderedMessages,
+    preparedMessages: params.preparedMessages,
+    retainedUserTurns: params.retainedUserTurns,
+    retainedRecentTokenBudget: params.retainedRecentTokenBudget,
+  });
   if (boundaryIndex < 0) return null;
 
   const boundaryMessage = params.orderedMessages[boundaryIndex];
@@ -1557,6 +1675,14 @@ const buildCompactionState = async (params: {
     toolDefinitions: params.toolDefinitions,
     modelContextWindowTokens: params.modelContextWindowTokens,
   });
+  const provisionalBudget = resolveContextBudgetPolicy(
+    params.modelContextWindowTokens,
+    params.budgetPolicy,
+    {
+      inputLimitTokens: params.inputLimitTokens,
+      outputLimitTokens: params.outputLimitTokens,
+    }
+  );
 
   const provisionalState: ConversationCompactionState = {
     conversationId: compactableMessages[0]?.conversation_id || '',
@@ -1590,14 +1716,8 @@ const buildCompactionState = async (params: {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     prunedToolContextMessageIds: params.prunedToolContextMessageIds ?? [],
-    reservedTokens: resolveContextBudgetPolicy(
-      params.modelContextWindowTokens,
-      params.budgetPolicy,
-      {
-        inputLimitTokens: params.inputLimitTokens,
-        outputLimitTokens: params.outputLimitTokens,
-      }
-    ).reservedTokens,
+    reservedTokens: provisionalBudget.reservedTokens,
+    outputReserveTokens: provisionalBudget.outputReserveTokens,
     footprintBefore: params.footprintBefore,
     degradedReason: null,
     compactionKind: params.compactionKind,
@@ -1660,6 +1780,10 @@ export const maybeCompactConversation = async (
   });
 
   const footprintBefore = estimateFootprint(params.preparedMessages, params.mode);
+  const retainedRecentTokenBudget = resolveRetainedRecentContextBudget(
+    footprintBefore.usableContextTokens,
+    params.budgetPolicy?.preserveRecentTokens
+  );
   const shouldPrune =
     params.budgetPolicy?.prune !== false &&
     (Boolean(activeTrigger) || Boolean(params.forcePrune));
@@ -1760,6 +1884,7 @@ export const maybeCompactConversation = async (
       footprintBefore,
       compactionKind: params.mode,
       compactionPass,
+      retainedRecentTokenBudget,
       generateSummary: params.generateSummary,
     });
 
@@ -1827,6 +1952,7 @@ export const maybeCompactConversation = async (
       compactionKind: params.mode,
       compactionPass,
       retainedUserTurns: 1,
+      retainedRecentTokenBudget,
       generateSummary: params.generateSummary,
     });
 
@@ -1865,6 +1991,7 @@ export const maybeCompactConversation = async (
       estimatedTokensAfter: footprintAfter.totalEstimatedTokens,
       prunedToolContextMessageIds,
       reservedTokens: footprintAfter.reservedTokens,
+      outputReserveTokens: footprintAfter.outputReserveTokens,
       footprintBefore,
       footprintAfter,
       degradedReason: degraded ? footprintAfter.reason : null,

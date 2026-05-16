@@ -77,6 +77,20 @@ describe('modelContextLimits', () => {
     expect(limits.confidence).toBe('catalog');
   });
 
+  it('uses the OpenCode Go Qwen 3.6 catalog window instead of the generic 128k lane', () => {
+    const limits = resolveModelContextLimits({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'qwen3.6-plus',
+    });
+
+    expect(limits.contextTokens).toBe(262_144);
+    expect(limits.outputTokens).toBe(66_000);
+    expect(limits.source).toBe('models_dev');
+    expect(limits.isAuthoritative).toBe(true);
+  });
+
   it('marks provider overflow learned limits as temporary diagnostics', () => {
     const limits = resolveModelContextLimits({
       providerType: 'openai',
@@ -100,6 +114,7 @@ describe('modelContextLimits', () => {
 
     expect(OUTPUT_TOKEN_MAX).toBe(32_000);
     expect(budget.maxOutputTokens).toBe(32_000);
+    expect(budget.outputReserveTokens).toBe(32_000);
     expect(budget.reservedTokens).toBe(COMPACTION_BUFFER);
     expect(budget.usableContextTokens).toBe(168_000);
   });
@@ -112,6 +127,7 @@ describe('modelContextLimits', () => {
     });
 
     expect(budget.reservedTokens).toBe(10_000);
+    expect(budget.outputReserveTokens).toBe(10_000);
     expect(budget.usableContextTokens).toBe(110_000);
   });
 
@@ -124,6 +140,7 @@ describe('modelContextLimits', () => {
     });
 
     expect(budget.reservedTokens).toBe(4_000);
+    expect(budget.outputReserveTokens).toBe(4_000);
     expect(budget.usableContextTokens).toBe(116_000);
   });
 });

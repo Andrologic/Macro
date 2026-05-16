@@ -788,6 +788,77 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  it('resets a learned provider overflow limit back to catalog metadata', async () => {
+    const providerStore = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'gpt-catalog': {
+              id: 'gpt-catalog',
+              limit: { context: 222_000, input: 200_000, output: 16_000 },
+            },
+          },
+        },
+      },
+    });
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-catalog',
+            name: 'GPT Catalog',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 64_000,
+            contextWindowSource: 'provider_overflow_error',
+            contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .resetProviderModelContextOverflowLimit('provider-openai', 'gpt-catalog');
+
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ][0]
+    ).toMatchObject({
+      contextWindowTokens: 222_000,
+      inputLimitTokens: 200_000,
+      outputLimitTokens: 16_000,
+      contextWindowSource: 'models_dev',
+    });
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'gpt-catalog',
+          context_window_tokens: 222_000,
+          context_window_source: 'models_dev',
+        }),
+      ],
+    });
+  });
+
   it('does not replace user overrides or increase known provider limits from overflow hints', async () => {
     const providerStore = await loadProviderStore();
 

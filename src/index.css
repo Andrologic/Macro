@@ -766,6 +766,28 @@
   }
 }
 
+@keyframes contextWindowCompactionWave {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: var(--context-window-wave-start, -64);
+  }
+  18% {
+    opacity: 0.92;
+  }
+  72% {
+    opacity: 0.68;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+.context-window-compaction-wave {
+  animation: contextWindowCompactionWave 1.55s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  filter: drop-shadow(0 0 3px rgb(var(--primary) / 0.28));
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-status-awaiting-response__wave {
     animation: none;
@@ -776,6 +798,12 @@
   .chat-compaction-wave-text {
     animation: none;
     background-position: 50% 50%;
+  }
+
+  .context-window-compaction-wave {
+    animation: none;
+    opacity: 0.72;
+    stroke-dashoffset: 0;
   }
 }
 

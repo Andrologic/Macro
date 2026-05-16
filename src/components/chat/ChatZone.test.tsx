@@ -62,6 +62,10 @@ type MockChatState = {
       upToMessageId?: string | null;
       updatedAt?: string | null;
       summaryText?: string | null;
+      footprintAfter?: {
+        usableContextRatio?: number;
+        totalContextRatio?: number;
+      };
     }
   >;
   sessionCompactionEventsByConversationId: Record<
@@ -378,6 +382,15 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../stores/useTaskStore', () => ({
+    getTaskLifecycleCapabilities: () => ({
+      isPublished: false,
+      canRename: true,
+      canDelete: false,
+      canArchive: false,
+      canRestore: false,
+      canReopen: false,
+      deleteBlockReason: null,
+    }),
     getPlanActivationCandidateTask: () => null,
     useTaskStore,
   }));
@@ -537,6 +550,17 @@ const buildCompactionEvent = (
   kind: 'manual',
   startedAt: '2026-05-10T08:30:00.000Z',
   completedAt: '2026-05-10T08:30:00.000Z',
+  ...overrides,
+});
+
+const buildCompactionFootprint = (
+  overrides: {
+    usableContextRatio?: number;
+    totalContextRatio?: number;
+  } = {},
+) => ({
+  usableContextRatio: 0.42,
+  totalContextRatio: 0.5,
   ...overrides,
 });
 
@@ -1169,6 +1193,109 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();
+  });
+
+  it('animates the context window during safety compaction without diagnostics', async () => {
+    chatState = {
+      ...chatState,
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'safety_compacting',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.42 }),
+        },
+      },
+      contextDiagnosticsByConversationId: {},
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
+    ).not.toBeNull();
+    expect(
+      requireContainer()
+        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
+        ?.getAttribute('stroke-dasharray'),
+    ).toBe('42 100');
+  });
+
+  it('animates the context window during model-switch compaction without diagnostics', async () => {
+    chatState = {
+      ...chatState,
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'model_switch_compacting',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.37 }),
+        },
+      },
+      contextDiagnosticsByConversationId: {},
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
+    ).not.toBeNull();
+    expect(
+      requireContainer()
+        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
+        ?.getAttribute('stroke-dasharray'),
+    ).toBe('37 100');
+  });
+
+  it('animates the context window during overflow recovery without diagnostics', async () => {
+    chatState = {
+      ...chatState,
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'recovering_overflow',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.64 }),
+        },
+      },
+      contextDiagnosticsByConversationId: {},
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
+    ).not.toBeNull();
+    expect(
+      requireContainer()
+        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
+        ?.getAttribute('stroke-dasharray'),
+    ).toBe('64 100');
+  });
+
+  it('does not animate the context window for a final compacted status', async () => {
+    chatState = {
+      ...chatState,
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.25 }),
+        },
+      },
+      contextDiagnosticsByConversationId: {},
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
+    ).toBeNull();
   });
 
   it('renders compaction progress clearly in the transcript when no assistant cursor exists', async () => {

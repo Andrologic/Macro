@@ -14,6 +14,7 @@ import {
   ConversationRuntimeState,
   ContextCompactionKind,
   ContextFootprint,
+  ContextCompactionDecisionAudit,
   ContextFootprintReason,
   ContextRefKind,
   ContextReference,
@@ -186,17 +187,37 @@ import {
 } from "../services/chatQuestionnaires";
 import {
   buildContextTooLargeErrorMessage,
+  buildContextCompactionDecisionAudit,
   buildManualCompactionRequiredErrorMessage,
   buildCompactedMessagesForRequest,
   COMPACTED_CONVERSATION_STATE_MARKER,
   estimateConversationFootprint,
-  invalidateCompactionFromMessage,
   isContextFootprintOverUsableBudget,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
   type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
+import {
+  buildCompactionDecisionAuditMetadata,
+  getCompactionBoundaryForMode,
+  runContextCompactionOrchestration,
+} from "../services/contextCompactionOrchestrator";
+import {
+  buildCompactionActivityStatus,
+  clearLatestRunningSessionCompactionEvent as clearLatestSessionCompactionEventState,
+  completeLatestSessionCompactionEvent as completeLatestSessionCompactionEventState,
+  getCompactionEventTrigger,
+  isTransientCompactionStatus,
+  resolveCompactionStatusFromState,
+  startSessionCompactionEvent as startSessionCompactionEventState,
+  type ConversationCompactionPhase,
+  type ConversationCompactionStatus,
+  type SessionCompactionEvent,
+} from "../services/contextCompactionSession";
+import {
+  buildConversationReplayPlan,
+} from "../services/conversationReplayService";
 import {
   contextLimitsToFootprintFields,
   resolveModelContextLimits,
@@ -456,6 +477,67 @@ const countStreamContentLines = (content: StreamMessage["content"]): number => {
   }, 0);
 };
 
+const streamContentToPlainText = (content: StreamMessage["content"]): string => {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) =>
+      part.type === "text"
+        ? part.text
+        : part.type === "image_url"
+          ? "[image attachment]"
+          : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+};
+
+const splitSystemAndPreparedStreamMessages = (
+  messages: StreamMessage[],
+): { systemMessage: string; preparedMessages: StreamMessage[] } => {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    return {
+      systemMessage: first.content,
+      preparedMessages: messages.slice(1),
+    };
+  }
+  return {
+    systemMessage: "",
+    preparedMessages: messages,
+  };
+};
+
+const buildSyntheticOrderedMessagesForStreamRequest = (params: {
+  conversationId: string;
+  taskId: string;
+  messages: StreamMessage[];
+}): ChatMessage[] => {
+  const timestampBase = Date.now();
+  return params.messages.map((message, index) => {
+    const role: ChatMessage["role"] =
+      message.role === "assistant" || message.role === "tool" || message.role === "system"
+        ? "assistant"
+        : "user";
+    const label =
+      message.role === "tool"
+        ? "Tool result"
+        : message.role === "system"
+          ? "System instruction"
+          : "";
+    const content = streamContentToPlainText(message.content);
+    return {
+      id: `stream-boundary-${index}`,
+      task_id: params.taskId,
+      conversation_id: params.conversationId,
+      role,
+      content: label ? `[${label}]\n${content}` : content,
+      timestamp: new Date(timestampBase + index).toISOString(),
+      provider_input_items: message.provider_input_items,
+      provider_turn_state: message.provider_turn_state,
+    };
+  });
+};
+
 const countPreparedToolContextLines = (
   messages: StreamMessage[],
 ): number =>
@@ -682,6 +764,15 @@ const buildContextDiagnosticsFromFootprint = (params: {
     previousModelContextWindowTokens: footprint?.previousModelContextWindowTokens,
     modelContextWindowShrank: footprint?.modelContextWindowShrank,
     marginTokens: footprint?.marginTokens,
+    compactionDecisionAudit: buildContextCompactionDecisionAudit({
+      providerId: params.providerId,
+      providerType: params.providerType,
+      modelId: params.modelId,
+      trigger: params.compactionState?.lastTrigger ?? params.compactionState?.compactionKind,
+      result: params.decision,
+      footprintBefore: params.footprintBefore,
+      footprintAfter: params.footprintAfter,
+    }),
     phase: params.phase,
     decision: params.decision,
     compactionPass: params.compactionPass,
@@ -1306,43 +1397,12 @@ type PendingToolApprovalResolution =
 
 type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
 
-export type ConversationCompactionPhase =
-  | "idle"
-  | "compacting"
-  | "safety_compacting"
-  | "model_switch_compacting"
-  | "recovering_overflow"
-  | "compacted"
-  | "degraded"
-  | "too_large"
-  | "needs_manual_compaction"
-  | "blocked";
-
-export interface ConversationCompactionStatus {
-  phase: ConversationCompactionPhase;
-  upToMessageId?: string;
-  summaryText?: string;
-  updatedAt?: string;
-  reason?: ContextFootprintReason | null;
-  kind?: ContextCompactionKind;
-  footprintAfter?: ContextFootprint;
-  recoveredFromOverflow?: boolean;
-  summaryFormatVersion?: number;
-  summarySource?: CompactionSummarySource;
-  checkpointHealth?: ConversationCompactionState["checkpointHealth"];
-}
-
-export type SessionCompactionEventStatus = "running" | "completed";
-
-export interface SessionCompactionEvent {
-  id: string;
-  status: SessionCompactionEventStatus;
-  displayAfterMessageId: string | null;
-  logicalUpToMessageId?: string;
-  kind?: ContextCompactionKind;
-  startedAt: string;
-  completedAt?: string;
-}
+export type {
+  ConversationCompactionPhase,
+  ConversationCompactionStatus,
+  SessionCompactionEvent,
+  SessionCompactionEventStatus,
+} from "../services/contextCompactionSession";
 
 export type ConversationContextDiagnosticsStatus = "estimating" | "ready" | "error";
 export type ConversationContextDiagnosticsSource = "full" | "live_stream";
@@ -1378,6 +1438,7 @@ export interface ConversationContextDiagnostics {
   previousModelContextWindowTokens?: number;
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
+  compactionDecisionAudit?: ContextCompactionDecisionAudit;
   phase?: ConversationCompactionPhase | "provider_error";
   decision?: ContextCompactionDecision;
   compactionPass?: CompactionPass;
@@ -4028,34 +4089,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const getCompactionEventTrigger = (
-    mode: ContextCompactionKind,
-  ): ConversationCompactionState["lastTrigger"] | ContextCompactionKind =>
-    mode === "overflow_recovery" ? "stream_overflow" : mode;
-
-  const shouldPersistCompactionResult = (params: {
-    hasCompaction: boolean;
-    usedExistingCompaction: boolean;
-    forceCompaction?: boolean;
-    mode: ContextCompactionKind;
-  }): boolean =>
-    params.hasCompaction &&
-    (!params.usedExistingCompaction ||
-      Boolean(params.forceCompaction) ||
-      params.mode === "manual" ||
-      params.mode === "model_switch" ||
-      params.mode === "safety_prestream" ||
-      params.mode === "stream_overflow" ||
-      params.mode === "overflow_recovery");
-
-  const isTransientCompactionStatus = (
-    status: ConversationCompactionStatus | null | undefined,
-  ): status is ConversationCompactionStatus =>
-    status?.phase === "compacting" ||
-    status?.phase === "safety_compacting" ||
-    status?.phase === "model_switch_compacting" ||
-    status?.phase === "recovering_overflow";
-
   const normalizeSummaryFormatVersion = (
     value: number | null | undefined,
   ): number => (
@@ -4063,31 +4096,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? Math.trunc(value)
       : 1
   );
-
-  const resolveCompactionStatusFromState = (
-    state: ConversationCompactionState,
-  ): ConversationCompactionStatus => {
-    const footprintAfter = state.footprintAfter;
-    const phase: ConversationCompactionPhase =
-      footprintAfter?.isHardStop === true
-        ? "too_large"
-        : state.degradedReason
-          ? "degraded"
-          : "compacted";
-
-    return {
-      phase,
-      upToMessageId: state.upToMessageId,
-      summaryText: state.summaryText,
-      updatedAt: state.updatedAt,
-      reason: state.degradedReason ?? null,
-      kind: state.compactionKind,
-      summaryFormatVersion: state.summaryFormatVersion,
-      summarySource: state.summarySource,
-      checkpointHealth: state.checkpointHealth,
-      footprintAfter,
-    };
-  };
 
   const setConversationCompactionStatus = (
     conversationId: string,
@@ -4119,17 +4127,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
   };
 
-  const resolveCompactionActivityPhase = (
-    kind: ContextCompactionKind,
-  ): ConversationCompactionPhase =>
-    kind === "overflow_recovery" || kind === "stream_overflow"
-      ? "recovering_overflow"
-      : kind === "model_switch"
-        ? "model_switch_compacting"
-        : kind === "safety_prestream"
-          ? "safety_compacting"
-          : "compacting";
-
   const setConversationCompactionActivityStarted = (
     conversationId: string,
     kind: ContextCompactionKind,
@@ -4137,59 +4134,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ) => {
     const previous =
       get().conversationCompactionStatusById[conversationId] ?? fallbackStatus;
-    setConversationCompactionStatus(conversationId, {
-      ...previous,
-      phase: resolveCompactionActivityPhase(kind),
-      updatedAt: new Date().toISOString(),
-      kind,
-    });
+    setConversationCompactionStatus(
+      conversationId,
+      buildCompactionActivityStatus({ kind, previous }),
+    );
   };
 
   const getLastConversationMessageId = (conversationId: string): string | null =>
     getOrderedConversationMessages(conversationId).at(-1)?.id ?? null;
-
-  const createSessionCompactionEventId = (
-    conversationId: string,
-    kind: ContextCompactionKind,
-    displayAfterMessageId: string | null,
-    startedAt: string,
-  ): string =>
-    [
-      "compaction",
-      conversationId,
-      kind,
-      displayAfterMessageId ?? "end",
-      startedAt,
-    ].join(":");
 
   const startSessionCompactionEvent = (
     conversationId: string,
     kind: ContextCompactionKind,
     displayAfterMessageId?: string | null,
   ) => {
-    const startedAt = new Date().toISOString();
     const anchor = displayAfterMessageId ?? getLastConversationMessageId(conversationId);
-    const event: SessionCompactionEvent = {
-      id: createSessionCompactionEventId(conversationId, kind, anchor, startedAt),
-      status: "running",
-      displayAfterMessageId: anchor,
-      kind,
-      startedAt,
-    };
-
     set((state) => {
       const existing =
         state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      const withoutObsoleteEvents = existing.filter((item) => {
-        if (item.displayAfterMessageId === anchor) {
-          return false;
-        }
-        return !(item.status === "running" && item.kind === kind);
-      });
       return {
         sessionCompactionEventsByConversationId: {
           ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: [...withoutObsoleteEvents, event],
+          [conversationId]: startSessionCompactionEventState({
+            conversationId,
+            kind,
+            displayAfterMessageId: anchor,
+            existingEvents: existing,
+          }),
         },
       };
     });
@@ -4203,32 +4174,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     set((storeState) => {
       const existing =
         storeState.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      const runningIndex = [...existing]
-        .reverse()
-        .findIndex(
-          (event) =>
-            event.status === "running" &&
-            (kind === undefined || event.kind === kind),
-        );
-      if (runningIndex < 0) {
-        return {};
-      }
-
-      const targetIndex = existing.length - 1 - runningIndex;
-      const nextEvents = existing.map((event, index) =>
-        index === targetIndex
-          ? {
-              ...event,
-              status: "completed" as const,
-              logicalUpToMessageId: state.upToMessageId,
-              completedAt: state.updatedAt,
-            }
-          : event,
-      );
       return {
         sessionCompactionEventsByConversationId: {
           ...storeState.sessionCompactionEventsByConversationId,
-          [conversationId]: nextEvents,
+          [conversationId]: completeLatestSessionCompactionEventState({
+            existingEvents: existing,
+            state,
+            kind,
+          }),
         },
       };
     });
@@ -4241,54 +4194,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     set((state) => {
       const existing =
         state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      const runningIndex = [...existing]
-        .reverse()
-        .findIndex(
-          (event) =>
-            event.status === "running" &&
-            (kind === undefined || event.kind === kind),
-        );
-      if (runningIndex < 0) {
-        return {};
-      }
-
-      const targetIndex = existing.length - 1 - runningIndex;
-      const nextEvents = existing.filter((_, index) => index !== targetIndex);
       return {
         sessionCompactionEventsByConversationId: {
           ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: nextEvents.length > 0 ? nextEvents : undefined,
+          [conversationId]: clearLatestSessionCompactionEventState({
+            existingEvents: existing,
+            kind,
+          }),
         },
       };
     });
-  };
-
-  const pruneSessionCompactionEventsBeforeReplay = (
-    events: SessionCompactionEvent[] | undefined,
-    conversationMessages: ChatMessage[],
-    replayMessageId: string,
-  ): SessionCompactionEvent[] | undefined => {
-    if (!events?.length) {
-      return events;
-    }
-
-    const messageIndexById = new Map(
-      conversationMessages.map((message, index) => [message.id, index]),
-    );
-    const replayIndex = messageIndexById.get(replayMessageId);
-    if (replayIndex === undefined) {
-      return undefined;
-    }
-
-    const keptEvents = events.filter((event) => {
-      if (!event.displayAfterMessageId) {
-        return false;
-      }
-      const anchorIndex = messageIndexById.get(event.displayAfterMessageId);
-      return anchorIndex !== undefined && anchorIndex < replayIndex;
-    });
-
-    return keptEvents.length > 0 ? keptEvents : undefined;
   };
 
   const markConversationCompactionStarted = (
@@ -4507,60 +4422,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         `Failed to record compaction event for conversation=${params.conversationId}: ${toServiceError(error).message}`,
       );
     }
-  };
-
-  const buildCompactionDecisionAuditMetadata = (params: {
-    trigger?: ConversationCompactionState["lastTrigger"] | ContextCompactionKind;
-    status?: "success" | "failed" | "blocked" | "degraded" | "skipped";
-    footprintBefore?: ContextFootprint | null;
-    footprintAfter?: ContextFootprint | null;
-    footprint?: ContextFootprint | null;
-    footprintFields?: ContextLimitFootprintFields;
-    budgetPolicy?: ContextBudgetPolicy | null;
-    reason?: string | null;
-    result?: string | null;
-  }): Record<string, unknown> => {
-    const footprint = params.footprintAfter ?? params.footprint ?? params.footprintBefore;
-    return {
-      trigger: params.trigger ?? null,
-      status: params.status ?? null,
-      result: params.result ?? null,
-      reason: params.reason ?? footprint?.reason ?? null,
-      contextLimitSource:
-        footprint?.contextLimitSource ??
-        params.footprintFields?.contextLimitSource ??
-        null,
-      isContextLimitAuthoritative:
-        footprint?.isContextLimitAuthoritative ??
-        params.footprintFields?.isContextLimitAuthoritative ??
-        null,
-      contextLimitConfidence:
-        footprint?.contextLimitConfidence ??
-        params.footprintFields?.contextLimitConfidence ??
-        null,
-      contextLimitWarning:
-        footprint?.contextLimitWarning ??
-        params.footprintFields?.contextLimitWarning ??
-        null,
-      modelContextWindowTokens:
-        footprint?.modelContextWindowTokens ??
-        params.footprintFields?.modelContextWindowTokens ??
-        null,
-      inputLimitTokens:
-        footprint?.inputLimitTokens ?? params.footprintFields?.inputLimitTokens ?? null,
-      outputLimitTokens:
-        footprint?.outputLimitTokens ?? params.footprintFields?.outputLimitTokens ?? null,
-      usableContextTokens: footprint?.usableContextTokens ?? null,
-      reservedTokens:
-        footprint?.reservedTokens ?? params.budgetPolicy?.reservedTokens ?? null,
-      totalEstimatedTokens: footprint?.totalEstimatedTokens ?? null,
-      tokensBefore: params.footprintBefore?.totalEstimatedTokens ?? null,
-      tokensAfter: params.footprintAfter?.totalEstimatedTokens ?? null,
-      usableContextRatio: footprint?.usableContextRatio ?? null,
-      totalContextRatio: footprint?.totalContextRatio ?? null,
-      threshold: footprint?.threshold ?? null,
-      autoCompactionEnabled: params.budgetPolicy?.auto !== false,
-    };
   };
 
   const prepareCompactionSummaryMessages = (
@@ -4831,33 +4692,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.providerConfig.providerType,
     );
     const budgetPolicy = await loadContextBudgetPolicy();
-
-    let result: MaybeCompactConversationResult;
+    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+      estimateChatCompletionSerializedPayloadTokens({
+        messages,
+        providerType: params.providerConfig.providerType,
+        providerId: params.providerId,
+        baseUrl: params.providerConfig.baseUrl,
+        modelId: params.modelId,
+      });
+    let orchestration: Awaited<
+      ReturnType<typeof runContextCompactionOrchestration>
+    >;
     try {
-      result = await buildCompactedMessagesForRequest({
+      orchestration = await runContextCompactionOrchestration({
+        boundary: getCompactionBoundaryForMode(params.mode),
+        mode: params.mode,
         systemMessage: params.systemMessage,
         preparedMessages: params.preparedMessages,
         orderedMessages: params.orderedMessages,
         citations: params.citations,
         toolDefinitions,
-        ...footprintFields,
+        footprintFields,
         previousModelContextWindowTokens:
           currentCompactionState?.modelContextWindowTokens,
         providerId: params.providerId,
+        providerType: params.providerConfig.providerType,
         modelId: params.modelId,
         currentCompactionState,
-        estimateSerializedPayloadTokens: (messages) =>
-          estimateChatCompletionSerializedPayloadTokens({
-            messages,
-            providerType: params.providerConfig.providerType,
-            providerId: params.providerId,
-            baseUrl: params.providerConfig.baseUrl,
-            modelId: params.modelId,
-          }),
-        mode: params.mode,
         budgetPolicy,
         forceCompaction: params.forceCompaction,
         forcePrune: params.forcePrune,
+        estimateSerializedPayloadTokens,
         onCompactionStarted: () => {
           markConversationCompactionStarted(
             params.conversationId,
@@ -4890,6 +4755,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : "compaction_error",
         reason: toServiceError(error).message,
         metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
           trigger: getCompactionEventTrigger(params.mode),
           status: "failed",
           footprintFields,
@@ -4901,15 +4769,86 @@ export const useChatStore = create<ChatStore>((set, get) => {
       throw error;
     }
 
-    const hadCompaction = Boolean(currentCompactionState);
-    const hasCompaction = Boolean(result.compactionState);
-    const shouldPersistCompaction = shouldPersistCompactionResult({
-      hasCompaction,
-      usedExistingCompaction: result.usedExistingCompaction,
-      forceCompaction: params.forceCompaction,
-      mode: params.mode,
-    });
-    if (shouldPersistCompaction) {
+    if (orchestration.outcome === "blocked") {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
+      setConversationCompactionStatus(params.conversationId, {
+        phase: "too_large",
+        updatedAt: new Date().toISOString(),
+        reason: orchestration.preflightFootprint.reason,
+        kind: params.mode,
+        footprintAfter: orchestration.preflightFootprint,
+      });
+      await recordConversationCompactionEvent({
+        conversationId: params.conversationId,
+        trigger: getCompactionEventTrigger(params.mode),
+        providerId: params.providerId,
+        modelId: params.modelId,
+        modelContextWindowTokens:
+          orchestration.preflightFootprint.modelContextWindowTokens,
+        tokensBefore: orchestration.preflightFootprint.totalEstimatedTokens,
+        tokensAfter: orchestration.preflightFootprint.totalEstimatedTokens,
+        status: "blocked",
+        reason: orchestration.evaluation.reason,
+        metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
+          trigger: getCompactionEventTrigger(params.mode),
+          status: "blocked",
+          footprint: orchestration.preflightFootprint,
+          footprintFields,
+          budgetPolicy,
+          reason: orchestration.evaluation.reason,
+          result: "latest_boundary_payload_too_large",
+        }),
+      });
+      throw buildSendError(orchestration.errorMessage);
+    }
+    if (orchestration.outcome === "manual_required") {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
+      setConversationCompactionStatus(params.conversationId, {
+        ...statusBeforeNewCompaction,
+        phase: "needs_manual_compaction",
+        updatedAt: new Date().toISOString(),
+        reason: "manual_compaction_required",
+        kind: params.mode,
+        footprintAfter: {
+          ...orchestration.preflightFootprint,
+          reason: "manual_compaction_required",
+        },
+      });
+      await recordConversationCompactionEvent({
+        conversationId: params.conversationId,
+        trigger: getCompactionEventTrigger(params.mode),
+        providerId: params.providerId,
+        modelId: params.modelId,
+        modelContextWindowTokens:
+          orchestration.preflightFootprint.modelContextWindowTokens,
+        tokensBefore: orchestration.preflightFootprint.totalEstimatedTokens,
+        tokensAfter: orchestration.preflightFootprint.totalEstimatedTokens,
+        status: "skipped",
+        reason: "manual_compaction_required",
+        metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
+          trigger: getCompactionEventTrigger(params.mode),
+          status: "skipped",
+          footprint: {
+            ...orchestration.preflightFootprint,
+            reason: "manual_compaction_required",
+          },
+          footprintFields,
+          budgetPolicy,
+          reason: "manual_compaction_required",
+          result: "auto_compaction_disabled",
+        }),
+      });
+      throw buildSendError(orchestration.errorMessage);
+    }
+
+    const { result } = orchestration;
+    if (orchestration.shouldPersistCompaction) {
       if (result.compactionState) {
         completeLatestSessionCompactionEvent(
           params.conversationId,
@@ -4931,6 +4870,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         status: result.degraded ? "degraded" : "success",
         reason: result.footprintAfter.reason,
         metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
           trigger:
             result.compactionState?.lastTrigger ??
             getCompactionEventTrigger(params.mode),
@@ -4945,7 +4887,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : "created_or_refreshed_compaction",
         }),
       });
-    } else if (hasCompaction) {
+    } else if (orchestration.hasCompaction) {
       completeLatestSessionCompactionEvent(
         params.conversationId,
         result.compactionState!,
@@ -4955,7 +4897,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.conversationId,
         resolveCompactionStatusFromState(result.compactionState!),
       );
-    } else if (hadCompaction && params.mode !== "blocking") {
+    } else if (orchestration.hadCompaction && params.mode !== "blocking") {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       await deleteConversationCompactionState(params.conversationId);
     } else {
@@ -5103,6 +5045,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           status: "skipped",
           reason: "manual_compaction_required",
           metadata: buildCompactionDecisionAuditMetadata({
+            providerId: params.nextProviderId,
+            providerType: nextProvider.providerType,
+            modelId: params.nextModelId,
             trigger: "model_switch",
             status: "skipped",
             footprintAfter: {
@@ -8362,6 +8307,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         status: autoCompactionBlocked ? "skipped" : "blocked",
         reason: blockedFootprint.reason,
         metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
           trigger: needsSafetyPrestream || autoCompactionBlocked
             ? "safety_prestream"
             : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
@@ -8682,6 +8630,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
 
+    const existingCompactionState = await getConversationCompactionState(
+      params.conversationId,
+    );
+    let shouldDeleteContextCompactionState = false;
+
     set((current) => {
       const currentMessages = params.updatedMessage
         ? current.messages.map((message) =>
@@ -8707,15 +8660,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return current;
       }
 
-      const allowedIds = new Set(
-        conversationMessages
-          .slice(0, targetIndex + 1)
-          .map((message) => message.id),
-      );
+      const replayPlan = buildConversationReplayPlan({
+        conversationId: params.conversationId,
+        replayMessageId: params.messageId,
+        conversationMessages,
+        contextCompactionState: existingCompactionState,
+        sessionCompactionEvents:
+          current.sessionCompactionEventsByConversationId[
+            params.conversationId
+          ],
+      });
+      shouldDeleteContextCompactionState =
+        replayPlan.shouldDeleteContextCompactionState;
 
       const trimmedMessages = currentMessages.filter((message) =>
         message.conversation_id === params.conversationId
-          ? allowedIds.has(message.id)
+          ? replayPlan.keptMessageIds.has(message.id)
           : true,
       );
 
@@ -8759,15 +8719,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (params.clearQuestionnaireSession) {
         saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
       }
-      const nextSessionCompactionEvents =
-        pruneSessionCompactionEventsBeforeReplay(
-          current.sessionCompactionEventsByConversationId[
-            params.conversationId
-          ],
-          conversationMessages,
-          params.messageId,
-        );
-
       return {
         ...buildMessageState(trimmedMessages),
         conversations,
@@ -8775,7 +8726,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
         sessionCompactionEventsByConversationId: {
           ...current.sessionCompactionEventsByConversationId,
-          [params.conversationId]: nextSessionCompactionEvents,
+          [params.conversationId]: replayPlan.sessionCompactionEvents,
         },
         lastError: null,
       };
@@ -8797,19 +8748,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         keptConversationMessageIds,
       );
 
-    const currentOrderedMessages = getOrderedConversationMessages(
-      params.conversationId,
-    );
-    const existingCompactionState = await getConversationCompactionState(
-      params.conversationId,
-    );
-    if (
-      invalidateCompactionFromMessage(
-        existingCompactionState,
-        currentOrderedMessages,
-        params.messageId,
-      )
-    ) {
+    if (shouldDeleteContextCompactionState) {
       await deleteConversationCompactionState(params.conversationId);
     }
   };
@@ -9757,6 +9696,237 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     };
 
+    const compactFollowUpMessagesBeforeProviderRequest = async (request: {
+      messages: StreamMessage[];
+      turnCount: number;
+      toolResultCount: number;
+    }): Promise<{ messages: StreamMessage[]; compacted?: boolean } | void> => {
+      if (
+        abortController.signal.aborted ||
+        !shouldAcceptStreamUpdate() ||
+        request.toolResultCount <= 0
+      ) {
+        return;
+      }
+
+      const { systemMessage, preparedMessages } =
+        splitSystemAndPreparedStreamMessages(request.messages);
+      if (preparedMessages.length < 3) {
+        return;
+      }
+
+      const orderedMessages = buildSyntheticOrderedMessagesForStreamRequest({
+        conversationId: params.conversationId,
+        taskId: params.resolvedTaskId,
+        messages: preparedMessages,
+      });
+      const { footprintFields } = getSelectedModelContext(
+        params.selectedProviderId,
+        params.selectedModelId,
+        params.providerConfig.providerType,
+      );
+      const budgetPolicy = await loadContextBudgetPolicy();
+      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+        estimateChatCompletionSerializedPayloadTokens({
+          messages,
+          providerType: params.providerConfig.providerType,
+          providerId: params.selectedProviderId,
+          baseUrl: params.providerConfig.baseUrl,
+          modelId: params.selectedModelId,
+        });
+      const footprint = estimateConversationFootprint({
+        systemMessage,
+        preparedMessages,
+        orderedMessages,
+        citations: contextDiagnosticsBaseline.citations,
+        toolDefinitions,
+        ...footprintFields,
+        estimateSerializedPayloadTokens,
+        mode: "safety_prestream",
+        budgetPolicy,
+      });
+      const latestToolBatchTokens = Math.ceil(
+        JSON.stringify(preparedMessages.slice(-request.toolResultCount)).length / 4,
+      );
+      const previousStatus =
+        get().conversationCompactionStatusById[params.conversationId] ?? null;
+
+      let result: MaybeCompactConversationResult;
+      let orchestration: Awaited<
+        ReturnType<typeof runContextCompactionOrchestration>
+      >;
+      try {
+        orchestration = await runContextCompactionOrchestration({
+          boundary: "post_tool_batch",
+          mode: "safety_prestream",
+          systemMessage,
+          preparedMessages,
+          orderedMessages,
+          citations: contextDiagnosticsBaseline.citations,
+          toolDefinitions,
+          footprintFields,
+          providerId: params.selectedProviderId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.selectedModelId,
+          estimateSerializedPayloadTokens,
+          budgetPolicy,
+          latestBoundaryPayloadTokens: latestToolBatchTokens,
+          buildForceCompaction: true,
+          forcePrune: true,
+          onCompactionStarted: () => {
+            markConversationCompactionStarted(
+              params.conversationId,
+              "safety_prestream",
+              previousStatus,
+              params.assistantMessage.id,
+            );
+          },
+          generateSummary: (input) =>
+            generateCompactionSummary(
+              params.providerConfig,
+              params.selectedProviderId,
+              params.selectedModelId,
+              params.selectedReasoningEffort,
+              input,
+            ),
+        });
+      } catch (error) {
+        clearLatestRunningSessionCompactionEvent(
+          params.conversationId,
+          "safety_prestream",
+        );
+        setConversationCompactionStatus(params.conversationId, previousStatus);
+        await recordConversationCompactionEvent({
+          conversationId: params.conversationId,
+          trigger: "safety_prestream",
+          providerId: params.selectedProviderId,
+          modelId: params.selectedModelId,
+          modelContextWindowTokens: footprint.modelContextWindowTokens,
+          tokensBefore: footprint.totalEstimatedTokens,
+          tokensAfter: footprint.totalEstimatedTokens,
+          status: "failed",
+          errorCode: isProviderContextOverflowError(error)
+            ? "context_overflow"
+            : "tool_boundary_compaction_error",
+          reason: toServiceError(error).message,
+          metadata: buildCompactionDecisionAuditMetadata({
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            modelId: params.selectedModelId,
+            trigger: "safety_prestream",
+            status: "failed",
+            footprint,
+            footprintFields,
+            budgetPolicy,
+            reason: toServiceError(error).message,
+            result: "tool_boundary_compaction_error",
+          }),
+        });
+        throw error;
+      }
+      if (orchestration.outcome === "blocked") {
+        throw buildSendError(orchestration.errorMessage);
+      }
+      if (orchestration.outcome === "manual_required") {
+        throw buildSendError(orchestration.errorMessage);
+      }
+      if (orchestration.evaluation.decision !== "compact") {
+        return;
+      }
+      result = orchestration.result;
+
+      if (
+        result.decision === "hard_stop" ||
+        isContextFootprintOverUsableBudget(result.footprintAfter)
+      ) {
+        clearLatestRunningSessionCompactionEvent(
+          params.conversationId,
+          "safety_prestream",
+        );
+        setConversationCompactionStatus(params.conversationId, {
+          phase: "too_large",
+          updatedAt: new Date().toISOString(),
+          reason: result.footprintAfter.reason,
+          kind: "safety_prestream",
+          footprintAfter: result.footprintAfter,
+        });
+        await recordConversationCompactionEvent({
+          conversationId: params.conversationId,
+          trigger: "safety_prestream",
+          providerId: params.selectedProviderId,
+          modelId: params.selectedModelId,
+          modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
+          tokensBefore: result.footprintBefore.totalEstimatedTokens,
+          tokensAfter: result.footprintAfter.totalEstimatedTokens,
+          status: "blocked",
+          reason: result.footprintAfter.reason,
+          metadata: buildCompactionDecisionAuditMetadata({
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            modelId: params.selectedModelId,
+            trigger: "safety_prestream",
+            status: "blocked",
+            footprintBefore: result.footprintBefore,
+            footprintAfter: result.footprintAfter,
+            footprintFields,
+            budgetPolicy,
+            reason: result.footprintAfter.reason,
+            result: "tool_boundary_context_too_large",
+          }),
+        });
+        throw buildSendError(buildContextTooLargeErrorMessage(result.footprintAfter));
+      }
+
+      if (result.compactionState) {
+        completeLatestSessionCompactionEvent(
+          params.conversationId,
+          result.compactionState,
+          "safety_prestream",
+        );
+        setConversationCompactionStatus(
+          params.conversationId,
+          resolveCompactionStatusFromState(result.compactionState),
+        );
+      } else {
+        clearLatestRunningSessionCompactionEvent(
+          params.conversationId,
+          "safety_prestream",
+        );
+        setConversationCompactionStatus(params.conversationId, previousStatus);
+      }
+
+      await recordConversationCompactionEvent({
+        conversationId: params.conversationId,
+        trigger: "safety_prestream",
+        providerId: params.selectedProviderId,
+        modelId: params.selectedModelId,
+        modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
+        tokensBefore: result.footprintBefore.totalEstimatedTokens,
+        tokensAfter: result.footprintAfter.totalEstimatedTokens,
+        status: result.degraded ? "degraded" : "success",
+        reason: result.footprintAfter.reason,
+        metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.selectedProviderId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.selectedModelId,
+          trigger: "safety_prestream",
+          status: result.degraded ? "degraded" : "success",
+          footprintBefore: result.footprintBefore,
+          footprintAfter: result.footprintAfter,
+          footprintFields,
+          budgetPolicy,
+          reason: result.footprintAfter.reason,
+          result: "tool_boundary_compaction",
+        }),
+      });
+
+      return {
+        messages: result.messages,
+        compacted: Boolean(result.compactionState),
+      };
+    };
+
     void (async () => {
       try {
         await streamChat({
@@ -9801,6 +9971,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               tool_traces: toolTraces,
             });
           },
+          onBeforeFollowUpRequest: compactFollowUpMessagesBeforeProviderRequest,
           onLiveContextUpdate: (snapshot) => {
             if (!shouldAcceptStreamUpdate()) {
               return;

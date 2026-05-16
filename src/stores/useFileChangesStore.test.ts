@@ -877,6 +877,92 @@ describe('useFileChangesStore', () => {
     expect(nextState.diffModalSession?.isDirty).toBe(true);
   });
 
+  it('preserves a diff modal opened while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(true);
+    expect(nextState.selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(nextState.diffModalSession?.rightDraftContent).toContain('const value = 42;');
+    expect(nextState.diffModalSession?.isDirty).toBe(true);
+  });
+
+  it('closes a diff modal when its file disappears during a silent refresh', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    delete currentFiles[worktreeAPath]['src/main.ts'];
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+  });
+
+  it('does not reopen a diff modal closed while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.closeDiffModal();
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+  });
+
   it('clears stale diff state when switching to another task', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();

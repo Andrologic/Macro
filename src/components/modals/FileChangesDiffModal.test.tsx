@@ -17,6 +17,7 @@ let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let initialStoreState: ReturnType<typeof useFileChangesStore.getState> | null = null;
 let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
 let importCounter = 0;
+let shouldThrowDiffMergeView = false;
 
 const loadFileChangesDiffModalModules = async () => {
   importCounter += 1;
@@ -40,6 +41,20 @@ const loadFileChangesDiffModalModules = async () => {
   );
   mock.module('../../stores/useFileChangesStore', () => ({
     ...fileChangesStoreModule,
+  }));
+
+  const reactModule = await import('react');
+  const diffMergeViewModule = await import(
+    `../ui/DiffMergeView.tsx?file-changes-diff-modal-diff-view-test=${importCounter}`
+  );
+  mock.module('../ui/DiffMergeView', () => ({
+    ...diffMergeViewModule,
+    DiffMergeView: reactModule.forwardRef((props, ref) => {
+      if (shouldThrowDiffMergeView) {
+        throw new Error('DiffMergeView render failed');
+      }
+      return reactModule.createElement(diffMergeViewModule.DiffMergeView, { ...props, ref });
+    }),
   }));
 
   ({ FileChangesDiffModal } = await import(
@@ -212,6 +227,7 @@ describe('FileChangesDiffModal', () => {
 
   beforeEach(async () => {
     mock.restore();
+    shouldThrowDiffMergeView = false;
     await loadFileChangesDiffModalModules();
     localStorage.clear();
     useAppStore.setState({ codeOverflowMode: 'wrap' });
@@ -316,6 +332,26 @@ describe('FileChangesDiffModal', () => {
     });
 
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a local fallback when the diff viewer fails to render', async () => {
+    const consoleErrorSpy = mock(() => undefined);
+    const previousConsoleError = console.error;
+    console.error = consoleErrorSpy as typeof console.error;
+    shouldThrowDiffMergeView = true;
+
+    try {
+      await act(async () => {
+        root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+        await flushRender();
+      });
+
+      expect(document.body.textContent).toContain('Could not render this diff');
+      expect(document.body.textContent).toContain('The changes panel stayed open');
+      expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    } finally {
+      console.error = previousConsoleError;
+    }
   });
 
   it('shows save and reset controls while the draft is dirty', async () => {

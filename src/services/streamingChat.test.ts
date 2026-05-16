@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
-import type { LiveStreamContextSnapshot, StreamCompletionResult } from './streamingChat';
+import type {
+  LiveStreamContextSnapshot,
+  StreamCompletionResult,
+  StreamingFollowUpCompactionRequest,
+} from './streamingChat';
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
@@ -19,6 +23,7 @@ const loadStreamingChat = async (
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
   const actualHttp = await import('@tauri-apps/plugin-http');
+  const actualArchitectChat = await import('./architectChat');
   mock.module('@tauri-apps/api/core', () => ({
     ...actualCore,
     invoke: invokeImpl,
@@ -121,6 +126,7 @@ const loadStreamingChat = async (
   mock.module('./tauriIpc', () => tauriIpcMock);
   mock.module('../services/tauriIpc', () => tauriIpcMock);
   mock.module('./architectChat', () => ({
+    ...actualArchitectChat,
     ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION:
       'After using an Architect tool, always answer in natural language with a concise recap.',
     ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT:
@@ -1281,6 +1287,104 @@ describe('streamingChat tool rendering helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(invokeImpl).not.toHaveBeenCalled();
     expect(requestBodies).toHaveLength(2);
+  });
+
+  it('allows compaction before generic provider follow-up requests after tool results', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestCount += 1;
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestCount === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      expect(JSON.stringify(body.messages)).toContain('[COMPACTED CONVERSATION STATE]');
+      expect(JSON.stringify(body.messages)).not.toContain('FILE: README.md');
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onBeforeFollowUpRequest = mock(
+      async (request: StreamingFollowUpCompactionRequest) => {
+        expect(request.reason).toBe('tool_results');
+        expect(request.toolResultCount).toBe(1);
+        expect(JSON.stringify(request.messages)).toContain('FILE: README.md');
+        return {
+          messages: [
+            {
+              role: 'system' as const,
+              content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+            },
+            {
+              role: 'user' as const,
+              content: 'Continue.',
+            },
+          ],
+        };
+      },
+    );
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Inspect README.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => 'FILE: README.md\n\n' + 'A'.repeat(6000),
+      onBeforeFollowUpRequest,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onBeforeFollowUpRequest).toHaveBeenCalledTimes(1);
+    expect(requestBodies[1]?.messages).toEqual([
+      {
+        role: 'system',
+        content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+      },
+      {
+        role: 'user',
+        content: 'Continue.',
+      },
+    ]);
   });
 
   it('retries Kimi-compatible providers without thinking when the gateway rejects it', async () => {

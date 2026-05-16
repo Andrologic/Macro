@@ -175,6 +175,7 @@ export const resolveUsableContextTokens = (params: {
 }): {
   maxOutputTokens: number;
   reservedTokens: number;
+  outputReserveTokens: number;
   usableContextTokens: number;
 } => {
   const contextTokens = Math.max(1, Math.trunc(params.contextTokens || 1));
@@ -193,14 +194,15 @@ export const resolveUsableContextTokens = (params: {
       explicitReservedTokens ?? resolveDefaultReservedTokens(params.outputTokens)
     )
   );
-  const outputReserve = explicitReservedTokens ?? maxOutputTokens;
+  const outputReserveTokens = explicitReservedTokens ?? maxOutputTokens;
   const rawUsable = inputTokens
     ? inputTokens - reservedTokens
-    : contextTokens - outputReserve;
+    : contextTokens - outputReserveTokens;
 
   return {
     maxOutputTokens,
     reservedTokens,
+    outputReserveTokens,
     usableContextTokens: Math.max(1, Math.min(contextTokens - 1, rawUsable)),
   };
 };

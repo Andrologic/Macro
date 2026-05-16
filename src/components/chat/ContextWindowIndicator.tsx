@@ -1,12 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 
-import type { ConversationContextDiagnostics } from '../../stores/useChatStore';
+import type {
+  ConversationCompactionStatus,
+  ConversationContextDiagnostics,
+} from '../../stores/useChatStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 interface ContextWindowIndicatorProps {
   diagnostics?: ConversationContextDiagnostics;
+  compactionStatus?: ConversationCompactionStatus;
   isCompacting?: boolean;
   canCompactNow?: boolean;
   onRefresh?: () => void;
@@ -93,10 +97,20 @@ const getContextLimitWarning = (
   return null;
 };
 
-const getPressureRatio = (diagnostics?: ConversationContextDiagnostics): number =>
-  Math.min(
-    Math.max(diagnostics?.usableRatio ?? diagnostics?.ratio ?? 0, 0),
-    1,
+const clampRatio = (value?: number): number =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(Math.max(value, 0), 1)
+    : 0;
+
+const getPressureRatio = (
+  diagnostics?: ConversationContextDiagnostics,
+  compactionStatus?: ConversationCompactionStatus,
+): number =>
+  clampRatio(
+    diagnostics?.usableRatio ??
+      diagnostics?.ratio ??
+      compactionStatus?.footprintAfter?.usableContextRatio ??
+      compactionStatus?.footprintAfter?.totalContextRatio,
   );
 
 const resolveTone = (diagnostics?: ConversationContextDiagnostics) => {
@@ -182,6 +196,7 @@ const diagnosticsMatchStableContext = (
 
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   diagnostics,
+  compactionStatus,
   isCompacting = false,
   canCompactNow = true,
   onRefresh,
@@ -229,9 +244,10 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       ? lastStableDiagnostics
       : diagnostics;
   const tone = resolveTone(effectiveDiagnostics);
-  const pressureRatio = getPressureRatio(effectiveDiagnostics);
+  const pressureRatio = getPressureRatio(effectiveDiagnostics, compactionStatus);
   const [displayedPressureRatio, setDisplayedPressureRatio] = useState(pressureRatio);
   const displayedPressureRatioRef = useRef(displayedPressureRatio);
+  const svgId = useId().replace(/:/g, '');
 
   useEffect(() => {
     displayedPressureRatioRef.current = displayedPressureRatio;
@@ -273,8 +289,14 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     };
   }, [pressureRatio]);
 
-  const totalRatio = Math.min(Math.max(effectiveDiagnostics?.ratio ?? 0, 0), 1);
+  const totalRatio = clampRatio(
+    effectiveDiagnostics?.ratio ?? compactionStatus?.footprintAfter?.totalContextRatio,
+  );
   const progress = Math.round(displayedPressureRatio * 100);
+  const compactionWaveLength =
+    progress > 0 ? Math.max(1, Math.min(18, progress * 0.35, progress)) : 0;
+  const compactionWaveStart = -Math.max(progress - compactionWaveLength, 0);
+  const compactingMaskId = `context-window-compacting-mask-${svgId}`;
   const footprint =
     effectiveDiagnostics?.footprintAfter ?? effectiveDiagnostics?.footprintBefore;
   const remainingTokens = footprint
@@ -303,6 +325,12 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             : ''
         }`
       : 'Aucun';
+  const budgetFormula =
+    effectiveDiagnostics?.compactionDecisionAudit?.formula ?? null;
+  const outputReserveTokens =
+    footprint?.outputReserveTokens ??
+    effectiveDiagnostics?.compactionDecisionAudit?.outputReserveTokens ??
+    undefined;
   const canCompact =
     Boolean(onCompactNow) &&
     canCompactNow &&
@@ -329,6 +357,25 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             viewBox="0 0 24 24"
             aria-hidden="true"
           >
+            {isCompacting && progress > 0 ? (
+              <defs>
+                <mask id={compactingMaskId} maskUnits="userSpaceOnUse">
+                  <rect x="0" y="0" width="24" height="24" fill="black" />
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9"
+                    fill="none"
+                    stroke="white"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    pathLength="100"
+                    strokeDasharray={`${progress} 100`}
+                    data-testid="context-window-compacting-mask-fill"
+                  />
+                </mask>
+              </defs>
+            ) : null}
             <circle
               cx="12"
               cy="12"
@@ -348,9 +395,28 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               strokeLinecap="round"
               pathLength="100"
               strokeDasharray={`${progress} 100`}
-              className={cn(isCompacting && 'opacity-35')}
+              className={cn(isCompacting && 'opacity-30')}
               data-testid="context-window-fill"
             />
+            {isCompacting && progress > 0 ? (
+              <circle
+                cx="12"
+                cy="12"
+                r="9"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                pathLength="100"
+                strokeDasharray={`${compactionWaveLength} 100`}
+                mask={`url(#${compactingMaskId})`}
+                className="context-window-compaction-wave motion-reduce:animate-none"
+                style={{
+                  '--context-window-wave-start': String(compactionWaveStart),
+                } as React.CSSProperties}
+                data-testid="context-window-compacting"
+              />
+            ) : null}
           </svg>
           {isCompacting ? (
             <span
@@ -359,25 +425,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               aria-label="Compactage en cours"
               data-testid="context-window-compacting-spinner"
             >
-              <svg
-                className="absolute inset-0 h-5 w-5 -rotate-90 animate-spin overflow-visible motion-reduce:animate-none"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                data-testid="context-window-compacting"
-              >
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="9"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  pathLength="100"
-                  strokeDasharray="18 100"
-                  className="opacity-75"
-                />
-              </svg>
               <span className="flex h-3 w-3 items-center justify-center rounded-full bg-background/85">
                 <span className="h-1.5 w-1.5 rounded-full bg-current/75" />
               </span>
@@ -422,12 +469,19 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             <Metric label="Payload" value={formatCompactTokens(footprint?.serializedPayloadTokens ?? footprint?.totalEstimatedTokens)} />
             <Metric label={contextLimitLabel} value={formatCompactTokens(modelWindowTokens)} />
             <Metric label="Budget utile" value={formatCompactTokens(footprint?.usableContextTokens)} />
+            <Metric label="Réserve sortie" value={formatCompactTokens(outputReserveTokens)} />
             <Metric label="Marge" value={formatCompactTokens(remainingTokens)} />
             <Metric label="Source limite" value={contextLimitSourceLabel} />
             <Metric label="Confiance" value={contextLimitConfidenceLabel} />
             <Metric label="Contexte total" value={formatPercent(totalRatio)} />
             <Metric label="Checkpoint" value={checkpointLabel} />
           </div>
+
+          {budgetFormula ? (
+            <div className="mt-3 rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs text-muted-foreground">
+              {budgetFormula}
+            </div>
+          ) : null}
 
           {contextLimitWarning ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">

@@ -156,6 +156,21 @@ interface LoadCurrentChangesOptions {
   preserveDiffModalSession?: boolean;
 }
 
+const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
+
+const isFileDiffDebugEnabled = (): boolean =>
+  Boolean(import.meta.env?.DEV) &&
+  typeof window !== 'undefined' &&
+  window.localStorage.getItem(DEBUG_FILE_DIFF_STORAGE_KEY) === '1';
+
+const debugFileDiffStoreLog = (event: string, details?: Record<string, unknown>): void => {
+  if (!isFileDiffDebugEnabled()) {
+    return;
+  }
+
+  console.debug(`[FileChangesStore] ${event}`, details ?? {});
+};
+
 const EMPTY_STATS: ReviewRepositoryStats = {
   pendingVisibleFileCount: 0,
   validatedStagedFileCount: 0,
@@ -1156,6 +1171,78 @@ const buildDiffModalSession = (
   ...overrides,
 });
 
+const findDiffTargetChange = (
+  repositories: ReviewRepositoryState[],
+  target: SelectedDiffTarget | null
+): FileChangeEntry | null => {
+  if (!target) {
+    return null;
+  }
+
+  return repositories
+    .find((repository) => repository.id === target.repositoryId)
+    ?.changes.find((change) => change.id === target.changeId) ?? null;
+};
+
+const resolveLatestDiffModalSessionAfterRefresh = ({
+  repositories,
+  latestState,
+  taskId,
+  shouldPreserve,
+}: {
+  repositories: ReviewRepositoryState[];
+  latestState: FileChangesState;
+  taskId: string;
+  shouldPreserve: boolean;
+}): Pick<FileChangesState, 'selectedDiffTarget' | 'diffModalSession' | 'isDiffModalOpen'> => {
+  if (!shouldPreserve || latestState.currentTaskId !== taskId || !latestState.isDiffModalOpen) {
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  const session = latestState.diffModalSession;
+  const target = latestState.selectedDiffTarget;
+  if (!session || !target) {
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  const refreshedChange = findDiffTargetChange(repositories, target);
+  if (!refreshedChange) {
+    debugFileDiffStoreLog('loadCurrentChanges.modalClosedAfterRefresh', {
+      repositoryId: target.repositoryId,
+      changeId: target.changeId,
+      reason: 'change_missing',
+    });
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  return {
+    selectedDiffTarget: target,
+    diffModalSession: {
+      ...session,
+      originalContent: refreshedChange.originalContent,
+      rightDraftContent: session.isDirty
+        ? session.rightDraftContent
+        : refreshedChange.modifiedContent,
+      lastLoadedModifiedContent: refreshedChange.modifiedContent,
+      isSaving: false,
+      isHydratingFullContext: false,
+    },
+    isDiffModalOpen: true,
+  };
+};
+
 interface FileChangesState {
   currentTaskId: string | null;
   currentTaskLoadState: FileChangesTaskLoadState;
@@ -1414,9 +1501,15 @@ export const createFileChangesStore = (
       (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
     );
     const executionRecords = sameTask ? previousState.executionRecords : {};
-    const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
-    const previousDiffModalSession = sameTask ? previousState.diffModalSession : null;
-    const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
+    const shouldPreserveModalAfterRefresh = silentReload || options?.preserveDiffModalSession === true;
+
+    debugFileDiffStoreLog('loadCurrentChanges.start', {
+      taskId: task.id,
+      silent: options?.silent === true,
+      preserveDiffModalSession: options?.preserveDiffModalSession === true,
+      isDiffModalOpen: previousState.isDiffModalOpen,
+      selectedDiffTarget: previousState.selectedDiffTarget,
+    });
 
     if (silentReload) {
       set({
@@ -1517,29 +1610,19 @@ export const createFileChangesStore = (
       }
 
       const derivedReviewState = deriveReviewState(repositories);
-      const selectedDiffTarget =
-        previousSelectedDiffTarget &&
-          repositories.some((repository) =>
-            repository.id === previousSelectedDiffTarget.repositoryId &&
-            repository.changes.some((change) => change.id === previousSelectedDiffTarget.changeId)
-          )
-          ? previousSelectedDiffTarget
-          : null;
-      const shouldPreserveDiffModalSession = Boolean(
-        (silentReload || options?.preserveDiffModalSession) &&
-          previousDiffModalSession &&
-          selectedDiffTarget &&
-          previousDiffModalSession.repositoryId === selectedDiffTarget.repositoryId &&
-          previousDiffModalSession.changeId === selectedDiffTarget.changeId
-      );
-      const diffModalSession =
-        shouldPreserveDiffModalSession && previousDiffModalSession
-          ? {
-            ...previousDiffModalSession,
-            isSaving: false,
-            isHydratingFullContext: false,
-          }
-          : null;
+      const latestDiffModalState = resolveLatestDiffModalSessionAfterRefresh({
+        repositories,
+        latestState: get(),
+        taskId: task.id,
+        shouldPreserve: shouldPreserveModalAfterRefresh,
+      });
+
+      debugFileDiffStoreLog('loadCurrentChanges.finish', {
+        taskId: task.id,
+        repositoryCount: repositories.length,
+        preservedDiffModal: latestDiffModalState.isDiffModalOpen,
+        selectedDiffTarget: latestDiffModalState.selectedDiffTarget,
+      });
 
       set({
         currentTaskId: task.id,
@@ -1547,9 +1630,7 @@ export const createFileChangesStore = (
         currentTaskLoadMessage: null,
         repositories,
         reviewSummary: derivedReviewState.reviewSummary,
-        selectedDiffTarget,
-        diffModalSession,
-        isDiffModalOpen: Boolean(selectedDiffTarget) && previousIsDiffModalOpen,
+        ...latestDiffModalState,
         isLoading: false,
         lastError: null,
         executionRecords,
@@ -1601,6 +1682,11 @@ export const createFileChangesStore = (
     if (!change) {
       return;
     }
+    debugFileDiffStoreLog('openDiffModal', {
+      repositoryId,
+      changeId,
+      path: change.path,
+    });
     set({
       ...deriveReviewState(repositories),
       selectedDiffTarget: { repositoryId, changeId },
@@ -1613,6 +1699,11 @@ export const createFileChangesStore = (
   },
 
   closeDiffModal: () => {
+    const state = get();
+    debugFileDiffStoreLog('closeDiffModal', {
+      selectedDiffTarget: state.selectedDiffTarget,
+      hadSession: Boolean(state.diffModalSession),
+    });
     set({
       selectedDiffTarget: null,
       diffModalSession: null,

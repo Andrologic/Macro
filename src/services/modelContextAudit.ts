@@ -1,10 +1,15 @@
 import type {
   AIModel,
+  ContextCompactionDecisionAudit,
   ModelContextLimitConfidence,
   ModelContextLimitSource,
   ProviderConfig,
 } from '../types';
-import { resolveModelContextLimits } from './modelContextLimits';
+import { buildContextCompactionDecisionAudit } from './contextCompaction';
+import {
+  resolveModelContextLimits,
+  resolveUsableContextTokens,
+} from './modelContextLimits';
 
 export interface ModelContextAuditRow {
   providerId: string;
@@ -14,11 +19,15 @@ export interface ModelContextAuditRow {
   contextTokens: number;
   inputTokens?: number;
   outputTokens?: number;
+  outputReserveTokens?: number;
+  reservedTokens?: number;
+  usableContextTokens: number;
   source: ModelContextLimitSource;
   isAuthoritative: boolean;
   confidence: ModelContextLimitConfidence;
   updatedAt?: string;
   warning?: string;
+  audit: ContextCompactionDecisionAudit;
 }
 
 export const buildModelContextAuditRows = (params: {
@@ -44,6 +53,43 @@ export const buildModelContextAuditRows = (params: {
           contextWindowSource: model.contextWindowSource,
           contextLimitsUpdatedAt: model.contextLimitsUpdatedAt,
         });
+        const budget = resolveUsableContextTokens({
+          contextTokens: limits.contextTokens,
+          inputTokens: limits.inputTokens,
+          outputTokens: limits.outputTokens,
+        });
+        const audit = buildContextCompactionDecisionAudit({
+          providerId,
+          providerType: provider?.providerType,
+          modelId: model.id,
+          footprint: {
+            totalEstimatedTokens: 0,
+            messageTokens: 0,
+            hiddenContextTokens: 0,
+            systemTokens: 0,
+            toolSchemaTokens: 0,
+            imagePlaceholderTokens: 0,
+            citationTokens: 0,
+            modelContextWindowTokens: limits.contextTokens,
+            inputLimitTokens: limits.inputTokens,
+            outputLimitTokens: limits.outputTokens,
+            contextLimitSource: limits.source,
+            isContextLimitAuthoritative: limits.isAuthoritative,
+            contextLimitConfidence: limits.confidence,
+            contextLimitWarning: limits.warning,
+            reservedTokens: budget.reservedTokens,
+            outputReserveTokens: budget.outputReserveTokens,
+            usableContextTokens: budget.usableContextTokens,
+            threshold: 'none',
+            reason: 'below_threshold',
+            totalContextRatio: 0,
+            usableContextRatio: 0,
+            hiddenContextRatio: 0,
+            hardStopRatio: 0.98,
+            isHardStop: false,
+            toolTurnCount: 0,
+          },
+        });
 
         return {
           providerId,
@@ -53,11 +99,15 @@ export const buildModelContextAuditRows = (params: {
           contextTokens: limits.contextTokens,
           inputTokens: limits.inputTokens,
           outputTokens: limits.outputTokens,
+          outputReserveTokens: budget.outputReserveTokens,
+          reservedTokens: budget.reservedTokens,
+          usableContextTokens: budget.usableContextTokens,
           source: limits.source,
           isAuthoritative: limits.isAuthoritative,
           confidence: limits.confidence,
           updatedAt: limits.updatedAt,
           warning: limits.warning,
+          audit,
         };
       });
     })

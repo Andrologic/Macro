@@ -591,13 +591,17 @@ describe('FileChangesPanel', () => {
     expect(revertButtons.length).toBeGreaterThan(0);
     expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]').length).toBeGreaterThan(0);
     document.body.querySelectorAll('[data-pending-validation-indicator="true"]').forEach((indicator) => {
-      expect(indicator.className).toContain('group-focus-within:opacity-0');
+      expect(indicator.className).toContain('group-hover:opacity-0');
+      expect(indicator.className).not.toContain('group-focus-within:opacity-0');
     });
     document.body.querySelectorAll('[data-file-change-metadata="true"]').forEach((metadata) => {
-      expect(metadata.className).toContain('group-focus-within:opacity-0');
+      expect(metadata.className).toContain('group-hover:opacity-0');
+      expect(metadata.className).not.toContain('group-focus-within:opacity-0');
     });
     document.body.querySelectorAll('[data-scope-action-rail="true"]').forEach((rail) => {
-      expect(rail.className).toContain('group-focus-within:opacity-100');
+      expect(rail.className).toContain('group-hover:opacity-100');
+      expect(rail.className).toContain('group-hover:pointer-events-auto');
+      expect(rail.className).not.toContain('group-focus-within:opacity-100');
       expect(rail.className).toContain('bg-gradient-to-l');
       expect(rail.className).not.toContain('bg-transparent');
     });
@@ -792,10 +796,12 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('main.ts');
     expect(document.body.textContent).toContain('child.ts');
     document.body.querySelectorAll('[data-file-change-metadata="true"]').forEach((metadata) => {
-      expect(metadata.className).toContain('group-focus-within:opacity-0');
+      expect(metadata.className).toContain('group-hover:opacity-0');
+      expect(metadata.className).not.toContain('group-focus-within:opacity-0');
     });
     document.body.querySelectorAll('[data-repository-change-status="true"]').forEach((status) => {
-      expect(status.className).toContain('group-focus-within:opacity-0');
+      expect(status.className).toContain('group-hover:opacity-0');
+      expect(status.className).not.toContain('group-focus-within:opacity-0');
     });
     expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]')).toHaveLength(0);
     expect(document.body.textContent).not.toContain('validated file(s) staged and ready to commit');

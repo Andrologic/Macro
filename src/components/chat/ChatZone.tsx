@@ -800,6 +800,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ? contextDiagnosticsByConversationId[selectedConversationId]
     : undefined;
   const activeCompactionPhase = activeCompactionStatus?.phase ?? null;
+  const isRuntimeCompacting =
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase);
+  const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isContextStreaming || isPreparingSend;
@@ -808,7 +811,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const runtimeAssistantMessageId =
     selectedConversationRuntime.assistantMessageId ?? null;
   const activeTranscriptCompactionPhase =
-    isChatTranscriptCompactionProgressPhase(activeCompactionPhase)
+    isRuntimeCompacting
       ? activeCompactionPhase
       : isManualCompacting
         ? 'compacting'
@@ -818,7 +821,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     Boolean(selectedConversationId) &&
     (shouldShowContextControlsForActiveContext ||
       Boolean(contextDiagnostics) ||
-      Boolean(activeTranscriptCompactionPhase));
+      isActiveContextCompacting);
   const runtimeAssistantActivityAnchorId = resolveAssistantActivityAnchorId(
     currentMessages,
     runtimeAssistantMessageId,
@@ -1921,7 +1924,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {shouldShowContextIndicator && selectedConversationId && (
               <ContextWindowIndicator
                 diagnostics={contextDiagnostics}
-                isCompacting={Boolean(activeTranscriptCompactionPhase)}
+                compactionStatus={activeCompactionStatus}
+                isCompacting={isActiveContextCompacting}
                 canCompactNow={!isBusySending && !isManualCompacting}
                 onRefresh={() => {
                   void runContextDiagnosticsRefresh();

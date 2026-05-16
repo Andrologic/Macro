@@ -88,6 +88,7 @@ export const ModelsSettings: React.FC = () => {
     addManualModel,
     updateManualModel,
     deleteManualModel,
+    resetProviderModelContextOverflowLimit,
     updateProviderSettings,
     scanModelsForProvider,
     getAvailableReasoningEfforts,
@@ -586,6 +587,11 @@ export const ModelsSettings: React.FC = () => {
                                 {t('models.freeBadge', 'Free')}
                               </span>
                             )}
+                            {model.contextWindowSource === 'provider_overflow_error' && (
+                              <span className="px-2 py-0.5 text-[10px] rounded-full border border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                                {t('models.learnedContextLimit', 'Learned limit')}
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-muted-foreground mt-0.5 font-mono">
                             {model.id}
@@ -598,6 +604,30 @@ export const ModelsSettings: React.FC = () => {
                               setProviderModelEnabled(provider.id, model.id, checked)
                             }
                           />
+
+                          {model.contextWindowSource === 'provider_overflow_error' && (
+                            <button
+                              type="button"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-background/60 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                              title={t('models.resetLearnedContextLimit', 'Reset learned context limit')}
+                              aria-label={t('models.resetLearnedContextLimit', 'Reset learned context limit')}
+                              onClick={async () => {
+                                try {
+                                  await resetProviderModelContextOverflowLimit(provider.id, model.id);
+                                  notify.success(t('models.learnedContextLimitReset', 'Learned context limit reset'));
+                                } catch (error) {
+                                  notify.error(
+                                    getErrorMessage(
+                                      error,
+                                      t('models.learnedContextLimitResetFailed', 'Failed to reset learned context limit')
+                                    )
+                                  );
+                                }
+                              }}
+                            >
+                              <Icon name="rotate-ccw" size={14} />
+                            </button>
+                          )}
 
                           {model.isManual && (
                             <button
