@@ -59,7 +59,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/50"
         onClick={() => {
           if (!isSubmitting) {
             onClose();

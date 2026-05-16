@@ -45,7 +45,7 @@ import {
 const DEBUG_BLUEPRINT_FRAME_CLASS_NAME =
   'flex min-h-[236px] items-center justify-center rounded-2xl border border-border/60 bg-background/80 p-4 shadow-inner';
 const DEBUG_PANEL_CLASS_NAME =
-  'overflow-hidden rounded-2xl border border-border/60 bg-card/50 shadow-[0_20px_60px_-48px_rgba(0,0,0,0.55)] backdrop-blur-sm';
+  'overflow-hidden rounded-2xl border border-border/60 bg-card/50 shadow-[0_20px_60px_-48px_rgba(0,0,0,0.55)]';
 const DEBUG_PANEL_SECTION_CLASS_NAME = 'border-t border-border/50 px-4 py-4 sm:px-5';
 const DEBUG_PANEL_FIELD_GROUP_CLASS_NAME =
   'rounded-xl border border-border/50 bg-background/55 p-4';

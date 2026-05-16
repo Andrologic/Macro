@@ -714,7 +714,7 @@ export const ModelsSettings: React.FC = () => {
         )}
 
       {manualModelEditor && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
           <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
             <div className="mb-0 flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
               <h4 className="text-base font-semibold">

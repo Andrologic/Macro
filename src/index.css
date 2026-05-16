@@ -454,7 +454,6 @@
     color: rgb(var(--foreground));
     font-size: 0.75rem;
     font-weight: 500;
-    backdrop-filter: blur(10px);
   }
 
   [data-sonner-toaster].macro-toaster [data-button].macro-toast-action:hover,
@@ -795,7 +794,7 @@
   }
 
   .glass-effect {
-    @apply bg-card/50 backdrop-blur-sm border border-border/50;
+    @apply bg-card/95 border border-border/50;
   }
 
   /* Custom select styling to work with themes */

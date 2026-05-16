@@ -1953,6 +1953,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn resolves_shell_from_absolute_executable_shell_env() {
         let source = env_map(&[("SHELL", "/bin/zsh")]);
         let shell = resolve_unix_shell_from(|key| source.get(key).cloned(), || None, &|path| {
@@ -1969,6 +1970,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn resolves_fish_shell_from_shell_env() {
         let source = env_map(&[("SHELL", "/opt/homebrew/bin/fish")]);
         let shell = resolve_unix_shell_from(|key| source.get(key).cloned(), || None, &|path| {
@@ -1985,6 +1987,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn resolves_shell_from_passwd_when_shell_env_is_invalid() {
         let source = env_map(&[("SHELL", "zsh"), ("USER", "oscar")]);
         let shell = resolve_unix_shell_from(
@@ -2005,6 +2008,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn resolves_shell_from_fallbacks_when_user_shell_is_unavailable() {
         let source = env_map(&[("SHELL", "/missing/zsh"), ("USER", "oscar")]);
         let shell = resolve_unix_shell_from(
@@ -2023,6 +2027,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn fish_prompt_command_escapes_prompt_for_double_quotes() {
         assert_eq!(
             fish_double_quote_escape(r#"api "$HOME" \ ` > "#),
@@ -2031,6 +2036,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn bash_launch_config_keeps_isolated_interactive_args_and_silences_macos_warning() {
         let config = build_unix_shell_launch_config(
             &UnixShellSpec {
@@ -2052,6 +2058,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn zsh_launch_config_uses_fast_interactive_mode_with_macro_prompt() {
         let config = build_unix_shell_launch_config(
             &UnixShellSpec {
@@ -2068,6 +2075,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn fish_launch_config_sets_prompt_with_init_command() {
         let config = build_unix_shell_launch_config(
             &UnixShellSpec {

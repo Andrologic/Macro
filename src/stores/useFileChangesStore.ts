@@ -22,6 +22,10 @@ import {
   buildFileChangesRepositoryId,
   getFileChangesExecutionTargets,
 } from '../services/fileChangesReviewScope';
+import {
+  resolveCachedPreparedTaskWorktreePath,
+  resolvePreparedTaskWorktreePath,
+} from '../services/preparedTaskWorktrees';
 import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import {
@@ -195,6 +199,7 @@ type FileChangesTauriDeps = Pick<
   | 'gitAdd'
   | 'gitCommit'
   | 'gitRestorePaths'
+  | 'gitWorktreeInspect'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
   gitReviewSnapshot?: typeof tauriIpc.gitReviewSnapshot;
@@ -222,8 +227,9 @@ interface FileChangesTaskStoreState {
 }
 
 type FileChangesSetTaskState = (partial: {
-  activeBranchName: string | null;
-  activeRepositoryPath: string | null;
+  activeBranchName?: string | null;
+  activeRepositoryPath?: string | null;
+  branchWorktrees?: Record<string, string>;
 }) => void;
 
 export interface FileChangesStoreDependencies {
@@ -704,11 +710,54 @@ const ensureReviewTask = (deps: FileChangesStoreDependencies): FileChangesTaskLi
 
 const resolveRepositoryWorktreePath = (
   deps: FileChangesStoreDependencies,
-  target: TaskExecutionTarget,
-  _task: FileChangesTaskLike
+  target: TaskExecutionTarget
 ): string | null => {
   const taskState = deps.getTaskState();
-  return taskState.branchWorktrees[target.worktreeKey] ?? null;
+  return resolveCachedPreparedTaskWorktreePath(target, taskState.branchWorktrees);
+};
+
+const resolveRepositoryWorktreePaths = async (
+  deps: FileChangesStoreDependencies,
+  targets: TaskExecutionTarget[]
+): Promise<{
+  unresolvedTargets: TaskExecutionTarget[];
+  hydratedWorktrees: Record<string, string>;
+}> => {
+  const hydratedWorktrees: Record<string, string> = {};
+  const unresolvedTargets: TaskExecutionTarget[] = [];
+
+  for (const target of targets) {
+    const taskState = deps.getTaskState();
+    const branchWorktrees = {
+      ...taskState.branchWorktrees,
+      ...hydratedWorktrees,
+    };
+
+    if (branchWorktrees[target.worktreeKey]) {
+      continue;
+    }
+
+    const cachedPath = resolveCachedPreparedTaskWorktreePath(target, branchWorktrees);
+    if (cachedPath) {
+      hydratedWorktrees[target.worktreeKey] = cachedPath;
+      continue;
+    }
+
+    const resolvedPath = await resolvePreparedTaskWorktreePath({
+      target,
+      branchWorktrees,
+      getProjectById: deps.getAppState().getProjectById,
+      tauri: deps.tauri,
+    });
+
+    if (resolvedPath) {
+      hydratedWorktrees[target.worktreeKey] = resolvedPath;
+    } else {
+      unresolvedTargets.push(target);
+    }
+  }
+
+  return { unresolvedTargets, hydratedWorktrees };
 };
 
 const buildFirstChangesMessage = (): string =>
@@ -719,8 +768,21 @@ const buildFirstChangesMessage = (): string =>
 
 const buildMissingWorktreeMessage = (
   _task: FileChangesTaskLike,
-  _targets: TaskExecutionTarget[]
-): string => buildFirstChangesMessage();
+  targets: TaskExecutionTarget[]
+): string => {
+  const targetBranches = targets
+    .map((target) => target.branchName || target.worktreeKey)
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  const targetLabel = targetBranches.length > 0
+    ? targetBranches.join(', ')
+    : tChanges('implement.taskWorkspace', 'the task workspace');
+
+  return tChanges(
+    'implement.missingTaskWorktreeMapping',
+    'Macro could not find the prepared task worktree for {{target}}.',
+    { target: targetLabel }
+  );
+};
 
 const buildAwaitingWorktreeMessage = (task: FileChangesTaskLike): string => {
   if (task.status === 'Blocked') {
@@ -872,7 +934,7 @@ const loadRepositoryState = async (params: {
   const appState = deps.getAppState();
   const project = appState.getProjectById(target.projectId);
   const repoPath = project?.path ?? target.repoPath ?? null;
-  const worktreePath = resolveRepositoryWorktreePath(deps, target, task);
+  const worktreePath = resolveRepositoryWorktreePath(deps, target);
 
   if (!repoPath || !worktreePath) {
     throw new Error(
@@ -1423,9 +1485,8 @@ export const createFileChangesStore = (
         return;
       }
 
-      const unresolvedTargets = scopedExecutionTargets.filter(
-        (target) => !resolveRepositoryWorktreePath(deps, target, task)
-      );
+      const { unresolvedTargets, hydratedWorktrees } =
+        await resolveRepositoryWorktreePaths(deps, scopedExecutionTargets);
 
       if (unresolvedTargets.length > 0) {
         if (isStaleRequest(nextLoadRequestId, task.id)) {
@@ -1446,6 +1507,19 @@ export const createFileChangesStore = (
           executionRecords: {},
         });
         return;
+      }
+
+      if (Object.keys(hydratedWorktrees).length > 0) {
+        if (isStaleRequest(nextLoadRequestId, task.id)) {
+          return;
+        }
+
+        deps.setTaskState({
+          branchWorktrees: {
+            ...deps.getTaskState().branchWorktrees,
+            ...hydratedWorktrees,
+          },
+        });
       }
 
       const repositories = await Promise.all(
@@ -1474,12 +1548,15 @@ export const createFileChangesStore = (
           )
           ? previousSelectedDiffTarget
           : null;
+      const shouldPreserveDiffModalSession = Boolean(
+        (silentReload || options?.preserveDiffModalSession) &&
+          previousDiffModalSession &&
+          selectedDiffTarget &&
+          previousDiffModalSession.repositoryId === selectedDiffTarget.repositoryId &&
+          previousDiffModalSession.changeId === selectedDiffTarget.changeId
+      );
       const diffModalSession =
-        options?.preserveDiffModalSession &&
-        previousDiffModalSession &&
-        selectedDiffTarget &&
-        previousDiffModalSession.repositoryId === selectedDiffTarget.repositoryId &&
-        previousDiffModalSession.changeId === selectedDiffTarget.changeId
+        shouldPreserveDiffModalSession && previousDiffModalSession
           ? {
             ...previousDiffModalSession,
             isSaving: false,

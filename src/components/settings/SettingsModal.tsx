@@ -49,7 +49,7 @@ export const SettingsModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in p-3 md:p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in p-3 md:p-6">
       {/* Modal Container */}
       <div className="flex h-[min(90vh,calc(100vh-1.5rem))] w-full max-w-[1200px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ring-1 ring-white/5 md:h-[min(85vh,calc(100vh-3rem))] md:flex-row">
 
@@ -93,7 +93,7 @@ export const SettingsModal: React.FC = () => {
 
         {/* Content Area */}
         <div className="flex-1 flex flex-col bg-background/50 min-h-0">
-          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30 backdrop-blur-sm">
+          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
             <div>
               <h3 className="text-lg font-semibold text-foreground">
                 {tabs.find(t => t.id === activeSettingsTab)?.label}

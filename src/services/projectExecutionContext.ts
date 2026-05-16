@@ -7,6 +7,7 @@ import {
   isProjectActionable,
   isProjectReadOnly,
 } from './globalProjects';
+import { resolveCachedPreparedTaskWorktreePath } from './preparedTaskWorktrees';
 
 export interface ExecutionTaskLike {
   id: string;
@@ -206,8 +207,9 @@ export const resolveProjectExecutionContext = (
       : null;
     const branchWorktree = input.branchWorktrees
       ? cleanString(
-          (matchingTarget?.worktreeKey ? input.branchWorktrees[matchingTarget.worktreeKey] : null) ||
-            (matchingTarget?.branchName ? input.branchWorktrees[matchingTarget.branchName] : null)
+          matchingTarget
+            ? resolveCachedPreparedTaskWorktreePath(matchingTarget, input.branchWorktrees)
+            : null
         )
       : null;
     const resolvedPath =

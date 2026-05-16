@@ -735,6 +735,22 @@ impl ProjectRegistryRepairReportDto {
             || self.predicted_branches_removed > 0
             || self.git_flow_settings_auto_updated > 0
     }
+
+    pub fn has_destructive_repairs(&self) -> bool {
+        self.duplicate_paths_removed > 0
+            || self.empty_groups_removed > 0
+            || self.removed_synthetic_groups > 0
+            || self.removed_synthetic_projects > 0
+            || !self.removed_group_ids.is_empty()
+            || !self.removed_project_ids.is_empty()
+            || self.current_plan_project_ids_removed > 0
+            || self.current_plan_tasks_removed > 0
+            || self.current_plan_task_targets_removed > 0
+            || self.manual_features_removed > 0
+            || self.manual_feature_targets_removed > 0
+            || self.plan_nodes_removed > 0
+            || self.predicted_branches_removed > 0
+    }
 }
 
 fn default_project_git_setup_state() -> String {

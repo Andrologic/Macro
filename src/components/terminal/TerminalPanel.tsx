@@ -514,7 +514,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
         {searchOpen && (
-          <div className="absolute right-3 top-3 z-10 flex h-9 max-w-[min(520px,calc(100%-1.5rem))] items-center gap-1 rounded-md border border-border/80 bg-background/95 px-2 shadow-lg backdrop-blur">
+          <div className="absolute right-3 top-3 z-10 flex h-9 max-w-[min(520px,calc(100%-1.5rem))] items-center gap-1 rounded-md border border-border/80 bg-background/95 px-2 shadow-lg">
             <Icon name="search" size={13} className="shrink-0 text-muted-foreground" />
             <input
               ref={searchInputRef}
