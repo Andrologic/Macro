@@ -200,8 +200,11 @@ import {
 } from "../services/contextCompaction";
 import {
   buildCompactionDecisionAuditMetadata,
+  consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
+  isSyntheticCompactionBoundaryState,
   runContextCompactionOrchestration,
+  type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
 import {
   buildCompactionActivityStatus,
@@ -9411,6 +9414,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerTurnState: params.assistantMessage.provider_turn_state,
       },
     });
+    let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
 
     const maybeMarkImplementTaskFailedAfterStreamError = async () => {
       if (
@@ -9774,6 +9778,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           latestBoundaryPayloadTokens: latestToolBatchTokens,
           buildForceCompaction: true,
           forcePrune: true,
+          syntheticBoundary: true,
           onCompactionStarted: () => {
             markConversationCompactionStarted(
               params.conversationId,
@@ -9879,6 +9884,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       if (result.compactionState) {
+        if (isSyntheticCompactionBoundaryState(result.compactionState)) {
+          pendingToolBoundaryCompaction = {
+            conversationId: params.conversationId,
+            assistantMessageId: params.assistantMessage.id,
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            modelId: params.selectedModelId,
+            createdAt: new Date().toISOString(),
+            compactionState: result.compactionState,
+            footprintBefore: result.footprintBefore,
+            footprintAfter: result.footprintAfter,
+            messages: result.messages.map(cloneStreamMessage),
+          };
+        }
         completeLatestSessionCompactionEvent(
           params.conversationId,
           result.compactionState,
@@ -9925,6 +9944,133 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messages: result.messages,
         compacted: Boolean(result.compactionState),
       };
+    };
+
+    const consolidatePendingToolBoundaryCompactionAfterPersistence = async () => {
+      const pending = pendingToolBoundaryCompaction;
+      pendingToolBoundaryCompaction = null;
+      if (!pending) {
+        return;
+      }
+
+      const { footprintFields } = getSelectedModelContext(
+        params.selectedProviderId,
+        params.selectedModelId,
+        params.providerConfig.providerType,
+      );
+      const budgetPolicy = await loadContextBudgetPolicy();
+      const preparedRequest = await prepareMessagesForRequest(
+        params.conversationId,
+        params.allowedToolIds,
+        params.internalAgentProfile,
+        params.modeAtSend,
+      );
+      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+        estimateChatCompletionSerializedPayloadTokens({
+          messages,
+          providerType: params.providerConfig.providerType,
+          providerId: params.selectedProviderId,
+          baseUrl: params.providerConfig.baseUrl,
+          modelId: params.selectedModelId,
+        });
+      const consolidation = await consolidateCompletedAssistantTurnCompaction({
+        pending,
+        systemMessage: preparedRequest.systemMessage,
+        preparedMessages: preparedRequest.preparedMessages,
+        orderedMessages: preparedRequest.orderedMessages,
+        citations: preparedRequest.citations,
+        toolDefinitions,
+        footprintFields,
+        providerId: params.selectedProviderId,
+        providerType: params.providerConfig.providerType,
+        modelId: params.selectedModelId,
+        budgetPolicy,
+        estimateSerializedPayloadTokens,
+        generateSummary: (input) =>
+          generateCompactionSummary(
+            params.providerConfig,
+            params.selectedProviderId,
+            params.selectedModelId,
+            params.selectedReasoningEffort,
+            input,
+          ),
+      });
+
+      if (consolidation.outcome === "consolidated") {
+        if (
+          consolidation.shouldPersistCompaction &&
+          consolidation.result.compactionState
+        ) {
+          await persistConversationCompactionState(
+            consolidation.result.compactionState,
+          );
+        }
+        await recordConversationCompactionEvent({
+          conversationId: params.conversationId,
+          trigger:
+            consolidation.result.compactionState?.lastTrigger ??
+            "safety_prestream",
+          providerId: params.selectedProviderId,
+          modelId: params.selectedModelId,
+          modelContextWindowTokens:
+            consolidation.result.footprintAfter.modelContextWindowTokens,
+          tokensBefore: consolidation.result.footprintBefore.totalEstimatedTokens,
+          tokensAfter: consolidation.result.footprintAfter.totalEstimatedTokens,
+          status: consolidation.result.degraded ? "degraded" : "success",
+          reason: consolidation.result.footprintAfter.reason,
+          metadata: buildCompactionDecisionAuditMetadata({
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            modelId: params.selectedModelId,
+            trigger:
+              consolidation.result.compactionState?.lastTrigger ??
+              "safety_prestream",
+            status: consolidation.result.degraded ? "degraded" : "success",
+            footprintBefore: consolidation.result.footprintBefore,
+            footprintAfter: consolidation.result.footprintAfter,
+            footprintFields,
+            budgetPolicy,
+            reason: consolidation.result.footprintAfter.reason,
+            result: "tool_boundary_consolidation",
+          }),
+        });
+        return;
+      }
+
+      if (consolidation.outcome === "failed") {
+        const footprint =
+          consolidation.preflightFootprint ?? pending.footprintAfter;
+        await recordConversationCompactionEvent({
+          conversationId: params.conversationId,
+          trigger: "safety_prestream",
+          providerId: params.selectedProviderId,
+          modelId: params.selectedModelId,
+          modelContextWindowTokens: footprint.modelContextWindowTokens,
+          tokensBefore: pending.footprintBefore.totalEstimatedTokens,
+          tokensAfter: footprint.totalEstimatedTokens,
+          status: "failed",
+          errorCode: "tool_boundary_consolidation_failed",
+          reason: consolidation.reason,
+          metadata: buildCompactionDecisionAuditMetadata({
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            modelId: params.selectedModelId,
+            trigger: "safety_prestream",
+            status: "failed",
+            footprintBefore: pending.footprintBefore,
+            footprintAfter: footprint,
+            footprintFields,
+            budgetPolicy,
+            reason: consolidation.reason,
+            result: "tool_boundary_consolidation_failed",
+          }),
+        });
+      }
+
+      devLogger.info(
+        `Tool-boundary compaction consolidation ${consolidation.outcome} conversation=${params.conversationId} reason=${consolidation.reason}`,
+      );
     };
 
     void (async () => {
@@ -10047,34 +10193,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
               params.conversationId,
               params.assistantMessage.id,
               result,
-            ).catch((error) => {
-              const currentRuntime = getConversationRuntimeSnapshot(
-                get().conversationRuntimeById,
-                params.conversationId,
-              );
-              if (
-                currentRuntime.sessionId &&
-                currentRuntime.sessionId !== params.sessionId
-              ) {
-                return;
-              }
-              const normalized = toServiceError(error);
-              setConversationRuntime(
-                params.conversationId,
-                {
-                  phase: "error",
-                  sessionId: params.sessionId,
-                  turnId: streamTurnId,
-                  assistantMessageId: params.assistantMessage.id,
-                  abortController: null,
-                  lastError: normalized.message,
-                  lastErrorOrigin: "macro",
-                  lastErrorDisplayTarget: "composer",
-                },
-                { globalLastError: normalized.message },
-              );
-              set({ sendState: "error" });
-            });
+            )
+              .then(async () => {
+                try {
+                  await consolidatePendingToolBoundaryCompactionAfterPersistence();
+                } catch (error) {
+                  devLogger.info(
+                    `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
+                  );
+                }
+              })
+              .catch((error) => {
+                const currentRuntime = getConversationRuntimeSnapshot(
+                  get().conversationRuntimeById,
+                  params.conversationId,
+                );
+                if (
+                  currentRuntime.sessionId &&
+                  currentRuntime.sessionId !== params.sessionId
+                ) {
+                  return;
+                }
+                const normalized = toServiceError(error);
+                setConversationRuntime(
+                  params.conversationId,
+                  {
+                    phase: "error",
+                    sessionId: params.sessionId,
+                    turnId: streamTurnId,
+                    assistantMessageId: params.assistantMessage.id,
+                    abortController: null,
+                    lastError: normalized.message,
+                    lastErrorOrigin: "macro",
+                    lastErrorDisplayTarget: "composer",
+                  },
+                  { globalLastError: normalized.message },
+                );
+                set({ sendState: "error" });
+              });
             void syncMacroMetadataAfterStreamService({
               mode: params.modeAtSend,
               conversationId: params.conversationId,

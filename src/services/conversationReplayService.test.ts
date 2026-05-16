@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import type { ChatMessage, ConversationCompactionState } from '../types';
 import {
   buildConversationReplayPlan,
+  executeConversationReplay,
   pruneSessionCompactionEventsForReplay,
   shouldDeleteContextCompactionForReplay,
 } from './conversationReplayService';
@@ -110,5 +111,84 @@ describe('conversationReplayService', () => {
     expect(plan.shouldDeleteContextCompactionState).toBe(false);
     expect(plan.contextCompactionAction).toBe('keep');
     expect(plan.diagnosticMessages).toEqual([]);
+  });
+
+  it('executes replay operations in the safe checkpoint order', async () => {
+    const calls: string[] = [];
+
+    const result = await executeConversationReplay({
+      conversationId: 'conv-1',
+      replayMessageId: 'u2',
+      conversationMessages: messages,
+      contextCompactionState: state('u2'),
+      sessionCompactionEvents: [{ id: 'after', displayAfterMessageId: 'a2' }],
+      adapters: {
+        previewCodeCheckpoints: () => {
+          calls.push('preview');
+          return { affectedFileCount: 1 };
+        },
+        confirmCodeRestore: () => {
+          calls.push('confirm');
+          return true;
+        },
+        restoreCodeCheckpoint: () => {
+          calls.push('restore-code');
+        },
+        trimMessages: () => {
+          calls.push('trim');
+        },
+        pruneCodeCheckpoints: () => {
+          calls.push('prune-code');
+        },
+        deleteContextCompactionState: () => {
+          calls.push('delete-context-checkpoint');
+        },
+        applySessionCompactionEvents: () => {
+          calls.push('prune-markers');
+        },
+        restartAssistant: () => {
+          calls.push('restart');
+        },
+      },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(calls).toEqual([
+      'preview',
+      'confirm',
+      'restore-code',
+      'trim',
+      'prune-code',
+      'delete-context-checkpoint',
+      'prune-markers',
+      'restart',
+    ]);
+  });
+
+  it('cancels replay before mutations when code restore is refused', async () => {
+    const calls: string[] = [];
+
+    const result = await executeConversationReplay({
+      conversationId: 'conv-1',
+      replayMessageId: 'u2',
+      conversationMessages: messages,
+      contextCompactionState: state('u2'),
+      adapters: {
+        previewCodeCheckpoints: () => {
+          calls.push('preview');
+          return { affectedFiles: ['src/app.ts'] };
+        },
+        confirmCodeRestore: () => {
+          calls.push('confirm');
+          return false;
+        },
+        trimMessages: () => {
+          calls.push('trim');
+        },
+      },
+    });
+
+    expect(result.status).toBe('cancelled');
+    expect(calls).toEqual(['preview', 'confirm']);
   });
 });
