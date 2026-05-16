@@ -612,7 +612,7 @@ describe('useFileChangesStore', () => {
     ).toEqual([1, 1]);
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('validate_repository');
-    expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
     expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
   });
 
@@ -730,11 +730,11 @@ describe('useFileChangesStore', () => {
 
     await useFileChangesStore.getState().loadCurrentChanges();
 
-    const { repositories, reviewSummary, selectedRepositoryId } = useFileChangesStore.getState();
+    const { repositories, reviewSummary } = useFileChangesStore.getState();
     expect(repositories).toHaveLength(1);
     expect(repositories[0]?.projectId).toBe('project-b');
     expect(reviewSummary.repositoryCount).toBe(1);
-    expect(selectedRepositoryId).toBe(repositoryIdB);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdB);
     expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
   });
 
@@ -752,12 +752,12 @@ describe('useFileChangesStore', () => {
     expect(gitStatusMock).not.toHaveBeenCalled();
   });
 
-  it('recomputes the scoped repository selection when the focused subproject changes on the same task', async () => {
+  it('recomputes the scoped repository list when the focused subproject changes on the same task', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 
     await store.loadCurrentChanges();
-    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdA);
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdA);
 
     appStoreState.selectedProjectId = 'project-b';
     await store.loadCurrentChanges();
@@ -766,8 +766,7 @@ describe('useFileChangesStore', () => {
     expect(nextState.currentTaskId).toBe('task-1');
     expect(nextState.repositories).toHaveLength(1);
     expect(nextState.repositories[0]?.projectId).toBe('project-b');
-    expect(nextState.selectedRepositoryId).toBe(repositoryIdB);
-    expect(nextState.reviewSummary.currentRepositoryId).toBe(repositoryIdB);
+    expect(nextState.reviewSummary.nextRepositoryId).toBe(repositoryIdB);
   });
 
   it('reads repository changes from the task worktrees and reloads external edits', async () => {
@@ -1011,6 +1010,33 @@ describe('useFileChangesStore', () => {
     expect(updatedRepository?.changes.every((change) => change.hasValidatedStage)).toBe(true);
   });
 
+  it('does not infer a repository scope when staging all changes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageAllChanges();
+
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(1);
+
+    await store.stageAllChanges(repositoryIdA);
+
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+    });
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(0);
+  });
+
+  it('keeps repository stats explicit while overall stats remain global', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    expect(store.getStats().pendingVisibleFileCount).toBe(0);
+    expect(store.getStats(repositoryIdA).pendingVisibleFileCount).toBe(1);
+    expect(store.getOverallStats().pendingVisibleFileCount).toBe(2);
+  });
+
   it('keeps staged-only files visible without marking them pending', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
@@ -1175,9 +1201,8 @@ describe('useFileChangesStore', () => {
     expect(firstCommit.taskCompleted).toBe(false);
     expect(firstCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
-    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdB);
     expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
-    expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe(repositoryIdB);
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdB);
 
     const secondCommit = await store.commitStagedChanges(
       repositoryIdB,

@@ -1,4 +1,4 @@
-import type { AppMode } from "../types";
+import type { AgentType, AppMode } from "../types";
 import {
   getArchitectChatActionToolIds,
 } from "./architectToolSurface";
@@ -55,6 +55,12 @@ const IMPLEMENT_TASK_TODO_TOOLS = [
   "task_todo_get",
   "task_todo_update",
 ] as const;
+const IMPLEMENT_PLAN_TOOLS = [
+  ...SHARED_CONTEXT_TOOLS,
+  ...WORKSPACE_READ_TOOLS,
+  ...GIT_READ_TOOLS,
+  "task_todo_get",
+] as const;
 
 const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
   ...SHARED_CONTEXT_TOOLS,
@@ -102,6 +108,24 @@ export const getToolModePolicy = (
     enforceMacroOnlyWrites: false,
   };
 };
+
+export const getImplementAgentToolPolicy = (
+  agentType: AgentType,
+): ToolModePolicy => {
+  if (agentType === "plan") {
+    return {
+      allowedToolIds: [...IMPLEMENT_PLAN_TOOLS],
+      enforceMacroOnlyWrites: false,
+    };
+  }
+
+  return getToolModePolicy("Implement");
+};
+
+export const isToolAllowedForImplementAgent = (
+  agentType: AgentType,
+  toolId: string,
+): boolean => getImplementAgentToolPolicy(agentType).allowedToolIds.includes(toolId);
 
 const normalizeRelativePathParts = (rawPath: string): string[] | null => {
   const normalized = rawPath.replace(/\\/g, "/").trim();

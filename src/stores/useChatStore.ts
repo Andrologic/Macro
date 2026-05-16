@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   AppMode,
+  AgentType,
   BuiltInAppMode,
   AgentCodeCheckpoint,
   AgentCodeCheckpointFile,
@@ -59,7 +60,11 @@ import {
 import { useToolsStore } from "./useToolsStore";
 import { useAppStore } from "./useAppStore";
 import { useTaskStore, type ImplementTask } from "./useTaskStore";
-import { getToolModePolicy as getLocalToolModePolicy } from "../services/toolModePolicy";
+import {
+  getImplementAgentToolPolicy,
+  getToolModePolicy as getLocalToolModePolicy,
+  isToolAllowedForImplementAgent,
+} from "../services/toolModePolicy";
 import {
   executeWorkspaceTool,
   resolveExplicitMutatingToolProjectTargets,
@@ -232,6 +237,10 @@ const conversationCompactionStateCache = new Map<
 >();
 const conversationCompactionInProgress = new Set<string>();
 const gitStageCommitChallengesByAssistantTurn = new Set<string>();
+const assistantTurnContextByMessageId = new Map<
+  string,
+  { conversationId: string; mode: AppMode; agentType: AgentType | null }
+>();
 const agentCodeCheckpointLoadPromisesByConversationId = new Map<
   string,
   Promise<AgentCodeCheckpoint[]>
@@ -242,6 +251,12 @@ const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
 const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
   "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
+const IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE =
+  "Plan mode is read-only. This assistant turn cannot edit files, update todos, run terminal commands, stage, commit, checkout, merge, reset, or stash. Inspect the repo and produce a concrete implementation plan instead.";
+const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
+  "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
+const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
+  "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
 const COMPACTION_SUMMARY_SYSTEM_PROMPT =
   "Compact older conversation history for a programming agent into schema v3. Return ONLY valid JSON with keys " +
   '"currentObjective", "userInstructions", "decisions", "discoveries", "openQuestions", "activeFiles", "toolFacts", "knownErrors", "remainingWork", "summary". ' +
@@ -294,6 +309,22 @@ const clearGitStageCommitChallengesForConversations = (
       gitStageCommitChallengesByAssistantTurn.delete(key);
     }
   });
+};
+
+const clearAssistantTurnContextsForConversations = (
+  conversationIds: string[],
+) => {
+  if (conversationIds.length === 0) {
+    return;
+  }
+  const removedConversationIds = new Set(conversationIds);
+  Array.from(assistantTurnContextByMessageId.entries()).forEach(
+    ([messageId, context]) => {
+      if (removedConversationIds.has(context.conversationId)) {
+        assistantTurnContextByMessageId.delete(messageId);
+      }
+    },
+  );
 };
 
 interface LiveContextDiagnosticsRefreshState {
@@ -4949,11 +4980,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await toolsState.loadSettings();
   };
 
-  const getModePolicyForCurrentMode = async (): Promise<{
+  const getModePolicyForCurrentMode = async (
+    modeOverride?: AppMode,
+  ): Promise<{
     allowedToolIds: string[];
     enforceMacroOnlyWrites: boolean;
   }> => {
-    const mode = useAppStore.getState().mode;
+    const mode = modeOverride ?? useAppStore.getState().mode;
     const adjustAllowedToolIds = (allowedToolIds: string[]): string[] =>
       mode === "Architect"
         ? getArchitectProfileAdjustedToolIds(allowedToolIds)
@@ -4996,10 +5029,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const isSourceToolEnabled = async (toolId: string): Promise<boolean> => {
-    const mode = useAppStore.getState().mode;
-    const modePolicy = await getModePolicyForCurrentMode();
+  const isSourceToolEnabled = async (
+    toolId: string,
+    modeOverride?: AppMode,
+    agentTypeOverride?: AgentType | null,
+  ): Promise<boolean> => {
+    const mode = modeOverride ?? useAppStore.getState().mode;
+    const modePolicy = await getModePolicyForCurrentMode(mode);
     if (!modePolicy.allowedToolIds.includes(toolId)) {
+      return false;
+    }
+    if (
+      mode === "Implement" &&
+      agentTypeOverride === "plan" &&
+      !isToolAllowedForImplementAgent("plan", toolId)
+    ) {
       return false;
     }
 
@@ -5331,6 +5375,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return true;
   };
 
+  const rememberAssistantTurnContext = (
+    assistantMessageId: string,
+    conversationId: string,
+    mode: AppMode,
+    agentType: AgentType | null,
+  ) => {
+    assistantTurnContextByMessageId.set(assistantMessageId, {
+      conversationId,
+      mode,
+      agentType,
+    });
+  };
+
+  const resolveAssistantTurnContext = (
+    assistantMessageId: string,
+  ): { mode: AppMode; agentType: AgentType | null } => {
+    const remembered = assistantTurnContextByMessageId.get(assistantMessageId);
+    if (remembered) {
+      return {
+        mode: remembered.mode,
+        agentType: remembered.agentType,
+      };
+    }
+
+    const appState = useAppStore.getState();
+    return {
+      mode: appState.mode,
+      agentType: appState.mode === "Implement" ? appState.agentType : null,
+    };
+  };
+
   const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
@@ -5342,15 +5417,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const assistantTurnId =
       get().messages.find((message) => message.id === assistantMessageId)
         ?.turn_id ?? null;
+    const assistantTurnContext =
+      resolveAssistantTurnContext(assistantMessageId);
 
-    if (!(await isSourceToolEnabled(normalizedToolName))) {
+    if (
+      assistantTurnContext.mode === "Implement" &&
+      assistantTurnContext.agentType === "plan" &&
+      !isToolAllowedForImplementAgent("plan", normalizedToolName)
+    ) {
+      if (toolCallId) {
+        updateAssistantToolTraceStatus(
+          assistantMessageId,
+          toolCallId,
+          "denied",
+        );
+      }
+      return IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE;
+    }
+
+    if (
+      !(await isSourceToolEnabled(
+        normalizedToolName,
+        assistantTurnContext.mode,
+        assistantTurnContext.agentType,
+      ))
+    ) {
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
     }
 
     let executionContext = resolveConversationExecutionContext(conversationId);
     const riskLevel = await loadToolRiskLevelPreference();
     const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
-      mode: useAppStore.getState().mode,
+      mode: assistantTurnContext.mode,
       riskLevel,
       workspacePath: executionContext.workspacePath,
       defaultWorkspacePath: executionContext.defaultWorkspacePath,
@@ -5658,7 +5756,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "terminal_kill" ||
       normalizedToolName.startsWith("git_")
     ) {
-      const mode = useAppStore.getState().mode;
+      const mode = assistantTurnContext.mode;
       let appState = useAppStore.getState();
       let promotedProjectIdsForTool: string[] = [];
 
@@ -5888,6 +5986,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     allowedToolIds: string[],
     internalAgentProfile?: InternalAgentProfile | null,
+    modeAtSend?: AppMode,
+    agentTypeAtSend?: AgentType | null,
     messageWithImagesId?: string,
   ) => {
     const appState = useAppStore.getState();
@@ -6077,8 +6177,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "For file edits in this session, use write/edit/delete tools and do not emit apply_patch. The delete tool only supports files, not directories.",
       );
     }
-    const appMode = appState.mode;
-    const agentType = appMode === "Implement" ? appState.agentType : null;
+    const appMode = modeAtSend ?? appState.mode;
+    const agentType =
+      appMode === "Implement"
+        ? (agentTypeAtSend ?? appState.agentType)
+        : null;
     const modePromptKey = isBuiltInAppMode(appMode)
       ? MODE_PROMPT_KEYS_BY_MODE[appMode]
       : null;
@@ -6102,13 +6205,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
-      agentType === "plan" &&
-      internalAgentProfile !== "task_reviewer" &&
-      internalAgentProfile !== "repo_auditor"
+      appMode === "Implement" &&
+      agentType === "plan"
     ) {
-      systemInstructions.push(
-        "Agent type is PLAN. Focus on planning before execution: clarify goals, propose a step-by-step implementation plan, identify risks/dependencies, and ask for confirmation before suggesting direct file edits. Do not claim code was changed unless a tool call actually performed the change.",
-      );
+      systemInstructions.push(IMPLEMENT_PLAN_SYSTEM_INSTRUCTION);
+    }
+
+    let previousAssistantMessage: ChatMessage | null = null;
+    for (let index = lastUserIndex - 1; index >= 0; index -= 1) {
+      const candidate = orderedMessages[index];
+      if (candidate?.role === "assistant") {
+        previousAssistantMessage = candidate;
+        break;
+      }
+    }
+    const previousAssistantContext = previousAssistantMessage
+      ? assistantTurnContextByMessageId.get(previousAssistantMessage.id)
+      : null;
+    if (
+      appMode === "Implement" &&
+      agentType === "build" &&
+      previousAssistantContext?.agentType === "plan"
+    ) {
+      systemInstructions.push(IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION);
     }
 
     if (
@@ -6807,6 +6926,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     clearPendingArchitectConversationsForConversationIds(conversationIds);
     clearGitStageCommitChallengesForConversations(conversationIds);
+    clearAssistantTurnContextsForConversations(conversationIds);
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);
@@ -6830,6 +6950,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getAllowedToolIdsForCurrentMode = async (
     internalAgentProfile?: InternalAgentProfile | null,
+    modeOverride?: AppMode,
+    agentTypeOverride?: AgentType | null,
   ): Promise<string[]> => {
     if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
       return [];
@@ -6873,8 +6995,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return riskFilteredToolIds;
     };
 
-    const mode = useAppStore.getState().mode;
-    const modePolicy = await getModePolicyForCurrentMode();
+    const appState = useAppStore.getState();
+    const mode = modeOverride ?? appState.mode;
+    const agentType =
+      mode === "Implement"
+        ? (agentTypeOverride ?? appState.agentType)
+        : null;
+    const modePolicy = await getModePolicyForCurrentMode(mode);
     const toolsState = useToolsStore.getState();
 
     if (mode === "Chat") {
@@ -6890,10 +7017,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .filter((tool) => toolsState.isToolEnabled(tool.id))
       .map((tool) => tool.id);
 
+    const modeAllowedToolIds =
+      mode === "Implement" && agentType
+        ? getImplementAgentToolPolicy(agentType).allowedToolIds.filter(
+            (toolId) => modePolicy.allowedToolIds.includes(toolId),
+          )
+        : modePolicy.allowedToolIds;
+
     return finalizeAllowedToolIds(
-      enabledTools.filter((toolId) =>
-        modePolicy.allowedToolIds.includes(toolId),
-      ),
+      enabledTools.filter((toolId) => modeAllowedToolIds.includes(toolId)),
     );
   };
 
@@ -7840,6 +7972,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     userContent: string;
     resolvedTaskId: string;
     modeAtSend: AppMode;
+    agentTypeAtSend?: AgentType | null;
     providerId: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
@@ -7878,12 +8011,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
     const allowedToolIds = await getAllowedToolIdsForCurrentMode(
       internalAgentProfile,
+      params.modeAtSend,
+      params.agentTypeAtSend,
     );
     const showToolTraces = false;
     const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
       internalAgentProfile,
+      params.modeAtSend,
+      params.agentTypeAtSend,
       params.replyToMessageId,
     );
     const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
@@ -8475,6 +8612,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
   }) => {
     let assistantMessageId: string | null = null;
+    const agentTypeAtSend =
+      params.modeAtSend === "Implement"
+        ? useAppStore.getState().agentType
+        : null;
     setConversationRuntime(
       params.conversationId,
       {
@@ -8495,6 +8636,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         userContent: params.userContent,
         resolvedTaskId: params.taskId ?? "",
         modeAtSend: params.modeAtSend,
+        agentTypeAtSend,
         providerId: params.providerId,
         modelId: params.modelId,
         reasoningEffort: params.reasoningEffort,
@@ -8506,6 +8648,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         turnId: params.turnId,
         taskId: params.taskId,
       });
+      rememberAssistantTurnContext(
+        assistantMessage.id,
+        params.conversationId,
+        params.modeAtSend,
+        agentTypeAtSend,
+      );
       assistantMessageId = assistantMessage.id;
       get().addMessage(assistantMessage);
       setConversationRuntime(
@@ -12312,7 +12460,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedReasoningEffort,
           providerConfigs,
         } = providerState;
-        const modeAtSend = useAppStore.getState().mode;
+        const appStateAtSend = useAppStore.getState();
+        const modeAtSend = appStateAtSend.mode;
+        const agentTypeAtSend =
+          modeAtSend === "Implement" ? appStateAtSend.agentType : null;
         persistSelectionForContext(modeAtSend, conversationId);
 
         if (providerState.isLoading) {
@@ -12457,6 +12608,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             userContent: content,
             resolvedTaskId,
             modeAtSend,
+            agentTypeAtSend,
             providerId: selectedProviderId,
             modelId: selectedModelId,
             reasoningEffort: selectedReasoningEffort,
@@ -12474,6 +12626,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             turnId: activeTurnId,
             taskId: resolvedTaskId,
           });
+          rememberAssistantTurnContext(
+            assistantMessage.id,
+            conversationId,
+            modeAtSend,
+            agentTypeAtSend,
+          );
           assistantMessageId = assistantMessage.id;
           get().addMessage(assistantMessage);
           setConversationRuntime(

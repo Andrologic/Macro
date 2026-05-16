@@ -78,6 +78,7 @@ import { isManualDraftPendingInitialization } from '../../services/manualDraftIn
 import { canAutoRefreshFileChangesForTask } from '../../services/fileChangesRefreshPolicy';
 import { CommitMessageEditorModal } from './CommitMessageEditorModal';
 import { CommitMessageGenerationFailureModal } from './CommitMessageGenerationFailureModal';
+import { useElementSize } from '../../hooks/useElementSize';
 
 interface FileChangesPanelProps {
   className?: string;
@@ -121,6 +122,7 @@ const interpolateFallbackPlaceholders = (
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
 const POST_ASSISTANT_REFRESH_DELAY_MS = 400;
+const MULTI_REPOSITORY_MIN_SECTION_HEIGHT = 112;
 const NO_REASONING_EFFORTS = (_providerId?: string | null, _modelId?: string | null): ReasoningEffort[] => [];
 
 const STATUS_COLORS = {
@@ -543,11 +545,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const postAssistantRefreshTimeoutRef = useRef<number | null>(null);
   const [commitMessageEditState, setCommitMessageEditState] = useState<CommitMessageEditState | null>(null);
   const {
+    ref: repositoryListRef,
+    height: repositoryListHeight,
+  } = useElementSize<HTMLDivElement>();
+  const {
     repositories,
     reviewSummary,
     currentTaskLoadState,
     currentTaskLoadMessage,
-    selectedRepositoryId,
     selectedDiffTarget,
     isDiffModalOpen,
     isLoading,
@@ -557,7 +562,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     executionRecords,
     loadCurrentChanges,
     resetReviewState,
-    selectRepository,
     openDiffModal,
     closeDiffModal,
     stageChanges,
@@ -965,17 +969,23 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         if (next[repository.id] !== undefined) return;
         next[repository.id] =
           repositories.length === 1 ||
-          repository.id === selectedRepositoryId ||
           repository.id === reviewSummary.nextRepositoryId;
       });
       return next;
     });
-  }, [repositories, reviewSummary.nextRepositoryId, selectedRepositoryId]);
+  }, [repositories, reviewSummary.nextRepositoryId]);
 
   const repositorySummaryById = useMemo(
     () => new Map(reviewSummary.repositories.map((repository) => [repository.id, repository])),
     [reviewSummary.repositories]
   );
+  const multiRepositorySectionMaxHeight =
+    repositories.length > 1 && repositoryListHeight > 0
+      ? Math.max(
+          MULTI_REPOSITORY_MIN_SECTION_HEIGHT,
+          Math.floor(repositoryListHeight / repositories.length)
+        )
+      : null;
   const overallStats = getOverallStats();
   const actionableFileCount =
     overallStats.pendingVisibleFileCount + overallStats.validatedStagedFileCount;
@@ -1405,7 +1415,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2">
+      <div
+        ref={repositoryListRef}
+        className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2"
+      >
         {isLoading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
@@ -1472,7 +1485,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             expandedRepositoryIds[repository.id] ??
             (
               repositories.length === 1 ||
-              repository.id === selectedRepositoryId ||
               repositorySummary?.isNextAction ||
               false
             );
@@ -1495,19 +1507,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             .filter((change) => change.hasValidatedStage)
             .map((change) => change.id);
           const repositoryActionCount = repositoryChangeIds.length + repositoryStagedChangeIds.length;
+          const repositorySectionMaxHeight =
+            isExpanded && multiRepositorySectionMaxHeight
+              ? `${multiRepositorySectionMaxHeight}px`
+              : undefined;
           return (
             <section
               key={repository.id}
+              data-review-repository-section="true"
+              data-review-repository-expanded={isExpanded ? 'true' : 'false'}
               className={cn(
                 'mx-2 flex min-h-0 flex-col',
-                isExpanded ? 'min-h-[7rem] flex-1 basis-0' : 'shrink-0'
+                isExpanded && repositories.length === 1 && 'min-h-[7rem] flex-1 basis-0',
+                isExpanded && repositories.length > 1 && 'shrink-0 overflow-hidden',
+                !isExpanded && 'shrink-0'
               )}
+              style={repositorySectionMaxHeight ? { maxHeight: repositorySectionMaxHeight } : undefined}
             >
               <div
                 className={cn(
                   'group relative w-full rounded-xl px-3 py-2.5 transition-colors overflow-hidden',
-                  repository.id === selectedRepositoryId || isExpanded
-                    ? 'bg-primary/5'
+                  isExpanded
+                    ? 'bg-accent/25'
                     : 'bg-card hover:bg-accent/40'
                 )}
               >
@@ -1515,13 +1536,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   <button
                     type="button"
                     onClick={() => {
-                      selectRepository(repository.id);
                       setExpandedRepositoryIds((current) => ({
                         ...current,
                         [repository.id]: !(
                           current[repository.id] ??
                           (repositories.length === 1 ||
-                            repository.id === selectedRepositoryId ||
                             repository.id === reviewSummary.nextRepositoryId)
                         ),
                       }));
@@ -1548,7 +1567,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                           className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
                         />
                       )}
-                      {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
+                      {repositorySummary?.isNextAction && (
                         <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
                           {t('implement.nextRepository', 'Next')}
                         </span>
@@ -1598,7 +1617,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
               {isExpanded && (
                 <div className="ml-4 mr-3 mb-3 flex min-h-0 flex-1 flex-col pl-2">
-                  <div className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
+                  <div
+                    data-review-repository-scroll-region="true"
+                    className="min-h-0 flex-1 overflow-y-auto py-1 pr-1"
+                  >
                     {repositoryError && (
                       <div className="px-2 py-3">
                         {repositoryErrorPresentation ? (
@@ -1614,12 +1636,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'committed' && (
-                      <div className="px-2 py-8 text-center text-sm text-primary">
+                      <div className="px-2 py-4 text-center text-sm text-primary">
                         {t('implement.repositoryCommittedHelp', 'This repository has already been committed for this task.')}
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'no_changes' && (
-                      <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                      <div className="px-2 py-4 text-center text-sm text-muted-foreground">
                         {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
                       </div>
                     )}
@@ -1627,7 +1649,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       repository.commitState === 'idle' &&
                       folderTree.length === 0 &&
                       repository.stats.validatedStagedFileCount === 0 && (
-                        <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                        <div className="px-2 py-4 text-center text-sm text-muted-foreground">
                           {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
                         </div>
                       )}
@@ -1639,19 +1661,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
                         onFileClick={(changeId) => {
-                          selectRepository(repository.id);
                           openDiffModal(repository.id, changeId);
                         }}
                         onStageChanges={(changeIds) => {
-                          selectRepository(repository.id);
                           void handleStageScope(repository.id, changeIds);
                         }}
                         onUnstageChanges={(changeIds) => {
-                          selectRepository(repository.id);
                           void handleUnstageScope(repository.id, changeIds);
                         }}
                         onRevert={(changeIds, scopeLabel, requiresConfirm) => {
-                          selectRepository(repository.id);
                           if (requiresConfirm) {
                             setPendingRevertScope({
                               repositoryId: repository.id,

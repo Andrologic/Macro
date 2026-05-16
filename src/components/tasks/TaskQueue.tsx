@@ -173,7 +173,6 @@ interface MultiRepoTaskPresentation {
     label: string;
     title: string;
     state: ReviewRepositoryUiState | null;
-    isCurrent: boolean;
     isNext: boolean;
   }>;
   progressLabel: string;
@@ -899,7 +898,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         label: descriptor.label,
         title: descriptor.repoPath || descriptor.label,
         state: repositorySummary?.state ?? null,
-        isCurrent: repositorySummary?.id === reviewSummary?.currentRepositoryId,
         isNext: repositorySummary?.id === reviewSummary?.nextRepositoryId,
       };
     });
