@@ -231,6 +231,7 @@ const conversationCompactionStateCache = new Map<
   ConversationCompactionState | null
 >();
 const conversationCompactionInProgress = new Set<string>();
+const gitStageCommitChallengesByAssistantTurn = new Set<string>();
 const agentCodeCheckpointLoadPromisesByConversationId = new Map<
   string,
   Promise<AgentCodeCheckpoint[]>
@@ -238,6 +239,9 @@ const agentCodeCheckpointLoadPromisesByConversationId = new Map<
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
+const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
+const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
+  "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
 const COMPACTION_SUMMARY_SYSTEM_PROMPT =
   "Compact older conversation history for a programming agent into schema v3. Return ONLY valid JSON with keys " +
   '"currentObjective", "userInstructions", "decisions", "discoveries", "openQuestions", "activeFiles", "toolFacts", "knownErrors", "remainingWork", "summary". ' +
@@ -277,6 +281,20 @@ const getCompactionSummaryAttemptPlan = (
     toolDigestLimit: 8,
   },
 ];
+
+const clearGitStageCommitChallengesForConversations = (
+  conversationIds: string[],
+) => {
+  if (conversationIds.length === 0) {
+    return;
+  }
+  const prefixes = conversationIds.map((conversationId) => `${conversationId}::`);
+  Array.from(gitStageCommitChallengesByAssistantTurn).forEach((key) => {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) {
+      gitStageCommitChallengesByAssistantTurn.delete(key);
+    }
+  });
+};
 
 interface LiveContextDiagnosticsRefreshState {
   timeoutId: ReturnType<typeof setTimeout> | null;
@@ -5293,6 +5311,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
   };
 
+  const shouldChallengeGitStageCommitToolCall = (
+    conversationId: string,
+    assistantTurnId: string | null,
+    assistantMessageId: string,
+    toolName: string,
+  ): boolean => {
+    if (!GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS.has(toolName)) {
+      return false;
+    }
+
+    const turnKey = assistantTurnId || assistantMessageId;
+    const challengeKey = `${conversationId}::${turnKey}::${toolName}`;
+    if (gitStageCommitChallengesByAssistantTurn.has(challengeKey)) {
+      return false;
+    }
+
+    gitStageCommitChallengesByAssistantTurn.add(challengeKey);
+    return true;
+  };
+
   const handleToolCall = async (
     conversationId: string,
     assistantMessageId: string,
@@ -5330,6 +5368,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
       return securityEvaluation.denialReason;
+    }
+
+    if (
+      shouldChallengeGitStageCommitToolCall(
+        conversationId,
+        assistantTurnId,
+        assistantMessageId,
+        normalizedToolName,
+      )
+    ) {
+      if (toolCallId) {
+        updateAssistantToolTraceStatus(
+          assistantMessageId,
+          toolCallId,
+          "denied",
+        );
+      }
+      return GIT_STAGE_COMMIT_CHALLENGE_MESSAGE;
     }
 
     if (securityEvaluation.decision === "ask") {
@@ -5998,6 +6054,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (allowedToolIds.includes("question")) {
       systemInstructions.push(
         'Use the question tool only for blocking structured clarifications. If the user explicitly asks you to use the question tool, you must call it instead of asking in plain text. Do not use it for open brainstorming. Make at most one question tool call per assistant turn, with 1 to 5 sequential questions total, and exactly 3 suggested choices per question. If you use it, stop after the tool call and wait for the user questionnaire response.',
+      );
+    }
+    if (
+      allowedToolIds.includes("git_add") ||
+      allowedToolIds.includes("git_commit")
+    ) {
+      systemInstructions.push(
+        "Never stage or commit on your own initiative. Use git_add or git_commit only after an explicit user request.",
       );
     }
     if (allowedToolIds.includes("apply_patch")) {
@@ -6742,6 +6806,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     clearPendingArchitectConversationsForConversationIds(conversationIds);
+    clearGitStageCommitChallengesForConversations(conversationIds);
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);

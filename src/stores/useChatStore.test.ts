@@ -778,6 +778,7 @@ const sendChatNonStreamingMock = mock((async (
   return implementation(...args);
 }) as SendChatNonStreaming);
 const streamChatMock = mock(async () => ({ usage: null }));
+const executeWorkspaceToolMock = mock(async () => undefined);
 const estimateChatCompletionSerializedPayloadTokensMock = mock(
   (params: { messages: unknown[] }) =>
     Math.max(1, Math.ceil(JSON.stringify(params.messages).length / 4))
@@ -1426,7 +1427,7 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/workspaceToolExecutor', () => ({
-    executeWorkspaceTool: mock(async () => undefined),
+    executeWorkspaceTool: executeWorkspaceToolMock,
     resolveExplicitMutatingToolProjectTargets: mock((toolName: string, args: Record<string, unknown>) => {
       if (toolName === 'terminal_create_session' && typeof args.project_id === 'string') {
         return [args.project_id];
@@ -1975,6 +1976,49 @@ const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const startImplementToolConversation = async (
+  content = 'Travaille sur cette tâche.',
+) => {
+  providerState.selectedSupportsNativeToolCalling = () => true;
+  appState.mode = 'Implement';
+  appState.selectedTaskId = 'task-1';
+  localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+  taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+
+  const { useChatStore } = await loadChatStore();
+  useChatStore.setState({
+    conversations: [
+      {
+        ...createConversation('implement-conv'),
+        scope_mode: 'Implement',
+        task_id: 'task-1',
+        title: 'Task - Implement checkout',
+      },
+    ],
+    messages: [],
+    selectedConversationId: 'implement-conv',
+    selectedConversationIdsByMode: { Implement: 'implement-conv' },
+    isLoading: false,
+    isStreaming: false,
+    sendState: 'idle',
+    lastError: null,
+    abortController: null,
+    messageImagesByMessageId: {},
+    composerContextRefs: [],
+  });
+
+  await useChatStore.getState().sendMessage({
+    conversationId: 'implement-conv',
+    content,
+    taskId: 'task-1',
+  });
+
+  return {
+    useChatStore,
+    onToolCall: getLatestArchitectToolHandler(),
+  };
+};
+
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
 
@@ -2072,6 +2116,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     listArchitectPlansMock.mockClear();
     updateArchitectPlanMock.mockClear();
     streamChatMock.mockClear();
+    executeWorkspaceToolMock.mockClear();
     sendChatNonStreamingMock.mockClear();
     webSearchMock.mockClear();
     fetchWebPageMock.mockClear();
@@ -9564,6 +9609,150 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const parsed = JSON.parse(String(result));
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('challenges git_commit once before allowing the same assistant turn to commit', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Corrige le code, mais ne commit rien.',
+    );
+
+    const firstResult = await onToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-commit-1',
+    );
+
+    expect(String(firstResult)).toContain(
+      'Do not stage or commit unless the user explicitly asked',
+    );
+    expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+
+    const secondResult = await onToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-commit-2',
+    );
+
+    expect(secondResult).toBeUndefined();
+    expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+    expect(
+      (executeWorkspaceToolMock as unknown as { mock: { calls: unknown[][] } })
+        .mock.calls[0]?.[0],
+    ).toBe('git_commit');
+  });
+
+  it('challenges git_add once before allowing the same assistant turn to stage', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Corrige le code, mais ne stage rien.',
+    );
+
+    const firstResult = await onToolCall(
+      'git_add',
+      { paths: ['src/App.tsx'] },
+      'call-add-1',
+    );
+
+    expect(String(firstResult)).toContain(
+      'Do not stage or commit unless the user explicitly asked',
+    );
+    expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+
+    await onToolCall('git_add', { paths: ['src/App.tsx'] }, 'call-add-2');
+
+    expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+    expect(
+      (executeWorkspaceToolMock as unknown as { mock: { calls: unknown[][] } })
+        .mock.calls[0]?.[0],
+    ).toBe('git_add');
+  });
+
+  it('resets the git stage/commit challenge for a new assistant turn', async () => {
+    streamChatMock
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'Premier tour terminé.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock)
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'Deuxième tour terminé.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock);
+
+    const { useChatStore, onToolCall } = await startImplementToolConversation(
+      'Tu peux commit après vérification.',
+    );
+
+    await onToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-commit-first-challenge',
+    );
+    await onToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-commit-first-execute',
+    );
+    expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+
+    await flushAsyncWork();
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Continue.',
+      taskId: 'task-1',
+    });
+    await flushAsyncWork();
+
+    const nextTurnToolCall = getLatestArchitectToolHandler();
+    const nextTurnResult = await nextTurnToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-commit-second-turn',
+    );
+
+    expect(String(nextTurnResult)).toContain(
+      'Do not stage or commit unless the user explicitly asked',
+    );
+    expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes explicit anti stage/commit instructions when git tools are exposed', async () => {
+    await startImplementToolConversation('Implémente la correction.');
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    }>();
+
+    expect(streamOptions.allowedToolIds).toContain('git_add');
+    expect(streamOptions.allowedToolIds).toContain('git_commit');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Never stage or commit on your own initiative',
+    );
   });
 
   it('lets implement agents read and update the selected task todos', async () => {
