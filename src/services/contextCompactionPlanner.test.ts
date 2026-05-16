@@ -84,6 +84,7 @@ describe('evaluateContextCompaction', () => {
     expect(result.trigger).toBe('safety_prestream');
     expect(result.budget.usableContextTokens).toBe(120_000);
     expect(result.audit.formula).toBe('128k context - 8k output reserve = 120k usable');
+    expect(result.persistenceEligibility).toBe('durable');
   });
 
   it('does not compact at 120k for a 400k model', () => {
@@ -144,5 +145,18 @@ describe('evaluateContextCompaction', () => {
 
     expect(result.decision).toBe('block');
     expect(result.reason).toBe('latest_tool_batch_exceeds_usable_budget');
+  });
+
+  it('marks synthetic post-tool boundaries as transient and non-durable', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'post_tool_batch',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 130_000 }),
+      latestBoundaryPayloadTokens: 20_000,
+      syntheticBoundary: true,
+    });
+
+    expect(result.decision).toBe('compact');
+    expect(result.syntheticBoundary).toBe(true);
+    expect(result.persistenceEligibility).toBe('transient_synthetic_boundary');
   });
 });

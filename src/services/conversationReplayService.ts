@@ -16,6 +16,45 @@ export interface ConversationReplayPlan<TMarker extends ReplayCompactionMarker> 
   diagnosticMessages: string[];
 }
 
+export interface ConversationReplayCodeCheckpointPreview {
+  affectedFileCount?: number;
+  affectedFiles?: unknown[];
+}
+
+export interface ConversationReplayExecutionAdapters<
+  TMarker extends ReplayCompactionMarker,
+> {
+  previewCodeCheckpoints?: (
+    plan: ConversationReplayPlan<TMarker>,
+  ) => Promise<ConversationReplayCodeCheckpointPreview | null> | ConversationReplayCodeCheckpointPreview | null;
+  confirmCodeRestore?: (
+    preview: ConversationReplayCodeCheckpointPreview,
+    plan: ConversationReplayPlan<TMarker>,
+  ) => Promise<boolean> | boolean;
+  restoreCodeCheckpoint?: (
+    preview: ConversationReplayCodeCheckpointPreview,
+    plan: ConversationReplayPlan<TMarker>,
+  ) => Promise<void> | void;
+  trimMessages: (plan: ConversationReplayPlan<TMarker>) => Promise<void> | void;
+  pruneCodeCheckpoints?: (plan: ConversationReplayPlan<TMarker>) => Promise<void> | void;
+  deleteContextCompactionState?: (
+    plan: ConversationReplayPlan<TMarker>,
+  ) => Promise<void> | void;
+  applySessionCompactionEvents?: (
+    events: TMarker[] | undefined,
+    plan: ConversationReplayPlan<TMarker>,
+  ) => Promise<void> | void;
+  restartAssistant?: (plan: ConversationReplayPlan<TMarker>) => Promise<void> | void;
+}
+
+export interface ConversationReplayExecutionResult<
+  TMarker extends ReplayCompactionMarker,
+> {
+  status: 'completed' | 'cancelled';
+  plan: ConversationReplayPlan<TMarker>;
+  codeRestorePreview: ConversationReplayCodeCheckpointPreview | null;
+}
+
 const sortConversationMessages = (messages: ChatMessage[]): ChatMessage[] =>
   messages
     .slice()
@@ -127,4 +166,57 @@ export const buildConversationReplayPlan = <
     contextCompactionAction,
     diagnosticMessages,
   };
+};
+
+const hasAffectedCodeCheckpointFiles = (
+  preview: ConversationReplayCodeCheckpointPreview | null | undefined,
+): preview is ConversationReplayCodeCheckpointPreview => {
+  if (!preview) {
+    return false;
+  }
+  if (typeof preview.affectedFileCount === 'number') {
+    return preview.affectedFileCount > 0;
+  }
+  return Array.isArray(preview.affectedFiles) && preview.affectedFiles.length > 0;
+};
+
+export const executeConversationReplay = async <
+  TMarker extends ReplayCompactionMarker,
+>(params: {
+  conversationId: string;
+  replayMessageId: string;
+  conversationMessages: ChatMessage[];
+  contextCompactionState?: ConversationCompactionState | null;
+  sessionCompactionEvents?: TMarker[];
+  adapters: ConversationReplayExecutionAdapters<TMarker>;
+}): Promise<ConversationReplayExecutionResult<TMarker>> => {
+  const plan = buildConversationReplayPlan({
+    conversationId: params.conversationId,
+    replayMessageId: params.replayMessageId,
+    conversationMessages: params.conversationMessages,
+    contextCompactionState: params.contextCompactionState,
+    sessionCompactionEvents: params.sessionCompactionEvents,
+  });
+  const preview = (await params.adapters.previewCodeCheckpoints?.(plan)) ?? null;
+
+  if (hasAffectedCodeCheckpointFiles(preview)) {
+    const confirmed = await params.adapters.confirmCodeRestore?.(preview, plan);
+    if (confirmed === false) {
+      return { status: 'cancelled', plan, codeRestorePreview: preview };
+    }
+    await params.adapters.restoreCodeCheckpoint?.(preview, plan);
+  }
+
+  await params.adapters.trimMessages(plan);
+  await params.adapters.pruneCodeCheckpoints?.(plan);
+  if (plan.shouldDeleteContextCompactionState) {
+    await params.adapters.deleteContextCompactionState?.(plan);
+  }
+  await params.adapters.applySessionCompactionEvents?.(
+    plan.sessionCompactionEvents,
+    plan,
+  );
+  await params.adapters.restartAssistant?.(plan);
+
+  return { status: 'completed', plan, codeRestorePreview: preview };
 };

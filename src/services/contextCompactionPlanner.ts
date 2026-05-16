@@ -57,6 +57,11 @@ export interface ContextCompactionEvaluation {
   audit: ContextCompactionDecisionAudit;
   budget: ContextBudgetSnapshot;
   pressure: ContextPressureSnapshot;
+  persistenceEligibility:
+    | 'durable'
+    | 'transient_synthetic_boundary'
+    | 'not_applicable';
+  syntheticBoundary: boolean;
   shouldCreateOrRefreshCheckpoint: boolean;
   shouldReuseCheckpoint: boolean;
   currentCompactionState: ConversationCompactionState | null;
@@ -137,6 +142,7 @@ export const evaluateContextCompaction = (params: {
   providerId?: string | null;
   providerType?: string | null;
   modelId?: string | null;
+  syntheticBoundary?: boolean;
 }): ContextCompactionEvaluation => {
   const trigger = triggerForBoundary(params.boundary);
   const compactionKind = kindForBoundary(params.boundary);
@@ -191,6 +197,12 @@ export const evaluateContextCompaction = (params: {
     footprint: params.footprint,
     budgetPolicy: params.budgetPolicy ?? undefined,
   });
+  const syntheticBoundary = Boolean(params.syntheticBoundary);
+  const persistenceEligibility = syntheticBoundary
+    ? 'transient_synthetic_boundary'
+    : decision === 'compact' || decision === 'reuse_checkpoint'
+      ? 'durable'
+      : 'not_applicable';
 
   return {
     decision,
@@ -201,6 +213,8 @@ export const evaluateContextCompaction = (params: {
     audit,
     budget: buildBudgetSnapshot(params.footprint, audit),
     pressure: buildPressureSnapshot(params.footprint),
+    persistenceEligibility,
+    syntheticBoundary,
     shouldCreateOrRefreshCheckpoint: decision === 'compact',
     shouldReuseCheckpoint: decision === 'reuse_checkpoint',
     currentCompactionState,

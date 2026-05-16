@@ -2,9 +2,12 @@ import { describe, expect, it } from 'bun:test';
 
 import type { ChatMessage } from '../types';
 import type { StreamMessage } from './streamingChat';
+import { estimateConversationFootprint } from './contextCompaction';
 import {
   buildCompactionDecisionAuditMetadata,
+  consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
+  isSyntheticCompactionBoundaryState,
   runContextCompactionOrchestration,
 } from './contextCompactionOrchestrator';
 
@@ -53,6 +56,18 @@ const baseParams = (messages: ChatMessage[]) => ({
   modelId: 'model-1',
   estimateSerializedPayloadTokens: estimateByText,
 });
+
+const footprintFor = (messages: ChatMessage[]) =>
+  estimateConversationFootprint({
+    systemMessage: baseParams(messages).systemMessage,
+    preparedMessages: baseParams(messages).preparedMessages,
+    orderedMessages: messages,
+    citations: [],
+    toolDefinitions: [],
+    ...baseParams(messages).footprintFields,
+    estimateSerializedPayloadTokens: estimateByText,
+    mode: 'safety_prestream',
+  });
 
 describe('contextCompactionOrchestrator', () => {
   it('sends without compaction when the projected payload fits', async () => {
@@ -159,5 +174,116 @@ describe('contextCompactionOrchestrator', () => {
     expect(getCompactionBoundaryForMode('manual')).toBe('manual');
     expect(metadata.formula).toBe('128k context - 8k output reserve = 120k usable');
     expect(metadata.contextLimitSource).toBe('provider_metadata');
+  });
+
+  it('skips post-tool consolidation when there is no pending synthetic checkpoint', async () => {
+    const messages = [message('u1', 'user', 'hello')];
+
+    const result = await consolidateCompletedAssistantTurnCompaction({
+      pending: null,
+      ...baseParams(messages),
+      toolDefinitions: [],
+    });
+
+    expect(result.outcome).toBe('skipped');
+    if (result.outcome !== 'skipped') {
+      throw new Error('expected skipped result');
+    }
+    expect(result.reason).toBe('no_pending_compaction');
+  });
+
+  it('skips post-tool consolidation when the real assistant message is missing', async () => {
+    const messages = [message('u1', 'user', 'hello')];
+
+    const result = await consolidateCompletedAssistantTurnCompaction({
+      pending: {
+        conversationId: 'conv-1',
+        assistantMessageId: 'missing-assistant',
+        providerId: 'provider-1',
+        providerType: 'openai',
+        modelId: 'model-1',
+        createdAt: '2026-05-16T10:00:00.000Z',
+        compactionState: {
+          conversationId: 'conv-1',
+          upToMessageId: 'stream-boundary-2',
+          summaryText: 'Synthetic post-tool summary.',
+          toolDigest: [],
+          usedSourcePassageIds: [],
+          interestingSourcePassageIds: [],
+          estimatedTokensBefore: 1000,
+          estimatedTokensAfter: 200,
+          fingerprint: 'synthetic',
+          version: 1,
+          createdAt: '2026-05-16T10:00:00.000Z',
+          updatedAt: '2026-05-16T10:00:00.000Z',
+        },
+        footprintBefore: footprintFor(messages),
+        footprintAfter: footprintFor(messages),
+        messages: prepared(messages),
+      },
+      ...baseParams(messages),
+      toolDefinitions: [],
+    });
+
+    expect(result.outcome).toBe('skipped');
+    if (result.outcome !== 'skipped') {
+      throw new Error('expected skipped result');
+    }
+    expect(result.reason).toBe('assistant_message_missing');
+  });
+
+  it('consolidates a synthetic post-tool checkpoint onto real message ids', async () => {
+    const messages = [
+      message('u1', 'user', 'old request '.repeat(400)),
+      message('a1', 'assistant', 'old answer '.repeat(400)),
+      message('u2', 'user', 'tool request '.repeat(120)),
+      message('a2', 'assistant', 'tool result and final answer '.repeat(160)),
+      message('u3', 'user', 'continue'),
+    ];
+    const syntheticRun = await runContextCompactionOrchestration({
+      ...baseParams(messages),
+      boundary: 'post_tool_batch',
+      mode: 'safety_prestream',
+      orderedMessages: messages.map((item, index) => ({
+        ...item,
+        id: `stream-boundary-${index}`,
+      })),
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => 'Synthetic post-tool summary.',
+      syntheticBoundary: true,
+    });
+    if (syntheticRun.outcome !== 'completed' || !syntheticRun.result.compactionState) {
+      throw new Error('expected synthetic compaction');
+    }
+    expect(isSyntheticCompactionBoundaryState(syntheticRun.result.compactionState)).toBe(true);
+
+    const result = await consolidateCompletedAssistantTurnCompaction({
+      pending: {
+        conversationId: 'conv-1',
+        assistantMessageId: 'a2',
+        providerId: 'provider-1',
+        providerType: 'openai',
+        modelId: 'model-1',
+        createdAt: '2026-05-16T10:00:00.000Z',
+        compactionState: syntheticRun.result.compactionState,
+        footprintBefore: syntheticRun.result.footprintBefore,
+        footprintAfter: syntheticRun.result.footprintAfter,
+        messages: syntheticRun.result.messages,
+      },
+      ...baseParams(messages),
+      toolDefinitions: [],
+      generateSummary: async () => 'Real post-tool summary.',
+    });
+
+    expect(result.outcome).toBe('consolidated');
+    if (result.outcome !== 'consolidated') {
+      throw new Error('expected consolidated result');
+    }
+    expect(result.result.compactionState).not.toBeNull();
+    expect(result.result.compactionState?.upToMessageId.startsWith('stream-boundary-')).toBe(
+      false,
+    );
+    expect(result.shouldPersistCompaction).toBe(true);
   });
 });

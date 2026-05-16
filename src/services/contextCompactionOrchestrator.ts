@@ -24,6 +24,8 @@ import {
 import type { ContextLimitFootprintFields } from './modelContextLimits';
 import type { StreamMessage } from './streamingChat';
 
+const SYNTHETIC_STREAM_BOUNDARY_PREFIX = 'stream-boundary-';
+
 export type CompactionEventStatus =
   | 'success'
   | 'failed'
@@ -143,6 +145,80 @@ export type ContextCompactionOrchestrationResult =
       shouldPersistCompaction: boolean;
     };
 
+export interface CompactionRuntimeAdapters {
+  loadCheckpoint: (
+    conversationId: string,
+  ) => Promise<ConversationCompactionState | null> | ConversationCompactionState | null;
+  persistCheckpoint: (state: ConversationCompactionState | null) => Promise<void> | void;
+  deleteCheckpoint: (conversationId: string) => Promise<void> | void;
+  recordCompactionAuditEvent: (event: {
+    conversationId: string;
+    trigger: ConversationCompactionState['lastTrigger'] | ContextCompactionKind;
+    providerId?: string | null;
+    modelId?: string | null;
+    modelContextWindowTokens?: number | null;
+    tokensBefore?: number | null;
+    tokensAfter?: number | null;
+    status: CompactionEventStatus;
+    errorCode?: string | null;
+    reason?: string | null;
+    metadata?: Record<string, unknown>;
+  }) => Promise<void> | void;
+  generateSummary: (input: SummaryGenerationInput) => Promise<string | null>;
+  estimateSerializedPayloadTokens?: (
+    messages: StreamMessage[],
+  ) => number | null | undefined;
+  publishRuntimeStatus?: (
+    conversationId: string,
+    state: ConversationCompactionState | null,
+  ) => Promise<void> | void;
+}
+
+export interface PendingToolBoundaryCompaction {
+  conversationId: string;
+  assistantMessageId: string;
+  providerId?: string | null;
+  providerType?: string | null;
+  modelId?: string | null;
+  createdAt: string;
+  compactionState: ConversationCompactionState;
+  footprintBefore: ContextFootprint;
+  footprintAfter: ContextFootprint;
+  messages: StreamMessage[];
+}
+
+export type ToolBoundaryCompactionConsolidationResult =
+  | {
+      outcome: 'skipped';
+      reason:
+        | 'no_pending_compaction'
+        | 'already_durable'
+        | 'assistant_message_missing'
+        | 'no_checkpoint_created';
+    }
+  | {
+      outcome: 'failed';
+      reason:
+        | 'blocked'
+        | 'manual_required'
+        | 'synthetic_boundary_survived'
+        | 'consolidation_error';
+      error?: unknown;
+      preflightFootprint?: ContextFootprint;
+      evaluation?: ContextCompactionEvaluation;
+    }
+  | {
+      outcome: 'consolidated';
+      preflightFootprint: ContextFootprint;
+      evaluation: ContextCompactionEvaluation;
+      result: MaybeCompactConversationResult;
+      shouldPersistCompaction: boolean;
+    };
+
+export const isSyntheticCompactionBoundaryState = (
+  state: ConversationCompactionState | null | undefined,
+): boolean => Boolean(state?.upToMessageId?.startsWith(SYNTHETIC_STREAM_BOUNDARY_PREFIX));
+
 export const runContextCompactionOrchestration = async (params: {
   boundary: ContextCompactionBoundary;
   mode: ContextCompactionKind;
@@ -167,6 +243,7 @@ export const runContextCompactionOrchestration = async (params: {
   ) => number | null | undefined;
   onCompactionStarted?: () => void;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
+  syntheticBoundary?: boolean;
 }): Promise<ContextCompactionOrchestrationResult> => {
   const budgetPolicy = params.budgetPolicy ?? undefined;
   const preflightFootprint = estimateConversationFootprint({
@@ -191,6 +268,7 @@ export const runContextCompactionOrchestration = async (params: {
     providerId: params.providerId,
     providerType: params.providerType,
     modelId: params.modelId,
+    syntheticBoundary: params.syntheticBoundary,
   });
 
   if (evaluation.decision === 'block') {
@@ -253,4 +331,107 @@ export const runContextCompactionOrchestration = async (params: {
       mode: params.mode,
     }),
   };
+};
+
+export const consolidateCompletedAssistantTurnCompaction = async (params: {
+  pending?: PendingToolBoundaryCompaction | null;
+  systemMessage: string;
+  preparedMessages: StreamMessage[];
+  orderedMessages: ChatMessage[];
+  citations: Citation[];
+  toolDefinitions: MacroToolRegistryEntry[];
+  footprintFields: ContextLimitFootprintFields;
+  providerId?: string | null;
+  providerType?: string | null;
+  modelId?: string | null;
+  currentCompactionState?: ConversationCompactionState | null;
+  budgetPolicy?: ContextBudgetPolicy | null;
+  estimateSerializedPayloadTokens?: (
+    messages: StreamMessage[],
+  ) => number | null | undefined;
+  generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
+}): Promise<ToolBoundaryCompactionConsolidationResult> => {
+  const pending = params.pending;
+  if (!pending?.compactionState) {
+    return { outcome: 'skipped', reason: 'no_pending_compaction' };
+  }
+  if (!isSyntheticCompactionBoundaryState(pending.compactionState)) {
+    return { outcome: 'skipped', reason: 'already_durable' };
+  }
+  if (!params.orderedMessages.some((message) => message.id === pending.assistantMessageId)) {
+    return { outcome: 'skipped', reason: 'assistant_message_missing' };
+  }
+
+  try {
+    const orchestration = await runContextCompactionOrchestration({
+      boundary: 'post_tool_batch',
+      mode: 'safety_prestream',
+      systemMessage: params.systemMessage,
+      preparedMessages: params.preparedMessages,
+      orderedMessages: params.orderedMessages,
+      citations: params.citations,
+      toolDefinitions: params.toolDefinitions,
+      footprintFields: params.footprintFields,
+      providerId: params.providerId ?? pending.providerId,
+      providerType: params.providerType ?? pending.providerType,
+      modelId: params.modelId ?? pending.modelId,
+      currentCompactionState: params.currentCompactionState ?? null,
+      budgetPolicy: params.budgetPolicy,
+      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      forceCompaction: true,
+      buildForceCompaction: true,
+      forcePrune: true,
+      generateSummary: async (input) => {
+        const reusableSummary = pending.compactionState.summaryText?.trim();
+        if (reusableSummary) {
+          return reusableSummary;
+        }
+        return (await params.generateSummary?.(input)) ?? null;
+      },
+    });
+
+    if (orchestration.outcome === 'blocked') {
+      return {
+        outcome: 'failed',
+        reason: 'blocked',
+        preflightFootprint: orchestration.preflightFootprint,
+        evaluation: orchestration.evaluation,
+      };
+    }
+    if (orchestration.outcome === 'manual_required') {
+      return {
+        outcome: 'failed',
+        reason: 'manual_required',
+        preflightFootprint: orchestration.preflightFootprint,
+        evaluation: orchestration.evaluation,
+      };
+    }
+
+    const nextState = orchestration.result.compactionState;
+    if (!nextState) {
+      return { outcome: 'skipped', reason: 'no_checkpoint_created' };
+    }
+    if (isSyntheticCompactionBoundaryState(nextState)) {
+      return {
+        outcome: 'failed',
+        reason: 'synthetic_boundary_survived',
+        preflightFootprint: orchestration.preflightFootprint,
+        evaluation: orchestration.evaluation,
+      };
+    }
+
+    return {
+      outcome: 'consolidated',
+      preflightFootprint: orchestration.preflightFootprint,
+      evaluation: orchestration.evaluation,
+      result: orchestration.result,
+      shouldPersistCompaction: orchestration.shouldPersistCompaction,
+    };
+  } catch (error) {
+    return {
+      outcome: 'failed',
+      reason: 'consolidation_error',
+      error,
+    };
+  }
 };
