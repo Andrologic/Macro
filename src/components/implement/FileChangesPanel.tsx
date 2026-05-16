@@ -106,6 +106,9 @@ const isPassiveWorktreeWaitingState = (
 
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
+const HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE =
+  'transition-opacity group-hover:opacity-0 group-focus-within:opacity-0';
+
 const interpolateFallbackPlaceholders = (
   value: string,
   options?: Record<string, unknown>
@@ -212,9 +215,10 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   className,
 }) => (
   <div
+    data-scope-action-rail="true"
     className={cn(
       'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
-      'bg-transparent',
+      'bg-gradient-to-l from-background via-background/95 to-transparent',
       className
     )}
   >
@@ -310,7 +314,10 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
             {!isOpen && hasPendingValidation && (
               <span
                 data-pending-validation-indicator="true"
-                className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+                className={cn(
+                  'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                  HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                )}
               />
             )}
           </button>
@@ -380,15 +387,19 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
         {change.hasPendingVisibleChange && (
           <span
             data-pending-validation-indicator="true"
-            className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+            className={cn(
+              'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+            )}
           />
         )}
 
         <div
+          data-file-change-metadata="true"
           className={cn(
             'flex items-center gap-1 text-[11px] shrink-0 opacity-60',
             (change.hasPendingVisibleChange || change.hasValidatedStage) &&
-              'transition-opacity group-hover:opacity-0'
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
           )}
         >
           {change.hasValidatedStage && (
@@ -1564,7 +1575,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       {!isExpanded && repositoryHasPendingValidation && (
                         <span
                           data-pending-validation-indicator="true"
-                          className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                            HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                          )}
                         />
                       )}
                       {repositorySummary?.isNextAction && (
@@ -1577,9 +1591,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   <div className="flex shrink-0 items-center gap-2">
                     {repositorySummary && (
                       <span
+                        data-repository-change-status="true"
                         className={cn(
                           'px-2 py-0.5 rounded-full text-[10px] shrink-0',
-                          repositoryActionCount > 0 && 'transition-opacity group-hover:opacity-0',
+                          repositoryActionCount > 0 && HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE,
                           REVIEW_STATE_CLASSES[repositorySummary.state]
                         )}
                       >
