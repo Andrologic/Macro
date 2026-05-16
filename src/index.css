@@ -118,6 +118,56 @@
     @apply card hover:border-border/70 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
   }
 
+  .chat-compaction-rule {
+    display: block;
+    flex: 1 1 0;
+    height: 1px;
+    min-width: 1rem;
+    transform: translateY(1px);
+  }
+
+  .chat-compaction-rule--left {
+    left: 0;
+    right: calc(50% + 7rem);
+    background: linear-gradient(
+      90deg,
+      hsl(var(--primary) / 0.14) 0%,
+      hsl(var(--primary) / 0.24) 42%,
+      hsl(var(--primary) / 0.36) 100%
+    );
+  }
+
+  .chat-compaction-rule--right {
+    left: calc(50% + 7rem);
+    right: 0;
+    background: linear-gradient(
+      90deg,
+      hsl(var(--primary) / 0.36) 0%,
+      hsl(var(--primary) / 0.24) 58%,
+      hsl(var(--primary) / 0.14) 100%
+    );
+  }
+
+  .chat-compaction-wave-text {
+    background-image: linear-gradient(
+      90deg,
+      hsl(var(--primary) / 0.58) 0%,
+      hsl(var(--primary) / 0.58) 36%,
+      hsl(var(--primary) / 0.78) 45%,
+      hsl(var(--primary)) 50%,
+      hsl(var(--primary) / 0.78) 55%,
+      hsl(var(--primary) / 0.58) 64%,
+      hsl(var(--primary) / 0.58) 100%
+    );
+    background-size: 260% 100%;
+    background-position: 100% 50%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: hsl(var(--primary));
+    -webkit-text-fill-color: transparent;
+    animation: chatCompactionTextWave 2.15s linear infinite;
+  }
+
   .macro-topbar {
     min-height: var(--macro-titlebar-height, 48px);
     border-bottom: 1px solid rgb(var(--border) / 0.9);
@@ -653,23 +703,6 @@
     will-change: transform, opacity;
   }
 
-  .chat-streaming-compaction__wave {
-    animation: chatCompactionWavePropagate 1.8s cubic-bezier(0.16, 0.72, 0.28, 1) infinite;
-    transform-origin: center;
-    opacity: 0;
-    transform: scale(0.34);
-    border: 0;
-    background:
-      radial-gradient(
-        circle,
-        color-mix(in srgb, currentColor 78%, transparent) 0%,
-        color-mix(in srgb, currentColor 48%, transparent) 44%,
-        color-mix(in srgb, currentColor 22%, transparent) 74%,
-        transparent 100%
-      );
-    filter: saturate(1.18) brightness(1.1);
-    will-change: transform, opacity;
-  }
 }
 
 @keyframes separatorExpand {
@@ -720,18 +753,12 @@
   }
 }
 
-@keyframes chatCompactionWavePropagate {
+@keyframes chatCompactionTextWave {
   0% {
-    opacity: 0.62;
-    transform: scale(0.34);
-  }
-  58% {
-    opacity: 0.2;
-    transform: scale(0.78);
+    background-position: 100% 50%;
   }
   100% {
-    opacity: 0;
-    transform: scale(1.18);
+    background-position: 0% 50%;
   }
 }
 
@@ -742,10 +769,9 @@
     transform: scale(var(--task-status-wave-mid-scale, 0.68));
   }
 
-  .chat-streaming-compaction__wave {
+  .chat-compaction-wave-text {
     animation: none;
-    opacity: 0.26;
-    transform: scale(0.78);
+    background-position: 50% 50%;
   }
 }
 

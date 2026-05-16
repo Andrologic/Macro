@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  getImplementAgentToolPolicy,
   getToolModePolicy,
   isMacroScopedPath,
   isMetadataRelativePath,
@@ -89,6 +90,48 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(true);
     expect(policy.allowedToolIds.includes("git_status")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(true);
+    expect(policy.enforceMacroOnlyWrites).toBe(false);
+  });
+
+  it("keeps implement build aligned with the full implement mode policy", () => {
+    expect(getImplementAgentToolPolicy("build")).toEqual(
+      getToolModePolicy("Implement"),
+    );
+  });
+
+  it("limits implement plan to read-only inspection tools", () => {
+    const policy = getImplementAgentToolPolicy("plan");
+
+    expect(policy.allowedToolIds).toEqual([
+      "question",
+      "read_file",
+      "web_search",
+      "web_fetch",
+      "list",
+      "read",
+      "glob",
+      "grep",
+      "git_status",
+      "git_log",
+      "git_branch_list",
+      "git_diff",
+      "git_get_tree",
+      "task_todo_get",
+    ]);
+    expect(policy.allowedToolIds.includes("write")).toBe(false);
+    expect(policy.allowedToolIds.includes("edit")).toBe(false);
+    expect(policy.allowedToolIds.includes("delete")).toBe(false);
+    expect(policy.allowedToolIds.includes("apply_patch")).toBe(false);
+    expect(policy.allowedToolIds.includes("task_todo_update")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_add")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_checkout")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_merge")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_reset")).toBe(false);
+    expect(policy.allowedToolIds.includes("git_stash")).toBe(false);
+    expect(policy.allowedToolIds.includes("terminal_create_session")).toBe(false);
+    expect(policy.allowedToolIds.includes("terminal_run")).toBe(false);
+    expect(policy.allowedToolIds.includes("terminal_kill")).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(false);
   });
 

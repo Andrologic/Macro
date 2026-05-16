@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { AgentCodeCheckpoint, AppMode, Conversation, ProjectGroup } from '../types';
+import type { AgentCodeCheckpoint, AgentType, AppMode, Conversation, ProjectGroup } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
 
@@ -79,7 +79,7 @@ const projectGroups: ProjectGroup[] = [
 
 const appState = {
   mode: 'Architect' as AppMode,
-  agentType: 'build' as const,
+  agentType: 'build' as AgentType,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: 'project-1' as string | null,
   selectedTaskId: null as string | null,
@@ -259,6 +259,8 @@ const ALL_INTERNAL_TOOL_IDS = [
   'terminal_run',
   'terminal_read',
   'terminal_kill',
+  'task_todo_get',
+  'task_todo_update',
   'need_add',
   'need_list',
   'need_get',
@@ -1978,9 +1980,11 @@ const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
 
 const startImplementToolConversation = async (
   content = 'Travaille sur cette tâche.',
+  options: { agentType?: AgentType } = {},
 ) => {
   providerState.selectedSupportsNativeToolCalling = () => true;
   appState.mode = 'Implement';
+  appState.agentType = options.agentType ?? 'build';
   appState.selectedTaskId = 'task-1';
   localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
   taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
@@ -9641,6 +9645,62 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toBe('git_commit');
   });
 
+  it('limits implement plan agent turns to read-only inspection tools', async () => {
+    await startImplementToolConversation(
+      'Analyse la correction avant de toucher au code.',
+      { agentType: 'plan' },
+    );
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    }>();
+
+    expect(streamOptions.allowedToolIds).toContain('read');
+    expect(streamOptions.allowedToolIds).toContain('grep');
+    expect(streamOptions.allowedToolIds).toContain('git_diff');
+    expect(streamOptions.allowedToolIds).toContain('task_todo_get');
+    expect(streamOptions.allowedToolIds).not.toContain('write');
+    expect(streamOptions.allowedToolIds).not.toContain('edit');
+    expect(streamOptions.allowedToolIds).not.toContain('delete');
+    expect(streamOptions.allowedToolIds).not.toContain('apply_patch');
+    expect(streamOptions.allowedToolIds).not.toContain('task_todo_update');
+    expect(streamOptions.allowedToolIds).not.toContain('git_add');
+    expect(streamOptions.allowedToolIds).not.toContain('git_commit');
+    expect(streamOptions.allowedToolIds).not.toContain('terminal_run');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Plan mode is read-only',
+    );
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'end with a concrete implementation plan',
+    );
+  });
+
+  it('denies forced mutating tool calls during implement plan agent turns', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Prépare le plan de correction.',
+      { agentType: 'plan' },
+    );
+
+    const patchResult = await onToolCall(
+      'apply_patch',
+      {
+        patch_text:
+          '*** Begin Patch\n*** Update File: src/App.tsx\n@@\n console.log("x")\n*** End Patch',
+      },
+      'call-plan-patch',
+    );
+    const commitResult = await onToolCall(
+      'git_commit',
+      { message: 'fix: update checkout flow' },
+      'call-plan-commit',
+    );
+
+    expect(String(patchResult)).toContain('Plan mode is read-only');
+    expect(String(commitResult)).toContain('Plan mode is read-only');
+    expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+  });
+
   it('challenges git_add once before allowing the same assistant turn to stage', async () => {
     const { onToolCall } = await startImplementToolConversation(
       'Corrige le code, mais ne stage rien.',
@@ -9752,6 +9812,57 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('git_commit');
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Never stage or commit on your own initiative',
+    );
+  });
+
+  it('reminds build turns to execute the previous plan after a plan turn', async () => {
+    streamChatMock
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'Plan: inspecter les fichiers puis patcher.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock)
+      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock);
+
+    const { useChatStore } = await startImplementToolConversation(
+      'Fais le plan.',
+      { agentType: 'plan' },
+    );
+    await flushAsyncWork();
+
+    appState.agentType = 'build';
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Applique maintenant.',
+      taskId: 'task-1',
+    });
+    await waitForStreamCallCount(2);
+
+    const streamOptions = getLatestStreamOptions<{
+      messages: Array<{ role: string; content: string }>;
+      allowedToolIds: string[];
+    }>();
+
+    expect(streamOptions.allowedToolIds).toContain('write');
+    expect(streamOptions.allowedToolIds).toContain('git_commit');
+    expect(streamOptions.allowedToolIds).toContain('terminal_run');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'The previous assistant turn used Plan mode',
+    );
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Execute the latest plan unless the user changed direction',
     );
   });
 

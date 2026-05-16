@@ -2,7 +2,6 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { ChatTranscriptCompactionProgressPhase } from './transcriptItems';
-import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 export interface CompactionBoundaryVirtualItem {
   index: number;
@@ -26,70 +25,14 @@ export const CompactionBoundaryRow: React.FC<{
       role="separator"
       aria-label={t('chat.compactionBoundary', 'Contexte compacté')}
     >
-      <div className="flex min-h-10 items-center text-[11px] font-medium text-muted-foreground/85">
-        <span className="relative ml-1 inline-flex min-h-10 items-center gap-3">
-          <span
-            className="absolute left-1.5 top-0 h-full w-px bg-gradient-to-b from-transparent via-primary/45 to-border/70"
-            aria-hidden="true"
-          />
-          <span
-            className="relative z-10 flex h-3 w-3 items-center justify-center rounded-full border border-primary/30 bg-background"
-            aria-hidden="true"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-primary/70" />
-          </span>
-          <span className="relative z-10 inline-flex shrink-0 rounded-full border border-border/60 bg-background/95 px-2 py-0.5 shadow-sm">
-            {t('chat.compactionBoundary', 'Contexte compacté')}
-          </span>
-        </span>
+      <div className="relative flex min-h-7 items-center justify-center text-[11px] font-medium leading-4 text-muted-foreground/75">
+        <span className="chat-compaction-rule chat-compaction-rule--left" aria-hidden="true" />
+        <span className="relative shrink-0 bg-background px-2">{t('chat.compactionBoundary', 'Contexte compacté')}</span>
+        <span className="chat-compaction-rule chat-compaction-rule--right" aria-hidden="true" />
       </div>
     </div>
   );
 };
-
-const CompactionActivitySpinner: React.FC<{ spinnerSize?: number }> = ({
-  spinnerSize = 12,
-}) => (
-  <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-visible">
-    <span
-      className="chat-streaming-compaction__wave absolute h-7 w-7 rounded-full"
-      aria-hidden="true"
-    />
-    <span className="relative inline-flex h-5 w-5 items-center justify-center rounded-full border border-primary/20 bg-background/85">
-      <SpinnerIcon size={spinnerSize} className="text-primary" />
-    </span>
-  </span>
-);
-
-const CompactionWaveText: React.FC<React.PropsWithChildren> = ({ children }) => (
-  <>
-    <style>
-      {`
-        @keyframes macro-compaction-text-wave {
-          0% { background-position: 200% 50%; }
-          100% { background-position: -200% 50%; }
-        }
-        .macro-compaction-wave-text {
-          background-image: linear-gradient(90deg, hsl(var(--primary)), currentColor, hsl(var(--primary)), currentColor);
-          background-size: 220% 100%;
-          background-clip: text;
-          -webkit-background-clip: text;
-          color: hsl(var(--primary));
-          -webkit-text-fill-color: transparent;
-          animation: macro-compaction-text-wave 1.8s ease-in-out infinite;
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .macro-compaction-wave-text {
-            animation: none;
-            background-image: none;
-            -webkit-text-fill-color: currentColor;
-          }
-        }
-      `}
-    </style>
-    <span className="macro-compaction-wave-text truncate">{children}</span>
-  </>
-);
 
 export const CompactionProgressRow: React.FC<{
   virtualItem: CompactionBoundaryVirtualItem;
@@ -113,15 +56,12 @@ export const CompactionProgressRow: React.FC<{
         'Génération du résumé de contexte en cours. Cela peut prendre quelques secondes.',
       )}
     >
-      <div className="flex items-center gap-3 text-xs font-medium text-muted-foreground">
-        <span className="h-px flex-1 bg-gradient-to-r from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
-        <span className="inline-flex max-w-[min(34rem,calc(100%-3rem))] shrink-0 items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-primary shadow-sm">
-          <CompactionActivitySpinner spinnerSize={13} />
-          <CompactionWaveText>
-            {t('chat.compactionProgressTitle', 'Compactage du contexte...')}
-          </CompactionWaveText>
+      <div className="relative flex min-h-7 items-center justify-center text-xs font-medium leading-4">
+        <span className="chat-compaction-rule chat-compaction-rule--left" aria-hidden="true" />
+        <span className="chat-compaction-wave-text relative shrink-0 bg-background px-2">
+          {t('chat.compactionProgressTitle', 'Compactage du contexte...')}
         </span>
-        <span className="h-px flex-1 bg-gradient-to-l from-transparent via-primary/30 to-primary/30" aria-hidden="true" />
+        <span className="chat-compaction-rule chat-compaction-rule--right" aria-hidden="true" />
       </div>
     </div>
   );
@@ -133,7 +73,7 @@ export const StreamingCompactionActivity: React.FC = () => {
   return (
     <span
       data-chat-streaming-compaction-activity="true"
-      className="ml-1 inline-flex max-w-full items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary align-baseline shadow-sm"
+      className="ml-1 inline-flex max-w-full items-center text-xs font-medium align-baseline"
       role="status"
       aria-live="polite"
       aria-label={t(
@@ -141,10 +81,9 @@ export const StreamingCompactionActivity: React.FC = () => {
         'Génération du résumé de contexte en cours. Cela peut prendre quelques secondes.',
       )}
     >
-      <CompactionActivitySpinner />
-      <CompactionWaveText>
+      <span className="chat-compaction-wave-text truncate">
         {t('chat.streamingCompactionActivity', 'Compactage du contexte...')}
-      </CompactionWaveText>
+      </span>
     </span>
   );
 };

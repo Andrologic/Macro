@@ -269,6 +269,8 @@ describe('FileChangesPanel', () => {
   let unstageChangesMock: ReturnType<typeof mock>;
   let stageAllChangesMock: ReturnType<typeof mock>;
   let stageAllTaskChangesMock: ReturnType<typeof mock>;
+  let revertChangesMock: ReturnType<typeof mock>;
+  let openDiffModalMock: ReturnType<typeof mock>;
   let loadCurrentChangesMock: ReturnType<typeof mock>;
   let finishTaskMock: ReturnType<typeof mock>;
   let commitStagedChangesMock: ReturnType<typeof mock>;
@@ -355,10 +357,9 @@ describe('FileChangesPanel', () => {
     useFileChangesStore.setState({
       ...useFileChangesStore.getState(),
       repositories: options.loadState && options.loadState !== 'ready' ? [] : [repository],
-      selectedRepositoryId: options.loadState && options.loadState !== 'ready' ? null : repository.id,
       reviewSummary: options.loadState && options.loadState !== 'ready'
-        ? buildReviewTaskSummary([], null)
-        : buildReviewTaskSummary([repository], repository.id),
+        ? buildReviewTaskSummary([])
+        : buildReviewTaskSummary([repository]),
       currentTaskLoadState: options.loadState ?? 'ready',
       currentTaskLoadMessage: options.loadMessage ?? null,
       isLoading: false,
@@ -368,14 +369,13 @@ describe('FileChangesPanel', () => {
       executionRecords: options.executionRecords ?? {},
       loadCurrentChanges: loadCurrentChangesMock,
       resetReviewState: mock(() => undefined),
-      selectRepository: mock(() => undefined),
-      openDiffModal: mock(() => undefined),
+      openDiffModal: openDiffModalMock,
       closeDiffModal: mock(() => undefined),
       stageChanges: stageChangesMock,
       unstageChanges: unstageChangesMock,
       stageAllChanges: stageAllChangesMock,
       stageAllTaskChanges: stageAllTaskChangesMock,
-      revertChanges: mock(async () => undefined),
+      revertChanges: revertChangesMock,
       commitStagedChanges: commitStagedChangesMock,
       commitAllReadyTaskRepositories: commitAllReadyTaskRepositoriesMock,
       setCommitMessageDraft: mock(() => undefined),
@@ -513,6 +513,8 @@ describe('FileChangesPanel', () => {
     unstageChangesMock = mock(async () => undefined);
     stageAllChangesMock = mock(async () => undefined);
     stageAllTaskChangesMock = mock(async () => undefined);
+    revertChangesMock = mock(async () => undefined);
+    openDiffModalMock = mock(() => undefined);
     loadCurrentChangesMock = mock(async () => undefined);
     finishTaskMock = mock(async () => undefined);
     commitStagedChangesMock = mock(async () => ({
@@ -597,7 +599,152 @@ describe('FileChangesPanel', () => {
     });
 
     expect(stageChangesMock).toHaveBeenCalled();
+    expect(stageChangesMock.mock.calls[0]?.[0]).toBe('repo-1');
     expect(notifySuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('toggles a repository section without creating a selected repository state', async () => {
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const section = document.body.querySelector(
+      '[data-review-repository-section="true"]'
+    ) as HTMLElement | null;
+    const headerButton = section?.querySelector('button') as HTMLButtonElement | null;
+    expect(section?.getAttribute('data-review-repository-expanded')).toBe('true');
+    expect('selectedRepositoryId' in useFileChangesStore.getState()).toBe(false);
+
+    await act(async () => {
+      headerButton?.click();
+      await flushRender();
+    });
+
+    const collapsedSection = document.body.querySelector(
+      '[data-review-repository-section="true"]'
+    ) as HTMLElement | null;
+    expect(collapsedSection?.getAttribute('data-review-repository-expanded')).toBe('false');
+    expect('selectedRepositoryId' in useFileChangesStore.getState()).toBe(false);
+  });
+
+  it('opens a file diff with the repository id without selecting the repository', async () => {
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const mainFileButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('main.ts'));
+    expect(mainFileButton).toBeDefined();
+
+    await act(async () => {
+      mainFileButton?.click();
+      await flushRender();
+    });
+
+    expect(openDiffModalMock).toHaveBeenCalledWith('repo-1', 'change-1');
+    expect('selectedRepositoryId' in useFileChangesStore.getState()).toBe(false);
+  });
+
+  it('reverts a section with the explicit repository id', async () => {
+    seedStores(buildRepository(false));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const revertButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.getAttribute('aria-label') === 'Revert');
+    expect(revertButton).toBeDefined();
+
+    await act(async () => {
+      revertButton?.click();
+      await flushRender();
+    });
+
+    const confirmButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Revert' && button.getAttribute('aria-label') !== 'Revert');
+    expect(confirmButton).toBeDefined();
+
+    await act(async () => {
+      confirmButton?.click();
+      await flushRender();
+    });
+
+    expect(revertChangesMock).toHaveBeenCalled();
+    expect(revertChangesMock.mock.calls[0]?.[0]).toBe('repo-1');
+    expect('selectedRepositoryId' in useFileChangesStore.getState()).toBe(false);
+  });
+
+  it('caps expanded multi-repository sections instead of giving each one forced flex height', async () => {
+    const activeRepository = buildRepository(false);
+    const emptyRepository: ReviewRepositoryState = {
+      ...buildRepository(false),
+      id: 'repo-2',
+      projectId: 'project-2',
+      repoPath: '/tmp/repo-2',
+      worktreePath: '/tmp/worktree-2',
+      changes: [],
+      stagedPaths: [],
+      selectedChangeId: null,
+      stats: {
+        pendingVisibleFileCount: 0,
+        validatedStagedFileCount: 0,
+        additions: 0,
+        deletions: 0,
+      },
+      commitState: 'no_changes',
+    };
+    const thirdRepository: ReviewRepositoryState = {
+      ...buildRepository(false),
+      id: 'repo-3',
+      projectId: 'project-3',
+      repoPath: '/tmp/repo-3',
+      worktreePath: '/tmp/worktree-3',
+      branchName: 'feature/review-actions',
+    };
+    const repositories = [activeRepository, emptyRepository, thirdRepository];
+
+    seedStores(activeRepository);
+    useFileChangesStore.setState({
+      ...useFileChangesStore.getState(),
+      repositories,
+      reviewSummary: buildReviewTaskSummary(repositories),
+      getOverallStats: () => ({
+        pendingVisibleFileCount: 4,
+        validatedStagedFileCount: 0,
+        additions: 14,
+        deletions: 2,
+      }),
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const expandedSection = document.body.querySelector(
+      '[data-review-repository-section="true"][data-review-repository-expanded="true"]'
+    ) as HTMLElement | null;
+    expect(expandedSection).not.toBeNull();
+    expect(expandedSection?.style.maxHeight).toBe('240px');
+    expect(expandedSection?.className).not.toContain('flex-1');
+    expect(expandedSection?.className).not.toContain('basis-0');
+    expect(expandedSection?.className).toContain('overflow-hidden');
+    expect(expandedSection?.firstElementChild?.className).not.toContain('bg-primary/5');
+    expect(expandedSection?.firstElementChild?.className).toContain('bg-accent/25');
+    expect('selectedRepositoryId' in useFileChangesStore.getState()).toBe(false);
+
+    const scrollRegion = expandedSection?.querySelector(
+      '[data-review-repository-scroll-region="true"]'
+    ) as HTMLElement | null;
+    expect(scrollRegion?.className).toContain('overflow-y-auto');
   });
 
   it('hides scope actions once only staged changes remain', async () => {
@@ -643,6 +790,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(unstageChangesMock).toHaveBeenCalled();
+    expect(unstageChangesMock.mock.calls[0]?.[0]).toBe('repo-1');
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 

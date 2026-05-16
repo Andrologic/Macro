@@ -318,6 +318,7 @@ const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock(
   (_content: string, _isStreaming: boolean) => undefined,
 );
+const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
 let latestComposerProps: Record<string, unknown> | null = null;
 let manualCompactionVisiblePreference = false;
@@ -370,10 +371,13 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../hooks/useScrollMagnet', () => ({
-    useScrollMagnet: () => ({
-      scrollContainerRef,
-      separatorState: 'hidden',
-    }),
+    useScrollMagnet: (isActive: boolean) => {
+      scrollMagnetActiveValues.push(isActive);
+      return {
+        scrollContainerRef,
+        separatorState: 'hidden',
+      };
+    },
   }));
 
   mock.module('../../hooks/usePerformanceMonitor', () => ({
@@ -611,6 +615,7 @@ const resetState = () => {
   };
   composerEditorValue = '';
   latestComposerProps = null;
+  scrollMagnetActiveValues.length = 0;
   manualCompactionVisiblePreference = false;
 };
 
@@ -777,6 +782,8 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
     expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('compacting');
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();
@@ -812,8 +819,9 @@ describe('ChatZone', () => {
     );
     expect(inlineActivity).not.toBeNull();
     expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).not.toBeNull();
-    expect(inlineActivity?.querySelector('.chat-streaming-compaction__wave')).not.toBeNull();
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(inlineActivity?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -821,7 +829,7 @@ describe('ChatZone', () => {
     ).not.toBeNull();
   });
 
-  it('does not attach the normal cursor to an old assistant row before a new assistant exists', async () => {
+  it('renders standalone preparation activity instead of attaching a cursor to an old assistant row', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -850,7 +858,12 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
     ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
+    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
+    expect(progress).not.toBeNull();
+    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(scrollMagnetActiveValues.at(-1)).toBe(true);
   });
 
   it('updates an existing streaming assistant row when automatic compaction starts', async () => {
@@ -902,6 +915,8 @@ describe('ChatZone', () => {
     );
     expect(inlineActivity).not.toBeNull();
     expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -964,6 +979,8 @@ describe('ChatZone', () => {
     );
     expect(inlineActivity).not.toBeNull();
     expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
@@ -997,6 +1014,8 @@ describe('ChatZone', () => {
     );
     expect(inlineActivity).not.toBeNull();
     expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -1026,6 +1045,8 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
     expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('recovering_overflow');
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();
@@ -1054,14 +1075,40 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
     expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('safety_compacting');
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).not.toBeNull();
-    expect(progress?.querySelector('.chat-streaming-compaction__wave')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
     expect(
       requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
     ).toBeNull();
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();
+  });
+
+  it('keeps the transcript pinned while pre-stream safety compaction is visible', async () => {
+    chatState = {
+      ...chatState,
+      sendState: 'preparing',
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'safety_compacting',
+          updatedAt: '2026-05-10T08:31:00.000Z',
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
+    ).not.toBeNull();
+    expect(scrollMagnetActiveValues.at(-1)).toBe(true);
   });
 
   it('renders safety compaction progress before messages are persisted and keeps the composer text', async () => {
@@ -1089,8 +1136,9 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
     expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('safety_compacting');
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).not.toBeNull();
-    expect(progress?.querySelector('.chat-streaming-compaction__wave')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
     expect(composer?.value).toBe('encore');
     expect(
       requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
@@ -1100,7 +1148,7 @@ describe('ChatZone', () => {
     ).not.toBeNull();
   });
 
-  it('removes transcript progress after compaction completes', async () => {
+  it('keeps the checkpoint boundary after compaction completes', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -1121,7 +1169,10 @@ describe('ChatZone', () => {
     });
 
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
+    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
+    expect(boundary).not.toBeNull();
+    expect(boundary?.textContent).toContain(COMPACTION_BOUNDARY_TEXT);
+    expect(boundary?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
   });
 
   it('asks before replaying a user message that would rewind agent code checkpoints', async () => {
@@ -1345,6 +1396,8 @@ describe('ChatZone', () => {
     expect(progress).not.toBeNull();
     expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
     expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('compacting');
+    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
     expect(
       requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
     ).not.toBeNull();
@@ -1857,7 +1910,7 @@ describe('ChatZone', () => {
     expect(notice?.textContent).toContain('Macro showed a fallback summary.');
   });
 
-  it('shows assistant activity while a retry is preparing', async () => {
+  it('shows inline preparation activity while a retry is preparing', async () => {
     chatState = {
       ...chatState,
       sendState: 'preparing',
@@ -1878,7 +1931,14 @@ describe('ChatZone', () => {
 
     expect(
       requireContainer().querySelector('[data-chat-assistant-activity="true"]')
-    ).not.toBeNull();
+    ).toBeNull();
+    const inlineActivity = requireContainer().querySelector(
+      '[data-chat-streaming-compaction-activity="true"]',
+    );
+    expect(inlineActivity).not.toBeNull();
+    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
+    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
   });
 
   it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {

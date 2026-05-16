@@ -805,6 +805,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : isManualCompacting
         ? 'compacting'
         : null;
+  const activeTranscriptProgressPhase =
+    activeTranscriptCompactionPhase ?? (isPreparingSend ? 'compacting' : null);
   const shouldShowContextIndicator =
     Boolean(selectedConversationId) &&
     (shouldShowContextControlsForActiveContext ||
@@ -815,21 +817,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     runtimeAssistantMessageId,
     false,
   );
-  const compactionAssistantActivityMessageId = activeTranscriptCompactionPhase
+  const compactionAssistantActivityMessageId = activeTranscriptProgressPhase
     ? resolveAssistantActivityAnchorId(
         currentMessages,
         runtimeAssistantMessageId,
-        isBusySending || isContextOverflowRecovering,
+        Boolean(activeTranscriptCompactionPhase) &&
+          (isBusySending || isContextOverflowRecovering),
       )
     : null;
   const streamingAssistantActivityMessageId =
-    !activeTranscriptCompactionPhase && (isBusySending || isContextOverflowRecovering)
+    !activeTranscriptProgressPhase && (isBusySending || isContextOverflowRecovering)
       ? runtimeAssistantActivityAnchorId
       : null;
   const showInlineCompactionActivity =
     Boolean(compactionAssistantActivityMessageId);
   const showStandaloneCompactionProgress =
-    Boolean(activeTranscriptCompactionPhase) &&
+    Boolean(activeTranscriptProgressPhase) &&
     !showInlineCompactionActivity;
   const showCompactionBoundary = Boolean(activeCompactionStatus?.upToMessageId);
   const runContextDiagnosticsRefresh = useCallback(async () => {
@@ -863,12 +866,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           ? activeCompactionStatus?.upToMessageId
           : null,
         updatedAt: activeCompactionStatus?.updatedAt,
-        phase: showStandaloneCompactionProgress ? activeTranscriptCompactionPhase : null,
+        phase: showStandaloneCompactionProgress ? activeTranscriptProgressPhase : null,
       }),
     [
       activeCompactionStatus?.upToMessageId,
       activeCompactionStatus?.updatedAt,
-      activeTranscriptCompactionPhase,
+      activeTranscriptProgressPhase,
       currentMessages,
       selectedConversationId,
       showCompactionBoundary,
@@ -931,6 +934,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [isContextStreaming]);
 
   const isStreaming = isContextStreaming;
+  const isTranscriptActivityActive =
+    isContextStreaming ||
+    isPreparingSend ||
+    isContextOverflowRecovering ||
+    Boolean(activeTranscriptProgressPhase);
 
   const handleManualCompaction = useCallback(async () => {
     if (!selectedConversationId || isManualCompacting || isBusySending) {
@@ -1249,9 +1257,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return planNodes.length > 0 || predictedBranches.length > 0;
   }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
 
-  // Scroll magnetism: auto-scroll during streaming, animated separator
+  // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
-    isStreaming,
+    isTranscriptActivityActive,
     [transcriptItems],
   );
   const disableVirtualizerScrollAdjustment = useCallback(() => false, []);
@@ -1264,7 +1272,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     parentRef: scrollContainerRef,
     getItemKey: (item) => item.key,
     estimateSize: 220,
-    overscan: isStreaming ? 10 : 6,
+    overscan: isTranscriptActivityActive ? 10 : 6,
     dynamicHeight: true,
     gap: 24,
     shouldAdjustScrollPositionOnItemSizeChange:
@@ -2079,7 +2087,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           ? 'bg-primary text-primary-foreground'
                           : 'text-muted-foreground hover:text-foreground'
                       )}
-                      title={t('chat.agentTypePlan', 'Plan')}
+                      title={t('chat.agentTypePlanTitle', 'Plan: read-only investigation')}
                     >
                       <Icon name="map" size={12} />
                       {t('chat.agentTypePlan', 'Plan')}
@@ -2093,7 +2101,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           ? 'bg-primary text-primary-foreground'
                           : 'text-muted-foreground hover:text-foreground'
                       )}
-                      title={t('chat.agentTypeBuild', 'Build')}
+                      title={t('chat.agentTypeBuildTitle', 'Build: apply changes')}
                     >
                       <Icon name="code" size={12} />
                       {t('chat.agentTypeBuild', 'Build')}

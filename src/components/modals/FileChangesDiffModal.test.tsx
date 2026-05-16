@@ -194,7 +194,6 @@ describe('FileChangesDiffModal', () => {
     useFileChangesStore.setState({
       ...useFileChangesStore.getState(),
       repositories: [repository],
-      selectedRepositoryId: repository.id,
       selectedDiffTarget: { repositoryId: repository.id, changeId: diffSession.changeId },
       diffModalSession: diffSession,
       isDiffModalOpen: true,

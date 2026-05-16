@@ -19,7 +19,7 @@ interface ViewportAnchor {
 }
 
 /**
- * useScrollMagnet – Manages auto-scroll magnetism during streaming.
+ * useScrollMagnet – Manages auto-scroll magnetism during assistant activity.
  *
  * The separator color bar acts as a "gate": while locked, the user's wheel
  * events are absorbed (preventDefault). Scrolling up triggers the detaching
@@ -27,7 +27,7 @@ interface ViewportAnchor {
  * This prevents the vibration caused by auto-scroll fighting user input.
  *
  * State machine:
- *   idle ─(streaming starts)──► locked ─(streaming ends)──► releasing ──► idle
+ *   idle ─(activity starts)──► locked ─(activity ends)──► releasing ──► idle
  *                                  │                                       ▲
  *                                  ├─(user scrolls up)──► detaching ──► detached
  *                                  │                                       │
@@ -35,7 +35,7 @@ interface ViewportAnchor {
  *                                           via reattaching ──► locked
  */
 export function useScrollMagnet(
-    isStreaming: boolean,
+    isActive: boolean,
     deps: unknown[],
 ): {
     scrollContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -49,14 +49,14 @@ export function useScrollMagnet(
     const programmaticScrollRef = useRef(false);
     const scrollCaptureRafRef = useRef<number | null>(null);
     const pinnedScrollRafRef = useRef<number | null>(null);
-    const prevStreamingRef = useRef(isStreaming);
+    const prevActiveRef = useRef(isActive);
     // Keep a mutable ref in sync with state so event handlers always read fresh
     const stateRef = useRef<SeparatorState>(state);
     useEffect(() => { stateRef.current = state; }, [state]);
 
-    // Also keep a mutable ref for isStreaming to avoid re-registering listeners
-    const isStreamingRef = useRef(isStreaming);
-    useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+    // Also keep a mutable ref for activity to avoid re-registering listeners.
+    const isActiveRef = useRef(isActive);
+    useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
     // ---------------------------------------------------------------------------
     // Helpers
@@ -166,21 +166,21 @@ export function useScrollMagnet(
     }, [captureViewportAnchor]);
 
     // ---------------------------------------------------------------------------
-    // React to streaming start / stop
+    // React to assistant activity start / stop
     // ---------------------------------------------------------------------------
 
     useEffect(() => {
-        const wasStreaming = prevStreamingRef.current;
-        prevStreamingRef.current = isStreaming;
+        const wasActive = prevActiveRef.current;
+        prevActiveRef.current = isActive;
 
-        if (isStreaming && !wasStreaming) {
-            // New streaming started → force lock regardless of current state
+        if (isActive && !wasActive) {
+            // New assistant activity started -> force lock regardless of current state.
             clearTimer();
             setState('locked');
             // Immediately scroll to bottom
             requestAnimationFrame(() => scrollToBottom());
-        } else if (!isStreaming && wasStreaming) {
-            // Streaming ended
+        } else if (!isActive && wasActive) {
+            // Assistant activity ended.
             setState((prev) => {
                 if (prev === 'locked' || prev === 'reattaching') {
                     // Transition locked → releasing → idle
@@ -201,7 +201,7 @@ export function useScrollMagnet(
                 return 'idle';
             });
         }
-    }, [isStreaming, clearTimer, scrollToBottom]);
+    }, [isActive, clearTimer, scrollToBottom]);
 
     // ---------------------------------------------------------------------------
     // Auto-scroll while locked or detaching (react to message changes)
@@ -318,7 +318,7 @@ export function useScrollMagnet(
             }
 
             // --- User actively scrolls DOWN while detached & near bottom → reattach ---
-            if ((s === 'detached' || s === 'idle') && e.deltaY > 0 && isNearBottom() && isStreamingRef.current) {
+            if ((s === 'detached' || s === 'idle') && e.deltaY > 0 && isNearBottom() && isActiveRef.current) {
                 e.preventDefault();
                 clearTimer();
                 timerRef.current = setTimeout(() => {
