@@ -26,7 +26,7 @@ export const ArchitectPlanNamingRecoveryModal: React.FC<
   onRetry,
   onManual,
 }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-200">
     <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[440px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-in zoom-in-95 duration-200">
       <header className="h-12 px-4 border-b border-border flex items-center gap-3 shrink-0">
         <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">

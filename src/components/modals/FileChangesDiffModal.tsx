@@ -15,6 +15,41 @@ interface FileChangesDiffModalProps {
   onClose: () => void;
 }
 
+interface DiffModalErrorBoundaryProps {
+  children: React.ReactNode;
+  fallback: React.ReactNode;
+  resetKey: string;
+}
+
+interface DiffModalErrorBoundaryState {
+  hasError: boolean;
+}
+
+class DiffModalErrorBoundary extends React.Component<
+  DiffModalErrorBoundaryProps,
+  DiffModalErrorBoundaryState
+> {
+  state: DiffModalErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): DiffModalErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error('[FileChangesDiffModal] Failed to render diff viewer', error);
+  }
+
+  componentDidUpdate(previousProps: DiffModalErrorBoundaryProps) {
+    if (this.state.hasError && previousProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children;
+  }
+}
+
 const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
 
 const getFileLabel = (path: string): string => path.split('/').filter(Boolean).pop() || path;
@@ -265,10 +300,26 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
     (change.status === 'added' && change.additions > 0) ||
     (change.status === 'deleted' && change.deletions > 0)
   );
+  const diffErrorFallback = (
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 p-6 text-center">
+      <Icon name="triangle-alert" size={24} className="text-destructive" />
+      <div>
+        <p className="text-sm font-medium text-foreground">
+          {t('implement.diffRenderFailedTitle', 'Could not render this diff')}
+        </p>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          {t(
+            'implement.diffRenderFailedDescription',
+            'The changes panel stayed open. Close this file and retry, or inspect the file directly.'
+          )}
+        </p>
+      </div>
+    </div>
+  );
 
   return (
     <div
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/50 p-4 pt-12 backdrop-blur-sm sm:p-6 sm:pt-14"
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/95 p-4 pt-12 sm:p-6 sm:pt-14"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) attemptClose();
       }}
@@ -412,26 +463,28 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
             ) : (
-              <DiffMergeView
-                key={change.id}
-                original={session.originalContent}
-                modified={session.rightDraftContent}
-                language={change.language}
-                layout={diffLayout}
-                presentationMode={effectivePresentationMode}
-                className="h-full w-full border-none md:border-none"
-                editable={canEdit}
-                autoFocus={canEdit}
-                onChange={(value) => {
-                  if (canEdit) {
-                    updateRightDraft(value);
-                  }
-                }}
-                onEditorReady={handleDebugEditorReady}
-                revertControls={canRevertChunks ? 'a-to-b' : undefined}
-                validatedRemovedLineNumbers={change.validatedRemovedLineNumbers}
-                validatedAddedLineNumbers={change.validatedAddedLineNumbers}
-              />
+              <DiffModalErrorBoundary resetKey={change.id} fallback={diffErrorFallback}>
+                <DiffMergeView
+                  key={change.id}
+                  original={session.originalContent}
+                  modified={session.rightDraftContent}
+                  language={change.language}
+                  layout={diffLayout}
+                  presentationMode={effectivePresentationMode}
+                  className="h-full w-full border-none md:border-none"
+                  editable={canEdit}
+                  autoFocus={canEdit}
+                  onChange={(value) => {
+                    if (canEdit) {
+                      updateRightDraft(value);
+                    }
+                  }}
+                  onEditorReady={handleDebugEditorReady}
+                  revertControls={canRevertChunks ? 'a-to-b' : undefined}
+                  validatedRemovedLineNumbers={change.validatedRemovedLineNumbers}
+                  validatedAddedLineNumbers={change.validatedAddedLineNumbers}
+                />
+              </DiffModalErrorBoundary>
             )}
           </div>
 

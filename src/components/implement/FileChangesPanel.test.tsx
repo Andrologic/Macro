@@ -2619,12 +2619,13 @@ describe('FileChangesPanel', () => {
     expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
   });
 
-  it('defers the post-assistant refresh while the diff modal is open', async () => {
+  it('refreshes after the assistant finishes while preserving an open diff modal', async () => {
     seedActiveAssistantRuntime();
     seedStores(buildRepository(false));
     useFileChangesStore.setState({
       ...useFileChangesStore.getState(),
       isDiffModalOpen: true,
+      selectedDiffTarget: { repositoryId: 'repo-1', changeId: 'change-1' },
     });
 
     await act(async () => {
@@ -2639,17 +2640,11 @@ describe('FileChangesPanel', () => {
       await waitForPostAssistantRefresh();
     });
 
-    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
-
-    await act(async () => {
-      useFileChangesStore.setState({
-        ...useFileChangesStore.getState(),
-        isDiffModalOpen: false,
-      });
-      await flushRender();
+    expect(loadCurrentChangesMock).toHaveBeenCalledWith({
+      silent: true,
+      preserveDiffModalSession: true,
     });
-
-    expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
+    expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
   });
 
   it('renders the scoped empty-state message when the task is outside the current repository scope', async () => {
@@ -2682,6 +2677,66 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
     expect(document.body.textContent).toContain('Commit, stash, or discard');
     expect(document.body.textContent).toContain('Retry');
+  });
+
+  it('renders a plain empty state while a pending task has no worktree yet', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'awaiting_worktree',
+      loadMessage: 'Make your first changes to this task to see them here.',
+      taskOverrides: {
+        status: 'Pending',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Make your first changes to this task to see them here.');
+    expect(document.body.textContent).not.toContain('Macro could not prepare the task workspace');
+    expect(Array.from(document.body.querySelectorAll('button')).some((button) =>
+      button.textContent?.trim() === 'Retry'
+    )).toBe(false);
+  });
+
+  it('renders a calm waiting state for a failed task without a worktree', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'awaiting_worktree',
+      loadMessage: 'Retry this task to continue. Its changes will appear here.',
+      taskOverrides: {
+        status: 'Failed',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Retry this task to continue. Its changes will appear here.');
+    expect(document.body.textContent).not.toContain('Macro could not prepare the task workspace');
+    expect(Array.from(document.body.querySelectorAll('button')).some((button) =>
+      button.textContent?.trim() === 'Retry'
+    )).toBe(false);
+  });
+
+  it('keeps invalid worktree mappings actionable', async () => {
+    seedStores(buildRepository(false), {
+      loadState: 'invalid_mapping',
+      loadMessage: 'Macro could not find the prepared task worktree for feature/demo.',
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Macro could not prepare the task workspace');
+    expect(document.body.textContent).toContain('Macro could not find the prepared task worktree for feature/demo.');
+    expect(Array.from(document.body.querySelectorAll('button')).some((button) =>
+      button.textContent?.trim() === 'Retry'
+    )).toBe(true);
   });
 
   it('renders a calm locked state when the selected task is dependency-blocked', async () => {

@@ -3274,7 +3274,11 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
         return Ok(None);
     };
 
+    let raw_state = state.clone();
     let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    if repair_report.has_destructive_repairs() {
+        return Ok(Some(raw_state));
+    }
     if repair_report.has_repairs() {
         persist_state_sync(metadata_root, &sanitized_state)?;
     }
@@ -3526,6 +3530,69 @@ fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<
     }
 }
 
+fn sanitize_backup_operation(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "mutation".to_string()
+    } else {
+        sanitized.chars().take(48).collect()
+    }
+}
+
+async fn backup_workspace_state_if_present(
+    metadata_root: &Path,
+    operation: &str,
+) -> Result<Option<PathBuf>> {
+    let source = workspace_state_path(metadata_root);
+    if !source.exists() {
+        return Ok(None);
+    }
+
+    let now = Utc::now();
+    let timestamp = format!(
+        "{}-{:03}",
+        now.format("%Y%m%d-%H%M%S"),
+        now.timestamp_subsec_millis()
+    );
+    let backup_file_name = format!(
+        "{}.bak-{}-{}",
+        WORKSPACE_STATE_FILE,
+        timestamp,
+        sanitize_backup_operation(operation)
+    );
+    let mut backup_path = metadata_root.join(&backup_file_name);
+    let mut collision_index = 1usize;
+    while backup_path.exists() {
+        backup_path = metadata_root.join(format!("{}.{}", backup_file_name, collision_index));
+        collision_index += 1;
+    }
+
+    fs::copy(&source, &backup_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to back up workspace state {} to {}: {}",
+                source.display(),
+                backup_path.display(),
+                error
+            ),
+        })?;
+
+    Ok(Some(backup_path))
+}
+
 pub(crate) fn recover_missing_metadata_sync(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -3656,6 +3723,7 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
         return Ok(None);
     };
 
+    let raw_state = state.clone();
     let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
     if repair_report.has_repairs() {
         tracing::warn!(
@@ -3676,7 +3744,16 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
             predicted_branches_removed = repair_report.predicted_branches_removed,
             git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
         );
-        persist_state(metadata_root, &sanitized_state).await?;
+        if repair_report.has_destructive_repairs() {
+            tracing::warn!(
+                action = "project_registry_state_sanitized_not_persisted",
+                reason = "destructive_repairs_during_load",
+                "Workspace metadata repairs were ignored because a simple load must not remove projects or task metadata."
+            );
+            return Ok(Some(raw_state));
+        } else {
+            persist_state(metadata_root, &sanitized_state).await?;
+        }
     }
 
     Ok(Some(sanitized_state))
@@ -4114,6 +4191,18 @@ async fn persist_sanitized_state(
             predicted_branches_removed = repair_report.predicted_branches_removed,
             git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
         );
+    }
+
+    if repair_report.has_destructive_repairs() {
+        if let Some(backup_path) =
+            backup_workspace_state_if_present(metadata_root, operation).await?
+        {
+            tracing::warn!(
+                action = "project_registry_destructive_repair_backup_created",
+                operation,
+                backup_path = %backup_path.display()
+            );
+        }
     }
 
     persist_state(metadata_root, &sanitized_state).await?;
@@ -5586,6 +5675,101 @@ mod tests {
             "project-web"
         );
         assert_eq!(reconstructed.project_groups[0].projects[0].name, "Web");
+    }
+
+    #[tokio::test]
+    async fn load_state_does_not_persist_destructive_repairs() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+
+        let state = WorkspaceState {
+            version: 3,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Suite".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: Some(PlanDto {
+                id: "plan-main".to_string(),
+                description: "Workspace execution plan".to_string(),
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+                status: "Draft".to_string(),
+                project_ids: vec!["project-web".to_string(), "project-missing".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: Vec::new(),
+                predicted_git_trees: HashMap::new(),
+            }),
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist raw state");
+
+        let loaded = load_state(temp.path(), &metadata_root)
+            .await
+            .expect("load state")
+            .expect("state");
+        assert_eq!(
+            loaded.current_plan.as_ref().unwrap().project_ids,
+            vec!["project-web".to_string(), "project-missing".to_string()]
+        );
+
+        let raw_content =
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("read raw state");
+        assert!(raw_content.contains("project-missing"));
+    }
+
+    #[tokio::test]
+    async fn destructive_mutation_repairs_back_up_workspace_state_before_persisting() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+
+        let state = WorkspaceState {
+            version: 3,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Suite".to_string(),
+                is_open: true,
+                projects: vec![
+                    make_project("project-web", project_path.to_string_lossy().as_ref()),
+                    make_project("project-web-copy", project_path.to_string_lossy().as_ref()),
+                ],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist raw state");
+
+        persist_sanitized_state(temp.path(), &metadata_root, state, "remove_project")
+            .await
+            .expect("persist sanitized state");
+
+        let backups = stdfs::read_dir(&metadata_root)
+            .expect("read metadata root")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("workspace.json.bak-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+
+        let backup_content =
+            stdfs::read_to_string(backups[0].path()).expect("read backup state");
+        assert!(backup_content.contains("project-web-copy"));
     }
 
     #[tokio::test]

@@ -576,7 +576,7 @@ export const Footer: React.FC = () => {
 
       {showConflictModal && (
         <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowConflictModal(false)} />
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowConflictModal(false)} />
           <div className="relative max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-xl border border-border bg-card p-4 shadow-2xl">
             <ConflictResolutionPanel
               title={metadataSyncPresentation.title}

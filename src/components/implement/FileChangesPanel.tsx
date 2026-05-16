@@ -89,6 +89,20 @@ interface CommitMessageEditState {
   error: string | null;
 }
 
+const PASSIVE_WORKTREE_WAITING_STATUSES = new Set([
+  'Pending',
+  'Blocked',
+  'Failed',
+  'Completed',
+]);
+
+const isPassiveWorktreeWaitingState = (
+  loadState: string,
+  task: { status?: string | null } | null | undefined
+): boolean =>
+  loadState === 'awaiting_worktree' &&
+  PASSIVE_WORKTREE_WAITING_STATUSES.has(task?.status || '');
+
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
 const interpolateFallbackPlaceholders = (
@@ -872,7 +886,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!postAssistantRefreshToken || !postAssistantRefreshPendingRef.current) {
       return;
     }
-    if (isDiffModalOpen || isCommitting || isGeneratingCommitMessages) {
+    if (isCommitting || isGeneratingCommitMessages) {
       return;
     }
     if (
@@ -912,7 +926,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         }
 
         if (!isPlanFinalizationTask) {
-          await loadCurrentChanges({ silent: true });
+          await loadCurrentChanges({
+            silent: true,
+            ...(isDiffModalOpen ? { preserveDiffModalSession: true } : {}),
+          });
         }
       } catch {
         // Silent refresh: the panel will surface explicit errors on the next user action.
@@ -1009,13 +1026,20 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     ? currentTaskLoadMessage
     : null;
   const dependencyBlockedMessage = getDependencyBlockedMessage(currentTask, t);
+  const isPassiveWorktreeWaiting = isPassiveWorktreeWaitingState(
+    currentTaskLoadState,
+    currentTask
+  );
   const isManualDraftEmptyState =
     isManualDraftPendingInitialization(currentTask) &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree');
-  const draftEmptyStateMessage = isManualDraftEmptyState
+  const draftEmptyStateMessage = isManualDraftEmptyState || isPassiveWorktreeWaiting
     ? currentTaskLoadMessage
     : null;
-  const mappingError = !dependencyBlockedMessage && !isManualDraftEmptyState &&
+  const mappingError =
+    !dependencyBlockedMessage &&
+    !isManualDraftEmptyState &&
+    !isPassiveWorktreeWaiting &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree')
     ? currentTaskLoadMessage
     : null;
@@ -1715,7 +1739,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       {isCommitModelChoiceOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/50"
             onClick={() => setIsCommitModelChoiceOpen(false)}
           />
           <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">

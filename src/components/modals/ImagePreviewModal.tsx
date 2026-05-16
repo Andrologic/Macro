@@ -37,7 +37,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ isOpen, im
 
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 animate-in fade-in duration-200"
       onClick={handleBackdropClick}
     >
       <div

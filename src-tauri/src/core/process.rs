@@ -63,8 +63,6 @@ fn apply_tokio_visibility(
     command: &mut tokio::process::Command,
     visibility: ProcessLaunchVisibility,
 ) {
-    use tokio::os::windows::process::CommandExt;
-
     if windows_creation_flags_for_visibility(visibility) != 0 {
         command.creation_flags(windows_creation_flags_for_visibility(visibility));
     }

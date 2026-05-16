@@ -10,7 +10,7 @@ export const CodeFileViewerModal: React.FC = () => {
   if (!isOpen || !content) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="flex h-[min(80vh,calc(100vh-2rem))] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="h-12 px-4 border-b border-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">

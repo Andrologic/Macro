@@ -1487,7 +1487,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       )}
 
       {replicaRepair && (
-        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-background/80 p-4">
           <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
             <div className="shrink-0 px-5 py-4 border-b border-border">
               {replicaRepairPresentation && (

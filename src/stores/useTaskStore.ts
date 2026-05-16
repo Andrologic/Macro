@@ -28,6 +28,10 @@ import {
   resolveStableFallbackBranchesForProject,
 } from '../services/planIntegrationWorktreeService';
 import {
+  resolvePreparedTaskWorktreePath,
+  resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
+} from '../services/preparedTaskWorktrees';
+import {
   cleanupPlanBranches,
   mergeFeatureBranchIntoPlanBranch,
 } from '../services/architectGitFlowService';
@@ -868,24 +872,12 @@ const inspectTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>
 ): Promise<string | null> => {
-  const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
-  if (repoPath && tauriIpc.isTauriAvailable()) {
-    try {
-      const inspection = await tauriIpc.gitWorktreeInspect({
-        repoPath,
-        taskId: target.worktreeKey,
-        branchName: target.branchName,
-      });
-      if (inspection.status === 'ready' && inspection.worktreePath.trim().length > 0) {
-        return inspection.worktreePath;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  return branchWorktrees[target.worktreeKey] || null;
+  return resolvePreparedTaskWorktreePath({
+    target,
+    branchWorktrees,
+    getProjectById: useAppStore.getState().getProjectById,
+    tauri: tauriIpc,
+  });
 };
 
 const ensureTargetWorktreePath = async (
@@ -898,7 +890,10 @@ const ensureTargetWorktreePath = async (
     return inspectedPath;
   }
 
-  const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
+  const repoPath = resolvePreparedTaskRepositoryPath(
+    target,
+    useAppStore.getState().getProjectById
+  );
   const fromRef = repoPath ? await resolveTaskStartRef(task, target, repoPath) : null;
   const preferredCommitBranch =
     task.task_source === 'standalone'

@@ -584,7 +584,7 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
 
   return (
     <div
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/50 p-4 pt-12 backdrop-blur-sm sm:p-6 sm:pt-14"
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/50 p-4 pt-12 sm:p-6 sm:pt-14"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) attemptClose();
       }}

@@ -1511,7 +1511,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
             {hoveredNodeData && hoveredNodeRect && !isModalPanning && (
               <div
-                className="fixed z-[110] p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+                className="fixed z-[110] p-4 rounded-xl border border-border bg-popover/95 shadow-xl w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
                 style={{
                   top: Math.min(hoveredNodeRect.top + 10, window.innerHeight - 150),
                   ...(hoveredNodeRect.left > window.innerWidth / 2
@@ -1579,7 +1579,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
             )}
 
-            <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 backdrop-blur-sm border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
+            <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
               <div className="flex items-center gap-2 mb-1">
                 <Icon name="arrow-down-right" size={10} />
                 <span>{t('architect.dependencyFlow', 'Dependency Flow')}</span>
@@ -1734,7 +1734,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
       {hoveredFrozenBadge && viewMode === 'branches' && (
         <div
-          className="fixed z-[115] w-72 rounded-xl border border-border bg-popover/95 p-3 shadow-xl backdrop-blur-sm pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+          className="fixed z-[115] w-72 rounded-xl border border-border bg-popover/95 p-3 shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-150"
           style={{
             top: Math.min(
               hoveredFrozenBadge.rect.bottom + 10,
@@ -1772,7 +1772,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
       {isGraphModalOpen && (
         <div
-          className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 animate-in fade-in duration-200"
           onClick={handleModalBackdropClick}
         >
           <div
