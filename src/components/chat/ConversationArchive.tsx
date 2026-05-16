@@ -355,6 +355,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const {
     conversations,
     conversationRuntimeById,
+    conversationCompactionStatusById,
     selectedConversationId,
     selectConversation,
     createConversation,
@@ -362,6 +363,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     conversationRuntimeById: state.conversationRuntimeById,
+    conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectedConversationId: state.selectedConversationId,
     selectConversation: state.selectConversation,
     createConversation: state.createConversation,
@@ -425,8 +427,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [conversations]
   );
   const runningConversationIds = useMemo(
-    () => resolveRunningConversationIds(conversationRuntimeById),
-    [conversationRuntimeById]
+    () =>
+      resolveRunningConversationIds(
+        conversationRuntimeById,
+        conversationCompactionStatusById
+      ),
+    [conversationCompactionStatusById, conversationRuntimeById]
   );
   const chatConversationIds = useMemo(
     () => chatConversations.map((conversation) => conversation.id),

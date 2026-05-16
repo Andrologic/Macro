@@ -64,6 +64,18 @@ type MockChatState = {
       summaryText?: string | null;
     }
   >;
+  sessionCompactionEventsByConversationId: Record<
+    string,
+    Array<{
+      id: string;
+      status: 'running' | 'completed';
+      displayAfterMessageId?: string | null;
+      logicalUpToMessageId?: string | null;
+      kind?: string | null;
+      startedAt?: string | null;
+      completedAt?: string | null;
+    }>
+  >;
   contextDiagnosticsByConversationId: Record<string, unknown>;
   getConversationRuntime: (conversationId: string) => {
     phase: 'idle' | 'preparing' | 'overflow_recovery' | 'streaming' | 'error';
@@ -513,6 +525,21 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   ...overrides,
 });
 
+const buildCompactionEvent = (
+  overrides: Partial<
+    MockChatState['sessionCompactionEventsByConversationId'][string][number]
+  > = {},
+): MockChatState['sessionCompactionEventsByConversationId'][string][number] => ({
+  id: 'compaction-event-1',
+  status: 'completed',
+  displayAfterMessageId: 'msg-assistant-1',
+  logicalUpToMessageId: 'msg-assistant-1',
+  kind: 'manual',
+  startedAt: '2026-05-10T08:30:00.000Z',
+  completedAt: '2026-05-10T08:30:00.000Z',
+  ...overrides,
+});
+
 const buildProjectGroups = () => [
   {
     id: 'group-1',
@@ -548,6 +575,7 @@ const resetState = () => {
     messages: [],
     selectedConversationId: 'conv-1',
     conversationCompactionStatusById: {},
+    sessionCompactionEventsByConversationId: {},
     contextDiagnosticsByConversationId: {},
     getConversationRuntime: (conversationId: string) =>
       getMockConversationRuntime(chatState, conversationId),
@@ -713,6 +741,9 @@ describe('ChatZone', () => {
           summaryText: 'Résumé compacté',
         },
       },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [buildCompactionEvent()],
+      },
     };
 
     await act(async () => {
@@ -746,6 +777,9 @@ describe('ChatZone', () => {
           updatedAt: '2026-05-10T08:30:00.000Z',
         },
       },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [buildCompactionEvent()],
+      },
     };
 
     await act(async () => {
@@ -755,6 +789,71 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
     ).not.toBeNull();
+  });
+
+  it('removes the virtual transcript gap before a compaction separator that follows an assistant message', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Dernière réponse compactée',
+        }),
+      ],
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [buildCompactionEvent()],
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const assistant = requireContainer().querySelector<HTMLElement>(
+      '#chat-message-msg-assistant-1'
+    );
+    const boundary = requireContainer().querySelector<HTMLElement>(
+      '[data-chat-compaction-boundary="true"]'
+    );
+
+    expect(assistant).not.toBeNull();
+    expect(boundary).not.toBeNull();
+    expect(assistant?.style.transform).toBe('translateY(244px)');
+    expect(boundary?.style.transform).toBe('translateY(464px)');
+    expect(boundary?.className).toContain('pt-0');
+    expect(boundary?.className).toContain('pb-2');
+  });
+
+  it('does not render a visual boundary from a rehydrated compaction checkpoint alone', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Dernière réponse compactée',
+        }),
+      ],
+      conversationCompactionStatusById: {
+        'conv-1': {
+          phase: 'compacted',
+          upToMessageId: 'msg-assistant-1',
+          updatedAt: '2026-05-10T08:30:00.000Z',
+        },
+      },
+      sessionCompactionEventsByConversationId: {},
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(
+      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
+    ).toBeNull();
   });
 
   it('renders compaction progress in the transcript while manual compaction is running', async () => {
@@ -771,6 +870,20 @@ describe('ChatZone', () => {
           upToMessageId: 'msg-assistant-1',
           updatedAt: '2026-05-10T08:30:00.000Z',
         },
+      },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            id: 'previous-compaction',
+            status: 'completed',
+            displayAfterMessageId: 'msg-user-1',
+          }),
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: 'msg-assistant-1',
+            completedAt: null,
+          }),
+        ],
       },
     };
 
@@ -790,7 +903,50 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
   });
 
-  it('replaces the streaming cursor with inline compaction activity', async () => {
+  it('uses the same compaction label layout for completed and running rows', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
+      ],
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            id: 'completed-compaction',
+            status: 'completed',
+            displayAfterMessageId: 'msg-user-1',
+          }),
+          buildCompactionEvent({
+            id: 'running-compaction',
+            status: 'running',
+            displayAfterMessageId: 'msg-assistant-1',
+            completedAt: null,
+          }),
+        ],
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
+    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
+    const boundaryLabel = boundary?.querySelector('.chat-compaction-label');
+    const progressLabel = progress?.querySelector('.chat-compaction-label');
+
+    expect(boundary).not.toBeNull();
+    expect(progress).not.toBeNull();
+    expect(boundaryLabel).not.toBeNull();
+    expect(progressLabel).not.toBeNull();
+    expect(boundaryLabel?.textContent).toContain(COMPACTION_BOUNDARY_TEXT);
+    expect(progressLabel?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
+    expect(boundaryLabel?.classList.contains('chat-compaction-wave-text')).toBe(false);
+    expect(progressLabel?.classList.contains('chat-compaction-wave-text')).toBe(true);
+  });
+
+  it('suppresses the streaming cursor during compaction without rendering inline compaction text', async () => {
     chatState = {
       ...chatState,
       isStreaming: true,
@@ -814,14 +970,9 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
     });
 
-    const inlineActivity = requireContainer().querySelector(
-      '[data-chat-streaming-compaction-activity="true"]',
-    );
-    expect(inlineActivity).not.toBeNull();
-    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(inlineActivity?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
+    ).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -848,6 +999,15 @@ describe('ChatZone', () => {
         lastErrorOrigin: null,
         lastErrorDisplayTarget: null,
       }),
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: 'msg-assistant-1',
+            completedAt: null,
+          }),
+        ],
+      },
     };
 
     await act(async () => {
@@ -910,13 +1070,9 @@ describe('ChatZone', () => {
 
     expect(chatState.messages).toBe(messages);
     expect(chatState.messages[1]).toBe(assistantMessage);
-    const inlineActivity = requireContainer().querySelector(
-      '[data-chat-streaming-compaction-activity="true"]',
-    );
-    expect(inlineActivity).not.toBeNull();
-    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
+    ).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -974,18 +1130,14 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    const inlineActivity = requireContainer().querySelector(
-      '[data-chat-streaming-compaction-activity="true"]',
-    );
-    expect(inlineActivity).not.toBeNull();
-    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
+    ).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
-  it('replaces the preparing assistant cursor with inline compaction activity', async () => {
+  it('suppresses the preparing assistant cursor during compaction without rendering inline compaction text', async () => {
     chatState = {
       ...chatState,
       sendState: 'preparing',
@@ -1009,13 +1161,9 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
     });
 
-    const inlineActivity = requireContainer().querySelector(
-      '[data-chat-streaming-compaction-activity="true"]',
-    );
-    expect(inlineActivity).not.toBeNull();
-    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
+    ).toBeNull();
     expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
     expect(
@@ -1034,6 +1182,16 @@ describe('ChatZone', () => {
           phase: 'recovering_overflow',
           updatedAt: '2026-05-10T08:31:00.000Z',
         },
+      },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: 'msg-user-1',
+            kind: 'stream_overflow',
+            completedAt: null,
+          }),
+        ],
       },
     };
 
@@ -1064,6 +1222,16 @@ describe('ChatZone', () => {
           phase: 'safety_compacting',
           updatedAt: '2026-05-10T08:31:00.000Z',
         },
+      },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: 'msg-user-1',
+            kind: 'safety_prestream',
+            completedAt: null,
+          }),
+        ],
       },
     };
 
@@ -1099,6 +1267,16 @@ describe('ChatZone', () => {
           updatedAt: '2026-05-10T08:31:00.000Z',
         },
       },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: 'msg-user-1',
+            kind: 'safety_prestream',
+            completedAt: null,
+          }),
+        ],
+      },
     };
 
     await act(async () => {
@@ -1122,6 +1300,16 @@ describe('ChatZone', () => {
           phase: 'safety_compacting',
           updatedAt: '2026-05-10T08:31:00.000Z',
         },
+      },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            status: 'running',
+            displayAfterMessageId: null,
+            kind: 'safety_prestream',
+            completedAt: null,
+          }),
+        ],
       },
     };
 
@@ -1161,6 +1349,15 @@ describe('ChatZone', () => {
           upToMessageId: 'msg-assistant-1',
           updatedAt: '2026-05-10T08:32:00.000Z',
         },
+      },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({
+            displayAfterMessageId: 'msg-user-1',
+            logicalUpToMessageId: 'msg-assistant-1',
+            completedAt: '2026-05-10T08:32:00.000Z',
+          }),
+        ],
       },
     };
 
@@ -1341,6 +1538,9 @@ describe('ChatZone', () => {
           updatedAt: '2026-05-10T08:30:00.000Z',
         },
       },
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [buildCompactionEvent()],
+      },
     };
 
     await act(async () => {
@@ -1370,10 +1570,23 @@ describe('ChatZone', () => {
         }),
       ],
       compactConversationNow: mock(
-        () =>
-          new Promise<void>((resolve) => {
+        () => {
+          useChatStore.setState((state) => ({
+            sessionCompactionEventsByConversationId: {
+              ...state.sessionCompactionEventsByConversationId,
+              'conv-1': [
+                buildCompactionEvent({
+                  status: 'running',
+                  displayAfterMessageId: 'msg-assistant-1',
+                  completedAt: null,
+                }),
+              ],
+            },
+          }));
+          return new Promise<void>((resolve) => {
             resolveCompaction = resolve;
-          }),
+          });
+        },
       ),
     };
 
@@ -1910,7 +2123,7 @@ describe('ChatZone', () => {
     expect(notice?.textContent).toContain('Macro showed a fallback summary.');
   });
 
-  it('shows inline preparation activity while a retry is preparing', async () => {
+  it('shows the normal assistant cursor while a retry is preparing without compaction', async () => {
     chatState = {
       ...chatState,
       sendState: 'preparing',
@@ -1931,14 +2144,11 @@ describe('ChatZone', () => {
 
     expect(
       requireContainer().querySelector('[data-chat-assistant-activity="true"]')
+    ).not.toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
     ).toBeNull();
-    const inlineActivity = requireContainer().querySelector(
-      '[data-chat-streaming-compaction-activity="true"]',
-    );
-    expect(inlineActivity).not.toBeNull();
-    expect(inlineActivity?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(inlineActivity?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(inlineActivity?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
+    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
   it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {

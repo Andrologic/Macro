@@ -605,12 +605,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const {
     createConversation,
     conversations,
+    selectedConversationId,
     conversationRuntimeById,
+    conversationCompactionStatusById,
     selectConversation,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
     conversationRuntimeById: state.conversationRuntimeById,
+    conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
   })));
   const {
@@ -1615,9 +1619,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () =>
       resolveRunningTaskIds({
         conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
         conversationRuntimeById,
+        conversationCompactionStatusById,
       }),
-    [conversationRuntimeById, conversations]
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
   );
   const selectedTaskForError = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,

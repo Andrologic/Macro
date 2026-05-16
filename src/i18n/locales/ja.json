@@ -474,7 +474,6 @@
     "questionnaireNext": "Next",
     "compactionBoundary": "コンテキストを圧縮済み",
     "compactionProgressTitle": "コンテキストを圧縮中...",
-    "streamingCompactionActivity": "コンテキストを圧縮中...",
     "compactNow": "今すぐ圧縮",
     "loadingModels": "モデルを読み込み中",
     "agentCodeReplayTitle": "コードのチェックポイントに戻りますか？",
