@@ -75,6 +75,14 @@ const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = {
         id: 'anthropic/claude-sonnet-4.5',
         limit: { context: 200_000, output: 64_000 },
       },
+      'qwen/qwen3.6-plus': {
+        id: 'qwen/qwen3.6-plus',
+        limit: { context: 1_000_000, output: 66_000 },
+      },
+      'qwen3.6-plus': {
+        id: 'qwen3.6-plus',
+        limit: { context: 1_000_000, output: 66_000 },
+      },
     },
   },
   'github-copilot': {
@@ -92,6 +100,12 @@ const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = {
     models: {
       'kimi-k2.6': { id: 'kimi-k2.6', limit: { context: 128_000, output: 32_000 } },
       'kimi-k2': { id: 'kimi-k2', limit: { context: 128_000, output: 32_000 } },
+      'qwen3.6-plus': { id: 'qwen3.6-plus', limit: { context: 262_144, output: 66_000 } },
+      'qwen3-6-plus': { id: 'qwen3-6-plus', limit: { context: 262_144, output: 66_000 } },
+      'qwen/qwen3.6-plus': {
+        id: 'qwen/qwen3.6-plus',
+        limit: { context: 262_144, output: 66_000 },
+      },
     },
   },
 };

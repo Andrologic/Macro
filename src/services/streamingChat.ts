@@ -312,6 +312,20 @@ export interface ToolInterruptResolution {
 
 export type ToolCallResolution = ToolResultResolution | ToolInterruptResolution;
 
+export type StreamingFollowUpCompactionReason = 'tool_results';
+
+export interface StreamingFollowUpCompactionRequest {
+  reason: StreamingFollowUpCompactionReason;
+  messages: StreamMessage[];
+  turnCount: number;
+  toolResultCount: number;
+}
+
+export interface StreamingFollowUpCompactionResult {
+  messages: StreamMessage[];
+  compacted?: boolean;
+}
+
 export interface StreamingChatOptions {
   sessionId?: string;
   conversationId?: string;
@@ -345,6 +359,13 @@ export interface StreamingChatOptions {
     | string
     | void;
   onToolResult?: (toolName: string, result: string) => void;
+  onBeforeFollowUpRequest?: (
+    request: StreamingFollowUpCompactionRequest,
+  ) =>
+    | Promise<StreamingFollowUpCompactionResult | StreamMessage[] | void>
+    | StreamingFollowUpCompactionResult
+    | StreamMessage[]
+    | void;
   fileToolContext?: Array<{
     title: string;
     source: string;
@@ -372,6 +393,39 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   visibleContent,
   toolTraces: [],
 });
+
+const cloneStreamMessage = (message: StreamMessage): StreamMessage =>
+  JSON.parse(JSON.stringify(message)) as StreamMessage;
+
+const maybeCompactFollowUpMessages = async (
+  options: StreamingChatOptions,
+  params: {
+    reason: StreamingFollowUpCompactionReason;
+    messages: StreamMessage[];
+    turnCount: number;
+    toolResultCount: number;
+  },
+): Promise<StreamMessage[]> => {
+  if (!options.onBeforeFollowUpRequest) {
+    return params.messages;
+  }
+  const result = await options.onBeforeFollowUpRequest({
+    reason: params.reason,
+    messages: params.messages.map(cloneStreamMessage),
+    turnCount: params.turnCount,
+    toolResultCount: params.toolResultCount,
+  });
+  if (!result) {
+    return params.messages;
+  }
+  if (Array.isArray(result)) {
+    return result.map(cloneStreamMessage);
+  }
+  if (Array.isArray(result.messages)) {
+    return result.messages.map(cloneStreamMessage);
+  }
+  return params.messages;
+};
 
 const isReasoningUnsupportedError = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -2992,6 +3046,12 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResultCount: toolResults.length,
           });
         }
+        currentMessages = await maybeCompactFollowUpMessages(options, {
+          reason: 'tool_results',
+          messages: currentMessages,
+          turnCount,
+          toolResultCount: toolResults.length,
+        });
       }
 
       turnCount++;
@@ -3955,6 +4015,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           if (guardSystemMessages.length > 0) {
             currentMessages.push(...guardSystemMessages);
           }
+          currentMessages = await maybeCompactFollowUpMessages(options, {
+            reason: 'tool_results',
+            messages: currentMessages,
+            turnCount,
+            toolResultCount: toolResults.length,
+          });
         }
       }
 

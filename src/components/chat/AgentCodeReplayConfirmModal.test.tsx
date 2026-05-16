@@ -86,5 +86,8 @@ describe('AgentCodeReplayConfirmModal', () => {
     expect(container.textContent).toContain(
       'Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés',
     );
+    expect(container.textContent).toContain(
+      'Les compactages de contexte après ce message seront recalculés',
+    );
   });
 });

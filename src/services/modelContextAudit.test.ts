@@ -36,10 +36,12 @@ describe('modelContextAudit', () => {
       modelId: 'model-a',
       contextTokens: 200_000,
       inputTokens: 180_000,
+      usableContextTokens: 160_000,
       source: 'provider_metadata',
       isAuthoritative: true,
       confidence: 'verified',
     });
+    expect(rows[0]?.audit.formula).toBe('180k input limit - 20k reserved = 160k usable');
     expect(rows[1]).toMatchObject({
       providerId: 'provider-1',
       modelId: 'model-b',

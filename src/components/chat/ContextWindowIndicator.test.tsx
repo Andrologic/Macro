@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-import type { ConversationContextDiagnostics } from '../../stores/useChatStore';
+import type {
+  ConversationCompactionStatus,
+  ConversationContextDiagnostics,
+} from '../../stores/useChatStore';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 
 const flushRender = async () => {
@@ -112,6 +115,20 @@ const buildDiagnostics = (
   ...overrides,
 });
 
+const buildCompactionStatus = (
+  overrides: Partial<ConversationCompactionStatus> = {},
+): ConversationCompactionStatus => ({
+  phase: 'safety_compacting',
+  updatedAt: '2026-05-10T00:01:00.000Z',
+  kind: 'safety_prestream',
+  footprintAfter: {
+    ...buildDiagnostics().footprintAfter!,
+    usableContextRatio: 0.42,
+    totalContextRatio: 0.5,
+  },
+  ...overrides,
+});
+
 describe('ContextWindowIndicator', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -151,7 +168,7 @@ describe('ContextWindowIndicator', () => {
     expect(fill?.getAttribute('stroke-dasharray')).toBe('82 100');
   });
 
-  it('shows a compacting animation arc', async () => {
+  it('shows a compacting wave clipped to the active context fill', async () => {
     await act(async () => {
       root?.render(
         <ContextWindowIndicator diagnostics={buildDiagnostics()} isCompacting />
@@ -165,14 +182,87 @@ describe('ContextWindowIndicator', () => {
     );
     expect(spinner).not.toBeNull();
     expect(spinner?.getAttribute('role')).toBe('status');
+    const compactionWave = document.body.querySelector(
+      '[data-testid="context-window-compacting"]',
+    );
+    const compactionMask = document.body.querySelector(
+      '[data-testid="context-window-compacting-mask-fill"]',
+    );
+    expect(compactionWave).not.toBeNull();
+    expect(compactionMask).not.toBeNull();
+    expect(compactionMask?.getAttribute('stroke-dasharray')).toBe('82 100');
+    expect(compactionWave?.getAttribute('stroke-dasharray')).toBe('18 100');
+    expect(compactionWave?.getAttribute('mask')).toContain('context-window-compacting-mask');
     expect(
-      document.body
-        .querySelector('[data-testid="context-window-compacting"]')
-        ?.getAttribute('class'),
-    ).toContain('animate-spin');
+      compactionWave?.getAttribute('class'),
+    ).toContain('context-window-compaction-wave');
+    expect(compactionWave?.getAttribute('class')).not.toContain('animate-spin');
     expect(document.body.querySelector('svg')?.getAttribute('class')).not.toContain(
       'animate-spin',
     );
+  });
+
+  it('keeps the compacting wave inside small active context windows', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({ usableRatio: 0.1 })}
+          isCompacting
+        />,
+      );
+      await flushRender();
+    });
+
+    const compactionWave = document.body.querySelector(
+      '[data-testid="context-window-compacting"]',
+    );
+    const compactionMask = document.body.querySelector(
+      '[data-testid="context-window-compacting-mask-fill"]',
+    );
+
+    expect(compactionMask?.getAttribute('stroke-dasharray')).toBe('10 100');
+    expect(Number(compactionWave?.getAttribute('stroke-dasharray')?.split(' ')[0])).toBeLessThanOrEqual(10);
+  });
+
+  it('uses the runtime compaction footprint when diagnostics are not available yet', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          isCompacting
+          compactionStatus={buildCompactionStatus()}
+        />,
+      );
+      await flushRender();
+    });
+
+    expect(
+      document.body
+        .querySelector('[data-testid="context-window-fill"]')
+        ?.getAttribute('stroke-dasharray'),
+    ).toBe('42 100');
+    expect(
+      document.body
+        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
+        ?.getAttribute('stroke-dasharray'),
+    ).toBe('42 100');
+    expect(document.body.querySelector('[data-testid="context-window-compacting"]')).not.toBeNull();
+  });
+
+  it('keeps the compacting status without drawing a wave when no footprint is known', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          isCompacting
+          compactionStatus={buildCompactionStatus({ footprintAfter: undefined })}
+        />,
+      );
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-testid="context-window-compacting"]')).toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="context-window-compacting-spinner"]'),
+    ).not.toBeNull();
   });
 
   it('shows a compacting label in the popover while compaction is active', async () => {

@@ -563,6 +563,7 @@ export interface ContextFootprint {
   modelContextWindowShrank?: boolean;
   marginTokens?: number;
   reservedTokens: number;
+  outputReserveTokens?: number;
   usableContextTokens: number;
   threshold: ContextFootprintThreshold;
   reason: ContextFootprintReason;
@@ -572,6 +573,31 @@ export interface ContextFootprint {
   hardStopRatio: number;
   isHardStop: boolean;
   toolTurnCount: number;
+}
+
+export interface ContextCompactionDecisionAudit {
+  providerId?: string | null;
+  providerType?: string | null;
+  modelId?: string | null;
+  trigger?: ContextCompactionKind | ContextCompactionTrigger | null;
+  result?: string | null;
+  reason?: ContextFootprintReason | string | null;
+  modelContextWindowTokens?: number | null;
+  inputLimitTokens?: number | null;
+  outputLimitTokens?: number | null;
+  outputReserveTokens?: number | null;
+  reservedTokens?: number | null;
+  usableContextTokens?: number | null;
+  totalEstimatedTokens?: number | null;
+  usableContextRatio?: number | null;
+  totalContextRatio?: number | null;
+  threshold?: ContextFootprintThreshold | null;
+  contextLimitSource?: ModelContextLimitSource | null;
+  isContextLimitAuthoritative?: boolean | null;
+  contextLimitConfidence?: ModelContextLimitConfidence | null;
+  contextLimitWarning?: string | null;
+  autoCompactionEnabled?: boolean | null;
+  formula?: string | null;
 }
 
 export type ContextCompactionKind =
@@ -625,6 +651,7 @@ export interface ConversationCompactionState {
   updatedAt: string;
   prunedToolContextMessageIds?: string[];
   reservedTokens?: number;
+  outputReserveTokens?: number;
   footprintBefore?: ContextFootprint;
   footprintAfter?: ContextFootprint;
   degradedReason?: ContextFootprintReason | null;

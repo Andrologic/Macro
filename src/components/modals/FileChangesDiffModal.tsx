@@ -17,7 +17,7 @@ interface FileChangesDiffModalProps {
 
 interface DiffModalErrorBoundaryProps {
   children: React.ReactNode;
-  fallback: React.ReactNode;
+  fallback: (reset: () => void) => React.ReactNode;
   resetKey: string;
 }
 
@@ -46,7 +46,9 @@ class DiffModalErrorBoundary extends React.Component<
   }
 
   render() {
-    return this.state.hasError ? this.props.fallback : this.props.children;
+    return this.state.hasError
+      ? this.props.fallback(() => this.setState({ hasError: false }))
+      : this.props.children;
   }
 }
 
@@ -89,7 +91,45 @@ const STATUS_META = {
   },
 } as const;
 
-export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
+const FileChangesDiffModalRenderError: React.FC<{
+  onClose: () => void;
+  onRetry: () => void;
+}> = ({ onClose, onRetry }) => {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-background/95 p-4 pt-12 sm:p-6 sm:pt-14"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-xl border border-border bg-background p-6 text-center shadow-2xl">
+        <Icon name="triangle-alert" size={24} className="text-destructive" />
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            {t('implement.diffModalCrashedTitle', 'Could not keep this diff open')}
+          </p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            {t(
+              'implement.diffModalCrashedDescription',
+              'The changes panel is still running. Retry the diff viewer or close this file.'
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            {t('common.close', 'Close')}
+          </Button>
+          <Button variant="primary" size="sm" onClick={onRetry}>
+            {t('common.retry', 'Retry')}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
   const { t } = useTranslation();
   const titleId = useId();
   const session = useFileChangesStore((state) => state.diffModalSession);
@@ -463,7 +503,7 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
                 {t('implement.noTextualDiff', 'No textual diff is available for this file.')}
               </div>
             ) : (
-              <DiffModalErrorBoundary resetKey={change.id} fallback={diffErrorFallback}>
+              <DiffModalErrorBoundary resetKey={change.id} fallback={() => diffErrorFallback}>
                 <DiffMergeView
                   key={change.id}
                   original={session.originalContent}
@@ -611,5 +651,26 @@ export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onCl
         />
       )}
     </div>
+  );
+};
+
+export const FileChangesDiffModal: React.FC<FileChangesDiffModalProps> = ({ onClose }) => {
+  const resetKey = useFileChangesStore((state) => {
+    const session = state.diffModalSession;
+    return session ? `${session.repositoryId}:${session.changeId}` : 'no-session';
+  });
+
+  return (
+    <DiffModalErrorBoundary
+      resetKey={resetKey}
+      fallback={(reset) => (
+        <FileChangesDiffModalRenderError
+          onClose={onClose}
+          onRetry={reset}
+        />
+      )}
+    >
+      <FileChangesDiffModalContent onClose={onClose} />
+    </DiffModalErrorBoundary>
   );
 };

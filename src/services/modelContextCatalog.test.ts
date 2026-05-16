@@ -27,6 +27,21 @@ describe('modelContextCatalog', () => {
     });
   });
 
+  it('uses the local snapshot for OpenCode Go Qwen 3.6 Plus limits offline', () => {
+    const limit = lookupModelContextCatalogLimit({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'qwen3.6-plus',
+    });
+
+    expect(limit).toMatchObject({
+      contextTokens: 262_144,
+      outputTokens: 66_000,
+      source: 'models_dev',
+    });
+  });
+
   it('matches provider aliases and slash-prefixed model ids', () => {
     __testables.writeCachedCatalog({
       fetchedAt: new Date().toISOString(),

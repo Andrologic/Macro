@@ -107,7 +107,7 @@ const isPassiveWorktreeWaitingState = (
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
 const HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE =
-  'transition-opacity group-hover:opacity-0 group-focus-within:opacity-0';
+  'transition-opacity group-hover:opacity-0';
 
 const interpolateFallbackPlaceholders = (
   value: string,
@@ -217,7 +217,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   <div
     data-scope-action-rail="true"
     className={cn(
-      'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
+      'pointer-events-none absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100',
       'bg-gradient-to-l from-background via-background/95 to-transparent',
       className
     )}

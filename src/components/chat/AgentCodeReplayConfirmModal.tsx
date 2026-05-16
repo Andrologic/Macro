@@ -96,6 +96,12 @@ export const AgentCodeReplayConfirmModal: React.FC<
               'Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés, y compris les fichiers non suivis créés par l’agent.'
             )}
           </p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t(
+              'chat.agentCodeReplayCompactionWarning',
+              'Les compactages de contexte après ce message seront recalculés.'
+            )}
+          </p>
         </div>
       )}
     </ConfirmPromptModal>

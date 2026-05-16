@@ -5,6 +5,7 @@ import type { Citation } from '../stores/useCitationsStore';
 import type { StreamMessage } from './streamingChat';
 import {
   buildContextTooLargeErrorMessage,
+  buildContextCompactionDecisionAudit,
   buildCompactedMessagesForRequest,
   compactProviderInputItemsForContext,
   estimateConversationFootprint,
@@ -12,6 +13,7 @@ import {
   isContextFootprintOverUsableBudget,
   parseHiddenToolContext,
   pruneToolContextBlocks,
+  resolveRetainedRecentContextBudget,
   resolveModelContextWindowTokens,
   validateCompactionState,
 } from './contextCompaction';
@@ -567,6 +569,44 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.usedExistingCompaction).toBe(false);
   });
 
+  it('bounds the retained recent tail by tokens instead of always keeping two full turns', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the parser.'),
+      makeMessage('a1', 'assistant', 'Older parser facts.'),
+      makeMessage('u2', 'user', 'Inspect the reducer.'),
+      makeMessage('a2', 'assistant', 'large recent provider output '.repeat(120)),
+      makeMessage('u3', 'user', 'Patch?'),
+      makeMessage('a3', 'assistant', 'Ok.'),
+    ];
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 1000,
+      mode: 'manual',
+      forceCompaction: true,
+      budgetPolicy: { reservedTokens: 0, preserveRecentTokens: 20 },
+      generateSummary: async () => 'Current objective: patch from compacted context.',
+    });
+
+    expect(result.compactionState?.upToMessageId).toBe('a2');
+    expect(result.messages.slice(2).map((message) => message.content)).toEqual([
+      'Patch?',
+      'Ok.',
+    ]);
+  });
+
+  it('derives a bounded default retained tail budget from the usable context', () => {
+    expect(resolveRetainedRecentContextBudget(128_000)).toBe(15_360);
+    expect(resolveRetainedRecentContextBudget(400_000)).toBe(32_000);
+    expect(resolveRetainedRecentContextBudget(30_000)).toBe(8_000);
+    expect(resolveRetainedRecentContextBudget(1_000)).toBe(8_000);
+    expect(resolveRetainedRecentContextBudget(128_000, 4096)).toBe(4096);
+  });
+
   it('invalidates v3 checkpoints when source passage content changes', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),
@@ -710,7 +750,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.footprintAfter.isHardStop).toBe(true);
   });
 
-  it('uses an ultra pass before hard stopping when recent provider history is too large', async () => {
+  it('reduces the retained recent tail before requiring an ultra compaction pass', async () => {
     const hugeReasoning = `Trace.\n${'provider trace payload\n'.repeat(3000)}`;
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),
@@ -747,7 +787,7 @@ describe('buildCompactedMessagesForRequest', () => {
 
     expect(result.decision).toBe('send');
     expect(result.compactionState?.upToMessageId).toBe('a2');
-    expect(result.compactionState?.compactionPass).toBe('ultra');
+    expect(result.compactionState?.compactionPass).toBe('forced');
     expect(result.compactionState?.summaryFormatVersion).toBe(3);
     expect(result.compactionState?.summarySource).toBe('model');
     expect(JSON.stringify(result.messages)).not.toContain('provider trace payload');
@@ -945,6 +985,61 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.contextLimitSource).toBe('provider_metadata');
     expect(footprint.isContextLimitAuthoritative).toBe(true);
     expect(isContextFootprintOverUsableBudget(footprint)).toBe(true);
+  });
+
+  it('does not trigger automatic compaction at 124k for an authoritative 400k model', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Large but valid payload.'),
+    ];
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 400_000,
+      outputLimitTokens: 8_000,
+      contextLimitSource: 'provider_metadata',
+      isContextLimitAuthoritative: true,
+      estimateSerializedPayloadTokens: () => 124_000,
+      mode: 'blocking',
+    });
+
+    expect(footprint.usableContextTokens).toBe(392_000);
+    expect(footprint.usableContextRatio).toBeLessThan(1);
+    expect(isContextFootprintOverUsableBudget(footprint)).toBe(false);
+  });
+
+  it('explains the expected 120k safety threshold for a 128k model with an 8k output reserve', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Large payload.'),
+    ];
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 128_000,
+      outputLimitTokens: 8_000,
+      contextLimitSource: 'provider_metadata',
+      isContextLimitAuthoritative: true,
+      estimateSerializedPayloadTokens: () => 120_000,
+      mode: 'blocking',
+    });
+    const audit = buildContextCompactionDecisionAudit({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      modelId: 'small-window',
+      trigger: 'safety_prestream',
+      result: 'context_too_large',
+      footprint,
+    });
+
+    expect(footprint.usableContextTokens).toBe(120_000);
+    expect(footprint.outputReserveTokens).toBe(8_000);
+    expect(isContextFootprintOverUsableBudget(footprint)).toBe(true);
+    expect(audit.formula).toBe('128k context - 8k output reserve = 120k usable');
   });
 });
 
