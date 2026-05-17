@@ -6,9 +6,39 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.0-rc.8
+
+### Added
+
+- Added conversation compaction surfaces in chat, including transcript boundaries, in-progress compaction status, context-window diagnostics, manual compaction controls, and persisted compaction metadata for long sessions.
+- Added the Macro extension runtime foundation with the extension API package, manifest validation, extension install/trust/storage/runtime services, and the native Extensions settings view.
+- Added assistant replay safeguards for code changes, including checkpoints, staged/committed change detection, and replay trimming protections.
+- Added integrated terminal URL detection, clickable URL opening, and terminal search.
+
+### Changed
+
+- Refactored the chat runtime and `useChatStore` into dedicated orchestration, persistence, session, compaction, replay, and runtime modules.
+- Hardened context budgeting with model/provider context limits, serialized payload estimates, image token estimates, source fingerprints, provider payload pruning, overflow recovery, and manual/automatic compaction decisions.
+- Moved compaction status into the conversation transcript, refined the compaction timeline animation/layout, and reduced noisy live context labels.
+- Refactored branch worktree handling, task preparation, metadata hydration, service runtime, smart commit drafts, and commit message generation flows.
+- Updated the 0.1 documentation source of truth around the local-first desktop scope, remote transport expectations, local provider storage, and release guidance.
+
 ### Fixed
 
 - Fixed OpenAI-compatible reasoning/tool-call replay for Kimi, DeepSeek, OpenRouter, Mistral, Claude-like, and LiteLLM providers, including OpenCode Go Kimi preserved-thinking requests after tool calls.
+- Fixed commit message generation from diff context and refined the instructions used for generated commit messages.
+- Fixed File Changes panel hover/focus action overlap and related review diff interactions.
+- Fixed worktree hydration, metadata sanitization, context policy defaults, non-authoritative fallback handling, post-compaction hard stops, and provider payload double-counting.
+- Fixed chat scroll pinning when tool accordions expand.
+
+### Security
+
+- Provider API keys and ChatGPT sessions continue to use Macro's private local app data file, with the documentation updated to match the 0.1 behavior.
+- Added assistant Git stage/commit guard coverage and extension trust/manifest validation as part of the release candidate hardening.
+
+### Removed
+
+- Removed legacy runtime mocks, mock provider data paths, legacy AGENT instructions, and obsolete archived API documentation.
 - Removed temporary provider debug console/Rust instrumentation added while diagnosing OpenCode Go errors.
 
 ## 0.1.0-rc.7
