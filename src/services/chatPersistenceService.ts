@@ -52,6 +52,10 @@ export interface ChatPersistenceIpc {
   renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   deleteConversations: (ids: string[]) => Promise<void>;
+  deleteMessagesAfter: (
+    conversationId: string,
+    messageId: string,
+  ) => Promise<void>;
 }
 
 export interface ChatPersistenceAdapters {
@@ -400,4 +404,13 @@ export const deleteConversations = async (
 ): Promise<void> => {
   if (!adapters.isTauriAvailable()) return;
   await adapters.ipc.deleteConversations(conversationIds);
+};
+
+export const deleteMessagesAfter = async (
+  adapters: ChatPersistenceAdapters,
+  conversationId: string,
+  messageId: string,
+): Promise<void> => {
+  if (!adapters.isTauriAvailable()) return;
+  await adapters.ipc.deleteMessagesAfter(conversationId, messageId);
 };

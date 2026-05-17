@@ -29,10 +29,6 @@ import {
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
 import {
-  buildProviderErrorTranscriptMarkdown,
-  resolveChatErrorPresentation,
-} from "../services/chatErrorPresentation";
-import {
   extractContextLimitTokensFromErrorLike,
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
@@ -53,6 +49,7 @@ import {
   runAssistantStream,
   type ChatStreamTokenControls,
 } from "../services/chatStreamOrchestrator";
+import { createChatStreamLifecycleRuntime } from "../services/chatStreamLifecycleRuntime";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
 import {
   fetchWebPage,
@@ -142,13 +139,11 @@ import {
   filterDeniedToolIdsForRiskLevel,
 } from "../services/toolSecurityPolicy";
 import {
-  mergeToolTracesPreservingDeniedStatus,
-} from "../services/toolTraceState";
-import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation as deletePersistedConversation,
   deleteConversations as deletePersistedConversations,
+  deleteMessagesAfter as deletePersistedMessagesAfter,
   loadChatBootstrapSnapshot,
   loadConversationMessages,
   persistAssistantCompletionResult,
@@ -298,6 +293,7 @@ import {
   isConversationRuntimeActive,
   type ChatSendState,
 } from "./chat/chatRuntimeState";
+import { buildReplayTrimStatePatch } from "./chat/chatReplayTrimState";
 
 export type {
   ConversationContextDiagnostics,
@@ -7011,28 +7007,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const applyStreamCompletion = (
-    messageId: string,
-    result: StreamCompletionResult,
-  ) => {
-    const existingToolTraces =
-      get().messages.find((message) => message.id === messageId)?.tool_traces ??
-      [];
-    const mergedToolTraces = mergeToolTracesPreservingDeniedStatus(
-      result.toolTraces,
-      existingToolTraces,
-    );
-
-    get().updateMessageFields(messageId, {
-      tool_traces: mergedToolTraces,
-      hidden_context: result.hiddenContext,
-      provider_input_items: result.providerInputItems,
-      provider_turn_state: result.providerTurnState,
-      ...(result.completionReason ? { completion_reason: result.completionReason } : {}),
-    });
-    get().updateMessageContent(messageId, result.visibleContent);
-  };
-
   const persistProviderInputItemsForMessage = async (
     messageId: string,
     providerInputItems: unknown[] | undefined,
@@ -7595,73 +7569,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const applyReplayTrimToState = (
       plan: ConversationReplayPlan<SessionCompactionEvent>,
     ) => {
+      let persistedMessageImages: Record<string, MessageImageAttachment[]> | null = null;
+      let persistedQuestionnaireDrafts: Record<
+        string,
+        ConversationQuestionnaireDraft
+      > | null = null;
       set((current) => {
-        const currentMessages = params.updatedMessage
-          ? current.messages.map((message) =>
-              message.id === params.updatedMessage!.id
-                ? params.updatedMessage!
-                : message,
-            )
-          : current.messages;
-
-        const trimmedMessages = currentMessages.filter((message) =>
-          message.conversation_id === params.conversationId
-            ? plan.keptMessageIds.has(message.id)
-            : true,
-        );
-
-        const conversationMeta = recalcConversation(
-          params.conversationId,
-          trimmedMessages,
-        );
-
-        const conversations = current.conversations.map((conv) =>
-          conv.id === params.conversationId
-            ? { ...conv, ...conversationMeta }
-            : conv,
-        );
-
-        const keptConversationMessageIds = new Set(
-          trimmedMessages
-            .filter(
-              (message) => message.conversation_id === params.conversationId,
-            )
-            .map((message) => message.id),
-        );
-        const nextImages = { ...current.messageImagesByMessageId };
-        Object.keys(nextImages).forEach((messageIdKey) => {
-          const message = trimmedMessages.find((m) => m.id === messageIdKey);
-          if (
-            !message ||
-            (message.conversation_id === params.conversationId &&
-              !keptConversationMessageIds.has(messageIdKey))
-          ) {
-            delete nextImages[messageIdKey];
-          }
+        const result = buildReplayTrimStatePatch({
+          state: current,
+          conversationId: params.conversationId,
+          plan,
+          updatedMessage: params.updatedMessage,
+          clearQuestionnaireSession: params.clearQuestionnaireSession,
         });
-        saveMessageImagesToStorage(nextImages);
-
-        const nextQuestionnaireDrafts = params.clearQuestionnaireSession
-          ? clearQuestionnaireDraftsForConversations(
-              current.questionnaireDraftsByConversationId,
-              [params.conversationId],
-            )
-          : current.questionnaireDraftsByConversationId;
-        if (params.clearQuestionnaireSession) {
-          saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+        if (result.shouldPersistMessageImages) {
+          persistedMessageImages = result.patch.messageImagesByMessageId;
         }
-        return {
-          ...buildMessageState(trimmedMessages),
-          conversations,
-          messageImagesByMessageId: nextImages,
-          questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
-          sessionCompactionEventsByConversationId: {
-            ...current.sessionCompactionEventsByConversationId,
-            [params.conversationId]: plan.sessionCompactionEvents,
-          },
-          lastError: null,
-        };
+        if (result.shouldPersistQuestionnaireDrafts) {
+          persistedQuestionnaireDrafts =
+            result.patch.questionnaireDraftsByConversationId;
+        }
+        return result.patch;
       });
+      if (persistedMessageImages) {
+        saveMessageImagesToStorage(persistedMessageImages);
+      }
+      if (persistedQuestionnaireDrafts) {
+        saveQuestionnaireDraftsToStorage(persistedQuestionnaireDrafts);
+      }
     };
 
     await executeConversationReplay({
@@ -7675,19 +7610,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ],
       adapters: {
         trimMessages: async (plan) => {
-          if (tauriIpc.isTauriAvailable()) {
-            try {
-              await tauriIpc.deleteMessagesAfter(
-                params.conversationId,
-                params.messageId,
-              );
-            } catch (error) {
-              const normalized = toServiceError(error);
-              set({ lastError: normalized.message, sendState: "error" });
-              throw buildSendError(
-                `Failed to trim the conversation before retrying: ${normalized.message}`,
-              );
-            }
+          try {
+            await deletePersistedMessagesAfter(
+              chatPersistenceAdapters,
+              params.conversationId,
+              params.messageId,
+            );
+          } catch (error) {
+            const normalized = toServiceError(error);
+            set({ lastError: normalized.message, sendState: "error" });
+            throw buildSendError(
+              `Failed to trim the conversation before retrying: ${normalized.message}`,
+            );
           }
           applyReplayTrimToState(plan);
         },
@@ -8327,11 +8261,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       { globalLastError: null },
     );
     const deleteEmptyAssistantMessageFromDb = async () => {
-      if (!tauriIpc.isTauriAvailable()) {
-        return;
-      }
       try {
-        await tauriIpc.deleteMessagesAfter(
+        await deletePersistedMessagesAfter(
+          chatPersistenceAdapters,
           params.conversationId,
           params.replyToMessageId,
         );
@@ -8552,107 +8484,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deleteEmptyAssistantMessageFromDb();
         return true;
       }
-    };
-
-    const handleAssistantStreamError = async (
-      error: Error,
-      tokenControls: ChatStreamTokenControls,
-    ) => {
-      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        tokenControls.dispose();
-        return;
-      }
-
-      if (await tryRecoverFromOverflow(error, tokenControls)) {
-        return;
-      }
-
-      tokenControls.flushNow();
-      tokenControls.dispose();
-      clearLiveStreamContextEstimate(params.conversationId);
-      await maybeMarkImplementTaskFailedAfterStreamError();
-
-      const assistantMessage = get().messages.find(
-        (message) => message.id === params.assistantMessage.id,
-      );
-      const hasPartialAssistantProgress = Boolean(
-        assistantMessage &&
-          (assistantMessage.content.trim().length > 0 ||
-            (assistantMessage.tool_traces?.length ?? 0) > 0),
-      );
-      const errorPresentation = resolveChatErrorPresentation(error, {
-        providerId: params.selectedProviderId,
-        providerType: params.providerConfig.providerType,
-        modelId: params.selectedModelId,
-      });
-
-      if (errorPresentation.displayTarget === "transcript") {
-        const providerErrorMarkdown =
-          buildProviderErrorTranscriptMarkdown(errorPresentation);
-        const nextAssistantContent = hasPartialAssistantProgress && assistantMessage
-          ? `${assistantMessage.content.trimEnd()}\n\n---\n\n${providerErrorMarkdown}`
-          : providerErrorMarkdown;
-        get().updateMessageContent(
-          params.assistantMessage.id,
-          nextAssistantContent,
-        );
-        const updatedAssistantMessage = get().messages.find(
-          (message) => message.id === params.assistantMessage.id,
-        );
-        if (updatedAssistantMessage) {
-          try {
-            await persistAssistantPartialStreamResult(
-              updatedAssistantMessage,
-            );
-          } catch (persistError) {
-            console.warn(
-              "Failed to persist provider error after stream error:",
-              persistError,
-            );
-          }
-        }
-      } else if (hasPartialAssistantProgress && assistantMessage) {
-        try {
-          await persistAssistantPartialStreamResult(
-            assistantMessage,
-          );
-        } catch (persistError) {
-          console.warn(
-            "Failed to persist partial assistant response after stream error:",
-            persistError,
-          );
-        }
-      } else {
-        set((state) => removeEmptyAssistantPlaceholderFromState(
-          state,
-          params.assistantMessage.id,
-        ));
-        await deleteEmptyAssistantMessageFromDb();
-      }
-
-      updateConversationRuntimeIfSessionMatches(
-        params.conversationId,
-        params.sessionId,
-        () => ({
-          phase: "error",
-          sessionId: params.sessionId,
-          turnId: streamTurnId,
-          assistantMessageId:
-            errorPresentation.displayTarget === "composer" &&
-            !hasPartialAssistantProgress
-              ? null
-              : params.assistantMessage.id,
-          abortController: null,
-          lastError: errorPresentation.message,
-          lastErrorOrigin: errorPresentation.origin,
-          lastErrorDisplayTarget: errorPresentation.displayTarget,
-        }),
-      );
-      set(
-        errorPresentation.displayTarget === "composer"
-          ? { lastError: errorPresentation.message, sendState: "error" }
-          : { sendState: "error" },
-      );
     };
 
     const compactFollowUpMessagesBeforeProviderRequest = async (request: {
@@ -9028,6 +8859,163 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     };
 
+    const streamLifecycle = createChatStreamLifecycleRuntime({
+      stream: {
+        conversationId: params.conversationId,
+        sessionId: params.sessionId,
+        turnId: streamTurnId,
+        assistantMessageId: params.assistantMessage.id,
+        modeAtSend: params.modeAtSend,
+        resolvedTaskId: params.resolvedTaskId,
+        providerContext: {
+          providerId: params.selectedProviderId,
+          providerType: params.providerConfig.providerType,
+          baseUrl: params.providerConfig.baseUrl ?? "",
+          modelId: params.selectedModelId,
+        },
+      },
+      adapters: {
+        shouldAcceptStreamUpdate,
+        isAbortSignalAborted: () => abortController.signal.aborted,
+        appendTokenChunk: (messageId, tokenChunk) => {
+          get().appendToMessage(messageId, tokenChunk);
+        },
+        getAssistantMessage: (messageId) =>
+          get().messages.find((message) => message.id === messageId),
+        updateMessageFields: (messageId, fields) => {
+          get().updateMessageFields(messageId, fields);
+        },
+        updateMessageContent: (messageId, content) => {
+          get().updateMessageContent(messageId, content);
+        },
+        markProviderReachable: (providerId, modelId) => {
+          useProviderStore
+            .getState()
+            .markProviderReachable(providerId, { modelId });
+        },
+        getTaskStatus: (taskId) =>
+          useTaskStore.getState().getTaskById(taskId)?.status ?? null,
+        markTaskAwaitingResponse: (taskId) =>
+          useTaskStore.getState().markTaskAwaitingResponse(taskId),
+        assistantTurnRequiresUserReply,
+        updateConversationAfterCompletion: (conversationId, visibleContent) => {
+          set((state) => ({
+            conversations: state.conversations.map((conv) =>
+              conv.id === conversationId
+                ? {
+                    ...conv,
+                    last_message:
+                      visibleContent.slice(0, 100) +
+                      (visibleContent.length > 100 ? "..." : ""),
+                    updated_at: new Date().toISOString(),
+                  }
+                : conv,
+            ),
+          }));
+          updateConversationRuntimeIfSessionMatches(
+            conversationId,
+            params.sessionId,
+            () => null,
+          );
+        },
+        clearLiveStreamContextEstimate,
+        refreshConversationContextDiagnostics: (
+          conversationId,
+          providerContext,
+        ) =>
+          refreshConversationContextDiagnostics(conversationId, {
+            mode: "full",
+            providerContext: {
+              providerId: providerContext.providerId,
+              providerType: providerContext.providerType,
+              baseUrl: providerContext.baseUrl ?? "",
+              modelId: providerContext.modelId,
+            },
+          }),
+        persistAssistantStreamResult,
+        persistAssistantPartialStreamResult,
+        consolidatePendingToolBoundaryCompactionAfterPersistence,
+        syncMacroMetadataAfterStream: async (mode, conversationId) => {
+          await syncMacroMetadataAfterStreamService({
+            mode,
+            conversationId,
+            trigger: "send",
+          });
+        },
+        setCompletionPersistenceError: ({
+          conversationId,
+          sessionId,
+          turnId,
+          assistantMessageId,
+          message,
+        }) => {
+          const currentRuntime = getConversationRuntimeSnapshot(
+            get().conversationRuntimeById,
+            conversationId,
+          );
+          if (currentRuntime.sessionId && currentRuntime.sessionId !== sessionId) {
+            return;
+          }
+          setConversationRuntime(
+            conversationId,
+            {
+              phase: "error",
+              sessionId,
+              turnId,
+              assistantMessageId,
+              abortController: null,
+              lastError: message,
+              lastErrorOrigin: "macro",
+              lastErrorDisplayTarget: "composer",
+            },
+            { globalLastError: message },
+          );
+          set({ sendState: "error" });
+        },
+        maybeMarkImplementTaskFailedAfterStreamError,
+        tryRecoverFromOverflow,
+        removeEmptyAssistantPlaceholder: (assistantMessageId) => {
+          set((state) =>
+            removeEmptyAssistantPlaceholderFromState(
+              state,
+              assistantMessageId,
+            ),
+          );
+        },
+        deleteEmptyAssistantMessageFromDb,
+        setStreamErrorState: ({
+          presentation,
+          assistantMessageId,
+        }) => {
+          updateConversationRuntimeIfSessionMatches(
+            params.conversationId,
+            params.sessionId,
+            () => ({
+              phase: "error",
+              sessionId: params.sessionId,
+              turnId: streamTurnId,
+              assistantMessageId,
+              abortController: null,
+              lastError: presentation.message,
+              lastErrorOrigin: presentation.origin,
+              lastErrorDisplayTarget: presentation.displayTarget,
+            }),
+          );
+          set(
+            presentation.displayTarget === "composer"
+              ? { lastError: presentation.message, sendState: "error" }
+              : { sendState: "error" },
+          );
+        },
+        warn: (message, error) => {
+          console.warn(message, error);
+        },
+        info: (message) => {
+          devLogger.info(message);
+        },
+      },
+    });
+
     void runAssistantStream({
       conversationId: params.conversationId,
       mode: params.modeAtSend,
@@ -9059,12 +9047,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       maxTurns: params.maxTurns,
       sessionId: params.sessionId,
       signal: abortController.signal,
-      appendTokenChunk: (tokenChunk) => {
-        if (!shouldAcceptStreamUpdate()) {
-          return;
-        }
-        get().appendToMessage(params.assistantMessage.id, tokenChunk);
-      },
+      lifecycle: streamLifecycle,
       onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
@@ -9084,118 +9067,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           assistantMessageId: params.assistantMessage.id,
           snapshot,
         });
-      },
-      onComplete: (result, tokenControls) => {
-        if (!shouldAcceptStreamUpdate()) {
-          tokenControls.dispose();
-          return;
-        }
-        tokenControls.flushNow();
-        applyStreamCompletion(params.assistantMessage.id, result);
-        useProviderStore
-          .getState()
-          .markProviderReachable(params.selectedProviderId, { modelId: params.selectedModelId });
-
-        const taskAfterStream = params.resolvedTaskId
-          ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
-          : undefined;
-        const shouldMarkTaskAwaitingResponse =
-          params.modeAtSend === "Implement" &&
-          params.resolvedTaskId &&
-          taskAfterStream &&
-          taskAfterStream.status !== "Completed" &&
-          taskAfterStream.status !== "Failed" &&
-          assistantTurnRequiresUserReply(
-            result.visibleContent,
-            result.hiddenContext,
-          );
-
-        if (shouldMarkTaskAwaitingResponse) {
-          void useTaskStore
-            .getState()
-            .markTaskAwaitingResponse(params.resolvedTaskId);
-        }
-
-        set((state) => ({
-          conversations: state.conversations.map((conv) =>
-            conv.id === params.conversationId
-              ? {
-                  ...conv,
-                  last_message:
-                    result.visibleContent.slice(0, 100) +
-                    (result.visibleContent.length > 100 ? "..." : ""),
-                  updated_at: new Date().toISOString(),
-                }
-              : conv,
-          ),
-        }));
-        updateConversationRuntimeIfSessionMatches(
-          params.conversationId,
-          params.sessionId,
-          () => null,
-        );
-        clearLiveStreamContextEstimate(params.conversationId);
-        void refreshConversationContextDiagnostics(params.conversationId, {
-          mode: "full",
-          providerContext: {
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            baseUrl: params.providerConfig.baseUrl ?? "",
-            modelId: params.selectedModelId,
-          },
-        });
-
-        void persistAssistantStreamResult(
-          params.conversationId,
-          params.assistantMessage.id,
-          result,
-        )
-          .then(async () => {
-            try {
-              await consolidatePendingToolBoundaryCompactionAfterPersistence();
-            } catch (error) {
-              devLogger.info(
-                `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
-              );
-            }
-          })
-          .catch((error) => {
-            const currentRuntime = getConversationRuntimeSnapshot(
-              get().conversationRuntimeById,
-              params.conversationId,
-            );
-            if (
-              currentRuntime.sessionId &&
-              currentRuntime.sessionId !== params.sessionId
-            ) {
-              return;
-            }
-            const normalized = toServiceError(error);
-            setConversationRuntime(
-              params.conversationId,
-              {
-                phase: "error",
-                sessionId: params.sessionId,
-                turnId: streamTurnId,
-                assistantMessageId: params.assistantMessage.id,
-                abortController: null,
-                lastError: normalized.message,
-                lastErrorOrigin: "macro",
-                lastErrorDisplayTarget: "composer",
-              },
-              { globalLastError: normalized.message },
-            );
-            set({ sendState: "error" });
-          });
-        void syncMacroMetadataAfterStreamService({
-          mode: params.modeAtSend,
-          conversationId: params.conversationId,
-          trigger: "send",
-        });
-        tokenControls.dispose();
-      },
-      onError: (error, tokenControls) => {
-        void handleAssistantStreamError(error, tokenControls);
       },
       onTimeline: (event) => {
         devLogger.info("Provider stream timeline", {
