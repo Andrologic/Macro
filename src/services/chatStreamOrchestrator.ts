@@ -35,15 +35,20 @@ export interface ChatStreamTokenControls {
   dispose: () => void;
 }
 
+interface ChatStreamTokenBatcher extends ChatStreamTokenControls {
+  push: (token: string) => void;
+}
+
 export const createChatStreamTokenBatcher = (
   appendChunk: (chunk: string) => void,
-): ChatStreamTokenControls & { push: (token: string) => void } => {
+): ChatStreamTokenBatcher => {
   let buffer = "";
   let frameHandle: FrameHandle | null = null;
+  let disposed = false;
 
   const flush = () => {
     frameHandle = null;
-    if (!buffer) {
+    if (disposed || !buffer) {
       return;
     }
     const chunk = buffer;
@@ -53,6 +58,9 @@ export const createChatStreamTokenBatcher = (
 
   return {
     push: (token: string) => {
+      if (disposed) {
+        return;
+      }
       buffer += token;
       if (frameHandle !== null) {
         return;
@@ -60,6 +68,9 @@ export const createChatStreamTokenBatcher = (
       frameHandle = requestFrame(flush);
     },
     flushNow: () => {
+      if (disposed) {
+        return;
+      }
       if (frameHandle !== null) {
         cancelFrame(frameHandle);
         frameHandle = null;
@@ -72,6 +83,10 @@ export const createChatStreamTokenBatcher = (
       appendChunk(chunk);
     },
     dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
       if (frameHandle !== null) {
         cancelFrame(frameHandle);
         frameHandle = null;
@@ -85,31 +100,62 @@ export type ChatStreamTransport = (
   options: StreamingChatOptions,
 ) => Promise<void>;
 
-export interface RunAssistantStreamParams
-  extends Omit<StreamingChatOptions, "onToken" | "onComplete" | "onError"> {
+export interface ChatStreamLifecycleCallbacks {
   appendTokenChunk: (chunk: string) => void;
+  /**
+   * Owns Macro-side completion effects: message update, persistence,
+   * conversation runtime transitions, diagnostics, and metadata sync.
+   */
   onComplete: (
     result: StreamCompletionResult,
     controls: ChatStreamTokenControls,
-  ) => void;
+  ) => void | Promise<void>;
   onError: (
     error: Error,
     controls: ChatStreamTokenControls,
   ) => void | Promise<void>;
+}
+
+export interface RunAssistantStreamParams
+  extends Omit<StreamingChatOptions, "onToken" | "onComplete" | "onError"> {
+  lifecycle: ChatStreamLifecycleCallbacks;
   streamChatImpl?: ChatStreamTransport;
 }
 
 export const runAssistantStream = async ({
-  appendTokenChunk,
-  onComplete,
-  onError,
+  lifecycle,
   streamChatImpl = streamChat,
   ...streamOptions
 }: RunAssistantStreamParams): Promise<void> => {
-  const tokenBatcher = createChatStreamTokenBatcher(appendTokenChunk);
+  const tokenBatcher = createChatStreamTokenBatcher(lifecycle.appendTokenChunk);
   const controls: ChatStreamTokenControls = {
     flushNow: tokenBatcher.flushNow,
     dispose: tokenBatcher.dispose,
+  };
+  let handledError = false;
+  let handledComplete = false;
+  let completionPromise: Promise<void> | null = null;
+  const handleErrorOnce = async (error: Error): Promise<void> => {
+    if (handledError) {
+      return;
+    }
+    handledError = true;
+    await lifecycle.onError(error, controls);
+  };
+  const handleCompleteOnce = async (
+    result: StreamCompletionResult,
+  ): Promise<void> => {
+    if (handledError || handledComplete) {
+      return;
+    }
+    handledComplete = true;
+    try {
+      await lifecycle.onComplete(result, controls);
+    } catch (error) {
+      const normalized =
+        error instanceof Error ? error : new Error(String(error));
+      await handleErrorOnce(normalized);
+    }
   };
 
   try {
@@ -119,15 +165,22 @@ export const runAssistantStream = async ({
         tokenBatcher.push(token);
       },
       onComplete: (result) => {
-        onComplete(result, controls);
+        completionPromise = handleCompleteOnce(result);
       },
       onError: (error) => {
-        void onError(error, controls);
+        void handleErrorOnce(error);
       },
     });
+    if (completionPromise) {
+      await completionPromise;
+    }
   } catch (error) {
+    if (completionPromise) {
+      await completionPromise;
+      return;
+    }
     const normalized =
       error instanceof Error ? error : new Error(String(error));
-    await onError(normalized, controls);
+    await handleErrorOnce(normalized);
   }
 };

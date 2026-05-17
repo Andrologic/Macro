@@ -11,6 +11,7 @@ import {
   createUserMessage,
   deleteConversation,
   deleteConversations,
+  deleteMessagesAfter,
   loadChatBootstrapSnapshot,
   loadConversationMessages,
   persistAssistantCompletionResult,
@@ -98,6 +99,7 @@ const baseIpc = (
     }),
   ),
   updateMessage: mock(async () => undefined),
+  deleteMessagesAfter: mock(async () => undefined),
   renameConversation: mock(async () => undefined),
   deleteConversation: mock(async () => undefined),
   deleteConversations: mock(async () => undefined),
@@ -326,5 +328,22 @@ describe("chatPersistenceService", () => {
       "Ignored",
     );
     expect(nonTauriIpc.renameConversation).not.toHaveBeenCalled();
+  });
+
+  it("delegates replay message trimming only when Tauri is available", async () => {
+    const ipc = baseIpc();
+
+    await deleteMessagesAfter({ ...adapters(), ipc }, "conv-1", "message-1");
+    await deleteMessagesAfter(
+      { ...adapters({ available: false }), ipc },
+      "conv-1",
+      "message-1",
+    );
+
+    expect(ipc.deleteMessagesAfter).toHaveBeenCalledTimes(1);
+    expect(ipc.deleteMessagesAfter).toHaveBeenCalledWith(
+      "conv-1",
+      "message-1",
+    );
   });
 });

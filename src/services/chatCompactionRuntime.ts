@@ -84,6 +84,22 @@ export const createChatCompactionRuntime = (
       return { conversationCompactionStatusById: next };
     });
   };
+  const setStatus = setConversationCompactionStatus;
+
+  const setSessionCompactionEvents = (
+    conversationId: string,
+    events: SessionCompactionEvent[] | undefined,
+  ) => {
+    adapters.setState((state) => {
+      const next = { ...state.sessionCompactionEventsByConversationId };
+      if (events?.length) {
+        next[conversationId] = events;
+      } else {
+        delete next[conversationId];
+      }
+      return { sessionCompactionEventsByConversationId: next };
+    });
+  };
 
   const setConversationCompactionActivityStarted = (
     conversationId: string,
@@ -93,7 +109,7 @@ export const createChatCompactionRuntime = (
     const previous =
       adapters.getState().conversationCompactionStatusById[conversationId] ??
       fallbackStatus;
-    setConversationCompactionStatus(
+    setStatus(
       conversationId,
       buildCompactionActivityStatus({ kind, previous }),
     );
@@ -107,76 +123,71 @@ export const createChatCompactionRuntime = (
     const anchor =
       displayAfterMessageId ??
       adapters.getLastConversationMessageId(conversationId);
-    adapters.setState((state) => {
-      const existing =
-        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: startSessionCompactionEvent({
-            conversationId,
-            kind,
-            displayAfterMessageId: anchor,
-            existingEvents: existing,
-          }),
-        },
-      };
-    });
+    const existing =
+      adapters.getState().sessionCompactionEventsByConversationId[
+        conversationId
+      ] ?? [];
+    setSessionCompactionEvents(
+      conversationId,
+      startSessionCompactionEvent({
+        conversationId,
+        kind,
+        displayAfterMessageId: anchor,
+        existingEvents: existing,
+      }),
+    );
   };
 
   const completeCompactionEvent = (
     conversationId: string,
-    state: ConversationCompactionState,
+    compactionState: ConversationCompactionState,
     kind?: ContextCompactionKind,
   ) => {
-    adapters.setState((runtimeState) => {
-      const existing =
-        runtimeState.sessionCompactionEventsByConversationId[conversationId] ??
-        [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...runtimeState.sessionCompactionEventsByConversationId,
-          [conversationId]: completeLatestSessionCompactionEvent({
-            existingEvents: existing,
-            state,
-            kind,
-          }),
-        },
-      };
-    });
+    const existing =
+      adapters.getState().sessionCompactionEventsByConversationId[
+        conversationId
+      ] ?? [];
+    setSessionCompactionEvents(
+      conversationId,
+      completeLatestSessionCompactionEvent({
+        existingEvents: existing,
+        state: compactionState,
+        kind,
+      }),
+    );
   };
 
   const clearCompactionEvent = (
     conversationId: string,
     kind?: ContextCompactionKind,
   ) => {
-    adapters.setState((state) => {
-      const existing =
-        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: clearLatestRunningSessionCompactionEvent({
-            existingEvents: existing,
-            kind,
-          }),
-        },
-      };
-    });
+    const existing =
+      adapters.getState().sessionCompactionEventsByConversationId[
+        conversationId
+      ] ?? [];
+    setSessionCompactionEvents(
+      conversationId,
+      clearLatestRunningSessionCompactionEvent({
+        existingEvents: existing,
+        kind,
+      }),
+    );
   };
 
   return {
     setConversationCompactionStatus,
-    publishPersistedCompactionStatusIfIdle: (conversationId, state) => {
+    publishPersistedCompactionStatusIfIdle: (conversationId, compactionState) => {
       const currentStatus =
         adapters.getState().conversationCompactionStatusById[conversationId] ??
         null;
       if (isTransientCompactionStatus(currentStatus)) {
         return;
       }
-      setConversationCompactionStatus(
+      setStatus(
         conversationId,
-        state ? resolveCompactionStatusFromState(state) : null,
+        compactionState
+          ? resolveCompactionStatusFromState(compactionState)
+          : null,
       );
     },
     setConversationCompactionActivityStarted,

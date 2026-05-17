@@ -58,14 +58,16 @@ describe("runAssistantStream", () => {
 
     await runAssistantStream({
       ...minimalStreamOptions,
-      appendTokenChunk: (chunk) => {
-        appended.push(chunk);
+      lifecycle: {
+        appendTokenChunk: (chunk) => {
+          appended.push(chunk);
+        },
+        onComplete: (result, controls) => {
+          controls.flushNow();
+          completed.push(result.visibleContent);
+        },
+        onError: () => undefined,
       },
-      onComplete: (result, controls) => {
-        controls.flushNow();
-        completed.push(result.visibleContent);
-      },
-      onError: () => undefined,
       streamChatImpl,
     });
 
@@ -79,10 +81,12 @@ describe("runAssistantStream", () => {
 
     await runAssistantStream({
       ...minimalStreamOptions,
-      appendTokenChunk: () => undefined,
-      onComplete: () => undefined,
-      onError: (error) => {
-        errors.push(error);
+      lifecycle: {
+        appendTokenChunk: () => undefined,
+        onComplete: () => undefined,
+        onError: (error) => {
+          errors.push(error);
+        },
       },
       streamChatImpl: mock(async () => {
         throw "provider exploded";
@@ -92,5 +96,141 @@ describe("runAssistantStream", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(Error);
     expect(errors[0]?.message).toBe("provider exploded");
+  });
+
+  test("ignores tokens after dispose", () => {
+    const append = mock(() => undefined);
+    const batcher = createChatStreamTokenBatcher(append);
+
+    batcher.dispose();
+    batcher.push("ignored");
+    batcher.flushNow();
+
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test("handles provider onError plus rejection once", async () => {
+    const errors: string[] = [];
+
+    await runAssistantStream({
+      ...minimalStreamOptions,
+      lifecycle: {
+        appendTokenChunk: () => undefined,
+        onComplete: () => undefined,
+        onError: (error) => {
+          errors.push(error.message);
+        },
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onError(new Error("callback error"));
+        throw new Error("rejected error");
+      }),
+    });
+
+    expect(errors).toEqual(["callback error"]);
+  });
+
+  test("lets completion flush before store-side persistence", async () => {
+    const events: string[] = [];
+
+    await runAssistantStream({
+      ...minimalStreamOptions,
+      lifecycle: {
+        appendTokenChunk: (chunk) => {
+          events.push(`append:${chunk}`);
+        },
+        onComplete: (_result, controls) => {
+          controls.flushNow();
+          events.push("persist");
+        },
+        onError: () => undefined,
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onToken("done");
+        options.onComplete({
+          visibleContent: "done",
+          toolTraces: [],
+        });
+      }),
+    });
+
+    expect(events).toEqual(["append:done", "persist"]);
+  });
+
+  test("waits for async completion callbacks", async () => {
+    const events: string[] = [];
+
+    await runAssistantStream({
+      ...minimalStreamOptions,
+      lifecycle: {
+        appendTokenChunk: () => undefined,
+        onComplete: async () => {
+          await Promise.resolve();
+          events.push("completed");
+        },
+        onError: () => {
+          events.push("error");
+        },
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onComplete({
+          visibleContent: "done",
+          toolTraces: [],
+        });
+      }),
+    });
+
+    expect(events).toEqual(["completed"]);
+  });
+
+  test("routes completion callback errors through onError once", async () => {
+    const errors: string[] = [];
+
+    await runAssistantStream({
+      ...minimalStreamOptions,
+      lifecycle: {
+        appendTokenChunk: () => undefined,
+        onComplete: async () => {
+          throw new Error("completion failed");
+        },
+        onError: (error) => {
+          errors.push(error.message);
+        },
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onComplete({
+          visibleContent: "done",
+          toolTraces: [],
+        });
+      }),
+    });
+
+    expect(errors).toEqual(["completion failed"]);
+  });
+
+  test("ignores completion callbacks after an error was already handled", async () => {
+    const events: string[] = [];
+
+    await runAssistantStream({
+      ...minimalStreamOptions,
+      lifecycle: {
+        appendTokenChunk: () => undefined,
+        onComplete: () => {
+          events.push("complete");
+        },
+        onError: (error) => {
+          events.push(`error:${error.message}`);
+        },
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onError(new Error("provider failed"));
+        options.onComplete({
+          visibleContent: "late",
+          toolTraces: [],
+        });
+      }),
+    });
+
+    expect(events).toEqual(["error:provider failed"]);
   });
 });
