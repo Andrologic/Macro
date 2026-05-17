@@ -142,6 +142,7 @@ Macro supporte deux transports logiques cote application :
 
 Le transport `desktop` passe par Tauri IPC.
 Le transport `remote` passe par HTTP vers un kernel distant.
+Dans la ligne 0.1, `desktop` est le transport principal supporte. `remote` existe en premiere version pour le bootstrap workspace, le catalogue de taches, certains etats Git et l'execution d'outils distante, mais ne couvre pas encore toute la surface desktop.
 
 ---
 
@@ -451,11 +452,12 @@ L'historique structure de Macro est conserve dans une branche metadata dediee.
 Cette branche contient notamment :
 
 - `workspace.json`
-- les index de plans
-- les plans serialises
-- les rendus Markdown de plans
-- les fichiers `planned.md`
-- les fichiers `executed.md`
+- `branches/<target-branch>/plans/index.json`
+- `branches/<target-branch>/plans/<plan-id>/plan.json`
+- `branches/<target-branch>/plans/<plan-id>/needs.json`
+- `branches/<target-branch>/plans/<plan-id>/runtime.json`
+- `branches/<target-branch>/plans/<plan-id>/manifest.json`
+- `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
 
 Le stockage metadata dans Git permet l'audit, la redondance et la conservation de l'historique de travail.
 
@@ -469,9 +471,10 @@ Les plans sont stockes dans une structure de type :
 
 - `branches/<target-branch>/plans/index.json`
 - `branches/<target-branch>/plans/<plan-id>/plan.json`
-- `branches/<target-branch>/plans/<plan-id>/plan.md`
-- `branches/<target-branch>/plans/<plan-id>/tasks/<task-id>/planned.md`
-- `branches/<target-branch>/plans/<plan-id>/tasks/<task-id>/executed.md`
+- `branches/<target-branch>/plans/<plan-id>/needs.json`
+- `branches/<target-branch>/plans/<plan-id>/runtime.json`
+- `branches/<target-branch>/plans/<plan-id>/manifest.json`
+- `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
 
 ### 11.2 Raison de cette structure
 
@@ -644,14 +647,21 @@ Le kernel headless expose une API HTTP basee sur axum.
 
 Cette API couvre au minimum :
 
-- healthcheck
-- tool mode policy
-- validation d'outil
-- execution d'outil
-- bootstrap workspace
-- liste des taches
-- arbre Git par projet
-- historique Git par projet
+- `GET /health`
+- `GET /v1/tools/mode-policy`
+- `POST /v1/tools/validate`
+- `POST /v1/tools/execute`
+- `GET /api/v1/tools/mode-policy`
+- `POST /api/v1/tools/validate`
+- `POST /api/v1/tools/execute`
+- `GET /api/v1/workspace/bootstrap`
+- `GET /api/v1/workspaces/{workspace_id}/bootstrap`
+- `GET /api/v1/workspace/tasks`
+- `GET /api/v1/workspaces/{workspace_id}/tasks`
+- `GET /api/v1/projects/{project_id}/git/tree`
+- `GET /api/v1/projects/{project_id}/git/commits`
+
+Cette surface remote est volontairement minimale en 0.1 et ne remplace pas encore toutes les commandes IPC desktop.
 
 ### 15.3 Authentification
 

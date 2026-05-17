@@ -11,12 +11,12 @@ Les seules sources de verite a utiliser en priorite sont :
 ## Documents conserves
 
 - `analysis.md` : historique de la phase de decouverte produit, utile pour retrouver certaines hypotheses initiales et decisions de cadrage.
-- `api.md` : exploration strategique de la supervision distante, du mobile et du backend remote ; conserve comme document d'anticipation, sans valeur contractuelle.
 
 ## Documents retires
 
 Les documents suivants ont ete retires de l'archive minimale :
 
+- ancienne specification API mobile et backend remote, trop volumineuse et trop contractuelle pour l'etat 0.1 du produit
 - anciens apercus produit et workflows redondants avec la specification fonctionnelle
 - anciens plans d'implementation frontend et backend devenus obsoletes
 - anciennes TODO lists techniques et documentations IPC depassees
