@@ -8,13 +8,11 @@ import {
   AgentCodeReplayPreview,
   ChatMessage,
   ConversationApprovalGrant,
-  ConversationExecutionPhase,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
   ConversationRuntimeState,
   ContextCompactionKind,
   ContextFootprint,
-  ContextCompactionDecisionAudit,
   ContextFootprintReason,
   ContextRefKind,
   ContextReference,
@@ -42,7 +40,6 @@ import { providerHasCredentials, useProviderStore } from "./useProviderStore";
 import { useCitationsStore } from "./useCitationsStore";
 import type { Citation, SourcePassageKind } from "./useCitationsStore";
 import {
-  streamChat,
   cancelStream,
   sendChatNonStreaming,
   estimateChatCompletionSerializedPayloadTokens,
@@ -52,6 +49,10 @@ import {
   type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
+import {
+  runAssistantStream,
+  type ChatStreamTokenControls,
+} from "../services/chatStreamOrchestrator";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
 import {
   fetchWebPage,
@@ -142,8 +143,21 @@ import {
 } from "../services/toolSecurityPolicy";
 import {
   mergeToolTracesPreservingDeniedStatus,
-  parseToolTracesJson,
 } from "../services/toolTraceState";
+import {
+  createAssistantPlaceholderMessage,
+  createUserMessage,
+  deleteConversation as deletePersistedConversation,
+  deleteConversations as deletePersistedConversations,
+  loadChatBootstrapSnapshot,
+  loadConversationMessages,
+  persistAssistantCompletionResult,
+  persistAssistantPartialResult,
+  renameConversation as renamePersistedConversation,
+  updateEditedUserMessage,
+  updateProviderInputItemsForMessage,
+  type ChatPersistenceAdapters,
+} from "../services/chatPersistenceService";
 import {
   renderStandaloneFeatureBranchName,
 } from "../services/architectGitNaming";
@@ -173,21 +187,17 @@ import {
   resolveProjectExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
-import { parseMessageQuickReplies } from "../services/chatQuickReplies";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
   buildQuestionnaireHiddenContextBlock,
   DEFAULT_QUESTIONNAIRE_INTRO,
   findFirstUnansweredQuestionStepIndex,
-  parseAssistantQuestionnaireState,
-  parseUserQuestionnaireResponseState,
   resolveActiveConversationQuestionnaire,
   validateQuestionToolArgs,
 } from "../services/chatQuestionnaires";
 import {
   buildContextTooLargeErrorMessage,
-  buildContextCompactionDecisionAudit,
   buildManualCompactionRequiredErrorMessage,
   buildCompactedMessagesForRequest,
   COMPACTED_CONVERSATION_STATE_MARKER,
@@ -207,19 +217,16 @@ import {
   type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
 import {
-  buildCompactionActivityStatus,
-  clearLatestRunningSessionCompactionEvent as clearLatestSessionCompactionEventState,
-  completeLatestSessionCompactionEvent as completeLatestSessionCompactionEventState,
   getCompactionEventTrigger,
   isTransientCompactionStatus,
   resolveCompactionStatusFromState,
-  startSessionCompactionEvent as startSessionCompactionEventState,
-  type ConversationCompactionPhase,
   type ConversationCompactionStatus,
   type SessionCompactionEvent,
 } from "../services/contextCompactionSession";
+import { createChatCompactionRuntime } from "../services/chatCompactionRuntime";
 import {
-  buildConversationReplayPlan,
+  executeConversationReplay,
+  type ConversationReplayPlan,
 } from "../services/conversationReplayService";
 import {
   contextLimitsToFootprintFields,
@@ -248,6 +255,59 @@ import {
   MACRO_TOOL_REGISTRY,
   type MacroToolRegistryEntry,
 } from "../shared/macroToolRegistry";
+import {
+  EMPTY_CONTEXT_DIAGNOSTICS_COUNTS,
+  buildContextDiagnosticsFromFootprint,
+  type ConversationContextDiagnostics,
+  type ConversationContextDiagnosticsProviderContext,
+  type ConversationContextDiagnosticsRefreshMode,
+} from "./chat/chatContextDiagnostics";
+import {
+  assistantTurnRequiresUserReply,
+  buildAssistantMessagePresentation,
+  buildUserMessagePresentation,
+  mapDbConversationToConversation,
+  mapDbMessageToChatMessage,
+  normalizeReasoningEffort,
+} from "./chat/chatDbMappers";
+import {
+  buildMessageState,
+  findChatMessageInState,
+  getConversationMessagesFromState,
+  indexMessagesByConversation,
+  sortMessagesChronologically,
+} from "./chat/chatMessageState";
+import {
+  EMPTY_MESSAGE_IMAGES,
+  clearQuestionnaireDraftsForConversations,
+  loadMessageImagesFromStorage,
+  loadQuestionnaireDraftsFromStorage,
+  saveMessageImagesToStorage,
+  saveQuestionnaireDraftsToStorage,
+  setActiveQuestionnaireDraftStep,
+  setQuestionnaireDraftForConversation,
+  type MessageImageAttachment,
+} from "./chat/chatLocalSessionState";
+import {
+  buildConversationRuntimePatch,
+  buildLegacyStreamingFlags,
+  createConversationSessionId,
+  createConversationTurnId,
+  getConversationRuntimeSnapshot,
+  getMessageTurnId,
+  isConversationRuntimeActive,
+  type ChatSendState,
+} from "./chat/chatRuntimeState";
+
+export type {
+  ConversationContextDiagnostics,
+  ConversationContextDiagnosticsBreakdownItem,
+  ConversationContextDiagnosticsProviderContext,
+  ConversationContextDiagnosticsRefreshMode,
+  ConversationContextDiagnosticsSource,
+  ConversationContextDiagnosticsStatus,
+} from "./chat/chatContextDiagnostics";
+export type { MessageImageAttachment } from "./chat/chatLocalSessionState";
 
 const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
@@ -269,8 +329,12 @@ const agentCodeCheckpointLoadPromisesByConversationId = new Map<
   string,
   Promise<AgentCodeCheckpoint[]>
 >();
-const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
-const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
+const chatPersistenceAdapters: ChatPersistenceAdapters = {
+  isTauriAvailable: () => tauriIpc.isTauriAvailable(),
+  ipc: tauriIpc,
+  now: () => new Date(),
+  randomIdSuffix: () => Math.random().toString(36).slice(2, 8),
+};
 const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
 const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
@@ -395,90 +459,12 @@ interface LiveStreamDiagnosticsPayload {
   baseline: StreamContextDiagnosticsBaseline;
 }
 
-const createTokenBatcher = (appendChunk: (chunk: string) => void) => {
-  let buffer = "";
-  let rafId: number | null = null;
-
-  const flush = () => {
-    rafId = null;
-    if (!buffer) return;
-    const chunk = buffer;
-    buffer = "";
-    appendChunk(chunk);
-  };
-
-  return {
-    push: (token: string) => {
-      buffer += token;
-      if (rafId !== null) return;
-      rafId = window.requestAnimationFrame(flush);
-    },
-    flushNow: () => {
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      if (!buffer) return;
-      const chunk = buffer;
-      buffer = "";
-      appendChunk(chunk);
-    },
-    dispose: () => {
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      buffer = "";
-    },
-  };
-};
-
 const isProviderContextOverflowError = (error: unknown): boolean => {
   return isContextOverflowErrorLike(error);
 };
 
 const OVERFLOW_RECOVERY_FAILURE_MESSAGE =
   "The selected model still rejected this conversation after an aggressive compaction pass. Macro kept your message; continue with a larger-context model or compact manually before retrying.";
-
-const EMPTY_CONVERSATION_RUNTIME: ConversationRuntimeState = Object.freeze({
-  phase: "idle" as ConversationExecutionPhase,
-  sessionId: null,
-  turnId: null,
-  assistantMessageId: null,
-  abortController: null,
-  lastError: null,
-  lastErrorOrigin: null,
-  lastErrorDisplayTarget: null,
-});
-
-const EMPTY_CONTEXT_DIAGNOSTICS_COUNTS: ConversationContextDiagnostics["counts"] =
-  Object.freeze({
-    messages: 0,
-    visibleLines: 0,
-    hiddenContextLines: 0,
-    providerInputItems: 0,
-    providerInputItemLines: 0,
-    reasoningContentLines: 0,
-    toolResultLines: 0,
-    citations: 0,
-    activeFiles: 0,
-    toolFacts: 0,
-  });
-
-const countTextLines = (value: unknown): number => {
-  if (typeof value !== "string") return 0;
-  const trimmed = value.trim();
-  if (!trimmed) return 0;
-  return trimmed.split(/\r?\n/).length;
-};
-
-const countStreamContentLines = (content: StreamMessage["content"]): number => {
-  if (typeof content === "string") return countTextLines(content);
-  return content.reduce((total, part) => {
-    if (part.type !== "text") return total;
-    return total + countTextLines(part.text);
-  }, 0);
-};
 
 const streamContentToPlainText = (content: StreamMessage["content"]): string => {
   if (typeof content === "string") return content;
@@ -539,350 +525,6 @@ const buildSyntheticOrderedMessagesForStreamRequest = (params: {
       provider_turn_state: message.provider_turn_state,
     };
   });
-};
-
-const countPreparedToolContextLines = (
-  messages: StreamMessage[],
-): number =>
-  messages.reduce((total, message) => {
-    if (typeof message.content !== "string") {
-      return total;
-    }
-    const matches = message.content.matchAll(
-      /<tool_context\b[\s\S]*?<\/tool_context>/gi,
-    );
-    let nextTotal = total;
-    for (const match of matches) {
-      nextTotal += countTextLines(match[0]);
-    }
-    return nextTotal;
-  }, 0);
-
-const safeJsonLineCount = (value: unknown): number => {
-  try {
-    return countTextLines(JSON.stringify(value, null, 2));
-  } catch {
-    return 0;
-  }
-};
-
-const inspectProviderInputValue = (
-  value: unknown,
-  parentKey = "",
-  depth = 0,
-): { reasoningLines: number; toolResultLines: number } => {
-  if (depth > 8 || value == null) {
-    return { reasoningLines: 0, toolResultLines: 0 };
-  }
-
-  const normalizedKey = parentKey.toLowerCase();
-  if (typeof value === "string") {
-    const lines = countTextLines(value);
-    if (
-      normalizedKey.includes("reasoning") ||
-      normalizedKey.includes("thinking")
-    ) {
-      return { reasoningLines: lines, toolResultLines: 0 };
-    }
-    if (
-      normalizedKey.includes("tool") ||
-      normalizedKey.includes("result") ||
-      normalizedKey.includes("output")
-    ) {
-      return { reasoningLines: 0, toolResultLines: lines };
-    }
-    return { reasoningLines: 0, toolResultLines: 0 };
-  }
-
-  if (Array.isArray(value)) {
-    return value.reduce(
-      (total, item) => {
-        const inspected = inspectProviderInputValue(item, parentKey, depth + 1);
-        return {
-          reasoningLines: total.reasoningLines + inspected.reasoningLines,
-          toolResultLines: total.toolResultLines + inspected.toolResultLines,
-        };
-      },
-      { reasoningLines: 0, toolResultLines: 0 },
-    );
-  }
-
-  if (typeof value !== "object") {
-    return { reasoningLines: 0, toolResultLines: 0 };
-  }
-
-  const record = value as Record<string, unknown>;
-  const typeHint = String(record.type ?? record.role ?? "").toLowerCase();
-  const isToolLike =
-    typeHint.includes("tool") ||
-    typeHint.includes("function_call_output") ||
-    typeHint.includes("function_result");
-
-  return Object.entries(record).reduce(
-    (total, [key, child]) => {
-      const effectiveKey = isToolLike ? `${parentKey}.${key}.tool_result` : key;
-      const inspected = inspectProviderInputValue(child, effectiveKey, depth + 1);
-      return {
-        reasoningLines: total.reasoningLines + inspected.reasoningLines,
-        toolResultLines: total.toolResultLines + inspected.toolResultLines,
-      };
-    },
-    { reasoningLines: 0, toolResultLines: 0 },
-  );
-};
-
-const buildContextDiagnosticsFromFootprint = (params: {
-  conversationId: string;
-  providerId?: string;
-  providerType?: string;
-  modelId?: string;
-  status: ConversationContextDiagnosticsStatus;
-  source?: ConversationContextDiagnosticsSource;
-  phase?: ConversationCompactionPhase | "provider_error";
-  decision?: ContextCompactionDecision;
-  compactionPass?: CompactionPass;
-  summaryFormatVersion?: number;
-  summarySource?: CompactionSummarySource;
-  footprintBefore?: ContextFootprint;
-  footprintAfter?: ContextFootprint;
-  orderedMessages: ChatMessage[];
-  preparedMessages: StreamMessage[];
-  citations: Citation[];
-  compactionState?: ConversationCompactionState | null;
-  error?: string;
-}): ConversationContextDiagnostics => {
-  const footprint = params.footprintAfter ?? params.footprintBefore;
-  const providerInputItems = params.preparedMessages.flatMap(
-    (message) => message.provider_input_items ?? [],
-  );
-  const providerInputInspection = inspectProviderInputValue(providerInputItems);
-  const preparedToolContextLines = countPreparedToolContextLines(
-    params.preparedMessages,
-  );
-  const historicalHiddenContextLines = params.orderedMessages.reduce(
-    (total, message) => total + countTextLines(message.hidden_context),
-    0,
-  );
-  const hiddenContextLines =
-    preparedToolContextLines > 0
-      ? preparedToolContextLines
-      : providerInputItems.length > 0
-        ? 0
-        : historicalHiddenContextLines;
-  const visibleLines = params.preparedMessages.reduce(
-    (total, message) => total + countStreamContentLines(message.content),
-    0,
-  );
-  const counts: ConversationContextDiagnostics["counts"] = {
-    messages: params.orderedMessages.length,
-    visibleLines,
-    hiddenContextLines,
-    providerInputItems: providerInputItems.length,
-    providerInputItemLines: safeJsonLineCount(providerInputItems),
-    reasoningContentLines: providerInputInspection.reasoningLines,
-    toolResultLines:
-      providerInputInspection.toolResultLines + hiddenContextLines,
-    citations: params.citations.length,
-    activeFiles: params.citations.filter(
-      (citation) => citation.type === "file" || citation.type === "document",
-    ).length,
-    toolFacts: params.compactionState?.toolDigest?.length ?? 0,
-  };
-
-  const breakdown: ConversationContextDiagnosticsBreakdownItem[] = footprint
-    ? [
-        {
-          id: "serialized_payload",
-          label: "Payload sérialisé final",
-          tokens: footprint.serializedPayloadTokens,
-        },
-        {
-          id: "visible_messages",
-          label: "Messages visibles",
-          tokens: footprint.visibleMessageTokens,
-          lines: visibleLines,
-          count: params.orderedMessages.length,
-        },
-        {
-          id: "provider_input_items",
-          label: "Historique provider",
-          tokens: footprint.providerInputTokens,
-          lines: counts.providerInputItemLines,
-          count: counts.providerInputItems,
-        },
-        {
-          id: "hidden_context",
-          label: "Contexte masqué / outils",
-          tokens: footprint.hiddenContextTokens,
-          lines: hiddenContextLines,
-        },
-        {
-          id: "system_prompt",
-          label: "Prompt système",
-          tokens: footprint.systemTokens,
-        },
-        {
-          id: "tool_schema",
-          label: "Schémas d'outils",
-          tokens: footprint.toolSchemaTokens,
-        },
-        {
-          id: "citations",
-          label: "Citations et sources",
-          tokens: footprint.citationTokens,
-          count: params.citations.length,
-        },
-        {
-          id: "summary",
-          label: "Résumé compacté",
-          tokens: footprint.summaryTokens,
-          count: params.compactionState ? 1 : 0,
-        },
-        {
-          id: "latest_user",
-          label: "Dernier tour utilisateur",
-          tokens: footprint.latestUserContextTokens,
-        },
-      ]
-    : [];
-
-  const topContributors = [...breakdown]
-    .filter((item) => typeof item.tokens === "number" && item.tokens > 0)
-    .sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0))
-    .slice(0, 5);
-
-  return {
-    status: params.status,
-    source: params.source,
-    conversationId: params.conversationId,
-    updatedAt: new Date().toISOString(),
-    providerId: params.providerId,
-    providerType: params.providerType,
-    modelId: params.modelId,
-    modelContextWindowTokens: footprint?.modelContextWindowTokens,
-    contextLimitSource: footprint?.contextLimitSource,
-    isContextLimitAuthoritative: footprint?.isContextLimitAuthoritative,
-    contextLimitConfidence: footprint?.contextLimitConfidence,
-    contextLimitWarning: footprint?.contextLimitWarning,
-    previousModelContextWindowTokens: footprint?.previousModelContextWindowTokens,
-    modelContextWindowShrank: footprint?.modelContextWindowShrank,
-    marginTokens: footprint?.marginTokens,
-    compactionDecisionAudit: buildContextCompactionDecisionAudit({
-      providerId: params.providerId,
-      providerType: params.providerType,
-      modelId: params.modelId,
-      trigger: params.compactionState?.lastTrigger ?? params.compactionState?.compactionKind,
-      result: params.decision,
-      footprintBefore: params.footprintBefore,
-      footprintAfter: params.footprintAfter,
-    }),
-    phase: params.phase,
-    decision: params.decision,
-    compactionPass: params.compactionPass,
-    summaryFormatVersion: params.summaryFormatVersion,
-    summarySource: params.summarySource,
-    footprintBefore: params.footprintBefore,
-    footprintAfter: params.footprintAfter,
-    ratio: Math.max(0, footprint?.totalContextRatio ?? 0),
-    usableRatio: Math.max(0, footprint?.usableContextRatio ?? 0),
-    isHardStop: Boolean(footprint?.isHardStop),
-    error: params.error,
-    counts,
-    breakdown,
-    topContributors,
-  };
-};
-
-const createConversationSessionId = (): string =>
-  `conversation-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-const createConversationTurnId = (): string =>
-  `turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-const getMessageTurnId = (
-  message: Pick<ChatMessage, "id" | "turn_id">,
-): string => message.turn_id || `legacy-turn-${message.id}`;
-
-const isConversationRuntimeActive = (
-  runtime: ConversationRuntimeState | undefined,
-): boolean =>
-  runtime?.phase === "preparing" ||
-  runtime?.phase === "overflow_recovery" ||
-  runtime?.phase === "streaming";
-
-const getConversationRuntimeSnapshot = (
-  conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>,
-  conversationId: string | null | undefined,
-): ConversationRuntimeState => {
-  if (!conversationId) {
-    return EMPTY_CONVERSATION_RUNTIME;
-  }
-
-  return conversationRuntimeById[conversationId] ?? EMPTY_CONVERSATION_RUNTIME;
-};
-
-const buildLegacyStreamingFlags = (params: {
-  conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>;
-  selectedConversationId: string | null;
-}) => {
-  const runtimes = Object.values(params.conversationRuntimeById);
-  const hasPreparingConversation = runtimes.some(
-    (runtime) =>
-      runtime?.phase === "preparing" ||
-      runtime?.phase === "overflow_recovery",
-  );
-  const streamingRuntime =
-    runtimes.find((runtime) => runtime?.phase === "streaming") ?? null;
-  const errorRuntime =
-    runtimes.find((runtime) => runtime?.phase === "error") ?? null;
-  const selectedRuntime = getConversationRuntimeSnapshot(
-    params.conversationRuntimeById,
-    params.selectedConversationId,
-  );
-
-  return {
-    isLoading:
-      hasPreparingConversation || streamingRuntime !== null,
-    isStreaming: streamingRuntime !== null,
-    sendState: (
-      hasPreparingConversation
-        ? "preparing"
-        : streamingRuntime
-          ? "streaming"
-          : errorRuntime
-            ? "error"
-            : "idle"
-    ) as ChatSendState,
-    abortController:
-      selectedRuntime.abortController ??
-      streamingRuntime?.abortController ??
-      null,
-  };
-};
-
-const buildConversationRuntimePatch = (
-  state: Pick<
-    ChatStore,
-    | "conversationRuntimeById"
-    | "selectedConversationId"
-  >,
-  conversationId: string,
-  runtime: ConversationRuntimeState | null,
-) => {
-  const nextConversationRuntimeById = { ...state.conversationRuntimeById };
-  if (runtime) {
-    nextConversationRuntimeById[conversationId] = runtime;
-  } else {
-    delete nextConversationRuntimeById[conversationId];
-  }
-
-  return {
-    conversationRuntimeById: nextConversationRuntimeById,
-    ...buildLegacyStreamingFlags({
-      conversationRuntimeById: nextConversationRuntimeById,
-      selectedConversationId: state.selectedConversationId,
-    }),
-  };
 };
 
 const getConversationFallbackTitle = (content: string): string => {
@@ -1024,17 +666,6 @@ const branchNameMatchesCandidate = (
   );
 };
 
-const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
-const QUESTIONNAIRE_DRAFTS_STORAGE_KEY = "macro_chat_questionnaire_drafts";
-const REASONING_EFFORT_VALUES = new Set<ReasoningEffort>([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
-
 type AISelectionModeKey = "Chat" | "Architect" | "Implement";
 
 interface PersistedAISelection {
@@ -1083,11 +714,6 @@ const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
 
 const isBuiltInAppMode = (mode: AppMode): mode is BuiltInAppMode =>
   mode === "Architect" || mode === "Implement" || mode === "Chat";
-
-const normalizeReasoningEffort = (value: unknown): ReasoningEffort | null =>
-  typeof value === "string" && REASONING_EFFORT_VALUES.has(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : null;
 
 const normalizePersistedSelection = (
   value: unknown,
@@ -1268,101 +894,9 @@ const normalizeAIContextSelections = (
   };
 };
 
-export interface MessageImageAttachment {
-  id: string;
-  mimeType: string;
-  dataUrl: string;
-  width?: number;
-  height?: number;
-  createdAt: string;
-}
-
-const loadQuestionnaireDraftsFromStorage = (): Record<
-  string,
-  ConversationQuestionnaireDraft
-> => {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(
-      raw,
-    ) as Record<string, ConversationQuestionnaireDraft>;
-    if (!parsed || typeof parsed !== "object") {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) => {
-        return (
-          value &&
-          typeof value === "object" &&
-          (value.mode === undefined ||
-            value.mode === "pending_reply" ||
-            value.mode === "editing_response") &&
-          typeof value.assistantMessageId === "string" &&
-          (value.responseMessageId === undefined ||
-            typeof value.responseMessageId === "string") &&
-          typeof value.currentStepIndex === "number" &&
-          value.answersByStepId &&
-          typeof value.answersByStepId === "object" &&
-          value.draftTextByStepId &&
-          typeof value.draftTextByStepId === "object"
-        );
-      }),
-    );
-  } catch {
-    return {};
-  }
-};
-
-const saveQuestionnaireDraftsToStorage = (
-  draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
-      JSON.stringify(draftsByConversationId),
-    );
-  } catch {
-    // Ignore storage errors
-  }
-};
-
-const loadMessageImagesFromStorage = (): Record<
-  string,
-  MessageImageAttachment[]
-> => {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, MessageImageAttachment[]>;
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
-  } catch {
-    return {};
-  }
-};
-
-const saveMessageImagesToStorage = (
-  imagesByMessageId: Record<string, MessageImageAttachment[]>,
-) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      MESSAGE_IMAGES_STORAGE_KEY,
-      JSON.stringify(imagesByMessageId),
-    );
-  } catch {
-    // Ignore storage errors
-  }
-};
-
 type ChatHydrationStatus = "idle" | "hydrating" | "ready" | "error";
 type ChatRestoreStatus = "idle" | "resolving" | "ready" | "error";
 type ChatContextKey = string;
-type ChatSendState = "idle" | "preparing" | "streaming" | "error";
 
 interface ChatSendResult {
   status: "sent";
@@ -1406,68 +940,6 @@ export type {
   SessionCompactionEvent,
   SessionCompactionEventStatus,
 } from "../services/contextCompactionSession";
-
-export type ConversationContextDiagnosticsStatus = "estimating" | "ready" | "error";
-export type ConversationContextDiagnosticsSource = "full" | "live_stream";
-export type ConversationContextDiagnosticsRefreshMode = ConversationContextDiagnosticsSource;
-export interface ConversationContextDiagnosticsProviderContext {
-  providerId: string;
-  providerType: string;
-  baseUrl: string;
-  modelId: string;
-}
-
-export interface ConversationContextDiagnosticsBreakdownItem {
-  id: string;
-  label: string;
-  tokens?: number;
-  lines?: number;
-  count?: number;
-}
-
-export interface ConversationContextDiagnostics {
-  status: ConversationContextDiagnosticsStatus;
-  source?: ConversationContextDiagnosticsSource;
-  conversationId: string;
-  updatedAt: string;
-  providerId?: string;
-  providerType?: string;
-  modelId?: string;
-  modelContextWindowTokens?: number;
-  contextLimitSource?: ContextFootprint["contextLimitSource"];
-  isContextLimitAuthoritative?: boolean;
-  contextLimitConfidence?: ContextFootprint["contextLimitConfidence"];
-  contextLimitWarning?: string;
-  previousModelContextWindowTokens?: number;
-  modelContextWindowShrank?: boolean;
-  marginTokens?: number;
-  compactionDecisionAudit?: ContextCompactionDecisionAudit;
-  phase?: ConversationCompactionPhase | "provider_error";
-  decision?: ContextCompactionDecision;
-  compactionPass?: CompactionPass;
-  summaryFormatVersion?: number;
-  summarySource?: CompactionSummarySource;
-  footprintBefore?: ContextFootprint;
-  footprintAfter?: ContextFootprint;
-  ratio: number;
-  usableRatio: number;
-  isHardStop: boolean;
-  error?: string;
-  counts: {
-    messages: number;
-    visibleLines: number;
-    hiddenContextLines: number;
-    providerInputItems: number;
-    providerInputItemLines: number;
-    reasoningContentLines: number;
-    toolResultLines: number;
-    citations: number;
-    activeFiles: number;
-    toolFacts: number;
-  };
-  breakdown: ConversationContextDiagnosticsBreakdownItem[];
-  topContributors: ConversationContextDiagnosticsBreakdownItem[];
-}
 
 export interface LiveStreamContextEstimate {
   sessionId: string;
@@ -1698,160 +1170,6 @@ interface ResolvedConversationForContext {
   fallbackGroupId?: string | null;
 }
 
-const mapDbConversationToConversation = (
-  conversation: tauriIpc.DbConversation,
-): Conversation => ({
-  id: conversation.id,
-  title: conversation.title,
-  description: conversation.description || "",
-  scope_mode: conversation.scope_mode,
-  task_id: conversation.task_id,
-  group_id: conversation.group_id,
-  project_id: conversation.project_id,
-  provider_id: conversation.provider_id,
-  model_id: conversation.model_id,
-  reasoning_effort: normalizeReasoningEffort(conversation.reasoning_effort),
-  last_message: conversation.last_message || "",
-  message_count: conversation.message_count,
-  updated_at: conversation.updated_at,
-  is_unread: false,
-});
-
-const parseDbProviderTurnState = (
-  raw: string | null,
-): ChatMessage["provider_turn_state"] | undefined => {
-  if (!raw) return undefined;
-
-  try {
-    const parsed = JSON.parse(raw) as ChatMessage["provider_turn_state"] | null;
-    if (
-      !parsed ||
-      parsed.provider !== "chatgpt" ||
-      !Array.isArray(parsed.output_items)
-    ) {
-      return undefined;
-    }
-    return parsed;
-  } catch {
-    return undefined;
-  }
-};
-
-const parseDbProviderInputItems = (
-  raw: string | null,
-): ChatMessage["provider_input_items"] | undefined => {
-  if (!raw) {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const buildAssistantMessagePresentation = (
-  content: string,
-  hiddenContext?: string,
-): Pick<
-  ChatMessage,
-  "content" | "choices" | "allow_free_response" | "questionnaire"
-> => {
-  const questionnaireState = parseAssistantQuestionnaireState(
-    content,
-    hiddenContext,
-  );
-  const legacyQuickReplies = parseMessageQuickReplies(content);
-
-  return {
-    content: questionnaireState.content,
-    choices: legacyQuickReplies.choices,
-    allow_free_response: legacyQuickReplies.allowFreeResponse,
-    questionnaire: questionnaireState.questionnaire,
-  };
-};
-
-const assistantTurnRequiresUserReply = (
-  content: string,
-  hiddenContext?: string,
-): boolean =>
-  parseAssistantQuestionnaireState(content, hiddenContext).requiresUserReply;
-
-const buildUserMessagePresentation = (
-  content: string,
-  hiddenContext?: string,
-): Pick<ChatMessage, "content" | "questionnaire_response_summary"> => {
-  const questionnaireResponseState = parseUserQuestionnaireResponseState(
-    content,
-    hiddenContext,
-  );
-
-  return {
-    content: questionnaireResponseState.content,
-    questionnaire_response_summary:
-      questionnaireResponseState.questionnaireResponseSummary,
-  };
-};
-
-const mapDbMessageToChatMessage = (
-  message: tauriIpc.DbMessage,
-  conversationById: Map<string, Conversation>,
-): ChatMessage => {
-  const taskId = conversationById.get(message.conversation_id)?.task_id ?? "";
-  if (message.role === "assistant") {
-    const presentation = buildAssistantMessagePresentation(
-      message.content,
-      message.hidden_context ?? undefined,
-    );
-    return {
-      id: message.id,
-      turn_id: message.turn_id ?? null,
-      task_id: taskId,
-      conversation_id: message.conversation_id,
-      role: message.role as "user" | "assistant",
-      content: presentation.content,
-      timestamp: message.created_at,
-      choices: presentation.choices,
-      allow_free_response: presentation.allow_free_response,
-      questionnaire: presentation.questionnaire,
-      tool_traces: parseToolTracesJson(message.tool_traces_json),
-      hidden_context: message.hidden_context ?? undefined,
-      provider_input_items: parseDbProviderInputItems(
-        message.provider_input_items_json,
-      ),
-      provider_turn_state: parseDbProviderTurnState(
-        message.provider_turn_state_json,
-      ),
-    };
-  }
-
-  const userPresentation = buildUserMessagePresentation(
-    message.content,
-    message.hidden_context ?? undefined,
-  );
-  return {
-    id: message.id,
-    turn_id: message.turn_id ?? null,
-    task_id: taskId,
-    conversation_id: message.conversation_id,
-    role: message.role as "user" | "assistant",
-    content: userPresentation.content,
-    timestamp: message.created_at,
-    questionnaire_response_summary:
-      userPresentation.questionnaire_response_summary,
-    tool_traces: parseToolTracesJson(message.tool_traces_json),
-    hidden_context: message.hidden_context ?? undefined,
-    provider_input_items: parseDbProviderInputItems(
-      message.provider_input_items_json,
-    ),
-    provider_turn_state: parseDbProviderTurnState(
-      message.provider_turn_state_json,
-    ),
-  };
-};
-
 const buildChatContextKey = (
   appState: Pick<
     ReturnType<typeof useAppStore.getState>,
@@ -1966,93 +1284,6 @@ const toComparableChatMessage = (
   createdAt: message.timestamp,
 });
 
-const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessage[] =>
-  [...messages].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
-
-const indexMessagesByConversation = (
-  messages: ChatMessage[],
-): Record<string, ChatMessage[]> => {
-  const grouped: Record<string, ChatMessage[]> = {};
-
-  for (const message of messages) {
-    const existing = grouped[message.conversation_id];
-    if (existing) {
-      existing.push(message);
-    } else {
-      grouped[message.conversation_id] = [message];
-    }
-  }
-
-  Object.keys(grouped).forEach((conversationId) => {
-    grouped[conversationId] = sortMessagesChronologically(
-      grouped[conversationId]!,
-    );
-  });
-
-  return grouped;
-};
-
-const indexMessagesById = (messages: ChatMessage[]): Record<string, number> =>
-  Object.fromEntries(messages.map((message, index) => [message.id, index]));
-
-const buildMessageState = (messages: ChatMessage[]) => ({
-  messages,
-  messagesByConversationId: indexMessagesByConversation(messages),
-  messageIndexById: indexMessagesById(messages),
-});
-
-const getConversationMessagesFromState = (
-  state: Pick<ChatStore, "messages" | "messagesByConversationId">,
-  conversationId: string,
-): ChatMessage[] => {
-  const indexedMessages = state.messagesByConversationId[conversationId];
-  if (indexedMessages) {
-    return indexedMessages;
-  }
-
-  const fallbackMessages = state.messages.filter(
-    (msg) => msg.conversation_id === conversationId,
-  );
-  return fallbackMessages.length > 0
-    ? sortMessagesChronologically(fallbackMessages)
-    : EMPTY_CHAT_MESSAGES;
-};
-
-const findChatMessageInState = (
-  state: Pick<
-    ChatStore,
-    "messages" | "messagesByConversationId" | "messageIndexById"
-  >,
-  messageId: string,
-): ChatMessage | null => {
-  const indexedMessageIndex = state.messageIndexById[messageId];
-  const indexedMessage =
-    typeof indexedMessageIndex === "number"
-      ? state.messages[indexedMessageIndex]
-      : undefined;
-  if (indexedMessage?.id === messageId) {
-    return indexedMessage;
-  }
-
-  const directMessage = state.messages.find((message) => message.id === messageId);
-  if (directMessage) {
-    return directMessage;
-  }
-
-  for (const conversationMessages of Object.values(state.messagesByConversationId)) {
-    const message = conversationMessages?.find(
-      (candidate) => candidate.id === messageId,
-    );
-    if (message) {
-      return message;
-    }
-  }
-
-  return null;
-};
-
 const resolveConversationQuestionnaireFromState = (
   state: Pick<
     ChatStore,
@@ -2066,47 +1297,6 @@ const resolveConversationQuestionnaireFromState = (
     conversationId,
     getConversationMessagesFromState(state, conversationId),
     state.questionnaireDraftsByConversationId[conversationId],
-  );
-
-const setQuestionnaireDraftForConversation = (
-  draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-  conversationId: string,
-  draft: ConversationQuestionnaireDraft,
-): Record<string, ConversationQuestionnaireDraft> => ({
-  ...draftsByConversationId,
-  [conversationId]: draft,
-});
-
-const clearQuestionnaireDraftsForConversations = (
-  draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-  conversationIds: string[],
-): Record<string, ConversationQuestionnaireDraft> => {
-  if (conversationIds.length === 0) {
-    return draftsByConversationId;
-  }
-  const next = { ...draftsByConversationId };
-  conversationIds.forEach((conversationId) => {
-    delete next[conversationId];
-  });
-  return next;
-};
-
-const setActiveQuestionnaireDraftStep = (
-  draftsByConversationId: Record<string, ConversationQuestionnaireDraft>,
-  activeQuestionnaire: ConversationQuestionnaireState,
-  stepIndex: number,
-): Record<string, ConversationQuestionnaireDraft> =>
-  setQuestionnaireDraftForConversation(
-    draftsByConversationId,
-    activeQuestionnaire.conversationId,
-    {
-      mode: activeQuestionnaire.mode,
-      assistantMessageId: activeQuestionnaire.assistantMessageId,
-      responseMessageId: activeQuestionnaire.responseMessageId,
-      currentStepIndex: stepIndex,
-      answersByStepId: { ...activeQuestionnaire.answersByStepId },
-      draftTextByStepId: { ...activeQuestionnaire.draftTextByStepId },
-    },
   );
 
 const getStrictTranscriptFingerprint = (
@@ -3439,24 +2629,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
       }));
 
-      if (!tauriIpc.isTauriAvailable()) {
+      if (!chatPersistenceAdapters.isTauriAvailable()) {
         markConversationMessagesReady(conversationId);
         return;
       }
 
       try {
-        const dbMessages = await tauriIpc.listMessages(conversationId);
-        const conversationById = new Map(
-          get().conversations.map((conversation) => [
-            conversation.id,
-            conversation,
-          ]),
+        const loadedMessages = await loadConversationMessages(
+          chatPersistenceAdapters,
+          {
+            conversationId,
+            conversations: get().conversations,
+          },
         );
         replaceLoadedConversationMessages(
           conversationId,
-          dbMessages.map((message) =>
-            mapDbMessageToChatMessage(message, conversationById),
-          ),
+          loadedMessages,
         );
       } catch (error) {
         set((state) => ({
@@ -4100,124 +3288,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
       : 1
   );
 
-  const setConversationCompactionStatus = (
-    conversationId: string,
-    status: ConversationCompactionStatus | null,
-  ) => {
-    set((state) => {
-      const next = { ...state.conversationCompactionStatusById };
-      if (status) {
-        next[conversationId] = status;
-      } else {
-        delete next[conversationId];
-      }
-      return { conversationCompactionStatusById: next };
-    });
-  };
-
-  const publishPersistedCompactionStatusIfIdle = (
-    conversationId: string,
-    state: ConversationCompactionState | null,
-  ) => {
-    const currentStatus =
-      get().conversationCompactionStatusById[conversationId] ?? null;
-    if (isTransientCompactionStatus(currentStatus)) {
-      return;
-    }
-    setConversationCompactionStatus(
-      conversationId,
-      state ? resolveCompactionStatusFromState(state) : null,
-    );
-  };
-
-  const setConversationCompactionActivityStarted = (
-    conversationId: string,
-    kind: ContextCompactionKind,
-    fallbackStatus?: ConversationCompactionStatus | null,
-  ) => {
-    const previous =
-      get().conversationCompactionStatusById[conversationId] ?? fallbackStatus;
-    setConversationCompactionStatus(
-      conversationId,
-      buildCompactionActivityStatus({ kind, previous }),
-    );
-  };
-
   const getLastConversationMessageId = (conversationId: string): string | null =>
     getOrderedConversationMessages(conversationId).at(-1)?.id ?? null;
 
-  const startSessionCompactionEvent = (
-    conversationId: string,
-    kind: ContextCompactionKind,
-    displayAfterMessageId?: string | null,
-  ) => {
-    const anchor = displayAfterMessageId ?? getLastConversationMessageId(conversationId);
-    set((state) => {
-      const existing =
-        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: startSessionCompactionEventState({
-            conversationId,
-            kind,
-            displayAfterMessageId: anchor,
-            existingEvents: existing,
-          }),
-        },
-      };
-    });
-  };
-
-  const completeLatestSessionCompactionEvent = (
-    conversationId: string,
-    state: ConversationCompactionState,
-    kind?: ContextCompactionKind,
-  ) => {
-    set((storeState) => {
-      const existing =
-        storeState.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...storeState.sessionCompactionEventsByConversationId,
-          [conversationId]: completeLatestSessionCompactionEventState({
-            existingEvents: existing,
-            state,
-            kind,
-          }),
-        },
-      };
-    });
-  };
-
-  const clearLatestRunningSessionCompactionEvent = (
-    conversationId: string,
-    kind?: ContextCompactionKind,
-  ) => {
-    set((state) => {
-      const existing =
-        state.sessionCompactionEventsByConversationId[conversationId] ?? [];
-      return {
-        sessionCompactionEventsByConversationId: {
-          ...state.sessionCompactionEventsByConversationId,
-          [conversationId]: clearLatestSessionCompactionEventState({
-            existingEvents: existing,
-            kind,
-          }),
-        },
-      };
-    });
-  };
-
-  const markConversationCompactionStarted = (
-    conversationId: string,
-    kind: ContextCompactionKind,
-    fallbackStatus?: ConversationCompactionStatus | null,
-    displayAfterMessageId?: string | null,
-  ) => {
-    startSessionCompactionEvent(conversationId, kind, displayAfterMessageId);
-    setConversationCompactionActivityStarted(conversationId, kind, fallbackStatus);
-  };
+  const compactionRuntime = createChatCompactionRuntime({
+    getState: get,
+    setState: (updater) => {
+      set((state) => updater(state));
+    },
+    getLastConversationMessageId,
+  });
+  const {
+    setConversationCompactionStatus,
+    publishPersistedCompactionStatusIfIdle,
+    setConversationCompactionActivityStarted,
+    completeLatestSessionCompactionEvent,
+    clearLatestRunningSessionCompactionEvent,
+    markConversationCompactionStarted,
+  } = compactionRuntime;
 
   const mapDbCompactionStateToState = (
     record: tauriIpc.DbConversationCompactionState,
@@ -7960,20 +7048,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    if (!tauriIpc.isTauriAvailable()) {
-      get().updateMessageFields(messageId, {
-        provider_input_items: providerInputItems,
-      });
-      return;
-    }
-
     try {
-      await tauriIpc.updateMessage(messageId, message.content, {
-        turnId: message.turn_id ?? null,
-        toolTraces: message.tool_traces,
-        hiddenContext: message.hidden_context,
+      await updateProviderInputItemsForMessage(chatPersistenceAdapters, {
+        message,
         providerInputItems,
-        providerTurnState: message.provider_turn_state,
       });
       get().updateMessageFields(messageId, {
         provider_input_items: providerInputItems,
@@ -7994,64 +7072,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     hiddenContext?: string;
     providerInputItems?: unknown[];
   }): Promise<ChatMessage> => {
-    const presentation = buildUserMessagePresentation(
-      params.content,
-      params.hiddenContext,
-    );
-    let userMessage: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      turn_id: params.turnId,
-      task_id: params.taskId,
-      conversation_id: params.conversationId,
-      role: "user",
-      content: presentation.content,
-      timestamp: new Date().toISOString(),
-      hidden_context: params.hiddenContext,
-      provider_input_items: cloneProviderInputItems(params.providerInputItems),
-      questionnaire_response_summary:
-        presentation.questionnaire_response_summary,
-    };
-
-    if (tauriIpc.isTauriAvailable()) {
-      try {
-        const dbMessage = await tauriIpc.createMessage(
-          params.conversationId,
-          "user",
-          params.content,
-          {
-            turnId: params.turnId,
-            hiddenContext: params.hiddenContext,
-            providerInputItems: params.providerInputItems,
-          },
-        );
-        const dbPresentation = buildUserMessagePresentation(
-          dbMessage.content,
-          dbMessage.hidden_context ?? undefined,
-        );
-        userMessage = {
-          id: dbMessage.id,
-          turn_id: dbMessage.turn_id ?? params.turnId,
-          task_id: params.taskId,
-          conversation_id: dbMessage.conversation_id,
-          role: "user",
-          content: dbPresentation.content,
-          timestamp: dbMessage.created_at,
-          hidden_context: dbMessage.hidden_context ?? undefined,
-          provider_input_items: parseDbProviderInputItems(
-            dbMessage.provider_input_items_json,
-          ),
-          questionnaire_response_summary:
-            dbPresentation.questionnaire_response_summary,
-        };
-      } catch (error) {
-        const normalized = toServiceError(error);
-        throw buildSendError(
-          `Failed to save the message before sending: ${normalized.message}`,
-        );
-      }
+    try {
+      return await createUserMessage(chatPersistenceAdapters, params);
+    } catch (error) {
+      const normalized = toServiceError(error);
+      throw buildSendError(
+        `Failed to save the message before sending: ${normalized.message}`,
+      );
     }
-
-    return userMessage;
   };
 
   const buildAssistantMessageForSend = async (params: {
@@ -8059,63 +7087,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     turnId: string;
     taskId: string;
   }): Promise<ChatMessage> => {
-    const clientMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-assistant`;
-    let assistantMessage: ChatMessage = {
-      id: clientMessageId,
-      turn_id: params.turnId,
-      task_id: params.taskId,
-      conversation_id: params.conversationId,
-      role: "assistant",
-      content: "",
-      tool_traces: [],
-      timestamp: new Date().toISOString(),
-    };
-
-    if (tauriIpc.isTauriAvailable()) {
-      try {
-        const dbMessage = await tauriIpc.createMessage(
-          params.conversationId,
-          "assistant",
-          "",
-          {
-            id: clientMessageId,
-            turnId: params.turnId,
-            toolTraces: [],
-          },
-        );
-        const presentation = buildAssistantMessagePresentation(
-          dbMessage.content,
-          dbMessage.hidden_context ?? undefined,
-        );
-        assistantMessage = {
-          id: dbMessage.id,
-          turn_id: dbMessage.turn_id ?? params.turnId,
-          task_id: params.taskId,
-          conversation_id: dbMessage.conversation_id,
-          role: "assistant",
-          content: presentation.content,
-          timestamp: dbMessage.created_at,
-          choices: presentation.choices,
-          allow_free_response: presentation.allow_free_response,
-          questionnaire: presentation.questionnaire,
-          tool_traces: parseToolTracesJson(dbMessage.tool_traces_json) ?? [],
-          hidden_context: dbMessage.hidden_context ?? undefined,
-          provider_input_items: parseDbProviderInputItems(
-            dbMessage.provider_input_items_json,
-          ),
-          provider_turn_state: parseDbProviderTurnState(
-            dbMessage.provider_turn_state_json,
-          ),
-        };
-      } catch (error) {
-        const normalized = toServiceError(error);
-        throw buildSendError(
-          `Failed to create the assistant message before streaming: ${normalized.message}`,
-        );
-      }
+    try {
+      return await createAssistantPlaceholderMessage(
+        chatPersistenceAdapters,
+        params,
+      );
+    } catch (error) {
+      const normalized = toServiceError(error);
+      throw buildSendError(
+        `Failed to create the assistant message before streaming: ${normalized.message}`,
+      );
     }
-
-    return assistantMessage;
   };
 
   const prepareAssistantStreamLaunch = async (params: {
@@ -8559,33 +7541,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? cloneProviderInputItems(params.providerInputItems)
       : currentMessage.provider_input_items;
 
-    if (!tauriIpc.isTauriAvailable()) {
-      if (params.replaceStructuredFields) {
-        replaceUserMessagePresentationLocally({
-          messageId: params.messageId,
-          turnId: params.turnId,
-          content: params.content,
-          hiddenContext: nextHiddenContext,
-          providerInputItems: nextProviderInputItems,
-        });
-      } else {
-        get().updateMessageContent(params.messageId, params.content);
-        if (params.turnId) {
-          get().updateMessageFields(params.messageId, {
-            turn_id: params.turnId,
-          });
-        }
-      }
-      return;
-    }
-
     try {
-      await tauriIpc.updateMessage(params.messageId, params.content, {
-        turnId: params.turnId ?? currentMessage.turn_id ?? null,
-        toolTraces: currentMessage.tool_traces,
+      await updateEditedUserMessage(chatPersistenceAdapters, {
+        message: currentMessage,
+        content: params.content,
+        turnId: params.turnId,
         hiddenContext: nextHiddenContext,
         providerInputItems: nextProviderInputItems,
-        providerTurnState: currentMessage.provider_turn_state,
       });
       if (params.replaceStructuredFields) {
         replaceUserMessagePresentationLocally({
@@ -8618,142 +7580,135 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearQuestionnaireSession?: boolean;
     updatedMessage?: ChatMessage;
   }) => {
-    if (tauriIpc.isTauriAvailable()) {
-      try {
-        await tauriIpc.deleteMessagesAfter(
-          params.conversationId,
-          params.messageId,
-        );
-      } catch (error) {
-        const normalized = toServiceError(error);
-        set({ lastError: normalized.message, sendState: "error" });
-        throw buildSendError(
-          `Failed to trim the conversation before retrying: ${normalized.message}`,
-        );
-      }
-    }
-
     const existingCompactionState = await getConversationCompactionState(
       params.conversationId,
     );
-    let shouldDeleteContextCompactionState = false;
-
-    set((current) => {
-      const currentMessages = params.updatedMessage
-        ? current.messages.map((message) =>
-            message.id === params.updatedMessage!.id
-              ? params.updatedMessage!
-              : message,
-          )
-        : current.messages;
-      const conversationMessages = currentMessages
-        .filter(
-          (message) => message.conversation_id === params.conversationId,
+    const stateBeforeReplay = get();
+    const replayMessages = params.updatedMessage
+      ? stateBeforeReplay.messages.map((message) =>
+          message.id === params.updatedMessage!.id
+            ? params.updatedMessage!
+            : message,
         )
-        .sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() -
-            new Date(b.timestamp).getTime(),
+      : stateBeforeReplay.messages;
+
+    const applyReplayTrimToState = (
+      plan: ConversationReplayPlan<SessionCompactionEvent>,
+    ) => {
+      set((current) => {
+        const currentMessages = params.updatedMessage
+          ? current.messages.map((message) =>
+              message.id === params.updatedMessage!.id
+                ? params.updatedMessage!
+                : message,
+            )
+          : current.messages;
+
+        const trimmedMessages = currentMessages.filter((message) =>
+          message.conversation_id === params.conversationId
+            ? plan.keptMessageIds.has(message.id)
+            : true,
         );
 
-      const targetIndex = conversationMessages.findIndex(
-        (message) => message.id === params.messageId,
-      );
-      if (targetIndex === -1) {
-        return current;
-      }
+        const conversationMeta = recalcConversation(
+          params.conversationId,
+          trimmedMessages,
+        );
 
-      const replayPlan = buildConversationReplayPlan({
-        conversationId: params.conversationId,
-        replayMessageId: params.messageId,
-        conversationMessages,
-        contextCompactionState: existingCompactionState,
-        sessionCompactionEvents:
-          current.sessionCompactionEventsByConversationId[
-            params.conversationId
-          ],
-      });
-      shouldDeleteContextCompactionState =
-        replayPlan.shouldDeleteContextCompactionState;
+        const conversations = current.conversations.map((conv) =>
+          conv.id === params.conversationId
+            ? { ...conv, ...conversationMeta }
+            : conv,
+        );
 
-      const trimmedMessages = currentMessages.filter((message) =>
-        message.conversation_id === params.conversationId
-          ? replayPlan.keptMessageIds.has(message.id)
-          : true,
-      );
+        const keptConversationMessageIds = new Set(
+          trimmedMessages
+            .filter(
+              (message) => message.conversation_id === params.conversationId,
+            )
+            .map((message) => message.id),
+        );
+        const nextImages = { ...current.messageImagesByMessageId };
+        Object.keys(nextImages).forEach((messageIdKey) => {
+          const message = trimmedMessages.find((m) => m.id === messageIdKey);
+          if (
+            !message ||
+            (message.conversation_id === params.conversationId &&
+              !keptConversationMessageIds.has(messageIdKey))
+          ) {
+            delete nextImages[messageIdKey];
+          }
+        });
+        saveMessageImagesToStorage(nextImages);
 
-      const conversationMeta = recalcConversation(
-        params.conversationId,
-        trimmedMessages,
-      );
-
-      const conversations = current.conversations.map((conv) =>
-        conv.id === params.conversationId
-          ? { ...conv, ...conversationMeta }
-          : conv,
-      );
-
-      const keptConversationMessageIds = new Set(
-        trimmedMessages
-          .filter(
-            (message) => message.conversation_id === params.conversationId,
-          )
-          .map((message) => message.id),
-      );
-      const nextImages = { ...current.messageImagesByMessageId };
-      Object.keys(nextImages).forEach((messageIdKey) => {
-        const message = trimmedMessages.find((m) => m.id === messageIdKey);
-        if (
-          !message ||
-          (message.conversation_id === params.conversationId &&
-            !keptConversationMessageIds.has(messageIdKey))
-        ) {
-          delete nextImages[messageIdKey];
+        const nextQuestionnaireDrafts = params.clearQuestionnaireSession
+          ? clearQuestionnaireDraftsForConversations(
+              current.questionnaireDraftsByConversationId,
+              [params.conversationId],
+            )
+          : current.questionnaireDraftsByConversationId;
+        if (params.clearQuestionnaireSession) {
+          saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
         }
+        return {
+          ...buildMessageState(trimmedMessages),
+          conversations,
+          messageImagesByMessageId: nextImages,
+          questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+          sessionCompactionEventsByConversationId: {
+            ...current.sessionCompactionEventsByConversationId,
+            [params.conversationId]: plan.sessionCompactionEvents,
+          },
+          lastError: null,
+        };
       });
-      saveMessageImagesToStorage(nextImages);
+    };
 
-      const nextQuestionnaireDrafts = params.clearQuestionnaireSession
-        ? clearQuestionnaireDraftsForConversations(
-            current.questionnaireDraftsByConversationId,
-            [params.conversationId],
-          )
-        : current.questionnaireDraftsByConversationId;
-      if (params.clearQuestionnaireSession) {
-        saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
-      }
-      return {
-        ...buildMessageState(trimmedMessages),
-        conversations,
-        messageImagesByMessageId: nextImages,
-        questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
-        sessionCompactionEventsByConversationId: {
-          ...current.sessionCompactionEventsByConversationId,
-          [params.conversationId]: replayPlan.sessionCompactionEvents,
+    await executeConversationReplay({
+      conversationId: params.conversationId,
+      replayMessageId: params.messageId,
+      conversationMessages: replayMessages,
+      contextCompactionState: existingCompactionState,
+      sessionCompactionEvents:
+        stateBeforeReplay.sessionCompactionEventsByConversationId[
+          params.conversationId
+        ],
+      adapters: {
+        trimMessages: async (plan) => {
+          if (tauriIpc.isTauriAvailable()) {
+            try {
+              await tauriIpc.deleteMessagesAfter(
+                params.conversationId,
+                params.messageId,
+              );
+            } catch (error) {
+              const normalized = toServiceError(error);
+              set({ lastError: normalized.message, sendState: "error" });
+              throw buildSendError(
+                `Failed to trim the conversation before retrying: ${normalized.message}`,
+              );
+            }
+          }
+          applyReplayTrimToState(plan);
         },
-        lastError: null,
-      };
+        pruneCodeCheckpoints: async (plan) => {
+          const keptConversationMessageIds = Array.from(plan.keptMessageIds);
+          await pruneAgentCodeCheckpointsForConversation(
+            params.conversationId,
+            plan.keptMessageIds,
+          );
+          useCitationsStore
+            .getState()
+            .pruneConversationSourceCitations(
+              params.conversationId,
+              keptConversationMessageIds,
+            );
+        },
+        deleteContextCompactionState: async () => {
+          await deleteConversationCompactionState(params.conversationId);
+        },
+      },
     });
-
-    const keptConversationMessageIds = get()
-      .messages.filter(
-        (message) => message.conversation_id === params.conversationId,
-      )
-      .map((message) => message.id);
-    await pruneAgentCodeCheckpointsForConversation(
-      params.conversationId,
-      new Set(keptConversationMessageIds),
-    );
-    useCitationsStore
-      .getState()
-      .pruneConversationSourceCitations(
-        params.conversationId,
-        keptConversationMessageIds,
-      );
-
-    if (shouldDeleteContextCompactionState) {
-      await deleteConversationCompactionState(params.conversationId);
-    }
   };
 
   const restartAssistantFromEditedMessage = async (params: {
@@ -9371,12 +8326,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       { globalLastError: null },
     );
-    const tokenBatcher = createTokenBatcher((tokenChunk) => {
-      if (!shouldAcceptStreamUpdate()) {
-        return;
-      }
-      get().appendToMessage(params.assistantMessage.id, tokenChunk);
-    });
     const deleteEmptyAssistantMessageFromDb = async () => {
       if (!tauriIpc.isTauriAvailable()) {
         return;
@@ -9437,7 +8386,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
-    const tryRecoverFromOverflow = async (error: Error): Promise<boolean> => {
+    const tryRecoverFromOverflow = async (
+      error: Error,
+      tokenControls: ChatStreamTokenControls,
+    ): Promise<boolean> => {
       if (
         params.overflowRecoveryAttempted ||
         abortController.signal.aborted ||
@@ -9447,7 +8399,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return false;
       }
 
-      tokenBatcher.flushNow();
+      tokenControls.flushNow();
       const assistantMessage = get().messages.find(
         (message) => message.id === params.assistantMessage.id,
       );
@@ -9479,7 +8431,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      tokenBatcher.dispose();
+      tokenControls.dispose();
       clearLiveStreamContextEstimate(params.conversationId);
       setConversationCompactionStatus(params.conversationId, {
         phase: "recovering_overflow",
@@ -9602,18 +8554,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
-    const handleAssistantStreamError = async (error: Error) => {
+    const handleAssistantStreamError = async (
+      error: Error,
+      tokenControls: ChatStreamTokenControls,
+    ) => {
       if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        tokenBatcher.dispose();
+        tokenControls.dispose();
         return;
       }
 
-      if (await tryRecoverFromOverflow(error)) {
+      if (await tryRecoverFromOverflow(error, tokenControls)) {
         return;
       }
 
-      tokenBatcher.flushNow();
-      tokenBatcher.dispose();
+      tokenControls.flushNow();
+      tokenControls.dispose();
       clearLiveStreamContextEstimate(params.conversationId);
       await maybeMarkImplementTaskFailedAfterStreamError();
 
@@ -10073,222 +9028,203 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     };
 
-    void (async () => {
-      try {
-        await streamChat({
+    void runAssistantStream({
+      conversationId: params.conversationId,
+      mode: params.modeAtSend,
+      internalAgentProfile: params.internalAgentProfile,
+      providerId: params.selectedProviderId,
+      providerType: params.providerConfig.providerType,
+      baseUrl: params.providerConfig.baseUrl,
+      apiKey: params.providerConfig.apiKey,
+      modelId: params.selectedModelId,
+      reasoningEffort: params.selectedReasoningEffort,
+      messages: params.messagesForRequest,
+      fileToolContext: params.fileToolContext,
+      allowedToolIds: params.allowedToolIds,
+      copilotSendTimeoutMs:
+        params.providerConfig.providerType === "copilot"
+          ? (useProviderStore.getState().providerSettingsById?.[params.selectedProviderId]
+              ?.copilotSendTimeoutMs ?? null)
+          : null,
+      workspacePath: params.executionContext.workspacePath,
+      defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
+      projectMounts: params.executionContext.projectMounts,
+      virtualRootEnabled: params.executionContext.virtualRootEnabled,
+      focusedProjectId: params.executionContext.focusedProjectId,
+      guidedToolRetry: params.guidedToolRetry,
+      showToolTraces: params.showToolTraces,
+      enableWebSearch: params.enableWebSearch,
+      enableWebFetch: params.enableWebFetch,
+      webSearchOptions: params.webSearchOptions,
+      maxTurns: params.maxTurns,
+      sessionId: params.sessionId,
+      signal: abortController.signal,
+      appendTokenChunk: (tokenChunk) => {
+        if (!shouldAcceptStreamUpdate()) {
+          return;
+        }
+        get().appendToMessage(params.assistantMessage.id, tokenChunk);
+      },
+      onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
+        if (!shouldAcceptStreamUpdate()) {
+          return;
+        }
+        get().updateMessageFields(params.assistantMessage.id, {
+          tool_traces: toolTraces,
+        });
+      },
+      onBeforeFollowUpRequest: compactFollowUpMessagesBeforeProviderRequest,
+      onLiveContextUpdate: (snapshot) => {
+        if (!shouldAcceptStreamUpdate()) {
+          return;
+        }
+        recordLiveStreamContextEstimate({
           conversationId: params.conversationId,
-          mode: params.modeAtSend,
-          internalAgentProfile: params.internalAgentProfile,
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          baseUrl: params.providerConfig.baseUrl,
-          apiKey: params.providerConfig.apiKey,
-          modelId: params.selectedModelId,
-          reasoningEffort: params.selectedReasoningEffort,
-          messages: params.messagesForRequest,
-          fileToolContext: params.fileToolContext,
-          allowedToolIds: params.allowedToolIds,
-          copilotSendTimeoutMs:
-            params.providerConfig.providerType === "copilot"
-              ? (useProviderStore.getState().providerSettingsById?.[params.selectedProviderId]
-                  ?.copilotSendTimeoutMs ?? null)
-              : null,
-          workspacePath: params.executionContext.workspacePath,
-          defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
-          projectMounts: params.executionContext.projectMounts,
-          virtualRootEnabled: params.executionContext.virtualRootEnabled,
-          focusedProjectId: params.executionContext.focusedProjectId,
-          guidedToolRetry: params.guidedToolRetry,
-          showToolTraces: params.showToolTraces,
-          enableWebSearch: params.enableWebSearch,
-          enableWebFetch: params.enableWebFetch,
-          webSearchOptions: params.webSearchOptions,
-          maxTurns: params.maxTurns,
           sessionId: params.sessionId,
-          signal: abortController.signal,
-          onToken: (token) => {
-            tokenBatcher.push(token);
-          },
-          onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-            if (!shouldAcceptStreamUpdate()) {
-              return;
-            }
-            get().updateMessageFields(params.assistantMessage.id, {
-              tool_traces: toolTraces,
-            });
-          },
-          onBeforeFollowUpRequest: compactFollowUpMessagesBeforeProviderRequest,
-          onLiveContextUpdate: (snapshot) => {
-            if (!shouldAcceptStreamUpdate()) {
-              return;
-            }
-            recordLiveStreamContextEstimate({
-              conversationId: params.conversationId,
-              sessionId: params.sessionId,
-              assistantMessageId: params.assistantMessage.id,
-              snapshot,
-            });
-          },
-          onComplete: (result) => {
-            if (!shouldAcceptStreamUpdate()) {
-              tokenBatcher.dispose();
-              return;
-            }
-            tokenBatcher.flushNow();
-            applyStreamCompletion(params.assistantMessage.id, result);
-            useProviderStore
-              .getState()
-              .markProviderReachable(params.selectedProviderId, { modelId: params.selectedModelId });
+          assistantMessageId: params.assistantMessage.id,
+          snapshot,
+        });
+      },
+      onComplete: (result, tokenControls) => {
+        if (!shouldAcceptStreamUpdate()) {
+          tokenControls.dispose();
+          return;
+        }
+        tokenControls.flushNow();
+        applyStreamCompletion(params.assistantMessage.id, result);
+        useProviderStore
+          .getState()
+          .markProviderReachable(params.selectedProviderId, { modelId: params.selectedModelId });
 
-            const taskAfterStream = params.resolvedTaskId
-              ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
-              : undefined;
-            const shouldMarkTaskAwaitingResponse =
-              params.modeAtSend === "Implement" &&
-              params.resolvedTaskId &&
-              taskAfterStream &&
-              taskAfterStream.status !== "Completed" &&
-              taskAfterStream.status !== "Failed" &&
-              assistantTurnRequiresUserReply(
-                result.visibleContent,
-                result.hiddenContext,
-              );
+        const taskAfterStream = params.resolvedTaskId
+          ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
+          : undefined;
+        const shouldMarkTaskAwaitingResponse =
+          params.modeAtSend === "Implement" &&
+          params.resolvedTaskId &&
+          taskAfterStream &&
+          taskAfterStream.status !== "Completed" &&
+          taskAfterStream.status !== "Failed" &&
+          assistantTurnRequiresUserReply(
+            result.visibleContent,
+            result.hiddenContext,
+          );
 
-            if (shouldMarkTaskAwaitingResponse) {
-              void useTaskStore
-                .getState()
-                .markTaskAwaitingResponse(params.resolvedTaskId);
-            }
+        if (shouldMarkTaskAwaitingResponse) {
+          void useTaskStore
+            .getState()
+            .markTaskAwaitingResponse(params.resolvedTaskId);
+        }
 
-            set((state) => ({
-              conversations: state.conversations.map((conv) =>
-                conv.id === params.conversationId
-                  ? {
-                      ...conv,
-                      last_message:
-                        result.visibleContent.slice(0, 100) +
-                        (result.visibleContent.length > 100 ? "..." : ""),
-                      updated_at: new Date().toISOString(),
-                    }
-                  : conv,
-              ),
-            }));
-            updateConversationRuntimeIfSessionMatches(
-              params.conversationId,
-              params.sessionId,
-              () => null,
-            );
-            clearLiveStreamContextEstimate(params.conversationId);
-            void refreshConversationContextDiagnostics(params.conversationId, {
-              mode: "full",
-              providerContext: {
-                providerId: params.selectedProviderId,
-                providerType: params.providerConfig.providerType,
-                baseUrl: params.providerConfig.baseUrl ?? "",
-                modelId: params.selectedModelId,
-              },
-            });
-
-            void persistAssistantStreamResult(
-              params.conversationId,
-              params.assistantMessage.id,
-              result,
-            )
-              .then(async () => {
-                try {
-                  await consolidatePendingToolBoundaryCompactionAfterPersistence();
-                } catch (error) {
-                  devLogger.info(
-                    `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
-                  );
+        set((state) => ({
+          conversations: state.conversations.map((conv) =>
+            conv.id === params.conversationId
+              ? {
+                  ...conv,
+                  last_message:
+                    result.visibleContent.slice(0, 100) +
+                    (result.visibleContent.length > 100 ? "..." : ""),
+                  updated_at: new Date().toISOString(),
                 }
-              })
-              .catch((error) => {
-                const currentRuntime = getConversationRuntimeSnapshot(
-                  get().conversationRuntimeById,
-                  params.conversationId,
-                );
-                if (
-                  currentRuntime.sessionId &&
-                  currentRuntime.sessionId !== params.sessionId
-                ) {
-                  return;
-                }
-                const normalized = toServiceError(error);
-                setConversationRuntime(
-                  params.conversationId,
-                  {
-                    phase: "error",
-                    sessionId: params.sessionId,
-                    turnId: streamTurnId,
-                    assistantMessageId: params.assistantMessage.id,
-                    abortController: null,
-                    lastError: normalized.message,
-                    lastErrorOrigin: "macro",
-                    lastErrorDisplayTarget: "composer",
-                  },
-                  { globalLastError: normalized.message },
-                );
-                set({ sendState: "error" });
-              });
-            void syncMacroMetadataAfterStreamService({
-              mode: params.modeAtSend,
-              conversationId: params.conversationId,
-              trigger: "send",
-            });
-            tokenBatcher.dispose();
-          },
-          onError: (error) => {
-            void (async () => {
-              await handleAssistantStreamError(error);
-            })();
-          },
-          onTimeline: (event) => {
-            devLogger.info("Provider stream timeline", {
-              requestId: event.request_id,
-              providerId: event.provider_id,
-              providerType: event.provider_type,
-              phase: event.phase,
-              elapsedMs: event.elapsed_ms,
-            });
-          },
-          onToolCall: (toolName, args, toolCallId) => {
-            return handleToolCall(
-              params.conversationId,
-              params.assistantMessage.id,
-              toolName,
-              args,
-              toolCallId,
-            );
+              : conv,
+          ),
+        }));
+        updateConversationRuntimeIfSessionMatches(
+          params.conversationId,
+          params.sessionId,
+          () => null,
+        );
+        clearLiveStreamContextEstimate(params.conversationId);
+        void refreshConversationContextDiagnostics(params.conversationId, {
+          mode: "full",
+          providerContext: {
+            providerId: params.selectedProviderId,
+            providerType: params.providerConfig.providerType,
+            baseUrl: params.providerConfig.baseUrl ?? "",
+            modelId: params.selectedModelId,
           },
         });
-      } catch (error) {
-        const normalized = toServiceError(error);
-        await handleAssistantStreamError(
-          error instanceof Error ? error : new Error(normalized.message),
+
+        void persistAssistantStreamResult(
+          params.conversationId,
+          params.assistantMessage.id,
+          result,
+        )
+          .then(async () => {
+            try {
+              await consolidatePendingToolBoundaryCompactionAfterPersistence();
+            } catch (error) {
+              devLogger.info(
+                `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
+              );
+            }
+          })
+          .catch((error) => {
+            const currentRuntime = getConversationRuntimeSnapshot(
+              get().conversationRuntimeById,
+              params.conversationId,
+            );
+            if (
+              currentRuntime.sessionId &&
+              currentRuntime.sessionId !== params.sessionId
+            ) {
+              return;
+            }
+            const normalized = toServiceError(error);
+            setConversationRuntime(
+              params.conversationId,
+              {
+                phase: "error",
+                sessionId: params.sessionId,
+                turnId: streamTurnId,
+                assistantMessageId: params.assistantMessage.id,
+                abortController: null,
+                lastError: normalized.message,
+                lastErrorOrigin: "macro",
+                lastErrorDisplayTarget: "composer",
+              },
+              { globalLastError: normalized.message },
+            );
+            set({ sendState: "error" });
+          });
+        void syncMacroMetadataAfterStreamService({
+          mode: params.modeAtSend,
+          conversationId: params.conversationId,
+          trigger: "send",
+        });
+        tokenControls.dispose();
+      },
+      onError: (error, tokenControls) => {
+        void handleAssistantStreamError(error, tokenControls);
+      },
+      onTimeline: (event) => {
+        devLogger.info("Provider stream timeline", {
+          requestId: event.request_id,
+          providerId: event.provider_id,
+          providerType: event.provider_type,
+          phase: event.phase,
+          elapsedMs: event.elapsed_ms,
+        });
+      },
+      onToolCall: (toolName, args, toolCallId) => {
+        return handleToolCall(
+          params.conversationId,
+          params.assistantMessage.id,
+          toolName,
+          args,
+          toolCallId,
         );
-      }
-    })();
+      },
+    });
   };
 
   const persistAssistantPartialStreamResult = async (
     assistantMessage: ChatMessage,
   ) => {
-    if (!tauriIpc.isTauriAvailable()) return;
-    if (
-      assistantMessage.content.trim().length === 0 &&
-      (assistantMessage.tool_traces?.length ?? 0) === 0
-    ) {
-      return;
-    }
-
-    await tauriIpc.updateMessage(assistantMessage.id, assistantMessage.content, {
-      turnId: assistantMessage.turn_id ?? null,
-      toolTraces: assistantMessage.tool_traces,
-      hiddenContext: assistantMessage.hidden_context,
-      providerInputItems: assistantMessage.provider_input_items,
-      providerTurnState: assistantMessage.provider_turn_state,
-    });
+    await persistAssistantPartialResult(
+      chatPersistenceAdapters,
+      assistantMessage,
+    );
   };
 
   const persistAssistantStreamResult = async (
@@ -10296,19 +9232,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     assistantMessageId: string,
     result: StreamCompletionResult,
   ) => {
-    if (!tauriIpc.isTauriAvailable()) return;
     const persistedAssistant = get()
       .getConversationMessages(conversationId)
       .find((message) => message.id === assistantMessageId);
-    const persistedToolTraces =
-      persistedAssistant?.tool_traces ?? result.toolTraces;
     try {
-      await tauriIpc.updateMessage(assistantMessageId, result.visibleContent, {
-        turnId: persistedAssistant?.turn_id ?? null,
-        toolTraces: persistedToolTraces,
-        hiddenContext: result.hiddenContext,
-        providerInputItems: result.providerInputItems,
-        providerTurnState: result.providerTurnState,
+      await persistAssistantCompletionResult(chatPersistenceAdapters, {
+        assistantMessageId,
+        persistedAssistant,
+        result,
       });
     } catch (error) {
       const normalized = toServiceError(error);
@@ -11166,37 +10097,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
     messageLoadPromisesByConversationId.clear();
-    let conversations: Conversation[] = [];
-    let messages: ChatMessage[] = [];
+    const {
+      conversations,
+      messages,
+      loadedConversationIds,
+      bootstrapError,
+    } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
 
-    if (tauriIpc.isTauriAvailable()) {
-      try {
-        const snapshot = await tauriIpc.getChatBootstrapSnapshot();
-        conversations = snapshot.conversations.map(
-          mapDbConversationToConversation,
-        );
-        const conversationById = new Map(
-          conversations.map((conversation) => [conversation.id, conversation]),
-        );
-        messages = Object.values(snapshot.messages_by_conversation_id)
-          .flatMap((items) => items ?? [])
-          .map((message) => mapDbMessageToChatMessage(message, conversationById));
-      } catch (bootstrapError) {
-        console.warn(
-          "Falling back to conversation-only chat hydration path:",
-          bootstrapError,
-        );
-        const dbConversations = await tauriIpc.listConversations();
-        conversations = dbConversations.map(mapDbConversationToConversation);
-      }
+    if (bootstrapError) {
+      console.warn(
+        "Falling back to conversation-only chat hydration path:",
+        bootstrapError,
+      );
     }
 
     pruneConversationSelections(conversations);
 
     const loadedImages = loadMessageImagesFromStorage();
-    const loadedConversationIds = new Set(
-      messages.map((message) => message.conversation_id),
-    );
 
     set({
       conversations,
@@ -12451,9 +11368,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     renameConversation: async (conversationId, title) => {
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.renameConversation(conversationId, title);
-      }
+      await renamePersistedConversation(
+        chatPersistenceAdapters,
+        conversationId,
+        title,
+      );
       set((state) => ({
         conversations: state.conversations.map((conv) =>
           conv.id === conversationId ? { ...conv, title } : conv,
@@ -12522,9 +11441,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       stopConversationRuntimeLocally(conversationId);
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.deleteConversation(conversationId);
-      }
+      await deletePersistedConversation(chatPersistenceAdapters, conversationId);
       conversationCompactionStateCache.delete(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
@@ -12561,9 +11478,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       applyLocalConversationRemoval(uniqueIds);
 
       try {
-        if (tauriIpc.isTauriAvailable()) {
-          await tauriIpc.deleteConversations(uniqueIds);
-        }
+        await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
           removeConversationSelectionData(conversationId);
