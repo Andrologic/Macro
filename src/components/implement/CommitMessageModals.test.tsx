@@ -73,7 +73,7 @@ describe('CommitMessage modals', () => {
     const buttons = Array.from(container.querySelectorAll('button'));
     buttons.find((button) => button.textContent?.includes('Retry generation'))?.click();
     buttons.find((button) => button.textContent?.includes('Write manually'))?.click();
-    buttons.find((button) => button.textContent?.includes('Commit model settings'))?.click();
+    buttons.find((button) => button.textContent?.includes('Metadata model settings'))?.click();
 
     expect(onRetryGeneration).toHaveBeenCalledTimes(1);
     expect(onWriteManually).toHaveBeenCalledTimes(1);

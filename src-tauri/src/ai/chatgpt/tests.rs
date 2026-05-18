@@ -12,8 +12,8 @@ use super::stream::{
 };
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
-    ModelsCacheEntry, PersistChatGptSessionError, PkceCodes, CHATGPT_CALLBACK_PORT,
-    CHATGPT_CANCEL_PATH,
+    ModelsCacheEntry, ModelsCacheReasoningLevel, PersistChatGptSessionError, PkceCodes,
+    CHATGPT_CALLBACK_PORT, CHATGPT_CANCEL_PATH,
 };
 use crate::secrets::ChatGptSecret;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -772,6 +772,8 @@ fn model_supports_plan_matches_case_insensitively() {
         slug: "gpt-5.4".to_string(),
         display_name: None,
         description: None,
+        default_reasoning_level: None,
+        supported_reasoning_levels: None,
         visibility: Some("list".to_string()),
         available_in_plans: Some(vec!["Plus".to_string(), "Pro".to_string()]),
     };
@@ -788,6 +790,8 @@ fn build_provider_models_filters_hidden_and_prefers_matching_plan() {
             slug: "visible-plus".to_string(),
             display_name: Some("Visible Plus".to_string()),
             description: Some("Included for Plus".to_string()),
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             visibility: Some("list".to_string()),
             available_in_plans: Some(vec!["plus".to_string()]),
         },
@@ -795,6 +799,8 @@ fn build_provider_models_filters_hidden_and_prefers_matching_plan() {
             slug: "visible-team".to_string(),
             display_name: Some("Visible Team".to_string()),
             description: Some("Included for Team".to_string()),
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             visibility: Some("list".to_string()),
             available_in_plans: Some(vec!["team".to_string()]),
         },
@@ -802,6 +808,8 @@ fn build_provider_models_filters_hidden_and_prefers_matching_plan() {
             slug: "hidden-model".to_string(),
             display_name: Some("Hidden".to_string()),
             description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             visibility: Some("hidden".to_string()),
             available_in_plans: Some(vec!["plus".to_string()]),
         },
@@ -824,6 +832,8 @@ fn build_provider_models_assigns_reasoning_to_cached_chatgpt_gpt5_families() {
             slug: "gpt-5.4-mini".to_string(),
             display_name: Some("GPT-5.4-Mini".to_string()),
             description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             visibility: Some("list".to_string()),
             available_in_plans: None,
         },
@@ -831,6 +841,8 @@ fn build_provider_models_assigns_reasoning_to_cached_chatgpt_gpt5_families() {
             slug: "gpt-5.3-codex".to_string(),
             display_name: Some("gpt-5.3-codex".to_string()),
             description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             visibility: Some("list".to_string()),
             available_in_plans: None,
         },
@@ -863,4 +875,84 @@ fn build_provider_models_assigns_reasoning_to_cached_chatgpt_gpt5_families() {
         models[1].default_reasoning_effort.as_deref(),
         Some("medium")
     );
+}
+
+#[test]
+fn build_provider_models_uses_chatgpt_reasoning_metadata_from_codex_models() {
+    let entries = vec![ModelsCacheEntry {
+        slug: "gpt-5.5".to_string(),
+        display_name: Some("GPT-5.5".to_string()),
+        description: None,
+        default_reasoning_level: Some("medium".to_string()),
+        supported_reasoning_levels: Some(vec![
+            ModelsCacheReasoningLevel {
+                effort: "low".to_string(),
+                description: Some("Fast responses with lighter reasoning".to_string()),
+            },
+            ModelsCacheReasoningLevel {
+                effort: "medium".to_string(),
+                description: Some("Balances speed and reasoning depth".to_string()),
+            },
+            ModelsCacheReasoningLevel {
+                effort: "high".to_string(),
+                description: Some("Greater reasoning depth".to_string()),
+            },
+            ModelsCacheReasoningLevel {
+                effort: "xhigh".to_string(),
+                description: Some("Extra high reasoning depth".to_string()),
+            },
+        ]),
+        visibility: Some("list".to_string()),
+        available_in_plans: None,
+    }];
+
+    let models = build_provider_models(&entries, None);
+
+    assert_eq!(
+        models[0].reasoning_efforts.clone().unwrap_or_default(),
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string()
+        ]
+    );
+    assert_eq!(
+        models[0].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
+}
+
+#[test]
+fn build_provider_models_filters_invalid_chatgpt_reasoning_metadata() {
+    let entries = vec![ModelsCacheEntry {
+        slug: "provider-model".to_string(),
+        display_name: Some("Provider Model".to_string()),
+        description: None,
+        default_reasoning_level: Some("bogus".to_string()),
+        supported_reasoning_levels: Some(vec![
+            ModelsCacheReasoningLevel {
+                effort: "low".to_string(),
+                description: None,
+            },
+            ModelsCacheReasoningLevel {
+                effort: "bogus".to_string(),
+                description: None,
+            },
+            ModelsCacheReasoningLevel {
+                effort: "high".to_string(),
+                description: None,
+            },
+        ]),
+        visibility: Some("list".to_string()),
+        available_in_plans: None,
+    }];
+
+    let models = build_provider_models(&entries, None);
+
+    assert_eq!(
+        models[0].reasoning_efforts.clone().unwrap_or_default(),
+        vec!["low".to_string(), "high".to_string()]
+    );
+    assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("low"));
 }

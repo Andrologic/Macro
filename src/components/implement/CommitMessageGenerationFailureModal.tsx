@@ -104,7 +104,7 @@ export const CommitMessageGenerationFailureModal: React.FC<CommitMessageGenerati
             <FailureActionButton
               icon="refresh-cw"
               title={t('implement.retryGeneration', 'Retry generation')}
-              description={t('implement.retryGenerationHelp', 'Try again with the current commit model.')}
+              description={t('implement.retryGenerationHelp', 'Try again with the current metadata model.')}
               disabled={isGeneratingCommitMessages}
               onClick={onRetryGeneration}
             />
@@ -117,8 +117,8 @@ export const CommitMessageGenerationFailureModal: React.FC<CommitMessageGenerati
             />
             <FailureActionButton
               icon="cpu"
-              title={t('implement.commitModelSettings', 'Commit model settings')}
-              description={t('implement.commitModelSettingsHelp', 'Change the model used for commit messages.')}
+              title={t('implement.metadataModelSettings', 'Metadata model settings')}
+              description={t('implement.metadataModelSettingsHelp', 'Change the model used for generated metadata and commit messages.')}
               disabled={isGeneratingCommitMessages}
               onClick={onOpenCommitModelSettings}
             />

@@ -15,9 +15,9 @@ import {
   type ConventionalCommitType,
 } from './conventionalCommit';
 import {
-  normalizeSmartCommitModelConfig,
-  type SmartCommitModelConfig,
-} from './smartCommitModelConfig';
+  normalizeMetadataModelConfig,
+  type MetadataModelConfig,
+} from './metadataModelConfig';
 
 export interface SmartCommitMessageFileContext {
   path: string;
@@ -518,7 +518,7 @@ export const formatGeneratedCommitMessageForRepository = (
 };
 
 export interface GenerateSmartCommitMessagesOptions {
-  modelConfig?: SmartCommitModelConfig | null;
+  modelConfig?: MetadataModelConfig | null;
   validationFeedback?: string | null;
 }
 
@@ -528,7 +528,7 @@ export const generateSmartCommitMessages = async (
 ): Promise<GeneratedCommitMessages> => {
   try {
     const providerState = useProviderStore.getState();
-    const normalizedModelConfig = normalizeSmartCommitModelConfig(options.modelConfig, {
+    const normalizedModelConfig = normalizeMetadataModelConfig(options.modelConfig, {
       providerConfigs: providerState.providerConfigs,
       modelsByProvider: providerState.modelsByProvider,
       getAvailableReasoningEfforts: providerState.getAvailableReasoningEfforts,

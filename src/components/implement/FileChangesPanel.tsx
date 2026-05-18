@@ -39,14 +39,15 @@ import {
   type ConventionalCommitFields,
 } from '../../services/conventionalCommit';
 import {
-  normalizeSmartCommitModelConfig,
-  type SmartCommitModelConfig,
-} from '../../services/smartCommitModelConfig';
+  normalizeMetadataModelConfig,
+  resolveMetadataModelReasoningEfforts,
+  type MetadataModelConfig,
+} from '../../services/metadataModelConfig';
 import {
-  loadSmartCommitModelConfig,
-  saveSmartCommitModelConfig,
-  subscribeSmartCommitModelConfig,
-} from '../../services/smartCommitModelPreference';
+  loadMetadataModelConfig,
+  saveMetadataModelConfig,
+  subscribeMetadataModelConfig,
+} from '../../services/metadataModelPreference';
 import {
   buildEditableCommitMessages,
   buildManualCommitMessageDrafts,
@@ -540,7 +541,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     scopeLabel: string;
   } | null>(null);
   const [commitMessageGenerationError, setCommitMessageGenerationError] = useState<string | null>(null);
-  const [smartCommitModelConfig, setSmartCommitModelConfig] = useState<SmartCommitModelConfig | null | undefined>(
+  const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null | undefined>(
     undefined
   );
   const [isCommitModelChoiceOpen, setIsCommitModelChoiceOpen] = useState(false);
@@ -596,9 +597,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     [providerConfigs]
   );
   const normalizeCommitModelConfig = useCallback((
-    config: SmartCommitModelConfig | null | undefined
-  ): SmartCommitModelConfig | null =>
-    normalizeSmartCommitModelConfig(config, {
+    config: MetadataModelConfig | null | undefined
+  ): MetadataModelConfig | null =>
+    normalizeMetadataModelConfig(config, {
       providerConfigs: enabledCommitProviders,
       modelsByProvider,
       getAvailableReasoningEfforts,
@@ -609,9 +610,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       : [],
     [dedicatedCommitProviderId, modelsByProvider]
   );
-  const dedicatedCommitReasoningEfforts = getAvailableReasoningEfforts(
+  const dedicatedCommitReasoningEfforts = resolveMetadataModelReasoningEfforts(
     dedicatedCommitProviderId || null,
-    dedicatedCommitModelId || null
+    dedicatedCommitModelId || null,
+    {
+      providerConfigs: enabledCommitProviders,
+      modelsByProvider,
+      getAvailableReasoningEfforts,
+    }
   );
   const canUseDedicatedCommitModel = Boolean(dedicatedCommitProviderId && dedicatedCommitModelId);
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
@@ -636,11 +642,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   useEffect(() => {
     let disposed = false;
-    void loadSmartCommitModelConfig()
+    void loadMetadataModelConfig()
       .then((value) => {
         if (!disposed) {
           const normalized = normalizeCommitModelConfig(value);
-          setSmartCommitModelConfig(normalized);
+          setMetadataModelConfig(normalized);
           if (normalized?.mode === 'dedicated') {
             setCommitModelChoiceMode('dedicated');
             setDedicatedCommitProviderId(normalized.providerId);
@@ -650,11 +656,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         }
       });
 
-    const unsubscribe = subscribeSmartCommitModelConfig(
+    const unsubscribe = subscribeMetadataModelConfig(
       (value) => {
         if (disposed) return;
         const normalized = normalizeCommitModelConfig(value);
-        setSmartCommitModelConfig(normalized);
+        setMetadataModelConfig(normalized);
         if (normalized?.mode === 'dedicated') {
           setCommitModelChoiceMode('dedicated');
           setDedicatedCommitProviderId(normalized.providerId);
@@ -1076,7 +1082,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     : null;
   const runCommit = async (
     options: {
-      modelConfig?: SmartCommitModelConfig | null;
+      modelConfig?: MetadataModelConfig | null;
       messagesByRepositoryId?: Record<string, string>;
     } = {}
   ) => {
@@ -1116,11 +1122,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleCommit = async () => {
-    const persisted = await loadSmartCommitModelConfig();
-    const sourceConfig = smartCommitModelConfig === undefined ? persisted : persisted ?? smartCommitModelConfig;
+    const persisted = await loadMetadataModelConfig();
+    const sourceConfig = metadataModelConfig === undefined ? persisted : persisted ?? metadataModelConfig;
     const normalizedConfig = normalizeCommitModelConfig(sourceConfig);
 
-    setSmartCommitModelConfig(normalizedConfig);
+    setMetadataModelConfig(normalizedConfig);
     if (normalizedConfig?.mode === 'dedicated') {
       setCommitModelChoiceMode('dedicated');
       setDedicatedCommitProviderId(normalizedConfig.providerId);
@@ -1154,10 +1160,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     openSettings('models');
   };
 
-  const saveAndUseCommitModelConfig = async (config: SmartCommitModelConfig) => {
+  const saveAndUseCommitModelConfig = async (config: MetadataModelConfig) => {
     const normalizedConfig = normalizeCommitModelConfig(config) ?? config;
-    await saveSmartCommitModelConfig(normalizedConfig);
-    setSmartCommitModelConfig(normalizedConfig);
+    await saveMetadataModelConfig(normalizedConfig);
+    setMetadataModelConfig(normalizedConfig);
     setIsCommitModelChoiceOpen(false);
     await runCommit({ modelConfig: normalizedConfig });
   };
@@ -1778,12 +1784,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               <h3 className="text-sm font-semibold text-foreground">
-                {t('implement.commitModelChoiceTitle', 'Choose commit message model')}
+                {t('implement.metadataModelChoiceTitle', 'Choose metadata generation model')}
               </h3>
               <p className="mt-2 text-sm text-muted-foreground">
                 {t(
-                  'implement.commitModelChoiceDescription',
-                  'Macro can generate commit messages with the active conversation model or with a dedicated model for every commit.'
+                  'implement.metadataModelChoiceDescription',
+                  'Macro can generate commit messages, plan names, conversation titles, and feature slugs with the active conversation model or a dedicated metadata model.'
                 )}
               </p>
 
@@ -1798,7 +1804,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   )}
                   onClick={() => setCommitModelChoiceMode('conversation')}
                 >
-                  {t('implement.commitModelConversation', 'Conversation model')}
+                  {t('implement.metadataModelConversation', 'Conversation model')}
                 </button>
                 <button
                   type="button"
@@ -1810,7 +1816,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   )}
                   onClick={() => setCommitModelChoiceMode('dedicated')}
                 >
-                  {t('implement.commitModelDedicated', 'Dedicated model')}
+                  {t('implement.metadataModelDedicated', 'Dedicated model')}
                 </button>
               </div>
 
@@ -1896,7 +1902,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 size="sm"
                 disabled={commitModelChoiceMode === 'dedicated' && !canUseDedicatedCommitModel}
                 onClick={() => {
-                  const config: SmartCommitModelConfig = commitModelChoiceMode === 'dedicated'
+                  const config: MetadataModelConfig = commitModelChoiceMode === 'dedicated'
                     ? {
                         mode: 'dedicated',
                         providerId: dedicatedCommitProviderId,

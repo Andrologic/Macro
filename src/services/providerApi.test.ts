@@ -150,6 +150,44 @@ describe('providerApi fetchModelsFromProvider', () => {
     expect(result.models[0]?.supported_parameters).toEqual(['reasoning', 'tools']);
   });
 
+  it('keeps provider reasoning metadata from model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'gpt-5.5',
+            name: 'GPT-5.5',
+            default_reasoning_level: 'medium',
+            supported_reasoning_levels: [
+              { effort: 'low', description: 'Fast responses with lighter reasoning' },
+              { effort: 'medium', description: 'Balances speed and reasoning depth' },
+              { effort: 'high', description: 'Greater reasoning depth' },
+              { effort: 'xhigh', description: 'Extra high reasoning depth' },
+            ],
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://api.openai.com/v1',
+      providerId: 'openai',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'gpt-5.5',
+      supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
+      default_reasoning_effort: 'medium',
+    });
+  });
+
   it('keeps OpenRouter context length metadata from provider model payloads', async () => {
     tauriFetchMock.mockImplementation(async () => new Response(
       JSON.stringify({

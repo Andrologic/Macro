@@ -54,6 +54,31 @@ const loadModelsSettings = async () => {
     }),
   }));
 
+  const metadataModelConfigListeners = new Set<(value: unknown) => void>();
+  mock.module('../../../../services/metadataModelPreference', () => ({
+    loadMetadataModelConfig: async () => {
+      const persisted = window.localStorage.getItem('macro_metadataModelConfig');
+      if (persisted !== null) return JSON.parse(persisted);
+      const legacy = window.localStorage.getItem('macro_smartCommitModelConfig');
+      if (legacy !== null) {
+        window.localStorage.setItem('macro_metadataModelConfig', legacy);
+        return JSON.parse(legacy);
+      }
+      return null;
+    },
+    saveMetadataModelConfig: async (value: unknown) => {
+      window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify(value));
+      for (const listener of metadataModelConfigListeners) {
+        listener(value);
+      }
+      return value;
+    },
+    subscribeMetadataModelConfig: (listener: (value: unknown) => void) => {
+      metadataModelConfigListeners.add(listener);
+      return () => metadataModelConfigListeners.delete(listener);
+    },
+  }));
+
   mock.module('../../../ui/Icon', () => ({
     Icon: ({ name }: { name: string }) => <span data-icon={name} />,
   }));
@@ -111,7 +136,7 @@ const flush = async () => {
   await Promise.resolve();
 };
 
-describe('ModelsSettings smart commit model config', () => {
+describe('ModelsSettings metadata model config', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
@@ -135,7 +160,7 @@ describe('ModelsSettings smart commit model config', () => {
     window.localStorage.clear();
   });
 
-  it('repairs a dedicated model that belongs to another provider before rendering selects', async () => {
+  it('migrates and repairs a dedicated legacy commit model before rendering selects', async () => {
     window.localStorage.setItem(
       'macro_smartCommitModelConfig',
       JSON.stringify({
@@ -163,10 +188,12 @@ describe('ModelsSettings smart commit model config', () => {
 
     expect(providerSelect?.value).toBe('provider-a');
     expect(modelSelect?.value).toBe('model-a');
-    expect(container!.querySelector('#commit-message-model-settings')).toBeDefined();
-    expect(container!.querySelector('[data-settings-section="commit-messages"]')).toBeDefined();
+    expect(container!.querySelector('#metadata-generation-model-settings')).toBeDefined();
+    expect(container!.querySelector('[data-settings-section="metadata-generation"]')).toBeDefined();
+    expect(container!.textContent).toContain('Metadata generation');
     expect(Array.from(modelSelect?.options ?? []).map((option) => option.value)).toContain('model-a');
     expect(Array.from(modelSelect?.options ?? []).map((option) => option.value)).not.toContain('model-b');
+    expect(window.localStorage.getItem('macro_metadataModelConfig')).toContain('provider-a');
   });
 
   it('falls back to conversation when no dedicated provider has credentials', async () => {
@@ -174,7 +201,7 @@ describe('ModelsSettings smart commit model config', () => {
       provider('provider-a', { hasStoredApiKey: false, apiKey: '', isLocal: false }),
     ];
     window.localStorage.setItem(
-      'macro_smartCommitModelConfig',
+      'macro_metadataModelConfig',
       JSON.stringify({
         mode: 'dedicated',
         providerId: 'provider-a',
@@ -191,7 +218,62 @@ describe('ModelsSettings smart commit model config', () => {
     });
 
     expect(container!.textContent).toContain('Use conversation model');
-    const persisted = JSON.parse(window.localStorage.getItem('macro_smartCommitModelConfig') ?? 'null');
+    const persisted = JSON.parse(window.localStorage.getItem('macro_metadataModelConfig') ?? 'null');
     expect(persisted).toEqual({ mode: 'conversation' });
+  });
+
+  it('enables reasoning selection for dedicated metadata models with loaded efforts', async () => {
+    modelsByProvider = {
+      'provider-a': [
+        model('provider-a', 'model-a', {
+          reasoningEfforts: ['low', 'medium', 'high'],
+          defaultReasoningEffort: 'medium',
+        }),
+      ],
+      'provider-b': [model('provider-b', 'model-b')],
+    };
+    window.localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningEffort: null,
+      })
+    );
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const reasoningSelect = Array.from(container!.querySelectorAll('select'))
+      .find((select) =>
+        Array.from(select.options).some((option) => option.value === 'high')
+      );
+    expect(reasoningSelect).toBeDefined();
+    expect(reasoningSelect?.disabled).toBe(false);
+    expect(Array.from(reasoningSelect?.options ?? []).map((option) => option.value)).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+    ]);
+
+    await act(async () => {
+      reasoningSelect!.value = 'high';
+      reasoningSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+
+    const persisted = JSON.parse(window.localStorage.getItem('macro_metadataModelConfig') ?? 'null');
+    expect(persisted).toEqual({
+      mode: 'dedicated',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+      reasoningEffort: 'high',
+    });
   });
 });
