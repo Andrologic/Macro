@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { AIModel, ProviderConfig } from '../types';
 import {
-  normalizeSmartCommitModelConfig,
-  providerCanGenerateSmartCommitMessages,
-} from './smartCommitModelConfig';
+  normalizeMetadataModelConfig,
+  providerCanGenerateMetadata,
+} from './metadataModelConfig';
 
 const provider = (id: string, overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
   id,
@@ -24,7 +24,7 @@ const model = (providerId: string, id: string, overrides: Partial<AIModel> = {})
   ...overrides,
 });
 
-describe('smartCommitModelConfig', () => {
+describe('metadataModelConfig', () => {
   it('keeps conversation and valid dedicated configs unchanged', () => {
     const context = {
       providerConfigs: [provider('provider-a')],
@@ -33,11 +33,11 @@ describe('smartCommitModelConfig', () => {
       },
     };
 
-    expect(normalizeSmartCommitModelConfig({ mode: 'conversation' }, context)).toEqual({
+    expect(normalizeMetadataModelConfig({ mode: 'conversation' }, context)).toEqual({
       mode: 'conversation',
     });
     expect(
-      normalizeSmartCommitModelConfig(
+      normalizeMetadataModelConfig(
         {
           mode: 'dedicated',
           providerId: 'provider-a',
@@ -54,9 +54,68 @@ describe('smartCommitModelConfig', () => {
     });
   });
 
+  it('keeps a valid dedicated reasoning effort from loaded model metadata', () => {
+    expect(
+      normalizeMetadataModelConfig(
+        {
+          mode: 'dedicated',
+          providerId: 'provider-a',
+          modelId: 'model-a',
+          reasoningEffort: 'high',
+        },
+        {
+          providerConfigs: [provider('provider-a')],
+          modelsByProvider: {
+            'provider-a': [
+              model('provider-a', 'model-a', {
+                reasoningEfforts: ['low', 'medium', 'high'],
+                defaultReasoningEffort: 'medium',
+              }),
+            ],
+          },
+          getAvailableReasoningEfforts: () => [],
+        }
+      )
+    ).toEqual({
+      mode: 'dedicated',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('drops an invalid dedicated reasoning effort', () => {
+    expect(
+      normalizeMetadataModelConfig(
+        {
+          mode: 'dedicated',
+          providerId: 'provider-a',
+          modelId: 'model-a',
+          reasoningEffort: 'xhigh',
+        },
+        {
+          providerConfigs: [provider('provider-a')],
+          modelsByProvider: {
+            'provider-a': [
+              model('provider-a', 'model-a', {
+                reasoningEfforts: ['low', 'medium', 'high'],
+              }),
+            ],
+          },
+          getAvailableReasoningEfforts: () => [],
+        }
+      )
+    ).toEqual({
+      mode: 'dedicated',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+      reasoningEffort: null,
+    });
+  });
+
   it('repairs a dedicated model that belongs to another provider', () => {
     expect(
-      normalizeSmartCommitModelConfig(
+      normalizeMetadataModelConfig(
         {
           mode: 'dedicated',
           providerId: 'provider-a',
@@ -81,9 +140,9 @@ describe('smartCommitModelConfig', () => {
   });
 
   it('falls back to conversation when no dedicated provider/model is usable', () => {
-    expect(providerCanGenerateSmartCommitMessages(provider('disabled', { isEnabled: false }))).toBe(false);
+    expect(providerCanGenerateMetadata(provider('disabled', { isEnabled: false }))).toBe(false);
     expect(
-      normalizeSmartCommitModelConfig(
+      normalizeMetadataModelConfig(
         {
           mode: 'dedicated',
           providerId: 'missing-provider',

@@ -1064,6 +1064,87 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  it('persists and exposes provider-supplied reasoning metadata from model scans', async () => {
+    const providerStore = await loadProviderStore();
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [
+        {
+          id: 'provider-reasoning-model',
+          name: 'Provider Reasoning Model',
+          supported_reasoning_efforts: ['low', 'medium', 'high'],
+          default_reasoning_effort: 'medium',
+        },
+      ],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      {
+        id: 'db-model-1',
+        provider_id: 'provider-openai',
+        model_id: 'provider-reasoning-model',
+        name: 'Provider Reasoning Model',
+        description: null,
+        owned_by: null,
+        pricing_prompt: null,
+        pricing_completion: null,
+        pricing_request: null,
+        reasoning_efforts: ['low', 'medium', 'high'],
+        default_reasoning_effort: 'medium',
+        context_window_tokens: null,
+        input_limit_tokens: null,
+        output_limit_tokens: null,
+        context_window_source: null,
+        context_limits_updated_at: null,
+        is_enabled: true,
+        is_manual: false,
+        first_seen_at: '2026-05-18T00:00:00.000Z',
+        last_seen_at: '2026-05-18T00:00:00.000Z',
+      },
+    ] as never[]);
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {},
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'provider-reasoning-model',
+          reasoning_efforts: ['low', 'medium', 'high'],
+          default_reasoning_effort: 'medium',
+        }),
+      ],
+    });
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'provider-reasoning-model')
+    ).toEqual(['low', 'medium', 'high']);
+  });
+
   it('applies fresh Copilot runtime status when download completes', async () => {
     const providerStore = await loadProviderStore();
     const completionStatus = makeCopilotStatus({

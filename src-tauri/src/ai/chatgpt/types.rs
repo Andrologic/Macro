@@ -205,8 +205,17 @@ pub(super) struct ModelsCacheEntry {
     pub(super) slug: String,
     pub(super) display_name: Option<String>,
     pub(super) description: Option<String>,
+    pub(super) default_reasoning_level: Option<String>,
+    pub(super) supported_reasoning_levels: Option<Vec<ModelsCacheReasoningLevel>>,
     pub(super) visibility: Option<String>,
     pub(super) available_in_plans: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ModelsCacheReasoningLevel {
+    pub(super) effort: String,
+    #[allow(dead_code)]
+    pub(super) description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

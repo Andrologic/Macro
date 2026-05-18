@@ -4070,7 +4070,33 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }
   });
 
-  it('renames an auto-created canonical plan after the first message', async () => {
+  it('renames an auto-created canonical plan with the configured metadata model', async () => {
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Metadata Provider',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      ...providerState.modelsByProvider,
+      'provider-2': [{ id: 'metadata-model', name: 'Metadata Model', isEnabled: true }],
+    };
+    localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-2',
+        modelId: 'metadata-model',
+        reasoningEffort: null,
+      })
+    );
     const plan = createPlan({
       id: '1710000000000',
       slug: '1710000000000',
@@ -4110,6 +4136,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(sendChatNonStreamingMock.mock.calls[0]?.[0]).toMatchObject({
+      providerId: 'provider-2',
+      modelId: 'metadata-model',
+    });
     expect(updateArchitectPlanMock).toHaveBeenCalledWith({
       branchName: 'develop',
       planId: '1710000000000',
@@ -6232,6 +6262,32 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [createManualFeatureTask()];
+    providerState.providerConfigs = [
+      ...providerState.providerConfigs,
+      {
+        id: 'provider-2',
+        name: 'Metadata Provider',
+        providerType: 'openai',
+        isEnabled: true,
+        isLocal: true,
+        hasStoredApiKey: false,
+        apiKeyLoaded: true,
+        apiKey: '',
+      },
+    ];
+    providerState.modelsByProvider = {
+      ...providerState.modelsByProvider,
+      'provider-2': [{ id: 'metadata-model', name: 'Metadata Model', isEnabled: true }],
+    };
+    localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-2',
+        modelId: 'metadata-model',
+        reasoningEffort: null,
+      })
+    );
 
     queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
@@ -6269,6 +6325,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(sendChatNonStreamingMock.mock.calls[0]?.[0]).toMatchObject({
+      providerId: 'provider-2',
+      modelId: 'metadata-model',
+    });
     expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledWith({
       taskId: 'manual-task-1',
       conversationId: 'manual-conv',

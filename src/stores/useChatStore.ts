@@ -74,6 +74,7 @@ import {
   PREF_KEYS,
   savePreference,
 } from "../services/preferences";
+import { loadMetadataModelConfig } from "../services/metadataModelPreference";
 import {
   type ChatMaxTurnsPreference,
   normalizeChatMaxTurns,
@@ -1946,6 +1947,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
       modelId: params.modelId,
       reasoningEffort: params.reasoningEffort,
     };
+  };
+
+  const resolveMetadataGenerationProviderContext = async (fallback: {
+    providerId: string;
+    providerType?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    modelId: string;
+    reasoningEffort?: ReasoningEffort | null;
+  }) => {
+    const providerState = useProviderStore.getState();
+    const metadataModelConfig = await loadMetadataModelConfig({
+      providerConfigs: providerState.providerConfigs,
+      modelsByProvider: providerState.modelsByProvider,
+      getAvailableReasoningEfforts: providerState.getAvailableReasoningEfforts,
+    });
+
+    if (metadataModelConfig?.mode === "dedicated") {
+      return await resolveConversationMetadataProviderContext({
+        providerId: metadataModelConfig.providerId,
+        modelId: metadataModelConfig.modelId,
+        reasoningEffort: metadataModelConfig.reasoningEffort,
+      });
+    }
+
+    if (fallback.providerType && fallback.baseUrl !== undefined) {
+      return {
+        providerId: fallback.providerId,
+        providerType: fallback.providerType,
+        baseUrl: fallback.baseUrl,
+        apiKey: fallback.apiKey,
+        modelId: fallback.modelId,
+        reasoningEffort: fallback.reasoningEffort,
+      };
+    }
+
+    return await resolveConversationMetadataProviderContext({
+      providerId: fallback.providerId,
+      modelId: fallback.modelId,
+      reasoningEffort: fallback.reasoningEffort,
+    });
   };
 
   const getConversationProviderSelection = (
@@ -6597,6 +6639,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
+    const metadataProviderContext =
+      await resolveMetadataGenerationProviderContext({
+        providerId: params.providerId,
+        providerType: params.providerType,
+        baseUrl: params.baseUrl,
+        apiKey: params.apiKey,
+        modelId: params.modelId,
+        reasoningEffort: params.reasoningEffort,
+      });
+
     const appState = useAppStore.getState();
     const projectIds = Array.from(
       new Set(
@@ -6668,12 +6720,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       unavailableBranchNames: string[],
     ) => {
       const output = await sendChatNonStreaming({
-        providerId: params.providerId,
-        providerType: params.providerType,
-        baseUrl: params.baseUrl,
-        apiKey: params.apiKey,
-        modelId: params.modelId,
-        reasoningEffort: params.reasoningEffort,
+        providerId: metadataProviderContext.providerId,
+        providerType: metadataProviderContext.providerType,
+        baseUrl: metadataProviderContext.baseUrl,
+        apiKey: metadataProviderContext.apiKey,
+        modelId: metadataProviderContext.modelId,
+        reasoningEffort: metadataProviderContext.reasoningEffort,
         messages: prepareManualFeatureMetadataMessages(
           params.firstUserContent,
           unavailableBranchNames,
@@ -6944,6 +6996,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     metadataGenerationInFlight.add(conversationId);
 
     try {
+      const metadataProviderContext =
+        await resolveMetadataGenerationProviderContext({
+          providerId,
+          providerType,
+          baseUrl,
+          apiKey,
+          modelId,
+          reasoningEffort,
+        });
+
       if (architectPlan) {
         const recoverablePlan = await loadRecoverableArchitectPlan({
           architectPlan,
@@ -6954,12 +7016,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const metadata = await requestConversationMetadataWithRetries(
               {
                 firstUserContent,
-                providerId,
-                providerType,
-                baseUrl,
-                apiKey,
-                modelId,
-                reasoningEffort,
+                ...metadataProviderContext,
               },
               ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT,
             );
@@ -6994,7 +7051,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
-      const metadata = await requestConversationMetadata(params).catch(() => ({
+      const metadata = await requestConversationMetadata({
+        firstUserContent,
+        ...metadataProviderContext,
+      }).catch(() => ({
         title: getConversationFallbackTitle(firstUserContent),
         description: getConversationFallbackDescription(firstUserContent),
       }));
@@ -10826,7 +10886,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       try {
         const providerContext =
-          await resolveConversationMetadataProviderContext({
+          await resolveMetadataGenerationProviderContext({
             providerId: recovery.providerId,
             modelId: recovery.modelId,
             reasoningEffort: recovery.reasoningEffort,

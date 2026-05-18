@@ -108,13 +108,13 @@ describe('preferences legacy cleanup', () => {
   it('notifies same-window subscribers once for an immediate preference save', async () => {
     const { PREF_KEYS, savePreference, subscribePreference } = await loadPreferencesModule();
     const listener = mock((_value: unknown) => undefined);
-    const unsubscribe = subscribePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, listener);
+    const unsubscribe = subscribePreference(PREF_KEYS.METADATA_MODEL_CONFIG, listener);
 
-    await savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, { mode: 'conversation' });
+    await savePreference(PREF_KEYS.METADATA_MODEL_CONFIG, { mode: 'conversation' });
 
     unsubscribe();
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({ mode: 'conversation' }, PREF_KEYS.SMART_COMMIT_MODEL_CONFIG);
+    expect(listener).toHaveBeenCalledWith({ mode: 'conversation' }, PREF_KEYS.METADATA_MODEL_CONFIG);
   });
 
   it('does not emit a second same-window notification when a debounced save flushes to the store', async () => {
@@ -124,10 +124,10 @@ describe('preferences legacy cleanup', () => {
       subscribePreference,
     } = await loadPreferencesModule();
     const listener = mock((_value: unknown) => undefined);
-    const unsubscribe = subscribePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, listener);
+    const unsubscribe = subscribePreference(PREF_KEYS.METADATA_MODEL_CONFIG, listener);
 
     savePreferenceDebounced(
-      PREF_KEYS.SMART_COMMIT_MODEL_CONFIG,
+      PREF_KEYS.METADATA_MODEL_CONFIG,
       { mode: 'conversation' },
       1
     );
@@ -136,7 +136,7 @@ describe('preferences legacy cleanup', () => {
     unsubscribe();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(storeSetMock).toHaveBeenCalledWith(
-      PREF_KEYS.SMART_COMMIT_MODEL_CONFIG,
+      PREF_KEYS.METADATA_MODEL_CONFIG,
       { mode: 'conversation' }
     );
   });

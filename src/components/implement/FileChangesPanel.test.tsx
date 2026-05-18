@@ -544,7 +544,7 @@ describe('FileChangesPanel', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.localStorage.setItem('macro_smartCommitModelConfig', JSON.stringify({ mode: 'conversation' }));
+    window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify({ mode: 'conversation' }));
   });
 
   afterEach(async () => {
@@ -571,7 +571,7 @@ describe('FileChangesPanel', () => {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
     delete process.env.VITE_BACKEND_TRANSPORT;
-    window.localStorage.removeItem('macro_smartCommitModelConfig');
+    window.localStorage.removeItem('macro_metadataModelConfig');
     mock.restore();
   });
 
@@ -871,8 +871,8 @@ describe('FileChangesPanel', () => {
     expect(commitStagedChangesMock).not.toHaveBeenCalled();
   });
 
-  it('asks for the smart commit model choice the first time a commit is generated', async () => {
-    window.localStorage.removeItem('macro_smartCommitModelConfig');
+  it('asks for the metadata model choice the first time a commit is generated', async () => {
+    window.localStorage.removeItem('macro_metadataModelConfig');
     const repository = buildRepository(true);
     seedStores(repository);
 
@@ -890,7 +890,7 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Choose commit message model');
+    expect(document.body.textContent).toContain('Choose metadata generation model');
     expect(document.body.textContent).toContain('Conversation model');
     expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
 
@@ -904,7 +904,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
-    expect(window.localStorage.getItem('macro_smartCommitModelConfig')).toContain('conversation');
+    expect(window.localStorage.getItem('macro_metadataModelConfig')).toContain('conversation');
   });
 
   it('shows the backend commit error message when the commit rejects with an object payload', async () => {
@@ -958,7 +958,7 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Couldn’t generate commit messages');
     expect(document.body.textContent).toContain('Retry generation');
     expect(document.body.textContent).toContain('Write manually');
-    expect(document.body.textContent).toContain('Commit model settings');
+    expect(document.body.textContent).toContain('Metadata model settings');
     expect(document.body.textContent).toContain('Cancel');
     expect(notifyErrorMock).not.toHaveBeenCalled();
 
@@ -1059,7 +1059,7 @@ describe('FileChangesPanel', () => {
     });
 
     const settingsButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Commit model settings'));
+      .find((button) => button.textContent?.includes('Metadata model settings'));
     expect(settingsButton).toBeDefined();
 
     await act(async () => {
@@ -1072,10 +1072,10 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).not.toContain('Couldn’t generate commit messages');
   });
 
-  it('uses the latest saved commit model config when retrying after generation fails', async () => {
+  it('uses the latest saved metadata model config when retrying after generation fails', async () => {
     const repository = buildRepository(true);
     window.localStorage.setItem(
-      'macro_smartCommitModelConfig',
+      'macro_metadataModelConfig',
       JSON.stringify({
         mode: 'dedicated',
         providerId: 'provider-a',
@@ -1132,7 +1132,7 @@ describe('FileChangesPanel', () => {
 
     const preferences = await import('../../services/preferences');
     await act(async () => {
-      await preferences.savePreference(preferences.PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, {
+      await preferences.savePreference(preferences.PREF_KEYS.METADATA_MODEL_CONFIG, {
         mode: 'dedicated',
         providerId: 'provider-b',
         modelId: 'model-b',

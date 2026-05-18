@@ -40,7 +40,7 @@ import {
 import {
   validateConventionalCommitMessage,
 } from '../services/conventionalCommit';
-import type { SmartCommitModelConfig } from '../services/smartCommitModelConfig';
+import type { MetadataModelConfig } from '../services/metadataModelConfig';
 import {
   buildDefaultCommitMessage,
   getReadyCommitRepositories,
@@ -1275,7 +1275,7 @@ interface FileChangesState {
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
   commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
   commitAllReadyTaskRepositories: (options?: {
-    modelConfig?: SmartCommitModelConfig | null;
+    modelConfig?: MetadataModelConfig | null;
     messagesByRepositoryId?: Record<string, string>;
   }) => Promise<CommitTaskRepositoriesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;

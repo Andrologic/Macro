@@ -1223,6 +1223,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               providerType: config.providerType,
               modelId: model.id,
               supportedParameters: model.supported_parameters,
+              supportedReasoningEfforts: model.supported_reasoning_efforts,
+              defaultReasoningEffort: model.default_reasoning_effort,
             });
             const providerContextWindowTokens = inferProviderContextWindowTokens(model);
             const providerInputLimitTokens = inferProviderInputLimitTokens(model);
@@ -1350,6 +1352,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           providerType: config.providerType,
           modelId: m.id,
           supportedParameters: m.supported_parameters,
+          supportedReasoningEfforts: m.supported_reasoning_efforts,
+          defaultReasoningEffort: m.default_reasoning_effort,
         });
         const providerOverlay = buildProviderModelContextLimitOverlay(m);
         const catalogOverlay = providerOverlay.contextWindowTokens

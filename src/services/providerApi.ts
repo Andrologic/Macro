@@ -30,6 +30,11 @@ export interface ProviderModel {
     max_output_tokens?: number;
   };
   supported_parameters?: string[];
+  supported_reasoning_efforts?: string[];
+  reasoning_efforts?: string[];
+  supported_reasoning_levels?: Array<string | { effort?: string; description?: string }>;
+  default_reasoning_effort?: string;
+  default_reasoning_level?: string;
   pricing?: {
     prompt?: string;
     completion?: string;
@@ -94,6 +99,39 @@ export interface ProbeProviderReachabilityOptions extends FetchModelsOptions {
   preferredModelId?: string | null;
 }
 
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string');
+};
+
+const normalizeReasoningLevelEfforts = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry === 'string') return [entry];
+    if (entry && typeof entry === 'object') {
+      const effort = (entry as { effort?: unknown }).effort;
+      return typeof effort === 'string' ? [effort] : [];
+    }
+    return [];
+  });
+};
+
+const normalizeProviderReasoningEfforts = (entry: ProviderModel): string[] => {
+  const supportedEfforts = normalizeStringArray(entry.supported_reasoning_efforts);
+  if (supportedEfforts.length > 0) return supportedEfforts;
+
+  const reasoningEfforts = normalizeStringArray(entry.reasoning_efforts);
+  if (reasoningEfforts.length > 0) return reasoningEfforts;
+
+  return normalizeReasoningLevelEfforts(entry.supported_reasoning_levels);
+};
+
+const normalizeProviderDefaultReasoningEffort = (entry: ProviderModel): string | undefined => {
+  if (typeof entry.default_reasoning_effort === 'string') return entry.default_reasoning_effort;
+  if (typeof entry.default_reasoning_level === 'string') return entry.default_reasoning_level;
+  return undefined;
+};
+
 const isLocalProvider = (providerId: string): boolean =>
   providerId === 'lmstudio' || providerId === 'ollama';
 
@@ -134,6 +172,8 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
 
   return payload.data.map((model) => {
     const entry = (model ?? {}) as ProviderModel;
+    const reasoningEfforts = normalizeProviderReasoningEfforts(entry);
+    const defaultReasoningEffort = normalizeProviderDefaultReasoningEffort(entry);
     const topProvider =
       entry.top_provider &&
       typeof entry.top_provider === 'object' &&
@@ -165,6 +205,12 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
               (value): value is string => typeof value === 'string'
             ),
           }
+        : {}),
+      ...(reasoningEfforts.length > 0
+        ? { supported_reasoning_efforts: reasoningEfforts }
+        : {}),
+      ...(defaultReasoningEffort
+        ? { default_reasoning_effort: defaultReasoningEffort }
         : {}),
       pricing: entry.pricing,
     };

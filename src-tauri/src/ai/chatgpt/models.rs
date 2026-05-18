@@ -214,8 +214,20 @@ pub(super) fn build_provider_models(
     filtered_entries
         .into_iter()
         .map(|entry| {
-            let reasoning =
-                resolve_reasoning_capability(Some("chatgpt"), Some(&entry.slug), None, None, None);
+            let supported_reasoning_efforts =
+                entry.supported_reasoning_levels.as_ref().map(|levels| {
+                    levels
+                        .iter()
+                        .map(|level| level.effort.clone())
+                        .collect::<Vec<_>>()
+                });
+            let reasoning = resolve_reasoning_capability(
+                Some("chatgpt"),
+                Some(&entry.slug),
+                None,
+                supported_reasoning_efforts.as_deref(),
+                entry.default_reasoning_level.as_deref(),
+            );
 
             ProviderModelInput {
                 model_id: entry.slug.clone(),
