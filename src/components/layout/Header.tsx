@@ -11,7 +11,6 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { getGlobalProjectById } from '../../services/globalProjects';
-import { macroContributionRegistry } from '../../services/extensions';
 import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
 import { type AppMode } from '../../types';
@@ -19,7 +18,7 @@ import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
 import { Logo } from '../ui/Logo';
-import { Icon, isIconName, type IconName } from '../ui/Icon';
+import { Icon, type IconName } from '../ui/Icon';
 import { WindowControls } from './WindowControls';
 import {
   getMacosTrafficLightPosition,
@@ -100,7 +99,6 @@ export function Header({
 
   const [projectNavigatorOpen, setProjectNavigatorOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
-  const [, setExtensionRegistryRevision] = useState(0);
   const [portalPosition, setPortalPosition] = useState<{ top: number; left: number } | null>(null);
 
   const headerRef = useRef<HTMLElement>(null);
@@ -108,26 +106,10 @@ export function Header({
   const modeMenuPortalRef = useRef<HTMLDivElement>(null);
   const lastTrafficLightPositionRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    const subscription = macroContributionRegistry.subscribe(() =>
-      setExtensionRegistryRevision((revision) => revision + 1),
-    );
-    return () => subscription.dispose();
-  }, []);
-
-  const extensionModeOptions: ModeOption[] = macroContributionRegistry.listModes().map((entry) => ({
-    value: entry.contribution.id as AppMode,
-    label: entry.contribution.label,
-    icon: entry.contribution.icon && isIconName(entry.contribution.icon)
-      ? entry.contribution.icon
-      : 'layout-grid',
-  }));
-
   const modeOptions: ModeOption[] = [
     { value: 'Architect', label: t('header.architect'), icon: 'compass' },
     { value: 'Implement', label: t('header.implement'), icon: 'code' },
     { value: 'Chat', label: t('header.chat'), icon: 'message-circle' },
-    ...extensionModeOptions,
   ];
 
   const currentMode = modeOptions.find((candidate) => candidate.value === mode) || modeOptions[0];

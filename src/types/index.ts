@@ -20,9 +20,7 @@ export type ChatCompletionReason =
   | 'post_tool_empty_fallback';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
-export type BuiltInAppMode = 'Architect' | 'Implement' | 'Chat';
-export type ExtensionAppMode = string & { readonly __macroExtensionMode?: unique symbol };
-export type AppMode = BuiltInAppMode | ExtensionAppMode;
+export type AppMode = 'Architect' | 'Implement' | 'Chat';
 export type ConversationScopeMode = AppMode;
 export type AgentType = 'build' | 'plan';
 

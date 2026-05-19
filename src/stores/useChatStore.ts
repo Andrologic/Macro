@@ -2,7 +2,6 @@ import { create } from "zustand";
 import {
   AppMode,
   AgentType,
-  BuiltInAppMode,
   AgentCodeCheckpoint,
   AgentCodeCheckpointFile,
   AgentCodeReplayPreview,
@@ -708,9 +707,6 @@ const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
   }
   return "Implement";
 };
-
-const isBuiltInAppMode = (mode: AppMode): mode is BuiltInAppMode =>
-  mode === "Architect" || mode === "Implement" || mode === "Chat";
 
 const normalizePersistedSelection = (
   value: unknown,
@@ -5455,12 +5451,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       appMode === "Implement"
         ? (agentTypeAtSend ?? appState.agentType)
         : null;
-    const modePromptKey = isBuiltInAppMode(appMode)
-      ? MODE_PROMPT_KEYS_BY_MODE[appMode]
-      : null;
-    const modePrompt = modePromptKey
-      ? await loadPreference<string>(modePromptKey)
-      : null;
+    const modePrompt = await loadPreference<string>(
+      MODE_PROMPT_KEYS_BY_MODE[appMode]
+    );
 
     if (modePrompt) {
       systemInstructions.unshift(modePrompt);

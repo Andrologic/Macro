@@ -67,7 +67,7 @@ interface ChatZoneProps {
 }
 
 interface ContextControlsVisibilityInput {
-  mode: string;
+  mode: 'Chat' | 'Architect' | 'Implement';
   selectedConversationId?: string | null;
   selectedTaskId?: string | null;
   activeArchitectPlanId?: string | null;
@@ -1285,29 +1285,36 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               });
             })();
 
-      let positionAdjustment = 0;
-      return sourceItems.map((item) => {
+      return sourceItems.reduce<{
+        items: typeof sourceItems;
+        positionAdjustment: number;
+      }>((state, item) => {
         const previousItem = transcriptItems[item.index - 1];
         const isCompactionItem =
           item.item.kind === 'compaction_boundary' ||
           item.item.kind === 'compaction_progress';
-        if (
+        const assistantGapAdjustment =
           isCompactionItem &&
           previousItem?.kind === 'message' &&
           previousItem.message.role === 'assistant'
-        ) {
-          positionAdjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
-        }
-        const renderedItem = {
-          ...item,
-          start: item.start - positionAdjustment,
-        };
+            ? CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION
+            : 0;
+        const adjustmentBeforeRender =
+          state.positionAdjustment + assistantGapAdjustment;
         const nextItem = transcriptItems[item.index + 1];
-        if (isCompactionItem && nextItem) {
-          positionAdjustment += CHAT_TRANSCRIPT_ITEM_GAP;
-        }
-        return renderedItem;
-      });
+        const followingGapAdjustment =
+          isCompactionItem && nextItem ? CHAT_TRANSCRIPT_ITEM_GAP : 0;
+        return {
+          items: [
+            ...state.items,
+            {
+              ...item,
+              start: item.start - adjustmentBeforeRender,
+            },
+          ],
+          positionAdjustment: adjustmentBeforeRender + followingGapAdjustment,
+        };
+      }, { items: [], positionAdjustment: 0 }).items;
     },
     [transcriptItems, virtualMessageItems]
   );
