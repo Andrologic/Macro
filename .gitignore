@@ -36,3 +36,7 @@ direnv/.direnvrc
 
 # Tauri
 src-tauri/target/
+src-tauri/binaries/
+src-tauri/resources/macro-ai-runtime*
+src-tauri/resources/macro-copilot-bridge*
+src-tauri/macro.db
