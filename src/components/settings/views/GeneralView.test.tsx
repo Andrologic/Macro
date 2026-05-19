@@ -248,9 +248,14 @@ describe('GeneralView', () => {
 
     expect(container?.textContent).toContain('Security & approvals');
     expect(container?.textContent).toContain('Strict');
-    expect(container?.textContent).toContain('Project context memory');
     expect(container?.textContent).toContain('Limit agent turns');
     expect(container?.textContent).toContain('Max agent turns');
+    expect(container?.textContent).not.toContain('Project context memory');
+    expect(container?.textContent).not.toContain('Long-session compaction');
+    expect(container?.textContent).not.toContain('Automatic compaction');
+    expect(container?.textContent).not.toContain('Prune old tool output');
+    expect(container?.textContent).not.toContain('Show compact action');
+    expect(container?.textContent).not.toContain('Reserved tokens');
     expect(container?.textContent).not.toContain('Architect Tool Autonomy');
     expect(container?.querySelector('[data-icon="lock"]')).not.toBeNull();
     expect(container?.querySelector('[data-icon="shield"]')).not.toBeNull();

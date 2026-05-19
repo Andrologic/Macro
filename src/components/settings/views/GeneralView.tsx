@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
-import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
 import {
     getEmptyProjectOpenSelection,
     loadProjectOpenSettings,
@@ -12,7 +11,6 @@ import {
     type ProjectOpenAppOption,
     type ProjectOpenAppSelection,
 } from '../../../services/projectOpeners';
-import { useAppStore } from '../../../stores/useAppStore';
 import {
     CHAT_MAX_TURNS_DEFAULT,
     CHAT_MAX_TURNS_DISABLED,
@@ -30,8 +28,6 @@ import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
-    const projectSwitchPolicy = useAppStore((state) => state.projectSwitchPolicy);
-    const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
     const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
         editor: [],
@@ -47,10 +43,6 @@ export const GeneralView: React.FC = () => {
         String(CHAT_MAX_TURNS_DEFAULT)
     );
     const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
-    const [isCompactionAutoEnabled, setIsCompactionAutoEnabled] = useState(true);
-    const [isCompactionPruneEnabled, setIsCompactionPruneEnabled] = useState(true);
-    const [isCompactionManualVisible, setIsCompactionManualVisible] = useState(false);
-    const [compactionReservedTokensDraft, setCompactionReservedTokensDraft] = useState('');
 
     useEffect(() => {
         let cancelled = false;
@@ -72,31 +64,6 @@ export const GeneralView: React.FC = () => {
         };
 
         void loadApps();
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-
-    useEffect(() => {
-        let cancelled = false;
-
-        void Promise.all([
-            loadPreference<boolean>(PREF_KEYS.COMPACTION_AUTO),
-            loadPreference<boolean>(PREF_KEYS.COMPACTION_PRUNE),
-            loadPreference<number | null>(PREF_KEYS.COMPACTION_RESERVED_TOKENS),
-            loadPreference<boolean>(PREF_KEYS.COMPACTION_MANUAL_VISIBLE),
-        ]).then(([auto, prune, reservedTokens, manualVisible]) => {
-            if (cancelled) {
-                return;
-            }
-            setIsCompactionAutoEnabled(Boolean(auto));
-            setIsCompactionPruneEnabled(Boolean(prune));
-            setCompactionReservedTokensDraft(
-                typeof reservedTokens === 'number' ? String(reservedTokens) : ''
-            );
-            setIsCompactionManualVisible(Boolean(manualVisible));
-        });
 
         return () => {
             cancelled = true;
@@ -182,34 +149,6 @@ export const GeneralView: React.FC = () => {
         }
         event.preventDefault();
         commitChatMaxTurnsDraft();
-    };
-
-    const commitCompactionReservedTokensDraft = () => {
-        const trimmedValue = compactionReservedTokensDraft.trim();
-        if (!trimmedValue) {
-            setCompactionReservedTokensDraft('');
-            void savePreference(PREF_KEYS.COMPACTION_RESERVED_TOKENS, null);
-            return;
-        }
-
-        const numericValue = Number(trimmedValue);
-        if (!Number.isFinite(numericValue) || numericValue < 0) {
-            setCompactionReservedTokensDraft('');
-            void savePreference(PREF_KEYS.COMPACTION_RESERVED_TOKENS, null);
-            return;
-        }
-
-        const nextValue = Math.trunc(numericValue);
-        setCompactionReservedTokensDraft(String(nextValue));
-        void savePreference(PREF_KEYS.COMPACTION_RESERVED_TOKENS, nextValue);
-    };
-
-    const handleCompactionReservedTokensKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-        if (event.key !== 'Enter') {
-            return;
-        }
-        event.preventDefault();
-        commitCompactionReservedTokensDraft();
     };
 
     const renderProjectOpenOptions = (apps: ProjectOpenAppOption[]) => {
@@ -312,35 +251,6 @@ export const GeneralView: React.FC = () => {
                 <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
-                    <div className="flex items-center justify-between gap-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.projectContextPolicy', 'Project context memory')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t('settings.projectContextPolicyDesc', 'Control whether Architect/Implement context is restored per project when switching.')}
-                            </p>
-                        </div>
-                        <div className="w-[250px]">
-                            <Select
-                                value={projectSwitchPolicy}
-                                onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
-                                    const nextPolicy = (event.target.value === 'reset_on_switch'
-                                        ? 'reset_on_switch'
-                                        : 'resume_per_project') as ProjectSwitchPolicy;
-                                    void setProjectSwitchPolicy(nextPolicy);
-                                }}
-                            >
-                                <option value="resume_per_project">
-                                    {t('settings.projectContextPolicyResume', 'Resume per project')}
-                                </option>
-                                <option value="reset_on_switch">
-                                    {t('settings.projectContextPolicyReset', 'Reset on project switch')}
-                                </option>
-                            </Select>
-                        </div>
-                    </div>
-                    <div className="h-px bg-border/50" />
                     <div className="flex flex-col gap-3">
                         <div className="space-y-1">
                             <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">
@@ -383,99 +293,6 @@ export const GeneralView: React.FC = () => {
                                     onKeyDown={handleChatMaxTurnsKeyDown}
                                     className="w-28"
                                     aria-label={t('settings.agentLoop.maxTurnsLabel', 'Max agent turns')}
-                                />
-                            </div>
-                        </div>
-                    </div>
-                    <div className="h-px bg-border/50" />
-                    <div className="space-y-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.compaction.title', 'Long-session compaction')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t(
-                                    'settings.compaction.description',
-                                    'Reserve model context and compact older tool-heavy turns before a session overflows.'
-                                )}
-                            </p>
-                        </div>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/30 px-3 py-2">
-                                <div>
-                                    <label htmlFor="compaction-auto" className="text-sm font-medium text-foreground">
-                                        {t('settings.compaction.auto', 'Automatic compaction')}
-                                    </label>
-                                    <p className="text-[11px] text-muted-foreground">
-                                        {t('settings.compaction.autoDesc', 'Compact before provider overflow.')}
-                                    </p>
-                                </div>
-                                <Switch
-                                    id="compaction-auto"
-                                    checked={isCompactionAutoEnabled}
-                                    onCheckedChange={(checked) => {
-                                        setIsCompactionAutoEnabled(checked);
-                                        void savePreference(PREF_KEYS.COMPACTION_AUTO, checked);
-                                    }}
-                                />
-                            </div>
-                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/30 px-3 py-2">
-                                <div>
-                                    <label htmlFor="compaction-prune" className="text-sm font-medium text-foreground">
-                                        {t('settings.compaction.prune', 'Prune old tool output')}
-                                    </label>
-                                    <p className="text-[11px] text-muted-foreground">
-                                        {t('settings.compaction.pruneDesc', 'Digest large old tool contexts first.')}
-                                    </p>
-                                </div>
-                                <Switch
-                                    id="compaction-prune"
-                                    checked={isCompactionPruneEnabled}
-                                    onCheckedChange={(checked) => {
-                                        setIsCompactionPruneEnabled(checked);
-                                        void savePreference(PREF_KEYS.COMPACTION_PRUNE, checked);
-                                    }}
-                                />
-                            </div>
-                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/30 px-3 py-2">
-                                <div>
-                                    <label htmlFor="compaction-manual-visible" className="text-sm font-medium text-foreground">
-                                        {t('settings.compaction.manualVisible', 'Show compact action')}
-                                    </label>
-                                    <p className="text-[11px] text-muted-foreground">
-                                        {t('settings.compaction.manualVisibleDesc', 'Add a chat header button for manual compaction.')}
-                                    </p>
-                                </div>
-                                <Switch
-                                    id="compaction-manual-visible"
-                                    checked={isCompactionManualVisible}
-                                    onCheckedChange={(checked) => {
-                                        setIsCompactionManualVisible(checked);
-                                        void savePreference(PREF_KEYS.COMPACTION_MANUAL_VISIBLE, checked);
-                                    }}
-                                />
-                            </div>
-                            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/30 px-3 py-2">
-                                <div>
-                                    <label htmlFor="compaction-reserved-tokens" className="text-sm font-medium text-foreground">
-                                        {t('settings.compaction.reservedTokens', 'Reserved tokens')}
-                                    </label>
-                                    <p className="text-[11px] text-muted-foreground">
-                                        {t('settings.compaction.reservedTokensDesc', 'Blank keeps the automatic 20%/20k reserve.')}
-                                    </p>
-                                </div>
-                                <Input
-                                    id="compaction-reserved-tokens"
-                                    type="number"
-                                    min={0}
-                                    step={1000}
-                                    placeholder={t('settings.compaction.autoPlaceholder', 'Auto')}
-                                    value={compactionReservedTokensDraft}
-                                    onChange={(event) => setCompactionReservedTokensDraft(event.target.value)}
-                                    onBlur={commitCompactionReservedTokensDraft}
-                                    onKeyDown={handleCompactionReservedTokensKeyDown}
-                                    className="w-28"
-                                    aria-label={t('settings.compaction.reservedTokens', 'Reserved tokens')}
                                 />
                             </div>
                         </div>

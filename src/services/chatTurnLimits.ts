@@ -16,7 +16,7 @@ export const isValidChatMaxTurnsPreference = (
     value <= CHAT_MAX_TURNS_MAX);
 
 export const normalizeChatMaxTurns = (value: unknown): ChatMaxTurnsPreference => {
-  if (value === CHAT_MAX_TURNS_DISABLED) {
+  if (value === undefined || value === CHAT_MAX_TURNS_DISABLED) {
     return CHAT_MAX_TURNS_DISABLED;
   }
   if (typeof value !== "number" || !Number.isFinite(value)) {

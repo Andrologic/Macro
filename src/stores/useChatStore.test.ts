@@ -7649,11 +7649,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
   });
 
-  it('does not run safety prestream compaction when automatic compaction is disabled', async () => {
+  it('ignores legacy compaction preferences and still runs safety prestream compaction', async () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
     localStorage.setItem('macro_compaction.auto', JSON.stringify(false));
+    localStorage.setItem('macro_compaction.prune', JSON.stringify(false));
+    localStorage.setItem('macro_compaction.reservedTokens', JSON.stringify(0));
     providerState.modelsByProvider = {
       'provider-1': [
         {
@@ -7665,6 +7667,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         } as never,
       ],
     };
+    const summaryDeferred = createDeferred<string>();
+    queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
 
     const { useChatStore } = await loadChatStore();
     const oldContext = 'ancien contexte utile\n'.repeat(5000);
@@ -7698,24 +7702,36 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       selectedConversationIdsByMode: { Chat: 'chat-conv' },
     }));
 
-    await useChatStore.getState().sendMessage({
+    const sendPromise = useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
       content: 'Continue avec une réponse courte.',
     });
     await flushAsyncWork();
 
-    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
     expect(streamChatMock).not.toHaveBeenCalled();
     expect(
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
     ).toMatchObject({
-      phase: 'needs_manual_compaction',
+      phase: 'safety_compacting',
       kind: 'safety_prestream',
-      reason: 'manual_compaction_required',
     });
-    expect(useChatStore.getState().lastError).toContain(
-      'Automatic context compaction is disabled',
+
+    summaryDeferred.resolve(
+      JSON.stringify({
+        currentObjective: 'Continue from the compacted older context.',
+        userInstructions: ['Keep the answer short.'],
+        decisions: ['Legacy compaction preferences are ignored.'],
+        openQuestions: [],
+        activeFiles: [],
+        toolFacts: [],
+        remainingWork: ['Answer the latest user request.'],
+        summary: 'The old history contained useful context.',
+      }),
     );
+    await sendPromise;
+    await waitForStreamCallCount(1);
+
+    expect(useChatStore.getState().lastError).toBeNull();
   });
 
   it('blocks clearly when the latest user request is too large to compact away', async () => {

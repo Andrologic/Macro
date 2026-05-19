@@ -700,6 +700,9 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('Payload');
     expect(document.body.textContent).toContain('Limite modèle');
     expect(document.body.textContent).toContain('Budget utile');
+    expect(document.body.textContent).not.toContain('Réserve sortie');
+    expect(document.body.textContent).not.toContain('reserved');
+    expect(document.body.textContent).not.toContain('reserve');
     expect(document.body.textContent).toContain('Marge');
     expect(document.body.textContent).toContain('Source limite');
     expect(document.body.textContent).toContain('Provider');

@@ -275,6 +275,9 @@ let importCounter = 0;
 let preferenceValues: Record<string, unknown> = {};
 let projectSwitchPolicy: 'resume_per_project' | 'reset_on_switch' =
   'resume_per_project';
+const setProjectSwitchPolicyMock = mock(
+  async (_policy?: 'resume_per_project' | 'reset_on_switch') => undefined,
+);
 let sessionContext: {
   globalProjectId: string | null;
   selectedGroupId: string | null;
@@ -466,7 +469,7 @@ const registerUseAppStoreMocks = async () => {
     getProjectSwitchPolicy: async () => projectSwitchPolicy,
     reconcileLocalProjectRegistryState: async () => undefined,
     deleteLocalProjectContextState: deleteLocalProjectContextStateMock,
-    setProjectSwitchPolicy: async () => undefined,
+    setProjectSwitchPolicy: setProjectSwitchPolicyMock,
     upsertLocalProjectContextState: upsertLocalProjectContextStateMock,
     upsertLocalSessionContextState: upsertLocalSessionContextStateMock,
   }));
@@ -543,6 +546,7 @@ describe('useAppStore architect plan resolution', () => {
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanMock.mockClear();
     getArchitectPlanNeedsMock.mockClear();
+    setProjectSwitchPolicyMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
     getAppBootstrapMock.mockImplementation(async () => ({
@@ -593,6 +597,15 @@ describe('useAppStore architect plan resolution', () => {
 
   afterEach(() => {
     mock.restore();
+  });
+
+  it('normalizes project context storage policy to per-project resume', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+
+    await useAppStore.getState().setProjectSwitchPolicy('reset_on_switch');
+
+    expect(useAppStore.getState().projectSwitchPolicy).toBe('resume_per_project');
+    expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('resume_per_project');
   });
 
   it('loads the newest visible plan during initialize when no remembered plan is available', async () => {

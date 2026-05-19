@@ -325,12 +325,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             : ''
         }`
       : 'Aucun';
-  const budgetFormula =
-    effectiveDiagnostics?.compactionDecisionAudit?.formula ?? null;
-  const outputReserveTokens =
-    footprint?.outputReserveTokens ??
-    effectiveDiagnostics?.compactionDecisionAudit?.outputReserveTokens ??
-    undefined;
   const canCompact =
     Boolean(onCompactNow) &&
     canCompactNow &&
@@ -469,19 +463,12 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             <Metric label="Payload" value={formatCompactTokens(footprint?.serializedPayloadTokens ?? footprint?.totalEstimatedTokens)} />
             <Metric label={contextLimitLabel} value={formatCompactTokens(modelWindowTokens)} />
             <Metric label="Budget utile" value={formatCompactTokens(footprint?.usableContextTokens)} />
-            <Metric label="Réserve sortie" value={formatCompactTokens(outputReserveTokens)} />
             <Metric label="Marge" value={formatCompactTokens(remainingTokens)} />
             <Metric label="Source limite" value={contextLimitSourceLabel} />
             <Metric label="Confiance" value={contextLimitConfidenceLabel} />
             <Metric label="Contexte total" value={formatPercent(totalRatio)} />
             <Metric label="Checkpoint" value={checkpointLabel} />
           </div>
-
-          {budgetFormula ? (
-            <div className="mt-3 rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs text-muted-foreground">
-              {budgetFormula}
-            </div>
-          ) : null}
 
           {contextLimitWarning ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
