@@ -818,15 +818,6 @@ Le produit doit supporter au minimum les scenarios suivants :
 - l'utilisateur quitte son poste et poursuit la supervision depuis mobile
 - l'utilisateur execute Macro sur un serveur dedie au lieu d'un poste local unique
 
-### 19.4 Extensions liees au compte utilisateur
-
-Les comptes et les abonnements font partie du modele produit futur pour :
-- la supervision mobile distante
-- une synchronisation optionnelle des reglages
-- des offres d'execution hebergee
-
-Cela ne remet pas en cause la nature local-first de l'experience desktop principale.
-
 ---
 
 ## 20. Reglages et controle utilisateur

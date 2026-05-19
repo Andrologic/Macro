@@ -2,7 +2,6 @@ import React, { Suspense, lazy } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import type { AppMode } from '../../types';
 import { Skeleton } from '../shared/Skeleton';
-import { ExtensionNativeViews } from './ExtensionNativeViews';
 
 // =============================================================================
 // LAZY LOADED COMPONENTS - Code Splitting by Mode
@@ -85,9 +84,7 @@ interface PanelConfig {
 }
 
 // Map of mode-specific component configurations
-type BuiltInMode = 'Architect' | 'Implement' | 'Chat';
-
-const modeConfigs: Record<BuiltInMode, PanelConfig> = {
+const modeConfigs: Record<AppMode, PanelConfig> = {
   Architect: {
     left: NeedsPanel,
     center: ChatZone,
@@ -104,9 +101,6 @@ const modeConfigs: Record<BuiltInMode, PanelConfig> = {
     right: ContextToolbox,
   },
 };
-
-const isBuiltInMode = (mode: AppMode): mode is BuiltInMode =>
-  mode === 'Architect' || mode === 'Implement' || mode === 'Chat';
 
 // =============================================================================
 // PANEL SKELETON MAP
@@ -137,10 +131,6 @@ interface ModeRouterProps {
  */
 export const ModeRouter: React.FC<ModeRouterProps> = ({ panel }) => {
   const mode = useAppStore((state) => state.mode);
-
-  if (!isBuiltInMode(mode)) {
-    return <ExtensionNativeViews mode={mode} panel={panel} />;
-  }
 
   // Get the appropriate component for the current panel and mode
   const Component = modeConfigs[mode][panel];

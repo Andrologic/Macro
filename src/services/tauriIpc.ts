@@ -1499,18 +1499,6 @@ export async function fsMove(params: {
   });
 }
 
-export interface ExtensionArchiveExtractionDto {
-  extensionRootPath: string;
-  manifestPath: string;
-  manifestText: string;
-}
-
-export async function extensionExtractTgz(
-  archivePath: string,
-): Promise<ExtensionArchiveExtractionDto> {
-  return invoke<ExtensionArchiveExtractionDto>("extension_extract_tgz", { archivePath });
-}
-
 // ============ Provider Configs ============
 
 export async function listProviderConfigs(): Promise<DbProviderConfig[]> {
