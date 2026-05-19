@@ -13,6 +13,7 @@ import { cn } from '../../../utils/cn';
 const defaultSettings: ArchitectGitNamingSettings = {
   mainBranch: 'main',
   baseBranch: 'main',
+  completionMergePolicy: 'merge_commit',
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
   standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
@@ -33,6 +34,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       const [
         mainBranch,
         baseBranch,
+        completionMergePolicy,
         planTemplate,
         featureTemplate,
         standaloneFeatureTemplate,
@@ -43,6 +45,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       ] = await Promise.all([
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH),
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH),
+        loadPreference<string>(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY),
         loadPreference<string>(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE),
@@ -55,6 +58,8 @@ export const ArchitectGitFlowView: React.FC = () => {
       setSettings({
         mainBranch: mainBranch || defaultSettings.mainBranch,
         baseBranch: baseBranch || defaultSettings.baseBranch,
+        completionMergePolicy:
+          completionMergePolicy === 'fast_forward' ? 'fast_forward' : 'merge_commit',
         planBranchTemplate: planTemplate || defaultSettings.planBranchTemplate,
         featureBranchTemplate: featureTemplate || defaultSettings.featureBranchTemplate,
         standaloneFeatureBranchTemplate:
@@ -116,6 +121,7 @@ export const ArchitectGitFlowView: React.FC = () => {
     await Promise.all([
       savePreference(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH, settings.mainBranch.trim() || defaultSettings.mainBranch),
       savePreference(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH, settings.baseBranch.trim() || defaultSettings.baseBranch),
+      savePreference(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY, settings.completionMergePolicy),
       savePreference(
         PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE,
         settings.planBranchTemplate.trim() || defaultSettings.planBranchTemplate
@@ -189,6 +195,36 @@ export const ArchitectGitFlowView: React.FC = () => {
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="main"
           />
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">
+            {t('settings.architectGitFlow.completionMergePolicyLabel', 'Task completion merge policy')}
+          </label>
+          <select
+            value={settings.completionMergePolicy}
+            onChange={(event) =>
+              setSettings((prev) => ({
+                ...prev,
+                completionMergePolicy:
+                  event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
+              }))
+            }
+            className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="merge_commit">
+              {t('settings.architectGitFlow.completionMergePolicyMergeCommit', 'Merge commit')}
+            </option>
+            <option value="fast_forward">
+              {t('settings.architectGitFlow.completionMergePolicyFastForward', 'Fast-forward when possible')}
+            </option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              'settings.architectGitFlow.completionMergePolicyHelp',
+              'Merge commit keeps a visible task boundary. Fast-forward advances directly when Git can do so cleanly.'
+            )}
+          </p>
         </div>
 
         <div className="space-y-2">

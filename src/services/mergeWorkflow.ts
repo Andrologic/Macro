@@ -5,7 +5,7 @@ import type {
   PlanReviewResult,
 } from './architectGitFlowService';
 import { toServiceError } from './contracts/errors';
-import type { TaskExecutionTarget, TaskStatus } from '../types';
+import type { CompletionMergePolicy, TaskExecutionTarget, TaskStatus } from '../types';
 
 export type MergeWorkflowKind = 'task_completion' | 'plan_finalization';
 
@@ -183,6 +183,63 @@ export type MergeWorkflowMergeExecutionAction = Extract<
   MergeWorkflowResolutionAction,
   'fast_forward' | 'rebase_then_continue' | 'merge_commit' | 'complete_merge'
 >;
+
+export const isMergeWorkflowMergeExecutionAction = (
+  action: MergeWorkflowResolutionAction | null | undefined
+): action is MergeWorkflowMergeExecutionAction =>
+  action === 'fast_forward' ||
+  action === 'rebase_then_continue' ||
+  action === 'merge_commit' ||
+  action === 'complete_merge';
+
+export const resolveMergeWorkflowExecutionAction = (
+  repository: Pick<
+    MergeWorkflowRepositoryResult,
+    | 'availableActions'
+    | 'conflictFiles'
+    | 'hasChanges'
+    | 'mergeInProgress'
+    | 'blockingKind'
+    | 'progressState'
+  >,
+  params?: {
+    preferredAction?: MergeWorkflowResolutionAction | null;
+    completionMergePolicy?: CompletionMergePolicy | null;
+  }
+): MergeWorkflowMergeExecutionAction | null => {
+  if (
+    repository.mergeInProgress &&
+    repository.conflictFiles.length === 0 &&
+    repository.blockingKind !== 'repository_dirty' &&
+    repository.availableActions.includes('complete_merge')
+  ) {
+    return 'complete_merge';
+  }
+
+  if (!repository.hasChanges || repository.progressState === 'no_changes') {
+    return null;
+  }
+
+  if (
+    isMergeWorkflowMergeExecutionAction(params?.preferredAction) &&
+    repository.availableActions.includes(params.preferredAction)
+  ) {
+    return params.preferredAction;
+  }
+
+  if (
+    params?.completionMergePolicy === 'fast_forward' &&
+    repository.availableActions.includes('fast_forward')
+  ) {
+    return 'fast_forward';
+  }
+
+  if (repository.availableActions.includes('merge_commit')) {
+    return 'merge_commit';
+  }
+
+  return null;
+};
 
 export const isRepositoryRootExecutionTarget = (
   target: Pick<TaskExecutionTarget, 'executionKind'>
@@ -841,8 +898,7 @@ export const isMergeWorkflowRepositoryActionableByModal = (
   >
 ): boolean =>
   repository.progressState === 'pending' &&
-  (repository.recommendedAction === 'fast_forward' ||
-    repository.recommendedAction === 'rebase_then_continue');
+  repository.recommendedAction === 'rebase_then_continue';
 
 export const isMergeWorkflowFileConflictRepository = (
   repository: Pick<
@@ -861,11 +917,7 @@ export const isMergeWorkflowFileConflictRepository = (
 export const mergeWorkflowNeedsUserDecision = (
   runtime: Pick<MergeWorkflowRuntimeState, 'repositories' | 'blockedRepositories'> | null | undefined
 ): boolean =>
-  Boolean(
-    runtime &&
-      (runtime.blockedRepositories.length > 0 ||
-        runtime.repositories.some(isMergeWorkflowRepositoryActionableByModal))
-  );
+  Boolean(runtime && runtime.blockedRepositories.length > 0);
 
 export const resolveMergeWorkflowViewState = (
   runtime: MergeWorkflowRuntimeState | null | undefined,

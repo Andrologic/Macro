@@ -107,6 +107,13 @@ const gitMergeCheckMock = mock(async () => ({
   conflictFiles: [] as string[],
   hasChanges: true,
 }));
+const gitMergeMock = mock(async ({
+  branchName,
+  intoBranch,
+}: {
+  branchName: string;
+  intoBranch: string;
+}) => `Merged ${branchName} into ${intoBranch}`);
 const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/checkout');
 const gitRebaseCheckMock = mock(async () => ({
   rebaseable: true,
@@ -129,6 +136,8 @@ const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
 
+let projectCompletionMergePolicy: 'merge_commit' | 'fast_forward' = 'merge_commit';
+
 const appStoreState = {
   selectedTaskId: 'task-1' as string | null,
   selectedProjectId: null as string | null,
@@ -143,6 +152,13 @@ const appStoreState = {
     id: 'project-1',
     name: 'Project One',
     path: '/repos/web',
+    gitFlowSettings: {
+      baseBranch: 'develop',
+      planBranchTemplate: 'plan/{slug}',
+      taskBranchTemplate: 'feature/{slug}',
+      defaultTaskBranchPrefix: 'feature/',
+      completionMergePolicy: projectCompletionMergePolicy,
+    },
   }),
   setSelectedTask: mock((taskId: string | null) => {
     appStoreState.selectedTaskId = taskId;
@@ -209,6 +225,7 @@ mock.module('../services/tauriIpc', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitMerge: gitMergeMock,
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
@@ -233,6 +250,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitMerge: gitMergeMock,
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
@@ -424,7 +442,9 @@ describe('useTaskStore.finishTask', () => {
       ahead: 1,
       behind: 1,
     }));
+    gitMergeMock.mockClear();
     gitFastForwardMock.mockClear();
+    projectCompletionMergePolicy = 'merge_commit';
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
     gitPullMock.mockClear();
@@ -480,12 +500,12 @@ describe('useTaskStore.finishTask', () => {
 
     await useTaskStore.getState().finishTask('task-1');
 
-    expect(mergeFeatureBranchIntoPlanBranchMock).toHaveBeenCalledWith({
-      projectId: 'project-1',
+    expect(gitMergeMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       branchName: 'feature/task-1',
-      planBranchName: 'plan/checkout',
-      repoPath: '/repos/web',
+      intoBranch: 'plan/checkout',
     });
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
     expect(planState.nodes[0]?.status).toBe('completed');
     expect(planState.nodes[0]?.archiveReason).toBe('merged');
     expect(typeof planState.nodes[0]?.archivedAt).toBe('string');
@@ -676,6 +696,65 @@ describe('useTaskStore.finishTask', () => {
       branchName: 'feature/task-1',
       force: true,
     });
+  });
+
+  it('uses merge commit by default when fast-forward is available', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(gitMergeMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
+      branchName: 'feature/task-1',
+      intoBranch: 'plan/checkout',
+    });
+    expect(gitFastForwardMock).not.toHaveBeenCalled();
+  });
+
+  it('uses fast-forward by default when the project policy requests it', async () => {
+    projectCompletionMergePolicy = 'fast_forward';
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(gitFastForwardMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
+      sourceBranch: 'feature/task-1',
+      targetBranch: 'plan/checkout',
+    });
+    expect(gitMergeMock).not.toHaveBeenCalled();
   });
 
   it('completes an in-progress task after a successful merge workflow', async () => {

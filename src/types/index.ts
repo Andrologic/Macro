@@ -29,6 +29,7 @@ export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked'
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
+export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
   | 'not_git'
   | 'unborn'
@@ -52,6 +53,7 @@ export type ProjectAccessBlockingReason =
 export interface ProjectGitFlowSettings {
   baseBranch: string;
   mainBranch: string;
+  completionMergePolicy?: CompletionMergePolicy;
   planBranchTemplate: string;
   featureBranchTemplate: string;
   standaloneFeatureBranchTemplate: string;

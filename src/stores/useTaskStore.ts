@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TaskExecutionTarget, TaskStatus } from '../types';
+import type { CompletionMergePolicy, TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
 import {
   createRemoteUnsupportedInRemoteModeError,
@@ -31,12 +31,12 @@ import {
   resolvePreparedTaskWorktreePath,
   resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
 } from '../services/preparedTaskWorktrees';
-import {
-  cleanupPlanBranches,
-  mergeFeatureBranchIntoPlanBranch,
-} from '../services/architectGitFlowService';
+import { cleanupPlanBranches } from '../services/architectGitFlowService';
 import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
-import { shouldSyncTargetBranchBeforeFinish } from '../services/architectGitNaming';
+import {
+  resolveProjectGitFlowSettings,
+  shouldSyncTargetBranchBeforeFinish,
+} from '../services/architectGitNaming';
 import {
   archiveArchitectPlan,
   commitArchitectPlanMetadata,
@@ -76,6 +76,7 @@ import {
   createMergeWorkflowBlockedError,
   mergeMergeWorkflowRuntimeState,
   resolveMergeWorkflowPhaseFromRepositories,
+  resolveMergeWorkflowExecutionAction,
   resolveMergeWorkflowTaskStatus,
   resolveMergeWorkflowStrategy,
   isMergeWorkflowFileConflictRepository,
@@ -558,36 +559,21 @@ const resolveMergeWorkflowBlockers = async (
   return 0;
 };
 
-const isMergeExecutionAction = (
-  action: MergeWorkflowBlockerResolutionAction | null | undefined
-): action is MergeWorkflowMergeExecutionAction =>
-  action === 'fast_forward' ||
-  action === 'rebase_then_continue' ||
-  action === 'merge_commit' ||
-  action === 'complete_merge';
+const resolveProjectCompletionMergePolicy = (
+  projectId: string
+): CompletionMergePolicy =>
+  resolveProjectGitFlowSettings(
+    useAppStore.getState().getProjectById(projectId)?.gitFlowSettings
+  ).completionMergePolicy;
 
 const resolveRepositoryMergeStrategyAction = (
   repository: MergeWorkflowRepositoryResult,
   preferredAction: MergeWorkflowBlockerResolutionAction | null | undefined
 ): MergeWorkflowMergeExecutionAction | null => {
-  if (isCompletableMergeWorkflowRepository(repository)) {
-    return 'complete_merge';
-  }
-
-  if (!repository.hasChanges || repository.progressState === 'no_changes') {
-    return null;
-  }
-
-  if (
-    isMergeExecutionAction(preferredAction) &&
-    repository.availableActions.includes(preferredAction)
-  ) {
-    return preferredAction;
-  }
-
-  // Preserve the old default history shape unless the user explicitly accepts
-  // fast-forward or rebase from the modal.
-  return repository.availableActions.includes('merge_commit') ? 'merge_commit' : null;
+  return resolveMergeWorkflowExecutionAction(repository, {
+    preferredAction,
+    completionMergePolicy: resolveProjectCompletionMergePolicy(repository.projectId),
+  });
 };
 
 const runRepositoryMergeStrategy = async (
@@ -3886,18 +3872,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         try {
           const mergeOutput = allowWithoutCodeChanges
             ? undefined
-            : isMergeExecutionAction(options?.mergeStrategyAction) ||
-                isCompletableMergeWorkflowRepository(repository)
-              ? await runRepositoryMergeStrategy(
-                  repository,
-                  options?.mergeStrategyAction
-                )
-              : await mergeFeatureBranchIntoPlanBranch({
-                  projectId: repository.projectId,
-                  branchName: repository.sourceBranchName,
-                  planBranchName: repository.targetBranchName,
-                  repoPath: repository.repositoryRootPath,
-                });
+            : await runRepositoryMergeStrategy(
+                repository,
+                options?.mergeStrategyAction
+              );
           if (mergeOutput) {
             mergedRepositoryCount += 1;
           }

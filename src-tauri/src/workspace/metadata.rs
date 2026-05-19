@@ -427,6 +427,11 @@ pub struct ProjectGitFlowSettingsDto {
     #[serde(default = "default_project_git_main_branch", rename = "mainBranch")]
     pub main_branch: String,
     #[serde(
+        default = "default_project_git_completion_merge_policy",
+        rename = "completionMergePolicy"
+    )]
+    pub completion_merge_policy: String,
+    #[serde(
         default = "default_project_git_plan_branch_template",
         rename = "planBranchTemplate"
     )]
@@ -550,6 +555,7 @@ impl Default for ProjectGitFlowSettingsDto {
         Self {
             base_branch: default_project_git_base_branch(),
             main_branch: default_project_git_main_branch(),
+            completion_merge_policy: default_project_git_completion_merge_policy(),
             plan_branch_template: default_project_git_plan_branch_template(),
             feature_branch_template: default_project_git_feature_branch_template(),
             standalone_feature_branch_template:
@@ -571,6 +577,10 @@ fn default_project_git_detection_repo_resolution() -> String {
 
 fn default_project_git_main_branch() -> String {
     "main".to_string()
+}
+
+fn default_project_git_completion_merge_policy() -> String {
+    "merge_commit".to_string()
 }
 
 fn default_project_git_plan_branch_template() -> String {

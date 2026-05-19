@@ -4302,6 +4302,10 @@ fn normalize_project_git_flow_settings(
     ProjectGitFlowSettingsDto {
         base_branch: normalize_base_branch(Some(input.base_branch.as_str())),
         main_branch: normalize_base_branch(Some(input.main_branch.as_str())),
+        completion_merge_policy: match input.completion_merge_policy.as_str() {
+            "fast_forward" => "fast_forward".to_string(),
+            _ => "merge_commit".to_string(),
+        },
         plan_branch_template: normalize_branch_template(
             Some(input.plan_branch_template.as_str()),
             defaults.plan_branch_template.as_str(),
@@ -4422,6 +4426,12 @@ fn validate_project_git_flow_settings_strict(settings: &ProjectGitFlowSettingsDt
 
     if normalized.main_branch.trim().is_empty() {
         errors.push("Main branch cannot be empty.".to_string());
+    }
+
+    if normalized.completion_merge_policy != "merge_commit"
+        && normalized.completion_merge_policy != "fast_forward"
+    {
+        errors.push("Completion merge policy must be merge_commit or fast_forward.".to_string());
     }
 
     let required_tokens = [
@@ -4856,6 +4866,7 @@ mod tests {
             git_flow_settings: ProjectGitFlowSettingsDto {
                 base_branch: "develop".to_string(),
                 main_branch: "main".to_string(),
+                completion_merge_policy: "merge_commit".to_string(),
                 plan_branch_template: "plan/{planSlug}".to_string(),
                 feature_branch_template: "feature/{planSlug}/{featureSlug}".to_string(),
                 standalone_feature_branch_template: "feature/{featureSlug}".to_string(),
