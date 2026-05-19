@@ -337,7 +337,6 @@ const markdownRendererContentMock = mock(
 const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
 let latestComposerProps: Record<string, unknown> | null = null;
-let manualCompactionVisiblePreference = false;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -506,11 +505,9 @@ const loadChatZoneModule = async () => {
   mock.module('../../services/preferences', () => ({
     ...actualPreferences,
     loadPreference: mock(async (key: string) =>
-      key === actualPreferences.PREF_KEYS.COMPACTION_MANUAL_VISIBLE
-        ? manualCompactionVisiblePreference
-        : actualPreferences.PREF_DEFAULTS[
-            key as keyof typeof actualPreferences.PREF_DEFAULTS
-          ]
+      actualPreferences.PREF_DEFAULTS[
+        key as keyof typeof actualPreferences.PREF_DEFAULTS
+      ]
     ),
     subscribePreference: mock(() => () => undefined),
   }));
@@ -668,7 +665,6 @@ const resetState = () => {
   composerEditorValue = '';
   latestComposerProps = null;
   scrollMagnetActiveValues.length = 0;
-  manualCompactionVisiblePreference = false;
 };
 
 describe('ChatZone', () => {
@@ -881,7 +877,6 @@ describe('ChatZone', () => {
   });
 
   it('renders compaction progress in the transcript while manual compaction is running', async () => {
-    manualCompactionVisiblePreference = true;
     chatState = {
       ...chatState,
       messages: [
@@ -1645,8 +1640,8 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Task worktree is not ready yet.');
   });
 
-  it('keeps the manual compaction button independent from compacted transcript state', async () => {
-    manualCompactionVisiblePreference = true;
+  it('keeps manual compaction out of the header while preserving compacted transcript state', async () => {
+    localStorage.setItem('macro_compaction.manualVisible', JSON.stringify(true));
     chatState = {
       ...chatState,
       messages: [
@@ -1677,14 +1672,13 @@ describe('ChatZone', () => {
 
     expect(
       requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
     ).not.toBeNull();
   });
 
-  it('renders transcript progress while local manual compaction is pending', async () => {
-    manualCompactionVisiblePreference = true;
+  it('renders transcript progress when manual compaction starts from the context popover', async () => {
     let resolveCompaction: (() => void) | null = null;
     chatState = {
       ...chatState,
@@ -1722,9 +1716,20 @@ describe('ChatZone', () => {
     });
     await act(async () => undefined);
 
-    const manualButton = requireContainer().querySelector<HTMLButtonElement>(
-      'button[aria-label="Compacter maintenant"]',
-    );
+    expect(
+      requireContainer().querySelector('button[aria-label="Compacter maintenant"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      requireContainer()
+        .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    const manualButton = Array.from(
+      requireContainer().querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.includes('Compacter maintenant'));
     expect(manualButton).not.toBeNull();
 
     await act(async () => {
@@ -1818,7 +1823,6 @@ describe('ChatZone', () => {
   });
 
   it('hides context controls when Architect has no selected plan', async () => {
-    manualCompactionVisiblePreference = true;
     appState = {
       ...appState,
       mode: 'Architect',

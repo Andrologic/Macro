@@ -3762,15 +3762,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const loadContextBudgetPolicy = async (): Promise<ContextBudgetPolicy> => {
-    const [auto, prune, reservedTokens] = await Promise.all([
-      loadPreference<boolean>(PREF_KEYS.COMPACTION_AUTO),
-      loadPreference<boolean>(PREF_KEYS.COMPACTION_PRUNE),
-      loadPreference<number | null>(PREF_KEYS.COMPACTION_RESERVED_TOKENS),
-    ]);
     return {
-      auto,
-      prune,
-      reservedTokens,
+      auto: true,
+      prune: true,
+      reservedTokens: null,
     };
   };
 

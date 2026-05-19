@@ -1485,9 +1485,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void get().switchProjectContext(projectId);
   },
 
-  setProjectSwitchPolicy: async (policy) => {
-    const normalized =
-      policy === "reset_on_switch" ? "reset_on_switch" : "resume_per_project";
+  setProjectSwitchPolicy: async (_policy) => {
+    const normalized = "resume_per_project";
     set({ projectSwitchPolicy: normalized });
     await localProjectContext.setProjectSwitchPolicy(normalized);
   },

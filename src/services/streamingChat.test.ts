@@ -1821,7 +1821,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(finalResult?.visibleContent).not.toContain('[Macro]');
   });
 
-  it('does not force a final no-tool turn when max turns is disabled', async () => {
+  it('does not force a final no-tool turn when max turns is omitted by default', async () => {
     const encoder = new TextEncoder();
     const requestBodies: Array<Record<string, unknown>> = [];
     let requestCount = 0;
@@ -1874,7 +1874,6 @@ describe('streamingChat tool rendering helpers', () => {
       modelId: 'gpt-4.1',
       messages: [{ role: 'user', content: 'Inspect files.' }],
       allowedToolIds: ['read'],
-      maxTurns: null,
       enableWebSearch: false,
       enableWebFetch: false,
       onToken: () => undefined,
