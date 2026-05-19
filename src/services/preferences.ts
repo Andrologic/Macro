@@ -66,6 +66,7 @@ export const PREF_KEYS = {
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
   ARCHITECT_GIT_MAIN_BRANCH: "architectGitMainBranch",
+  ARCHITECT_COMPLETION_MERGE_POLICY: "architectCompletionMergePolicy",
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
   ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE: "architectStandaloneFeatureBranchTemplate",
@@ -280,6 +281,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
   [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+  [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: 'merge_commit',
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
   [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: 'feature/{featureSlug}',
@@ -330,6 +332,9 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.CHAT_MAX_TURNS) {
     return isValidChatMaxTurnsPreference(value);
+  }
+  if (key === PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY) {
+    return value === "merge_commit" || value === "fast_forward";
   }
   if (
     key === PREF_KEYS.COMPACTION_AUTO ||

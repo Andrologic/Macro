@@ -493,6 +493,38 @@ export const ProjectGitFlowModal: React.FC = () => {
     </div>
   );
 
+  const renderCompletionMergePolicySelect = () => (
+    <div className="space-y-2 md:col-span-2">
+      <label className="text-sm font-medium text-foreground">
+        {t('projects.gitFlowCompletionMergePolicy', 'Task completion merge policy')}
+      </label>
+      <select
+        value={settings.completionMergePolicy}
+        onChange={(event) =>
+          setSettings((prev) => ({
+            ...prev,
+            completionMergePolicy:
+              event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
+          }))
+        }
+        className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+      >
+        <option value="merge_commit">
+          {t('projects.gitFlowCompletionMergePolicyMergeCommit', 'Merge commit')}
+        </option>
+        <option value="fast_forward">
+          {t('projects.gitFlowCompletionMergePolicyFastForward', 'Fast-forward when possible')}
+        </option>
+      </select>
+      <p className="text-xs text-muted-foreground">
+        {t(
+          'projects.gitFlowCompletionMergePolicyHelp',
+          'Merge commit keeps completed tasks visible in history. Fast-forward advances directly when Git can do so cleanly.'
+        )}
+      </p>
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={handleClose} />
@@ -610,6 +642,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               'baseBranch',
               'main'
             )}
+            {renderCompletionMergePolicySelect()}
             {renderInput(
               t('projects.gitFlowPlanTemplate', 'Plan branch template'),
               settings.planBranchTemplate,

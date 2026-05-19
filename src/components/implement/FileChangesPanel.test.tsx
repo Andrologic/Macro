@@ -1646,7 +1646,7 @@ describe('FileChangesPanel', () => {
     });
   });
 
-  it('asks before fast-forwarding ready merge repositories', async () => {
+  it('merges ready fast-forwardable repositories without asking for a strategy', async () => {
     let resolveRunMergeWorkflow: (() => void) | null = null;
     const runMergeWorkflowMock = mock(() => new Promise<void>((resolve) => {
       resolveRunMergeWorkflow = resolve;
@@ -1700,28 +1700,16 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const chooseButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Choose merge strategy'));
+    const mergeButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Merge task'));
 
     await act(async () => {
-      chooseButton?.click();
+      mergeButton?.click();
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Fast-forward available');
-
-    const fastForwardButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Fast-forward and continue'));
-
-    await act(async () => {
-      fastForwardButton?.click();
-      await flushRender();
-    });
-
-    expect(fastForwardButton?.disabled).toBe(true);
-    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1', {
-      mergeStrategyAction: 'fast_forward',
-    });
+    expect(document.body.textContent).not.toContain('Fast-forward available');
+    expect(runMergeWorkflowMock).toHaveBeenCalledWith('task-1');
     expect(runMergeWorkflowMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -1729,9 +1717,9 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const remainingFastForwardButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Fast-forward and continue'));
-    expect(remainingFastForwardButton).toBeUndefined();
+    const remainingMergeButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Merge task'));
+    expect(remainingMergeButton?.disabled).toBe(false);
   });
 
   it('opens the assistant when a rebase strategy fails', async () => {
