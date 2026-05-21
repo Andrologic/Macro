@@ -261,7 +261,7 @@ export function Header({
   ) => (
     <button
       onClick={onClick}
-      className="macro-titlebar-action p-1.5 rounded-lg hover:bg-accent transition-colors"
+      className="macro-titlebar-action rounded-md p-1.5 transition-colors hover:bg-accent"
       title={title}
       aria-label={ariaLabel || title}
       data-tauri-drag-region="false"
@@ -301,11 +301,11 @@ export function Header({
 
             {mode !== 'Chat' ? (
               <>
-                <div className="hidden sm:block w-px h-5 bg-border shrink-0" />
+                <div className="ml-2 hidden h-5 w-px shrink-0 bg-border sm:block" />
                 <button
                   onClick={() => setProjectNavigatorOpen(true)}
                   className={cn(
-                    'macro-titlebar-action flex items-center gap-2 px-3 py-1.5 rounded-lg',
+                    'macro-titlebar-action flex items-center gap-2 rounded-md px-2.5 py-1.5',
                     'hover:bg-accent transition-colors text-sm',
                     'min-w-[80px] max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] xl:max-w-[320px]'
                   )}
@@ -333,7 +333,7 @@ export function Header({
             <div className="lg:hidden relative pointer-events-auto" ref={modeMenuRef}>
               <button
                 onClick={() => setModeMenuOpen((current) => !current)}
-                className="macro-titlebar-action flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors text-xs font-medium"
+                className="macro-titlebar-action flex items-center gap-2 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-accent"
                 data-tauri-drag-region="false"
                 data-tour-id="mode-switcher"
               >
@@ -380,7 +380,7 @@ export function Header({
           <div className="macro-topbar-trailing flex min-w-[100px] sm:min-w-[160px] md:min-w-[200px] items-center justify-end gap-2 justify-self-end">
             <button
               onClick={onToggleLeft}
-              className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
+              className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
               title={t('header.toggleLeftPanel')}
               data-tauri-drag-region="false"
               data-tour-id="toggle-left-panel"
@@ -393,7 +393,7 @@ export function Header({
             </button>
             <button
               onClick={onToggleRight}
-              className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
+              className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
               title={t('header.toggleRightPanel')}
               data-tauri-drag-region="false"
               data-tour-id="toggle-right-panel"
