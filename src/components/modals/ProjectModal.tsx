@@ -361,9 +361,6 @@ export const ProjectModal: React.FC = () => {
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="h-14 px-5 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
-              <Icon name="layers" size={16} className="text-primary" />
-            </div>
             <div>
               <div className="text-sm font-semibold text-foreground">
                 {t('project.addProjectTitle', 'Add Project')}

@@ -60,6 +60,11 @@ const PROJECT_NAV_MENU_HEIGHT = 120;
 const PROJECT_NAV_MENU_GAP = 4;
 const PROJECT_NAV_MENU_VIEWPORT_PADDING = 12;
 
+const projectHasGitIntegration = (project: Project): boolean => {
+  if (project.gitSetupState === 'not_git') return false;
+  return project.readOnlyReason !== 'missing_git' && project.readOnlyReason !== 'manual_and_missing_git';
+};
+
 const getProjectNavMenuPosition = (trigger: HTMLElement | null): MenuPosition => {
   if (!trigger) {
     return {
@@ -99,6 +104,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
   visibleActions,
 }) => {
   const { t } = useTranslation();
+  const projectIconName = projectHasGitIntegration(project) ? 'folder-git-2' : 'folder';
 
   const renderQuickAction = (
     action: ProjectOpenAction,
@@ -147,7 +153,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
           )}
         >
           <Icon
-            name="layers"
+            name={projectIconName}
             size={14}
             className={cn(
               project.status === 'active'
@@ -626,7 +632,6 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="layers" size={16} className="text-primary" />
             {t('projects.title', 'Projects')}
           </h2>
           <button
@@ -772,7 +777,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             {draggedProject && (
               <div className="px-3 py-2 rounded-lg bg-card border border-primary shadow-lg">
                 <div className="flex items-center gap-2">
-                  <Icon name="layers" size={14} className="text-primary" />
+                  <Icon
+                    name={projectHasGitIntegration(draggedProject) ? 'folder-git-2' : 'folder'}
+                    size={14}
+                    className="text-primary"
+                  />
                   <span className="text-sm text-foreground">{draggedProject.name}</span>
                 </div>
               </div>
