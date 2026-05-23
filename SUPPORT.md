@@ -1,6 +1,6 @@
 # Support
 
-Macro is in the 0.1 release line. Support is focused on the local-first desktop workflow and on keeping releases usable for early adopters.
+Macro is in the 0.1 release line. Support is focused on the desktop workflow and on keeping releases usable for early adopters.
 
 ## Supported for 0.1
 

@@ -1,427 +1,130 @@
 # Macro
 
-Macro is a local-first desktop environment for agentic software work. It helps developers plan changes in Architect mode, execute implementation tasks with AI assistance, review generated changes, and keep Git workflows auditable.
+<p align="center">
+  <img src="public/logo.svg" alt="Macro logo" width="96" />
+</p>
+
+<p align="center">
+  <strong>An AI development environment for planning, running, and reviewing software work across projects.</strong>
+</p>
+
+<p align="center">
+  <a href="https://macro.andrologic.ai">Website</a>
+  |
+  <a href="https://github.com/Andrologic/Macro/releases/latest"><strong>Download the latest release</strong></a>
+  |
+  <a href="INSTALL.md">Install from source</a>
+  |
+  <a href="CHANGELOG.md">Changelog</a>
+  |
+  <a href="SUPPORT.md">Support</a>
+</p>
+
+<p align="center">
+  <img alt="License" src="https://img.shields.io/github/license/Andrologic/Macro" />
+  <img alt="Latest release" src="https://img.shields.io/github/v/release/Andrologic/Macro?include_prereleases" />
+  <img alt="Built with Tauri" src="https://img.shields.io/badge/built%20with-Tauri-24c8db" />
+</p>
+
+Macro is a desktop development platform built for AI agents and the developers
+who supervise them. It coordinates projects, plans, worktrees, terminals,
+reviews, commits, and shared context so AI-assisted engineering can move faster
+without turning into an unreviewable stream of changes.
+
+Instead of giving an agent one repository and hoping it keeps the whole system
+in mind, Macro gives the work a structure: projects are grouped, plans can span
+multiple repositories, tasks run in isolated worktrees, and every result comes
+back through human review.
+
+Use Macro when you need to:
+
+- give AI agents shared context across several repositories;
+- supervise one plan that executes across multiple projects;
+- run multiple implementation tasks without one dirty working tree;
+- keep the planning and execution trail available after the code is committed.
+
+## What Makes Macro Different
+
+- **Multi-project context by design.** Group related repositories into one
+  workspace so an AI agent can understand how a frontend, backend, mobile app,
+  shared package, or companion tool fit together.
+- **Plans can span projects.** Architect mode can turn one product intent into a
+  strategy that touches multiple repositories while keeping the work visible as
+  one coordinated plan.
+- **Parallel task execution with worktrees.** Macro prepares task branches and
+  worktrees so several AI tasks can progress on the same project without
+  fighting over one working directory.
+- **Review-first implementation.** Implement mode is built around tasks,
+  blockers, diffs, terminals, commits, and merge flow, not just chat messages.
+- **Auditable AI workflow metadata.** Macro keeps planning and execution context
+  in a dedicated `@macro` metadata flow so the reasoning behind the work can be
+  restored, reviewed, and synchronized separately from product code.
+
+## How It Works
+
+1. **Group your projects.** Open one repository or connect several related
+   repositories as a single product workspace.
+2. **Plan with Architect.** Describe the change, let Macro extract needs,
+   generate strategy, identify dependencies, and decide which projects are
+   involved.
+3. **Run tasks with Implement.** Start implementation tasks manually, let AI
+   agents work in prepared branches and worktrees, and keep terminal/test output
+   close to the task.
+4. **Review before accepting.** Inspect file changes, resolve blockers, generate
+   commits, and integrate task work back through the plan.
+5. **Keep context with `@macro`.** Plans, needs, strategy, runtime state, and
+   chat transcript snapshots are stored as Macro metadata so the workflow has an
+   audit trail beyond the final code diff.
+
+## The `@macro` Metadata Branch
+
+Macro uses a dedicated `@macro` Git metadata flow to separate product code from
+workflow state.
+
+That branch exists to store the information that normal Git history does not
+capture well:
+
+- which plan created the work;
+- which needs and strategy were agreed before execution;
+- which tasks belong to which branches and projects;
+- what runtime state is needed to resume or audit the plan;
+- which conversations and plan snapshots explain the implementation context.
+
+Keeping this metadata separate has practical advantages. Product branches stay
+focused on code, while Macro can still preserve the coordination layer that made
+the code possible. In multi-project work, the same plan metadata can be present
+where it is needed so each repository keeps enough context to remain auditable.
+The separate sync flow also prepares Macro for remote and multi-machine
+supervision without mixing workflow state into application commits.
+
+## Get Macro
+
+Start with the latest published release:
+
+[Download the latest Macro release](https://github.com/Andrologic/Macro/releases/latest)
 
-## Features
+For source builds, platform requirements, provider notes, and validation
+commands, read [INSTALL.md](INSTALL.md).
 
-- **Architect mode**: turn an intent into scoped needs, strategy, and executable plans.
-- **Implement mode**: run AI-assisted tasks, inspect diffs, resolve blockers, and commit work.
-- **Chat mode**: keep lightweight local conversations with configurable tools and providers.
-- **Git-aware workflows**: coordinate branches, worktrees, metadata, reviews, and plan finalization.
-- **Local desktop backend**: Rust/Tauri services for filesystem, Git, terminal, provider, and workspace operations.
-- **Provider flexibility**: configure linked and OpenAI-compatible providers for local development.
+## Documentation
 
-## Safety Notice
+- [INSTALL.md](INSTALL.md) - install Macro or build it from source.
+- [DEVELOPMENT.md](DEVELOPMENT.md) - local development, scripts, environment
+  variables, and validation commands.
+- [RELEASES.md](RELEASES.md) - versioning, release builds, and macOS release
+  process.
+- [HEADLESS.md](HEADLESS.md) - headless kernel and remote transport notes.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.
+- [SECURITY.md](SECURITY.md) - security reporting and security model notes.
+- [SUPPORT.md](SUPPORT.md) - supported workflows for the current release line.
+- [CHANGELOG.md](CHANGELOG.md) - release history.
 
-Macro is intentionally powerful. At the user's direction it can execute terminal commands, modify files, interact with Git repositories, call configured AI providers, and store provider credentials in a private local Macro data file. Macro does not import older OS-stored provider secrets automatically, so users may need to reconnect providers once after storage changes. Review tool approvals, diffs, and provider settings carefully before using Macro on sensitive repositories.
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting and security model notes.
-
-## Install From Source
-
-Macro is a Tauri desktop app. The source package contains the React/TypeScript
-frontend, the Rust/Tauri backend, and the lockfiles needed to rebuild the app on
-your own machine.
-
-### Requirements
-
-- [Bun](https://bun.sh) >= 1.1.0. The repository currently pins `bun@1.1.42`.
-- [Rust](https://rustup.rs/) with Cargo, installed through `rustup`.
-- Tauri system dependencies for your operating system.
-- Python only if you need to run `bun run i18n:generate`.
-
-Tauri dependencies by platform:
-
-**Windows**
-
-- Microsoft Visual Studio Build Tools with the Desktop development with C++
-  workload.
-- WebView2 Runtime. It is already installed on most recent Windows systems.
-
-**macOS**
-
-- Xcode Command Line Tools: `xcode-select --install`
-- Full Xcode is only needed for signed or notarized release builds.
-
-**Ubuntu/Debian**
-
-```bash
-sudo apt update
-sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
-```
-
-### Build And Run With Tauri
-
-From the repository root:
-
-```bash
-# 1. Install JavaScript dependencies from the lockfile.
-bun install
-
-# 2. Check that every version manifest is synchronized.
-bun run version:check
-
-# 3. Run Macro as a desktop app in development mode.
-bun run tauri:dev
-```
-
-To compile an installable desktop build:
-
-```bash
-bun run tauri:build
-```
-
-Tauri writes desktop bundles to `src-tauri/target/release/bundle/`.
-
-You can also use the Tauri passthrough form:
-
-```bash
-bun run tauri build
-```
-
-For release-candidate versions on Windows, these commands automatically build
-the NSIS installer because MSI requires a numeric-only prerelease identifier.
-The release-candidate version stays unchanged in `package.json` and the app
-metadata.
-
-On macOS, you can build a DMG with:
-
-```bash
-bun run tauri:build:dmg
-```
-
-The DMG is written to `src-tauri/target/release/bundle/dmg/`.
-
-### Useful Validation Commands
-
-Run these commands before publishing or sharing a source package:
-
-```bash
-bun run version:check
-bun run typecheck
-bun run lint
-bun run test
-cargo test --manifest-path src-tauri/Cargo.toml
-bun run build
-```
-
-The full local CI command runs the same checks plus dependency installation,
-binary hygiene checks, i18n audit, and bundle-size validation:
-
-```bash
-bun run ci
-```
-
-### API Keys And Local Secrets
-
-No API key is required to compile Macro. Development-only provider keys can be
-placed in `dev/ai-keys.local.json`, but that file is intentionally ignored by
-git and must not be included in source packages. Do not put real secrets in
-`public/`, `.env`, or committed source files.
-
-## Available Scripts
-
-| Script | Description |
-|--------|-------------|
-| `bun run dev` | Start Vite development server |
-| `bun run build` | Build frontend for production |
-| `bun run preview` | Preview production build |
-| `bun run tauri:dev` | Run Tauri in development mode |
-| `bun run tauri:build` | Build Tauri application; Windows release candidates use NSIS automatically |
-| `bun run tauri:build:nsis` | Explicitly build a Windows NSIS installer |
-| `bun run tauri:build:dmg` | Build a native macOS DMG installer |
-| `bun run tauri:build:debug` | Build a debug Tauri application bundle |
-| `bun run install:tauri` | Install Bun dependencies and compile the Rust app in release mode |
-| `bun run typecheck` | Run TypeScript type checking |
-| `bun run lint` | Run ESLint |
-| `bun run clean` | Clean build artifacts |
-| `bun run update` | Update dependencies |
-| `bun run test` | Run tests with Bun test runner |
-| `bun run version:sync` | Sync secondary version manifests from `package.json` |
-| `bun run version:check` | Verify version consistency across app manifests |
-| `bun run version:bump` | Bump `package.json` version and sync dependent files |
-| `bun run ci` | CI pipeline (install + version check + binary check + typecheck + lint + i18n audit + tests + build) |
-
-## Versioning
-
-`package.json` is the single source of truth for the application version.
-
-- `src-tauri/tauri.conf.json` reads the version from `../package.json`
-- `src-tauri/Cargo.toml` is synchronized from `package.json`
-- `src-tauri/Cargo.lock` keeps the root package version synchronized from `package.json`
-- `flake.nix` derives its package version from `package.json`
-- the desktop UI reads the runtime app version from Tauri, with a Vite fallback sourced from `package.json`
-
-Use these commands for version management:
-
-```bash
-bun run version:check
-bun run version:sync
-bun run version:bump patch
-bun run version:bump rc
-bun run version:bump weekly
-bun run version:bump weekly 20260325
-```
-
-Release channels:
-
-- stable releases use `major`, `minor`, and `patch`
-- release candidates use `bun run version:bump rc` and produce versions like `0.2.1-rc.0`
-- weekly releases use `bun run version:bump weekly` and produce versions like `0.2.1-weekly.20260325.0`
-
-## Weekly Releases
-
-Weekly releases are automated through [`.github/workflows/weekly-release.yml`](.github/workflows/weekly-release.yml).
-
-- schedule-driven releases only run from the repository default branch on GitHub
-- the current cron is Monday at 08:17 UTC (`17 8 * * 1`)
-- the workflow bumps the app to the next `weekly` prerelease, commits the version files, tags `v<version>`, and publishes a signed Apple Silicon GitHub prerelease
-- release candidates stay manual and should be cut locally with `bun run version:bump rc`
-
-## Stable macOS Releases
-
-Stable macOS releases are published through [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
-
-- target architecture is Apple Silicon only (`aarch64-apple-darwin`)
-- output bundles are notarized `.app` and `.dmg` artifacts
-- auto-update is intentionally disabled for now; users update by downloading a newer release manually
-- the workflow expects Apple signing and notarization secrets to be configured in GitHub Actions
-
-## Bun Configuration
-
-This project uses Bun with optimized settings:
-
-- **Hoisted Installs**: Compatibility-first installs via `linker = "hoisted"`
-- **Auto-install**: Automatic dependency installation when `node_modules` is missing
-- **Exact Versions**: Exact versions saved to `package.json`
-- **Text Lockfile**: Human-readable `bun.lock` for better git diffs
-
-See [`bunfig.toml`](bunfig.toml) for complete configuration.
-
-## Project Structure
-
-```
-macro/
-├── src/                    # Frontend source code
-│   ├── components/         # React components
-│   ├── hooks/             # Custom React hooks
-│   ├── services/          # API and service layer
-│   ├── stores/            # Zustand state management
-│   ├── types/             # TypeScript type definitions
-│   └── utils/             # Utility functions
-├── src-tauri/             # Rust backend code
-├── public/                # Static assets
-├── dist/                  # Build output
-├── bunfig.toml           # Bun configuration
-├── package.json          # Project dependencies
-├── tsconfig.json         # TypeScript configuration
-└── vite.config.ts        # Vite configuration
-```
-
-## Technology Stack
-
-- **Frontend**: React 19, TypeScript, Tailwind CSS
-- **Backend**: Rust, Tauri
-- **Build Tool**: Vite
-- **Package Manager**: Bun
-- **State Management**: Zustand, Jotai
-- **UI Components**: Custom + Lucide icons
-
-## Performance Optimizations
-
-This project includes several performance optimizations:
-
-- **Code Splitting**: Lazy-loaded components by mode
-- **Bundle Optimization**: Manual chunks for vendors
-- **Theme Caching**: Instant theme switching with localStorage
-- **Lazy Loading**: CodeMirror loaded on demand
-- **Optimized Init**: Priority-based store initialization
-
-## Development
-
-### Using Bun
-
-Bun is the recommended package manager and runtime for this project. It provides:
-
-- **Faster installs**: Up to 30x faster than npm
-- **Single runtime for repo scripts**: Internal `.mjs` scripts run with Bun, so Node.js is not required for normal development
-- **Hoisted compatibility**: Matches the repository's `linker = "hoisted"` setup
-- **Built-in test runner**: Jest-compatible API with built-in coverage
-- **Native TypeScript support**: No additional configuration needed
-- **Auto-install**: Dependencies installed automatically when missing
-- **Hardlinks**: Disk space optimization on Windows/Linux
-
-### Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-VITE_BACKEND_TRANSPORT=desktop  # 'desktop' (default) or 'remote'
-
-# Remote backend (used when VITE_BACKEND_TRANSPORT=remote)
-VITE_REMOTE_API_BASE_URL=http://localhost:3000
-VITE_REMOTE_API_PREFIX=/api/v1
-VITE_REMOTE_WORKSPACE_ID=
-VITE_REMOTE_AUTH_TOKEN=
-VITE_REMOTE_TIMEOUT_MS=15000
-```
-
-Remote transport contract:
-
-- `VITE_BACKEND_TRANSPORT=remote` is sufficient to switch the `services` layer to the remote provider.
-- `VITE_BACKEND_TRANSPORT=desktop` requires the Tauri IPC runtime. Use `remote` for web/mobile shells.
-- The current remote mode is intentionally minimal. It supports workspace bootstrap, task catalog, Git tree/history, remote tool policy/validation/execution, and local browser persistence for tool/MCP preferences.
-- Project creation/import/edit flows, Git worktree flows, file preview from the Git tree, and local implementation actions remain desktop-only in this pass.
-
-### Local AI Provider Config for Tauri Dev
-
-Recommended for day-to-day development: to preload provider definitions and avoid re-entering provider API keys on every `bun run tauri:dev` restart, create a local provider config file:
-
-```bash
-cp dev/ai-keys.local.example.json dev/ai-keys.local.json
-```
-
-Then edit `dev/ai-keys.local.json` with your real keys and any dev-only provider definitions.
-
-- File format supports legacy key-only overrides for existing provider IDs (`openai`, `anthropic`, `openrouter`, `zai`, etc.)
-- Declarative entries can define a dev-managed provider with `name`, `providerType`, `baseUrl`, and optional `apiKey`/`isLocal`
-- For declarative entries, the JSON object key becomes the canonical provider ID
-- Provider keys are matched flexibly (`zai` and `z.ai` both work)
-- `apiKey` is enough in most cases
-- `baseUrl` is optional and only needed for custom/proxy endpoints
-- In `bun run tauri:dev`, declarative entries sync their `name`, `providerType`, `baseUrl`, and `isLocal` into the local provider database
-- Providers not declared in this file remain user-managed in the app
-- This file is ignored by git (`dev/ai-keys.local.json`)
-- The preload only works in `bun run tauri:dev`
-- `bun run dev`, `bun run build`, and `bun run tauri:build` do not load this file
-- Remove any legacy `public/ai-keys.local.json`; the build now fails if a secret file remains in `public`
-
-Example:
-
-```json
-{
-  "providers": {
-    "openai": {
-      "apiKey": "OPENAI_API_KEY_HERE"
-    },
-    "minimax": {
-      "name": "MiniMax",
-      "providerType": "openai",
-      "baseUrl": "https://api.minimax.io/v1",
-      "apiKey": "MINIMAX_API_KEY_HERE"
-    },
-    "opencode-go": {
-      "name": "OpenCode Go",
-      "providerType": "openai",
-      "baseUrl": "https://opencode.ai/zen/go/v1",
-      "apiKey": "OPENCODE_GO_API_KEY_HERE"
-    }
-  }
-}
-```
-
-### Tauri Development
-
-For Tauri development, ensure you have the required system dependencies:
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
-```
-
-**macOS:**
-No additional dependencies required for day-to-day development.
-
-For local signed or notarized release builds, install full Xcode in addition to the Command Line Tools.
-
-**Windows:**
-No additional dependencies required.
-
-## Building
-
-### Frontend Only
-
-```bash
-bun run build
-```
-
-### Tauri Application
-
-```bash
-# Development
-bun run tauri:dev
-
-# Production build
-bun run tauri:build
-
-# Native macOS DMG
-bun run tauri:build:dmg
-```
-
-Built applications will be in `src-tauri/target/release/bundle/`.
-
-On macOS, the DMG is generated at `src-tauri/target/release/bundle/dmg/`.
-The Finder presentation intentionally stays minimal and native: app on the left, `Applications` shortcut on the right, no custom background image.
-
-### Apple Silicon Runtime Sidecar
-
-The desktop app compiles an auxiliary AI runtime sidecar into `src-tauri/binaries/` before desktop builds.
-
-- local macOS Apple Silicon builds emit `macro-ai-runtime-aarch64-apple-darwin`
-- Tauri embeds the final packaged sidecar as `macro-ai-runtime` inside the app bundle
-- the sidecar uses macOS entitlements compatible with Bun's JavaScript runtime
-
-### macOS Release Runbook
-
-1. Ensure `bun run ci` passes locally.
-2. Bump and sync the version in `package.json`.
-3. Confirm the Apple signing secrets are configured in GitHub Actions:
-   `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8`.
-4. Trigger [`.github/workflows/release-macos.yml`](.github/workflows/release-macos.yml).
-5. Wait for the workflow to build, sign, notarize, staple, and validate the Apple Silicon `.app` and `.dmg`.
-6. Download the release artifact on a clean Apple Silicon Mac and smoke test:
-   app launch from Finder, terminal commands, Git access, AI runtime startup, provider secret storage, and notifications.
-
-### Headless Kernel (No GUI)
-
-You can run the backend kernel without the desktop interface:
-
-```bash
-cd src-tauri
-cargo run --bin macro-headless
-```
-
-Optional environment variables:
-
-- `MACRO_HEADLESS_HOST` (default: `127.0.0.1`)
-- `MACRO_HEADLESS_PORT` (default: `8787`)
-- `MACRO_HEADLESS_BEARER_TOKEN` (if set, required as `Authorization: Bearer <token>`)
-
-Available endpoints (initial implementation):
-
-- `GET /health`
-- `GET /v1/tools/mode-policy?mode=Architect|Chat|Implement`
-- `POST /v1/tools/validate`
-- `GET /api/v1/workspace/bootstrap`
-- `GET /api/v1/workspace/tasks`
-- `GET /api/v1/projects/:projectId/git/tree`
-- `GET /api/v1/projects/:projectId/git/commits`
-
-## Contributing
-
-Issues and pull requests are welcome, with discussion requested before larger changes to security, architecture, Git/worktree behavior, storage, AI provider flows, or licensing.
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. See [SUPPORT.md](SUPPORT.md) for supported 0.1 workflows, [CHANGELOG.md](CHANGELOG.md) for release notes, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+Product and architecture reference documents live in [docs/](docs/).
 
 ## License
 
 Macro is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
 
-You may use the software for free. If you modify Macro, redistribute it, or use a modified version to provide a network service, the corresponding source code must be made available under the same license.
-
-## Acknowledgments
-
-- Built with [Tauri](https://tauri.app/)
-- Powered by [Bun](https://bun.sh/)
-- UI with [Tailwind CSS](https://tailwindcss.com/)
+You may use the software for free. If you modify Macro, redistribute it, or use
+a modified version to provide a network service, the corresponding source code
+must be made available under the same license.
