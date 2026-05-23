@@ -239,9 +239,14 @@ describe('remote provider', () => {
     });
 
     const result = await getMCPServerSettings();
-    expect(result.servers).toEqual({});
-    expect(JSON.parse(localStorageMock.getItem('macro_mcp_server_settings') || '{}')).toEqual({
-      example: true,
+    expect(result.servers.example).toMatchObject({
+      id: 'example',
+      status: 'unconfigured',
+      config: { enabled: true },
+    });
+    expect(JSON.parse(localStorageMock.getItem('macro_mcp_server_settings') || '{}').example).toMatchObject({
+      id: 'example',
+      config: { enabled: true },
     });
   });
 });

@@ -1,29 +1,17 @@
-import React, { Suspense, lazy } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAppStore } from '../../stores/useAppStore';
 import type { AppMode } from '../../types';
 import { Skeleton } from '../shared/Skeleton';
-
-// =============================================================================
-// LAZY LOADED COMPONENTS - Code Splitting by Mode
-// =============================================================================
-// These components are loaded on-demand based on the active mode
-// This reduces the initial bundle size significantly
-
-// Architect Mode components - Loaded only when mode === 'Architect'
-const NeedsPanel = lazy(() => import('../architect/NeedsPanel'));
-const StrategyGraph = lazy(() => import('../plan/StrategyGraph'));
-
-// Implement Mode components - Loaded only when mode === 'Implement'
-const TaskQueue = lazy(() => import('../tasks/TaskQueue'));
-const FileChangesPanel = lazy(() => import('../implement/FileChangesPanel'));
-const ImplementCenter = lazy(() => import('../implement/ImplementCenter'));
-
-// Chat Mode components - Loaded only when mode === 'Chat'
-const ConversationArchive = lazy(() => import('../chat/ConversationArchive'));
-const ContextToolbox = lazy(() => import('../chat/ContextToolbox'));
-
-// Shared - ChatZone is used by all modes, but still lazy loaded
-const ChatZone = lazy(() => import('../chat/ChatZone'));
+import { Button } from '../ui/Button';
+import { Icon } from '../ui/Icon';
+import {
+  modePanelLoaders,
+  preloadModePanels,
+  resetModePanelLoader,
+  type ModePanelComponent,
+  type ModePanelLoader,
+  type ModePanelSlot,
+} from './modePanelLoaders';
 
 // =============================================================================
 // SKELETON COMPONENTS - Loading States
@@ -74,35 +62,6 @@ const RightPanelSkeleton: React.FC = () => (
 );
 
 // =============================================================================
-// PANEL CONFIGURATION
-// =============================================================================
-
-interface PanelConfig {
-  left: React.ComponentType<{ className?: string }>;
-  center: React.ComponentType;
-  right: React.ComponentType<{ className?: string }>;
-}
-
-// Map of mode-specific component configurations
-const modeConfigs: Record<AppMode, PanelConfig> = {
-  Architect: {
-    left: NeedsPanel,
-    center: ChatZone,
-    right: StrategyGraph,
-  },
-  Implement: {
-    left: TaskQueue,
-    center: ImplementCenter,
-    right: FileChangesPanel,
-  },
-  Chat: {
-    left: ConversationArchive,
-    center: ChatZone,
-    right: ContextToolbox,
-  },
-};
-
-// =============================================================================
 // PANEL SKELETON MAP
 // =============================================================================
 
@@ -116,31 +75,130 @@ const panelSkeletons = {
 // MODE ROUTER COMPONENT
 // =============================================================================
 
+const formatPanelLoadError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === 'string' ? error : 'Unknown module loading error';
+};
+
+interface AsyncPanelProps {
+  loader: ModePanelLoader;
+  fallback: React.ReactNode;
+}
+
+export const AsyncPanel: React.FC<AsyncPanelProps> = ({ loader, fallback }) => {
+  const [retryKey, setRetryKey] = useState(0);
+  const [state, setState] = useState<{
+    status: 'loading' | 'ready' | 'error';
+    component: ModePanelComponent | null;
+    error: unknown;
+  }>(() => {
+    const cachedComponent = loader.getCachedComponent();
+    return cachedComponent
+      ? { status: 'ready', component: cachedComponent, error: null }
+      : { status: 'loading', component: null, error: null };
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const cachedComponent = loader.getCachedComponent();
+
+    if (cachedComponent) {
+      setState({ status: 'ready', component: cachedComponent, error: null });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setState({ status: 'loading', component: null, error: null });
+
+    void loader
+      .load()
+      .then((component) => {
+        if (!cancelled) {
+          setState({ status: 'ready', component, error: null });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(`[ModeRouter] Failed to load ${loader.label}`, error);
+          setState({ status: 'error', component: null, error });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loader, retryKey]);
+
+  if (state.status === 'ready' && state.component) {
+    const Component = state.component;
+    return <Component />;
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-4 border border-dashed border-border bg-background/70 p-6 text-center">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-500">
+          <Icon name="alert-circle" size={18} />
+        </div>
+        <div className="max-w-sm space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">
+            {loader.label} could not load.
+          </h2>
+          <p className="text-xs leading-5 text-muted-foreground">
+            {formatPanelLoadError(state.error)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            leftIcon={<Icon name="refresh-cw" size={13} />}
+            onClick={() => {
+              resetModePanelLoader(loader);
+              setRetryKey((current) => current + 1);
+            }}
+          >
+            Retry
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => window.location.reload()}
+          >
+            Reload app
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{fallback}</>;
+};
+
 interface ModeRouterProps {
-  panel: 'left' | 'center' | 'right';
+  panel: ModePanelSlot;
 }
 
 /**
  * ModeRouter - Routes to the appropriate panel component based on current mode
  * 
  * PERFORMANCE OPTIMIZATIONS:
- * - Uses React.lazy() for code splitting by mode
- * - Suspense boundaries with skeleton loading states
- * - Only loads components for the active mode
+ * - Loads mode panels through a cached controlled async loader
+ * - Keeps skeleton loading states without letting chunk failures crash the shell
  * - Prevents unnecessary re-renders with stable references
  */
 export const ModeRouter: React.FC<ModeRouterProps> = ({ panel }) => {
   const mode = useAppStore((state) => state.mode);
-
-  // Get the appropriate component for the current panel and mode
-  const Component = modeConfigs[mode][panel];
+  const loader = modePanelLoaders[mode][panel];
   const fallback = panelSkeletons[panel];
 
-  return (
-    <Suspense fallback={fallback}>
-      <Component />
-    </Suspense>
-  );
+  return <AsyncPanel loader={loader} fallback={fallback} />;
 };
 
 // =============================================================================
@@ -152,24 +210,7 @@ export const ModeRouter: React.FC<ModeRouterProps> = ({ panel }) => {
  * Call this when hovering over mode switcher or anticipating mode change
  */
 export const preloadModeComponents = (mode: AppMode): void => {
-  // Preload all panels for the specified mode
-  switch (mode) {
-    case 'Architect':
-      import('../architect/NeedsPanel');
-      import('../plan/StrategyGraph');
-      import('../chat/ChatZone');
-      break;
-    case 'Implement':
-      import('../tasks/TaskQueue');
-      import('../implement/FileChangesPanel');
-      import('../implement/ImplementCenter');
-      break;
-    case 'Chat':
-      import('../chat/ConversationArchive');
-      import('../chat/ContextToolbox');
-      import('../chat/ChatZone');
-      break;
-  }
+  void preloadModePanels(mode);
 };
 
 /**

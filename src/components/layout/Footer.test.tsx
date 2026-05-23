@@ -20,6 +20,8 @@ type AppStoreState = {
   selectedProjectId: string | null;
   projectGroups: ProjectGroup[];
   metadataAutoPush: boolean;
+  metadataMissingUpstreamPolicy: 'ask' | 'ignore';
+  setMetadataMissingUpstreamPolicy: ReturnType<typeof mock>;
   activeArchitectPlanId: string | null;
   activePlanContext: { targetBranch: string } | null;
   switchProjectContext: ReturnType<typeof mock>;
@@ -95,11 +97,13 @@ let gitStatusMock: ReturnType<typeof mock>;
 let gitFetchMock: ReturnType<typeof mock>;
 let gitPullMock: ReturnType<typeof mock>;
 let gitPushMock: ReturnType<typeof mock>;
+let gitRemoteAddOriginMock: ReturnType<typeof mock>;
 let macroBranchEnsureMock: ReturnType<typeof mock>;
 let macroBranchStatusMock: ReturnType<typeof mock>;
 let macroBranchPullMock: ReturnType<typeof mock>;
 let macroBranchPushMock: ReturnType<typeof mock>;
 let macroBranchCommitIfDirtyMock: ReturnType<typeof mock>;
+let setMetadataMissingUpstreamPolicyMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let originalConsoleError: typeof console.error;
 
@@ -158,6 +162,12 @@ const buildGitStatus = (branch: string, behind: number, ahead: number): GitStatu
   behind,
 });
 
+const buildGitStatusWithoutOrigin = (branch: string, ahead = 1): GitStatusDto => ({
+  ...buildGitStatus(branch, 0, ahead),
+  has_origin: false,
+  has_upstream: false,
+});
+
 const buildMacroStatus = (behind: number, ahead: number): MacroBranchSyncDto => ({
   branch: '@macro',
   state: 'clean',
@@ -184,6 +194,24 @@ const buildDirtyMacroStatus = (): MacroBranchSyncDto => ({
   next_action: 'commit',
 });
 
+const buildMissingUpstreamMacroStatus = (): MacroBranchSyncDto => ({
+  ...buildMacroStatus(0, 2),
+  state: 'pending',
+  has_upstream: false,
+  reason: 'missing_upstream',
+  next_action: 'push',
+});
+
+const buildMissingOriginMacroStatus = (): MacroBranchSyncDto => ({
+  ...buildMacroStatus(0, 0),
+  state: 'failed',
+  has_origin: false,
+  has_upstream: false,
+  reason: 'missing_origin',
+  next_action: 'configure_remote',
+  error: 'Remote origin is not configured.',
+});
+
 const useAppStore = createStoreHook(() => appState);
 const useNotificationCenterStore = createStoreHook(() => notificationState);
 
@@ -198,6 +226,16 @@ const flushAsyncWork = async () => {
 
 const findButtonByIcon = (container: HTMLDivElement, iconName: string): HTMLButtonElement | null =>
   (container.querySelector(`[data-icon="${iconName}"]`)?.closest('button') as HTMLButtonElement | null) ?? null;
+
+const findButtonByText = (container: HTMLDivElement, text: string): HTMLButtonElement | null =>
+  Array.from(container.querySelectorAll('button'))
+    .find((button) => button.textContent?.trim() === text) ?? null;
+
+const setInputValue = (input: HTMLInputElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+};
 
 const selectGitScope = async (container: HTMLDivElement, value: string) => {
   const select = container.querySelector('select') as HTMLSelectElement | null;
@@ -245,6 +283,8 @@ const loadFooter = async () => {
     gitFetch: (params: { repoPath: string }) => gitFetchMock(params),
     gitPull: (params: { repoPath: string }) => gitPullMock(params),
     gitPush: (params: { repoPath: string }) => gitPushMock(params),
+    gitRemoteAddOrigin: (params: { repoPath: string; url: string }) =>
+      gitRemoteAddOriginMock(params),
     macroBranchEnsure: (params?: { workspacePath?: string | null }) =>
       macroBranchEnsureMock(params),
     macroBranchStatus: (params?: { workspacePath?: string | null }) =>
@@ -260,8 +300,8 @@ const loadFooter = async () => {
   mock.module('../ui/Button', () => ({
     Button: React.forwardRef<
       HTMLButtonElement,
-      React.ButtonHTMLAttributes<HTMLButtonElement>
-    >(({ children, ...props }, ref) => (
+      React.ButtonHTMLAttributes<HTMLButtonElement> & { isLoading?: boolean }
+    >(({ children, isLoading: _isLoading, ...props }, ref) => (
       <button ref={ref} {...props}>
         {children}
       </button>
@@ -291,7 +331,28 @@ const loadFooter = async () => {
   }));
 
   mock.module('../conflicts/ConflictResolutionPanel', () => ({
-    ConflictResolutionPanel: () => <div data-testid="conflict-panel" />,
+    ConflictResolutionPanel: ({
+      title,
+      description,
+      retryLabel,
+      dismissLabel,
+      onRetry,
+      onDismiss,
+    }: {
+      title: string;
+      description: string;
+      retryLabel?: string;
+      dismissLabel?: string;
+      onRetry?: () => void;
+      onDismiss?: () => void;
+    }) => (
+      <div data-testid="conflict-panel">
+        <h3>{title}</h3>
+        <p>{description}</p>
+        {onDismiss && <button onClick={onDismiss}>{dismissLabel || 'Close'}</button>}
+        {onRetry && <button onClick={onRetry}>{retryLabel || 'Retry'}</button>}
+      </div>
+    ),
   }));
 
   mock.module('./NotificationCenterPopover', () => ({
@@ -315,6 +376,9 @@ describe('Footer', () => {
       }
       originalConsoleError(...args);
     };
+    setMetadataMissingUpstreamPolicyMock = mock((policy: 'ask' | 'ignore') => {
+      appState.metadataMissingUpstreamPolicy = policy;
+    });
     appState = {
       selectedGroupId: 'group-1',
       selectedProjectId: 'project-a',
@@ -323,6 +387,8 @@ describe('Footer', () => {
         { id: 'group-2', name: 'Docs', projects: GROUP_TWO_PROJECTS },
       ],
       metadataAutoPush: false,
+      metadataMissingUpstreamPolicy: 'ask',
+      setMetadataMissingUpstreamPolicy: setMetadataMissingUpstreamPolicyMock,
       activeArchitectPlanId: null,
       activePlanContext: null,
       switchProjectContext: mock(async () => undefined),
@@ -361,6 +427,10 @@ describe('Footer', () => {
       branch: 'main',
       remote: 'origin',
       output: `push ${repoPath}`,
+    }));
+    gitRemoteAddOriginMock = mock(async ({ url }: { repoPath: string; url: string }) => ({
+      remote: 'origin',
+      url,
     }));
     macroBranchEnsureMock = mock(async (params?: { workspacePath?: string | null }) =>
       cloneMacroStatus(macroStatusByPath[params?.workspacePath ?? '']!)
@@ -600,5 +670,549 @@ describe('Footer', () => {
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3');
     expect(container?.textContent ?? '').not.toContain('Review');
     expect(container?.textContent ?? '').not.toContain('Resolve');
+  });
+
+  it('opens a missing upstream choice modal before the first footer push', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('@macro has no remote branch yet');
+    expect(gitPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('opens a remote configuration modal before pushing code without origin', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(container?.textContent ?? '').toContain('API');
+    expect(gitPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('only lists the selected footer scope when that sub-project has no origin', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatusWithoutOrigin('feature-b'),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    const inputLabels = Array.from(container?.querySelectorAll('input') ?? [])
+      .map((input) => input.closest('label')?.textContent ?? '');
+    expect(inputLabels).toHaveLength(1);
+    expect(inputLabels[0]).toContain('Web');
+    expect(inputLabels[0]).not.toContain('API');
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('pushes ready repositories while leaving missing-origin repositories local for this push', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push available repositories')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitRemoteAddOriginMock).not.toHaveBeenCalled();
+    expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repo/web' },
+    ]);
+  });
+
+  it('rechecks origin state on each push so external remote changes are picked up', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-a');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+
+    act(() => {
+      findButtonByText(container!, 'Cancel')?.click();
+    });
+    await flushAsyncWork();
+
+    gitStatusByPath['/repo/api'] = {
+      ...gitStatusByPath['/repo/api']!,
+      has_origin: true,
+      has_upstream: true,
+    };
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitRemoteAddOriginMock).not.toHaveBeenCalled();
+    expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repo/api' },
+    ]);
+  });
+
+  it('shows every missing-origin sub-project and requires at least one pushable repository', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatusWithoutOrigin('feature-b'),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('API');
+    expect(container?.textContent ?? '').toContain('Web');
+    expect(container?.querySelectorAll('input')).toHaveLength(2);
+
+    act(() => {
+      findButtonByText(container!, 'Push available repositories')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Enter at least one origin URL');
+    expect(gitRemoteAddOriginMock).not.toHaveBeenCalled();
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('configures one missing-origin sub-project and pushes only the configured subset', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatusWithoutOrigin('feature-b'),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    gitRemoteAddOriginMock.mockImplementation(async ({ repoPath, url }: { repoPath: string; url: string }) => {
+      gitStatusByPath[repoPath] = {
+        ...gitStatusByPath[repoPath]!,
+        has_origin: true,
+        has_upstream: true,
+      };
+      return { remote: 'origin', url };
+    });
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    const inputs = Array.from(container?.querySelectorAll('input') ?? []);
+    act(() => {
+      setInputValue(inputs[0]!, 'https://github.com/example/api.git');
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push available repositories')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitRemoteAddOriginMock).toHaveBeenCalledWith({
+      repoPath: '/repo/api',
+      url: 'https://github.com/example/api.git',
+    });
+    expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repo/api' },
+    ]);
+  });
+
+  it('configures origin from the push modal before retrying push', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    gitRemoteAddOriginMock.mockImplementation(async ({ repoPath, url }: { repoPath: string; url: string }) => {
+      gitStatusByPath[repoPath] = {
+        ...gitStatusByPath[repoPath]!,
+        has_origin: true,
+        has_upstream: true,
+      };
+      return { remote: 'origin', url };
+    });
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    const input = container?.querySelector('input') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    act(() => {
+      if (!input) return;
+      setInputValue(input, 'https://github.com/example/api.git');
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push available repositories')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitRemoteAddOriginMock).toHaveBeenCalledWith({
+      repoPath: '/repo/api',
+      url: 'https://github.com/example/api.git',
+    });
+    expect(gitPushMock).toHaveBeenCalled();
+  });
+
+  it('opens remote configuration when @macro reports missing origin', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingOriginMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('configures origin before asking about @macro missing upstream in mixed push preflight', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatusWithoutOrigin('main-a'),
+      '/repo/web': buildGitStatus('feature-b', 0, 0),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    gitRemoteAddOriginMock.mockImplementation(async ({ repoPath, url }: { repoPath: string; url: string }) => {
+      gitStatusByPath[repoPath] = {
+        ...gitStatusByPath[repoPath]!,
+        has_origin: true,
+        has_upstream: true,
+      };
+      return { remote: 'origin', url };
+    });
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+
+    const input = container?.querySelector('input') as HTMLInputElement | null;
+    act(() => {
+      if (!input) return;
+      setInputValue(input, 'https://github.com/example/api.git');
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push available repositories')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('@macro has no remote branch yet');
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('does not show Resolve for missing origin because push handles configuration', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingOriginMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').not.toContain('Resolve');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Remote origin is missing');
+  });
+
+  it('pushes @macro when the missing upstream modal confirms publishing', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push @macro')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repo/api' },
+      { repoPath: '/repo/web' },
+    ]);
+    expect(macroBranchPushMock).toHaveBeenCalled();
+    expect(setMetadataMissingUpstreamPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('persists ignore when the missing upstream modal chooses not to ask again', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, "Don't ask again")?.click();
+    });
+    await flushAsyncWork();
+
+    expect(setMetadataMissingUpstreamPolicyMock).toHaveBeenCalledWith('ignore');
+    expect(gitPushMock).toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps asking later when the missing upstream modal chooses ask next time', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-up')?.click();
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Ask next time')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(setMetadataMissingUpstreamPolicyMock).not.toHaveBeenCalled();
+    expect(gitPushMock).toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores existing missing upstream from Resolve without pushing code', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Resolve')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Push @macro');
+    expect(container?.textContent ?? '').toContain('Ignore missing upstream');
+    expect(container?.textContent ?? '').not.toContain('Ask next time');
+
+    act(() => {
+      findButtonByText(container!, 'Ignore missing upstream')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(setMetadataMissingUpstreamPolicyMock).toHaveBeenCalledWith('ignore');
+    expect(gitPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+  });
+
+  it('pushes @macro directly from Resolve for an existing missing upstream', async () => {
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Resolve')?.click();
+    });
+    await flushAsyncWork();
+
+    act(() => {
+      findButtonByText(container!, 'Push @macro')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).toHaveBeenCalledWith({ workspacePath: '/repo/api' });
   });
 });

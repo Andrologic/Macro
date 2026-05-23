@@ -5778,8 +5778,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(backups.len(), 1);
 
-        let backup_content =
-            stdfs::read_to_string(backups[0].path()).expect("read backup state");
+        let backup_content = stdfs::read_to_string(backups[0].path()).expect("read backup state");
         assert!(backup_content.contains("project-web-copy"));
     }
 

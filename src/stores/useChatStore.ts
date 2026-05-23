@@ -19,6 +19,7 @@ import {
   ConversationCompactionState,
   CompactionPass,
   CompactionSummarySource,
+  MCPTool,
   PendingToolApproval,
   ProviderTurnState,
   ProjectGroup,
@@ -116,6 +117,8 @@ import {
 } from "../services/architectPlanPresentation";
 import { buildArchitectPlanToolFollowUpInstruction } from "../services/architectChat";
 import { normalizeArchitectToolId } from "../services/architectToolNames";
+import { selectInjectableMCPToolIds } from "../services/mcp";
+import { isMCPToolId } from "../services/mcpToolNames";
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
@@ -3174,7 +3177,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getToolDefinitionsForIds = (toolIds: string[]) => {
     const allowedIdSet = new Set(toolIds);
-    return MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
+    const macroDefinitions = MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
+    const mcpDefinitions: MacroToolRegistryEntry[] = useToolsStore
+      .getState()
+      .getEnabledMCPTools()
+      .filter((tool) => allowedIdSet.has(tool.id))
+      .map((tool) => ({
+        id: tool.id,
+        description: tool.description || `MCP tool ${tool.name} from ${tool.serverId}`,
+        parameters: (tool.inputSchema as MacroToolRegistryEntry["parameters"]) ?? {
+          type: "object",
+          properties: {},
+        },
+      }));
+    return [...macroDefinitions, ...mcpDefinitions];
   };
 
   const getSelectedModelContext = (
@@ -4304,6 +4320,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     agentTypeOverride?: AgentType | null,
   ): Promise<boolean> => {
     const mode = modeOverride ?? useAppStore.getState().mode;
+    const toolsState = useToolsStore.getState();
+    if (isMCPToolId(toolId)) {
+      if (
+        mode === "Implement" &&
+        agentTypeOverride === "plan" &&
+        !isToolAllowedForImplementAgent("plan", toolId)
+      ) {
+        return false;
+      }
+      return toolsState.getEnabledMCPToolIds().includes(toolId);
+    }
+
     const modePolicy = await getModePolicyForCurrentMode(mode);
     if (!modePolicy.allowedToolIds.includes(toolId)) {
       return false;
@@ -4316,7 +4344,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return false;
     }
 
-    const toolsState = useToolsStore.getState();
     if (mode === "Chat") {
       return toolsState.isChatToolEnabled(toolId);
     }
@@ -4916,6 +4943,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (normalizedToolName === "read_file") {
       return readConversationFileContext(conversationId, args);
+    }
+
+    if (isMCPToolId(normalizedToolName)) {
+      return useToolsStore.getState().callMCPTool(normalizedToolName, args);
     }
 
     if (normalizedToolName === "mark_source_passage") {
@@ -6269,13 +6300,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : null;
     const modePolicy = await getModePolicyForCurrentMode(mode);
     const toolsState = useToolsStore.getState();
+    const enabledMCPToolIds = selectInjectableMCPToolIds({
+      enabledToolIds: toolsState.getEnabledMCPToolIds(),
+      supportsNativeToolCalling: true,
+      providerType: selectedProvider?.providerType,
+      mode,
+      agentType,
+    });
 
     if (mode === "Chat") {
       const enabledChatTools = toolsState.getEnabledChatToolIds();
       return finalizeAllowedToolIds(
-        enabledChatTools.filter((toolId) =>
-          modePolicy.allowedToolIds.includes(toolId),
-        ),
+        [
+          ...enabledChatTools.filter((toolId) =>
+            modePolicy.allowedToolIds.includes(toolId),
+          ),
+          ...enabledMCPToolIds,
+        ],
       );
     }
 
@@ -6291,7 +6332,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         : modePolicy.allowedToolIds;
 
     return finalizeAllowedToolIds(
-      enabledTools.filter((toolId) => modeAllowedToolIds.includes(toolId)),
+      [
+        ...enabledTools.filter((toolId) => modeAllowedToolIds.includes(toolId)),
+        ...enabledMCPToolIds,
+      ],
     );
   };
 
@@ -7358,6 +7402,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const maxTurns = normalizeChatMaxTurns(
       await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
     );
+    const mcpTools: MCPTool[] = useToolsStore
+      .getState()
+      .getEnabledMCPTools()
+      .filter((tool) => allowedToolIds.includes(tool.id));
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,
@@ -7388,6 +7436,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebSearch,
       enableWebFetch,
       webSearchOptions,
+      mcpTools,
       guidedToolRetry,
       maxTurns,
       compactionDecision: compactedRequest.decision,
@@ -7791,6 +7840,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         enableWebSearch: streamLaunch.enableWebSearch,
         enableWebFetch: streamLaunch.enableWebFetch,
         webSearchOptions: streamLaunch.webSearchOptions,
+        mcpTools: streamLaunch.mcpTools,
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
       });
@@ -8278,6 +8328,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     webSearchOptions: ReturnType<
       typeof getStreamingWebSearchConfig
     >["webSearchOptions"];
+    mcpTools: MCPTool[];
     maxTurns: ChatMaxTurnsPreference;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
@@ -8486,6 +8537,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enableWebSearch: streamLaunch.enableWebSearch,
           enableWebFetch: streamLaunch.enableWebFetch,
           webSearchOptions: streamLaunch.webSearchOptions,
+          mcpTools: streamLaunch.mcpTools,
           internalAgentProfile: streamLaunch.internalAgentProfile,
           maxTurns: streamLaunch.maxTurns,
           compactionDecision: streamLaunch.compactionDecision,
@@ -9092,6 +9144,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebSearch: params.enableWebSearch,
       enableWebFetch: params.enableWebFetch,
       webSearchOptions: params.webSearchOptions,
+      mcpTools: params.mcpTools,
       maxTurns: params.maxTurns,
       sessionId: params.sessionId,
       signal: abortController.signal,
@@ -10117,6 +10170,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       architectWorkspaceState &&
       isProjectWorkspaceMissing(architectWorkspaceState)
     ) {
+      clearPendingArchitectConversationsExcept();
+      return modeFallback(null);
+    }
+
+    if (mode === "Architect" && !appState.activeArchitectPlanId) {
       clearPendingArchitectConversationsExcept();
       return modeFallback(null);
     }
@@ -11822,6 +11880,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         await ensureMessagesLoadedForConversation(conversationId);
         emitSendTimeline("messages_ready", { conversationId });
+        const appStateAtSend = useAppStore.getState();
+        const modeAtSend = appStateAtSend.mode;
+        if (modeAtSend === "Architect" && !appStateAtSend.activeArchitectPlanId) {
+          throw buildSendError("Select a plan before sending an Architect message.");
+        }
+
         const previousConversationId = conversationId;
         const hasPendingArchitectConversation =
           pendingArchitectConversationDetailsById.has(conversationId);
@@ -11851,8 +11915,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedReasoningEffort,
           providerConfigs,
         } = providerState;
-        const appStateAtSend = useAppStore.getState();
-        const modeAtSend = appStateAtSend.mode;
         const agentTypeAtSend =
           modeAtSend === "Implement" ? appStateAtSend.agentType : null;
         persistSelectionForContext(modeAtSend, conversationId);
@@ -12067,6 +12129,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             enableWebSearch: streamLaunch.enableWebSearch,
             enableWebFetch: streamLaunch.enableWebFetch,
             webSearchOptions: streamLaunch.webSearchOptions,
+            mcpTools: streamLaunch.mcpTools,
             maxTurns: streamLaunch.maxTurns,
             compactionDecision: streamLaunch.compactionDecision,
           });

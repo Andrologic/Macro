@@ -16,7 +16,9 @@ import {
   syncArchitectPlanChatFromConversation,
 } from './architectPlanService';
 
-type MacroSyncResult = tauriIpc.MacroBranchSyncDto;
+type MacroSyncResult = tauriIpc.MacroBranchSyncDto & {
+  repositories?: MetadataSyncRepositoryStatus[];
+};
 type ManualMacroAction = 'commit' | 'pull' | 'push';
 
 interface StreamMetadataSyncParams {
@@ -39,6 +41,7 @@ interface MetadataSyncTarget {
 
 interface MacroSyncAppState {
   metadataAutoPush: boolean;
+  metadataMissingUpstreamPolicy: 'ask' | 'ignore';
   activeArchitectPlanId: string | null;
   activePlanContext: { targetBranch: string } | null;
   selectedGroupId: string | null;
@@ -87,7 +90,7 @@ const MACRO_REASON_MESSAGES: Record<tauriIpc.MacroSyncReason, string | null> = {
   diverged: '@macro needs conflict resolution before syncing.',
   merge_conflict: '@macro has unresolved conflicts. Resolve the conflicted files first.',
   missing_origin: 'Remote origin is not configured.',
-  missing_upstream: '@macro has no upstream yet. Push code to publish it.',
+  missing_upstream: '@macro has no upstream yet. Push @macro to publish it or keep it local.',
   auth_required: 'Git authentication for origin is required.',
   network_error: 'Network error while syncing @macro.',
   unknown_error: '@macro sync failed.',
@@ -420,6 +423,9 @@ const shouldBlockMacroCodeAction = (
   return action === 'push' && nextAction === 'pull';
 };
 
+const isMissingUpstreamResult = (result: MacroSyncResult): boolean =>
+  result.reason === 'missing_upstream' && result.next_action === 'push';
+
 const toRepositoryStatus = (
   target: MetadataSyncTarget,
   result: MacroSyncResult
@@ -565,7 +571,10 @@ export const createMacroSyncService = (
       conflictFiles: result.conflicted_files,
       repositories,
     });
-    return result;
+    return {
+      ...result,
+      repositories,
+    };
   };
 
   const applyMacroSyncFailure = (
@@ -841,6 +850,16 @@ export const createMacroSyncService = (
         });
 
         const postFlushEntries = await ensureTargets(targets);
+        if (
+          params.action === 'push' &&
+          postFlushEntries.some(({ result }) => isMissingUpstreamResult(result))
+        ) {
+          return applyMacroSyncResult(
+            createAggregateMacroResult(postFlushEntries),
+            postFlushEntries.map(({ target, result }) => toRepositoryStatus(target, result))
+          );
+        }
+
         if (
           postFlushEntries.some(({ result }) =>
             shouldBlockMacroCodeAction(result, params.action)

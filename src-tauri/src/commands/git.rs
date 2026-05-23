@@ -108,6 +108,12 @@ pub struct GitSyncDto {
     pub output: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GitRemoteDto {
+    pub remote: String,
+    pub url: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitWorktreeInspectionDto {
@@ -431,6 +437,41 @@ fn validate_remote_name(remote: &str) -> Result<()> {
     Ok(())
 }
 
+fn normalize_remote_url(url: &str) -> Result<String> {
+    let normalized = url.trim().to_string();
+    if normalized.is_empty() {
+        return Err(BackendError::Validation(
+            "Remote URL cannot be empty".to_string(),
+        ));
+    }
+    if normalized
+        .chars()
+        .any(|c| c == '\n' || c == '\r' || c == '\0')
+    {
+        return Err(BackendError::Validation(
+            "Remote URL cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn add_origin_remote(repo: &Repository, url: &str) -> Result<GitRemoteDto> {
+    let normalized_url = normalize_remote_url(url)?;
+    if repo.find_remote(DEFAULT_REMOTE_NAME).is_ok() {
+        return Err(BackendError::Validation(
+            "Remote origin is already configured".to_string(),
+        ));
+    }
+    repo.remote(DEFAULT_REMOTE_NAME, &normalized_url)
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to add remote origin: {}", error),
+        })?;
+    Ok(GitRemoteDto {
+        remote: DEFAULT_REMOTE_NAME.to_string(),
+        url: normalized_url,
+    })
+}
+
 fn resolve_target_branch(repo: &Repository, branch: Option<String>) -> Result<String> {
     if let Some(branch) = branch {
         let normalized = branch.trim().to_string();
@@ -637,6 +678,14 @@ fn derive_macro_sync_diagnostic(
         };
     }
 
+    if !signals.has_upstream {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("missing_upstream"),
+            next_action: Some("push"),
+        };
+    }
+
     if signals.ahead > 0 && signals.behind > 0 {
         return MacroSyncDiagnostic {
             state: "pending",
@@ -657,14 +706,6 @@ fn derive_macro_sync_diagnostic(
         return MacroSyncDiagnostic {
             state: "pending",
             reason: Some("ahead"),
-            next_action: Some("push"),
-        };
-    }
-
-    if !signals.has_upstream {
-        return MacroSyncDiagnostic {
-            state: "pending",
-            reason: Some("missing_upstream"),
             next_action: Some("push"),
         };
     }
@@ -4244,6 +4285,28 @@ pub async fn git_push(
 }
 
 #[tauri::command]
+pub async fn git_remote_add_origin(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    url: String,
+) -> Result<GitRemoteDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        add_origin_remote(&repo, &url)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Pull updates for current branch (or provided branch) from remote.
 pub async fn git_pull(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -5358,6 +5421,60 @@ mod tests {
         assert_eq!(diagnostic.state, "pending");
         assert_eq!(diagnostic.reason, Some("missing_upstream"));
         assert_eq!(diagnostic.next_action, Some("push"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_missing_upstream_wins_over_ahead() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: false,
+                is_dirty: false,
+                ahead: 2,
+                behind: 0,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "pending");
+        assert_eq!(diagnostic.reason, Some("missing_upstream"));
+        assert_eq!(diagnostic.next_action, Some("push"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_adds_origin() {
+        let (_temp, repo) = init_repo();
+
+        let result =
+            add_origin_remote(&repo, "https://github.com/example/repo.git").expect("add origin");
+
+        assert_eq!(result.remote, "origin");
+        assert_eq!(result.url, "https://github.com/example/repo.git");
+        let origin = repo.find_remote("origin").expect("origin remote");
+        assert_eq!(origin.url(), Some("https://github.com/example/repo.git"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_rejects_existing_origin() {
+        let (_temp, repo) = init_repo();
+        add_origin_remote(&repo, "https://github.com/example/repo.git").expect("add origin");
+
+        let error = add_origin_remote(&repo, "https://github.com/example/other.git")
+            .expect_err("existing origin should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Remote origin is already configured"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_rejects_empty_url() {
+        let (_temp, repo) = init_repo();
+
+        let error = add_origin_remote(&repo, "  ").expect_err("empty url should fail");
+
+        assert!(error.to_string().contains("Remote URL cannot be empty"));
     }
 
     #[test]

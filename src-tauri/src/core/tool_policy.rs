@@ -120,6 +120,11 @@ fn is_write_tool(tool_id: &str) -> bool {
     matches!(tool_id, "write" | "edit" | "delete" | "apply_patch")
 }
 
+fn is_mcp_tool_id(tool_id: &str) -> bool {
+    let parts: Vec<&str> = tool_id.split("__").collect();
+    parts.len() >= 3 && parts.first() == Some(&"mcp") && parts[1].len() > 0 && parts[2].len() > 0
+}
+
 fn normalize_relative_path_parts(raw_path: &str) -> Option<Vec<String>> {
     let mut normalized = raw_path.trim().replace('\\', "/");
     while normalized.starts_with("./") {
@@ -217,7 +222,7 @@ pub fn validate_tool_execution(
         };
     };
 
-    if !allowed_tool_ids.contains(&tool_id) {
+    if !allowed_tool_ids.contains(&tool_id) && !is_mcp_tool_id(tool_id) {
         return ToolValidationResult {
             allowed: false,
             reason: Some(format!(

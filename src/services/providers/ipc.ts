@@ -30,14 +30,24 @@ import type {
 } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
-import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
+import { BUILT_IN_TOOLS } from '../tools/builtInTools';
 import { normalizeArchitectToolId } from '../architectToolNames';
 import { sendChatCompletion } from './chatCompletions';
 import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 import { parseToolTracesJson } from '../toolTraceState';
+import {
+  buildMCPServerSettingsPayload,
+  normalizeMCPServerSettingsInput,
+  readStoredMCPServers,
+  writeStoredMCPServers,
+} from './clientSettingsStorage';
+import {
+  collectMCPEnvSecretRefs,
+  isMCPEnvSecretRef,
+  isSensitiveMCPEnvKey,
+} from '../mcp';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
-const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
   'web-search': 'web_search',
   'file-read': 'read_file',
@@ -61,14 +71,57 @@ const loadLocalToolSettings = (): Record<string, boolean> => {
   }
 };
 
-const loadLocalMcpSettings = (): Record<string, boolean> => {
-  try {
-    const raw = localStorage.getItem(MCP_SERVER_SETTINGS_STORAGE_KEY);
-    if (!raw || raw === 'undefined') return {};
-    return normalizeToolSettings(JSON.parse(raw));
-  } catch {
-    return {};
-  }
+const secureMCPServerEnv = async (
+  servers: ReturnType<typeof normalizeMCPServerSettingsInput>
+): Promise<ReturnType<typeof normalizeMCPServerSettingsInput>> => {
+  const securedEntries = await Promise.all(
+    Object.entries(servers).map(async ([id, server]) => {
+      if (server.transport?.type !== 'stdio') {
+        return [id, server] as const;
+      }
+
+      const envEntries = await Promise.all(
+        Object.entries(server.transport.env ?? {}).map(async ([key, value]) => {
+          if (!isSensitiveMCPEnvKey(key) || !value || isMCPEnvSecretRef(value)) {
+            return [key, value] as const;
+          }
+
+          const secretRef = await tauriIpc.mcpStoreEnvSecret({
+            serverId: server.id,
+            key,
+            value,
+          });
+          return [key, secretRef] as const;
+        })
+      );
+
+      return [
+        id,
+        {
+          ...server,
+          transport: {
+            ...server.transport,
+            env: Object.fromEntries(envEntries),
+          },
+        },
+      ] as const;
+    })
+  );
+
+  return Object.fromEntries(securedEntries);
+};
+
+const deleteRemovedMCPEnvSecrets = async (
+  before: ReturnType<typeof normalizeMCPServerSettingsInput>,
+  after: ReturnType<typeof normalizeMCPServerSettingsInput>
+): Promise<void> => {
+  const beforeRefs = collectMCPEnvSecretRefs(before);
+  const afterRefs = collectMCPEnvSecretRefs(after);
+  await Promise.all(
+    Array.from(beforeRefs.entries())
+      .filter(([id]) => !afterRefs.has(id))
+      .map(([, ref]) => tauriIpc.mcpDeleteEnvSecret(ref))
+  );
 };
 
 const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation => ({
@@ -512,38 +565,23 @@ export const updateToolSettings = async (settings: ToolSettingsDto): Promise<voi
 };
 
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
-  const enabledMap = loadLocalMcpSettings();
-  const servers = Object.fromEntries(
-    BUILT_IN_MCP_SERVERS.map((server) => {
-      const enabled = enabledMap[server.id] ?? false;
-      return [
-        server.id,
-        {
-          ...server,
-          status: (enabled ? 'online' : 'offline') as 'online' | 'offline',
-          config: {
-            ...server.config,
-            enabled,
-          },
-        },
-      ];
-    })
-  );
-
-  return { servers };
+  return buildMCPServerSettingsPayload();
 };
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  const enabledMap: Record<string, boolean> = {};
-  Object.entries(settings.servers || {}).forEach(([id, server]) => {
-    const enabled =
-      typeof server === 'boolean'
-        ? server
-        : (server as unknown as { config?: { enabled?: boolean } }).config?.enabled ?? false;
-    enabledMap[id] = enabled;
-  });
+  const previousServers = readStoredMCPServers();
+  const securedServers = await secureMCPServerEnv(normalizeMCPServerSettingsInput(settings));
+  await deleteRemovedMCPEnvSecrets(previousServers, securedServers);
+  writeStoredMCPServers(securedServers);
+};
 
-  localStorage.setItem(MCP_SERVER_SETTINGS_STORAGE_KEY, JSON.stringify(enabledMap));
+export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async (server) => {
+  const response = await tauriIpc.mcpDiscoverTools({ server });
+  return { tools: response.tools };
+};
+
+export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
+  return tauriIpc.mcpCallTool(data);
 };
 
 export const provider: ServiceProvider = {
@@ -579,4 +617,6 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
+  mcpDiscoverTools,
+  mcpCallTool,
 };

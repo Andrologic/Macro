@@ -971,6 +971,35 @@ describe('streamingChat tool rendering helpers', () => {
     expect(defaultBody.tools).toBeUndefined();
   });
 
+  it('includes enabled MCP tools in provider tool definitions', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    const tools = __testables.collectAllowedTools({
+      allowedTools: new Set(['mcp__github__list_issues']),
+      enableWebSearch: false,
+      enableWebFetch: false,
+      mcpTools: [
+        {
+          id: 'mcp__github__list_issues',
+          serverId: 'github',
+          name: 'list_issues',
+          description: 'List GitHub issues',
+          inputSchema: {
+            type: 'object',
+            properties: { state: { type: 'string' } },
+          },
+        },
+      ],
+    }) as Array<{ function?: { name?: string; parameters?: unknown } }>;
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.function?.name).toBe('mcp__github__list_issues');
+    expect(tools[0]?.function?.parameters).toEqual({
+      type: 'object',
+      properties: { state: { type: 'string' } },
+    });
+  });
+
   it('serializes Kimi reasoning_content and tool names for OpenCode Go Kimi only', async () => {
     const { __testables } = await loadStreamingChat();
     const assistantItem = __testables.buildAssistantChatCompletionProviderItem({

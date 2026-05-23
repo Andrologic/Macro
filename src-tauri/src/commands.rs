@@ -4,6 +4,8 @@ pub mod ai;
 pub mod fs;
 #[path = "commands/git.rs"]
 pub mod git;
+#[path = "commands/mcp/mod.rs"]
+pub mod mcp;
 #[path = "commands/terminal.rs"]
 pub mod terminal;
 #[path = "commands/workspace.rs"]

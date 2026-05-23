@@ -71,7 +71,6 @@ interface ContextControlsVisibilityInput {
   selectedConversationId?: string | null;
   selectedTaskId?: string | null;
   activeArchitectPlanId?: string | null;
-  activePlanContextId?: string | null;
 }
 
 export const shouldShowContextControls = ({
@@ -79,7 +78,6 @@ export const shouldShowContextControls = ({
   selectedConversationId,
   selectedTaskId,
   activeArchitectPlanId,
-  activePlanContextId,
 }: ContextControlsVisibilityInput): boolean => {
   if (!selectedConversationId) {
     return false;
@@ -90,7 +88,7 @@ export const shouldShowContextControls = ({
   }
 
   if (mode === 'Architect') {
-    return Boolean(activeArchitectPlanId || activePlanContextId);
+    return Boolean(activeArchitectPlanId);
   }
 
   return true;
@@ -748,12 +746,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   );
+  const isArchitectPlanSelectionMissing = mode === 'Architect' && !activeArchitectPlanId;
   const shouldShowContextControlsForActiveContext = shouldShowContextControls({
     mode,
     selectedConversationId,
     selectedTaskId,
     activeArchitectPlanId,
-    activePlanContextId: activePlanContext?.id ?? null,
   });
 
   const [inputValue, setInputValue] = useState('');
@@ -989,7 +987,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [isStreaming, markPerformance, streamingMessageContentLength]);
 
   // Get current conversation details
-  const currentConversation = selectedConversationId
+  const currentConversation = !isArchitectPlanSelectionMissing && selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
@@ -1095,6 +1093,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
+    isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
     isSelectedTaskDependencyBlocked ||
     Boolean(activeQuestionnaire) ||
@@ -1387,6 +1386,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (mode === 'Architect' && isWorkspaceMissing) return null;
+    if (isArchitectPlanSelectionMissing) return null;
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
@@ -1398,6 +1398,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversationForCurrentMode,
     mode,
     selectedConversationId,
+    isArchitectPlanSelectionMissing,
     isWorkspaceMissing,
     t,
   ]);
@@ -1597,6 +1598,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleSend = async () => {
     if (isComposerDisabled || activeQuestionnaire) return;
+    if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
     if (isImplementComposerInKickoffMode) {
@@ -1751,6 +1753,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const canSend =
+    !isComposerDisabled &&
     !activeQuestionnaire &&
     !isConversationPending &&
     (
@@ -1927,6 +1930,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               stateKind={workspaceState.kind}
               onPrimaryAction={() => openProjectModal(null)}
             />
+          ) : isArchitectPlanSelectionMissing ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center space-y-4">
+                <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
+                  <Icon name="compass" size={24} className="text-muted-foreground" />
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  {t(
+                    'architect.selectPlanToStart',
+                    'Select or create a plan to start architecting.'
+                  )}
+                </p>
+              </div>
+            </div>
           ) : isSelectedTaskDependencyBlocked && selectedTask ? (
             <TaskBlockedState
               title={t('implement.taskBlockedTitle', 'Task blocked')}
@@ -2281,6 +2298,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         ? workspaceState.kind === 'noProjectAvailable'
                           ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                      : isArchitectPlanSelectionMissing
+                        ? t(
+                            'architect.selectPlanToStart',
+                            'Select or create a plan to start architecting.'
+                          )
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
                       : isSelectedTaskDependencyBlocked

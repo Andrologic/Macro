@@ -1,9 +1,16 @@
 import { create } from 'zustand';
 import { services } from '../services';
-import type { Tool, MCPServer } from '../types';
+import type { Tool, MCPServer, MCPTool } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { getToolModePolicy } from '../services/toolModePolicy';
+import {
+  isMCPServerEnabled,
+  isMCPToolId,
+  normalizeMCPServer,
+  normalizeMCPServerTools,
+  toMCPServerSettingsMap,
+} from '../services/mcp';
 
 const CHAT_MODE_TOOL_SETTINGS_KEY = 'macro_chat_mode_tool_settings';
 const CHAT_MODE_TOOL_IDS = new Set(getToolModePolicy('Chat').allowedToolIds);
@@ -34,7 +41,6 @@ const isVisibleChatTool = (tool: Tool): boolean =>
   getConfigBoolean(tool, 'visible') !== false &&
   getConfigBoolean(tool, 'chatToolboxVisible') !== false;
 const isLockedTool = (tool: Tool): boolean => getConfigBoolean(tool, 'locked') === true;
-
 const getChatToggleGroupIds = (tool: Tool): readonly string[] => {
   const group = getConfigString(tool, 'chatToggleGroup');
   return group ? CHAT_TOGGLE_GROUPS[group] ?? [tool.id] : [tool.id];
@@ -78,6 +84,9 @@ interface ToolsStore {
   loadSettings: () => Promise<void>;
   toggleTool: (toolId: string) => Promise<void>;
   toggleMCPServer: (serverId: string) => Promise<void>;
+  upsertMCPServer: (server: MCPServer) => Promise<void>;
+  removeMCPServer: (serverId: string) => Promise<void>;
+  refreshMCPServerTools: (serverId: string) => Promise<void>;
   saveAll: (tools?: Record<string, boolean>, servers?: Record<string, boolean>) => Promise<void>;
   resetToDefaults: () => Promise<void>;
   toggleChatTool: (toolId: string) => void;
@@ -85,6 +94,10 @@ interface ToolsStore {
   getChatModeTools: () => Tool[];
   getEnabledChatTools: () => Tool[];
   getEnabledChatToolIds: () => string[];
+  getEnabledMCPTools: () => MCPTool[];
+  getEnabledMCPToolIds: () => string[];
+  getMCPToolById: (toolId: string) => { server: MCPServer; tool: MCPTool } | null;
+  callMCPTool: (toolId: string, args: Record<string, unknown>) => Promise<string>;
   isToolEnabled: (toolId: string) => boolean;
 }
 
@@ -136,7 +149,9 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       set({
         internalTools: loadedTools,
         chatToolStates,
-        mcpServers: Object.values(mcpServersDto.servers),
+        mcpServers: Object.values(mcpServersDto.servers)
+          .filter((server): server is MCPServer => Boolean(server && typeof server === 'object' && 'id' in server))
+          .map(normalizeMCPServer),
         isLoading: false,
       });
     } catch (error) {
@@ -201,20 +216,25 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       const server = currentServers.find((s) => s.id === serverId);
       
       if (server) {
-        const newServers: Record<string, any> = {};
-        currentServers.forEach((s) => {
-          const enabled = (s.config as any)?.enabled ?? false;
-          newServers[s.id] = { ...s.config, enabled: s.id === serverId ? !enabled : enabled };
+        const nextServers = currentServers.map((s) => {
+          if (s.id !== serverId) return s;
+          const enabled = !isMCPServerEnabled(s);
+          const status = enabled
+            ? s.transport
+              ? s.status === 'unconfigured'
+                ? 'offline'
+                : s.status
+              : 'unconfigured'
+            : 'offline';
+          return {
+            ...s,
+            status,
+            config: { ...s.config, enabled },
+          } satisfies MCPServer;
         });
 
-        await services.updateMCPServerSettings({ servers: newServers });
-        set({
-          mcpServers: currentServers.map((s) =>
-            s.id === serverId
-              ? { ...s, config: { ...s.config, enabled: !(s.config as any)?.enabled } }
-              : s
-          ),
-        });
+        await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
+        set({ mcpServers: nextServers });
       }
       
       set({ saving: false });
@@ -226,6 +246,81 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     }
   },
 
+  upsertMCPServer: async (server: MCPServer) => {
+    set({ saving: true, lastError: null });
+    try {
+      const normalized = normalizeMCPServer(server);
+      const currentServers = get().mcpServers;
+      const exists = currentServers.some((s) => s.id === normalized.id);
+      const nextServers = exists
+        ? currentServers.map((s) => (s.id === normalized.id ? normalized : s))
+        : [...currentServers, normalized];
+      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
+      set({ mcpServers: nextServers, saving: false });
+    } catch (error) {
+      set({ saving: false, lastError: toServiceError(error).message });
+    }
+  },
+
+  removeMCPServer: async (serverId: string) => {
+    set({ saving: true, lastError: null });
+    try {
+      const nextServers = get().mcpServers.filter((server) => server.id !== serverId);
+      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
+      set({ mcpServers: nextServers, saving: false });
+    } catch (error) {
+      set({ saving: false, lastError: toServiceError(error).message });
+    }
+  },
+
+  refreshMCPServerTools: async (serverId: string) => {
+    set({ saving: true, lastError: null });
+    const currentServers = get().mcpServers;
+    const server = currentServers.find((s) => s.id === serverId);
+    if (!server) {
+      set({ saving: false });
+      return;
+    }
+
+    try {
+      const response = await services.mcpDiscoverTools(server);
+      const discoveredAt = new Date().toISOString();
+      const tools = normalizeMCPServerTools(server, response.tools).map((tool) => ({
+        ...tool,
+        discoveredAt,
+      }));
+      const nextServers = currentServers.map((s) =>
+        s.id === serverId
+          ? {
+              ...s,
+              status: 'online' as const,
+              tools,
+              lastError: null,
+              discoveredAt,
+            }
+          : s
+      );
+      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
+      set({ mcpServers: nextServers, saving: false });
+    } catch (error) {
+      const message = toServiceError(error).message;
+      const nextServers = currentServers.map((s) =>
+        s.id === serverId
+          ? {
+              ...s,
+              status: s.transport ? ('degraded' as const) : ('unconfigured' as const),
+              lastError: message,
+            }
+          : s
+      );
+      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) }).catch(
+        () => undefined
+      );
+      set({ mcpServers: nextServers, saving: false, lastError: message });
+      throw error;
+    }
+  },
+
   saveAll: async (tools?: Record<string, boolean>, servers?: Record<string, any>) => {
     set({ saving: true, lastError: null });
     try {
@@ -234,13 +329,24 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         Object.entries(state.internalTools).map(([id, t]) => [id, isToolEnabledState(t)])
       );
       
-      const serversToSave = servers || Object.fromEntries(
-        state.mcpServers.map(s => [s.id, (s.config as any)?.enabled !== false])
-      );
+      const serversToSave = servers
+        ? Object.fromEntries(
+            state.mcpServers.map((server) => [
+              server.id,
+              {
+                ...server,
+                config: {
+                  ...server.config,
+                  enabled: servers[server.id] === true,
+                },
+              },
+            ])
+          )
+        : toMCPServerSettingsMap(state.mcpServers);
 
       await Promise.all([
         services.updateToolSettings({ tools: toolsToSave }),
-        services.updateMCPServerSettings({ servers: serversToSave as any }),
+        services.updateMCPServerSettings({ servers: serversToSave }),
       ]);
       set({ saving: false });
     } catch (error) {
@@ -314,6 +420,64 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     return Object.values(state.internalTools)
       .filter((tool) => isChatEligibleTool(tool) && state.isChatToolEnabled(tool.id))
       .map((tool) => tool.id);
+  },
+
+  getEnabledMCPTools: () => {
+    return get().mcpServers.flatMap((server) => {
+      if (!isMCPServerEnabled(server) || server.status !== 'online') {
+        return [];
+      }
+      return normalizeMCPServerTools(server).filter((tool) => tool.enabled !== false);
+    });
+  },
+
+  getEnabledMCPToolIds: () => {
+    return get().getEnabledMCPTools().map((tool) => tool.id);
+  },
+
+  getMCPToolById: (toolId: string) => {
+    if (!isMCPToolId(toolId)) return null;
+    for (const server of get().mcpServers) {
+      const tool = normalizeMCPServerTools(server).find((candidate) => candidate.id === toolId);
+      if (tool) {
+        return { server, tool };
+      }
+    }
+    return null;
+  },
+
+  callMCPTool: async (toolId: string, args: Record<string, unknown>) => {
+    const resolved = get().getMCPToolById(toolId);
+    if (!resolved) {
+      return `MCP tool ${toolId} is not configured.`;
+    }
+    if (!isMCPServerEnabled(resolved.server)) {
+      return `MCP server ${resolved.server.name} is disabled.`;
+    }
+    if (resolved.server.status !== 'online') {
+      return `MCP server ${resolved.server.name} is ${resolved.server.status}. Refresh tools before calling ${resolved.tool.name}.`;
+    }
+
+    try {
+      const response = await services.mcpCallTool({
+        server: resolved.server,
+        toolName: resolved.tool.name,
+        arguments: args,
+      });
+      return response.content;
+    } catch (error) {
+      const message = toServiceError(error).message;
+      const nextServers = get().mcpServers.map((server) =>
+        server.id === resolved.server.id
+          ? { ...server, status: 'degraded' as const, lastError: message }
+          : server
+      );
+      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) }).catch(
+        () => undefined
+      );
+      set({ mcpServers: nextServers, lastError: message });
+      return `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`;
+    }
   },
 
   isToolEnabled: (toolId: string) => {

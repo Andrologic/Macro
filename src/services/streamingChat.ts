@@ -24,9 +24,11 @@ import {
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
+import { toMCPFunctionToolShape } from './mcp';
 import type {
   AppMode,
   ChatCompletionReason,
+  MCPTool,
   ProjectMount,
   ProviderTurnState,
   ReasoningEffort,
@@ -349,6 +351,7 @@ export interface StreamingChatOptions {
   enableWebSearch?: boolean;
   enableWebFetch?: boolean;
   webSearchOptions?: WebSearchOptions;
+  mcpTools?: MCPTool[];
   onToolCall?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -2005,8 +2008,9 @@ const collectAllowedTools = (params: {
   enableWebSearch: boolean;
   enableWebFetch: boolean;
   webSearchOptions?: WebSearchOptions;
+  mcpTools?: MCPTool[];
 }): unknown[] => {
-  const { allowedTools, enableWebSearch, enableWebFetch, webSearchOptions } = params;
+  const { allowedTools, enableWebSearch, enableWebFetch, webSearchOptions, mcpTools } = params;
   const tools: unknown[] = [];
 
   if (allowedTools.has('list')) tools.push(LIST_TOOL);
@@ -2062,6 +2066,11 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);
   if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
+  (mcpTools ?? []).forEach((tool) => {
+    if (allowedTools.has(tool.id)) {
+      tools.push(toMCPFunctionToolShape(tool));
+    }
+  });
 
   return tools;
 };
@@ -2133,6 +2142,7 @@ export const __testables = {
   buildToolContextBlock,
   chatCompletionMessagesHaveToolHistory,
   classifyProviderError,
+  collectAllowedTools,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
   extractVisibleTextFromProviderInputItems,
@@ -2529,6 +2539,7 @@ const streamChatViaNativeToolCallingProvider = async (
     enableWebSearch,
     enableWebFetch,
     webSearchOptions,
+    mcpTools: options.mcpTools,
   });
   const streamAccumulator = createStreamAccumulator({
     onToken,
@@ -3229,6 +3240,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     enableWebSearch,
     enableWebFetch,
     webSearchOptions,
+    mcpTools: options.mcpTools,
   });
 
   const readEvidenceBySource = new Map<string, string>();

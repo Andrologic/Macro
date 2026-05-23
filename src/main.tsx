@@ -4,6 +4,7 @@ import App from "./App";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
 import { initializeI18n } from "./i18n";
+import { installFrontendDiagnostics } from "./services/frontendDiagnostics";
 import { isDevelopmentBuild } from "./utils/devLogger";
 import "./index.css";
 import "./styles/highlight.css";
@@ -71,6 +72,7 @@ if (typeof performance !== 'undefined' && performance.mark) {
 }
 
 installBenignTauriReloadWarningFilter();
+installFrontendDiagnostics();
 
 const renderApp = (): void => {
   ReactDOM.createRoot(rootElement).render(

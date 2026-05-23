@@ -100,6 +100,46 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("adds origin remotes with camelCase payload keys", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.gitRemoteAddOrigin({
+      repoPath: "C:/dev/web",
+      url: "https://github.com/example/web.git",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "git_remote_add_origin",
+        payload: {
+          repoPath: "C:/dev/web",
+          url: "https://github.com/example/web.git",
+        },
+      },
+    ]);
+  });
+
+  it("forwards frontend diagnostics to the native logger", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.frontendLog({
+      level: "error",
+      scope: "frontend",
+      message: "[Frontend:error] Importing a module script failed",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "frontend_log",
+        payload: {
+          level: "error",
+          scope: "frontend",
+          message: "[Frontend:error] Importing a module script failed",
+        },
+      },
+    ]);
+  });
+
   it("wraps message creation in params for db_create_message", async () => {
     const tauriIpc = await loadTauriIpc();
 

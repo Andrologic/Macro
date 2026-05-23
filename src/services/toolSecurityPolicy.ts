@@ -6,6 +6,7 @@ import type {
   ToolSecurityActionGroup,
   ToolSecurityDecision,
 } from "../types";
+import { isMCPToolId, parseMCPToolId } from "./mcpToolNames";
 import { getToolModePolicy } from "./toolModePolicy";
 
 type RememberStrategy =
@@ -658,12 +659,22 @@ const normalizeToolSecurityCall = (
   args: Record<string, unknown>,
   options: EvaluateToolSecurityOptions,
 ): NormalizedToolSecurityCall => {
-  const definition = TOOL_SECURITY_DEFINITIONS[toolId] ?? {
-    actionGroup: "escape" as const,
-    rememberStrategy: "tool" as const,
-    destructiveStrategy: "never" as const,
-    summary: `Use ${toolId}`,
-  };
+  const mcpToolIdentity = parseMCPToolId(toolId);
+  const definition =
+    TOOL_SECURITY_DEFINITIONS[toolId] ??
+    (mcpToolIdentity
+      ? {
+          actionGroup: "escape" as const,
+          rememberStrategy: "tool" as const,
+          destructiveStrategy: "never" as const,
+          summary: `Call MCP tool ${mcpToolIdentity.toolSlug} on ${mcpToolIdentity.serverId}`,
+        }
+      : {
+          actionGroup: "escape" as const,
+          rememberStrategy: "tool" as const,
+          destructiveStrategy: "never" as const,
+          summary: `Use ${toolId}`,
+        });
 
   const pathCandidates = getPathCandidates(toolId, args);
 
@@ -740,7 +751,7 @@ export const evaluateToolSecurity = (
   options: EvaluateToolSecurityOptions,
 ): ToolSecurityEvaluation => {
   const modePolicy = getToolModePolicy(options.mode);
-  if (!modePolicy.allowedToolIds.includes(toolId)) {
+  if (!modePolicy.allowedToolIds.includes(toolId) && !isMCPToolId(toolId)) {
     const normalizedCall = normalizeToolSecurityCall(toolId, args, options);
     return {
       decision: "deny",
@@ -777,6 +788,9 @@ export const filterDeniedToolIdsForRiskLevel = (
   }
 
   return [...new Set(toolIds)].filter((toolId) => {
+    if (isMCPToolId(toolId)) {
+      return false;
+    }
     const definition = TOOL_SECURITY_DEFINITIONS[toolId];
     return !definition || definition.actionGroup !== "escape";
   });
