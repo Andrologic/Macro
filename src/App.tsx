@@ -4,6 +4,8 @@ import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
 import { ModeRouter } from "./components/layout/ModeRouter";
+import { Footer } from "./components/layout/Footer";
+import { Toaster } from "./components/ui/Toaster";
 import { useAppStore } from "./stores/useAppStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -30,16 +32,6 @@ const ProjectGitFlowModal = lazy(
 const CodeFileViewerModal = lazy(
   () => import("./components/modals/CodeFileViewerModal"),
 );
-const Footer = lazy(() =>
-  import("./components/layout/Footer").then((module) => ({
-    default: module.Footer,
-  })),
-);
-const Toaster = lazy(() =>
-  import("./components/ui/Toaster").then((module) => ({
-    default: module.Toaster,
-  })),
-);
 const OnboardingGuide = lazy(() =>
   import("./components/onboarding/OnboardingGuide").then((module) => ({
     default: module.OnboardingGuide,
@@ -57,13 +49,6 @@ const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
   warnings: {},
   startupError: null,
 };
-
-const FooterSkeleton: React.FC = () => (
-  <div
-    className="h-8 shrink-0 border-t border-border bg-background/70"
-    aria-hidden="true"
-  />
-);
 
 const StartupScreen: React.FC = () => (
   <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background">
@@ -475,9 +460,7 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <Suspense fallback={<FooterSkeleton />}>
-        <Footer />
-      </Suspense>
+      <Footer />
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>
@@ -489,9 +472,7 @@ const App: React.FC = () => {
         <CodeFileViewerModal />
       </Suspense>
 
-      <Suspense fallback={null}>
-        <Toaster />
-      </Suspense>
+      <Toaster />
 
       <Suspense fallback={null}>
         <OnboardingGuide />

@@ -82,7 +82,7 @@ export interface ToolSettingsDto {
 }
 
 export interface MCPServerSettingsDto {
-  servers: Record<string, MCPServer>;
+  servers: Record<string, MCPServer | boolean | Record<string, unknown>>;
 }
 
 export interface ChatCompletionRequestDto {

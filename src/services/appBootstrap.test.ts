@@ -53,7 +53,7 @@ describe('appBootstrap', () => {
     checkSession = mock(async () => {
       callOrder.push('auth');
     });
-    preloadModeComponents = mock(() => {
+    preloadModeComponents = mock(async () => {
       callOrder.push('preload');
     });
   });
@@ -103,6 +103,7 @@ describe('appBootstrap', () => {
     expect(lowPriorityRuns).toHaveLength(1);
     expect(callOrder[0]).toBe('app');
     expect(callOrder.slice(1, 3).sort()).toEqual(['chat', 'tasks']);
+    expect(callOrder.indexOf('preload')).toBeLessThan(callOrder.indexOf('resume-app'));
     expect(callOrder).toContain('resume-app');
     expect(callOrder).toContain('resume-tasks');
     expect(callOrder.indexOf('providers')).toBeLessThan(callOrder.indexOf('restore-chat-selection'));
@@ -171,6 +172,46 @@ describe('appBootstrap', () => {
     expect(controller.getSnapshot().ready).toBe(true);
     expect(controller.getSnapshot().errors['Task Critical']).toBe('task catalog unavailable');
     expect(controller.getSnapshot().errors['Chat Critical']).toBe('chat snapshot unavailable');
+  });
+
+  it('keeps booting when current mode panel preload fails', async () => {
+    preloadModeComponents = mock(async () => {
+      callOrder.push('preload');
+      throw new Error('chunk missing');
+    });
+
+    const controller = createAppBootstrapController(() => ({
+      initializeAppCritical: initializeApp,
+      resumeAppAfterInitialize: resumeApp,
+      initializeChatCritical: initializeChat,
+      initializeTasksCritical: initializeTasks,
+      resumeTasksAfterInitialize: resumeTasks,
+      initializeTerminal,
+      initializeTools,
+      initializeProviders,
+      restoreChatSelectionAfterProviderInit,
+      initializeShortcuts,
+      checkSession,
+      getCurrentMode: () => 'Implement',
+      preloadModeComponents,
+      scheduleLowPriority: (run) => {
+        lowPriorityRuns.push(run);
+      },
+      now: () => 0,
+      log: () => undefined,
+      error: () => undefined,
+      isPageShuttingDown: () => false,
+    }));
+
+    const start = controller.ensureStarted();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    lowPriorityRuns[0]();
+    await start;
+
+    expect(controller.getSnapshot().critical).toBe(true);
+    expect(controller.getSnapshot().ready).toBe(true);
+    expect(controller.getSnapshot().errors['Current Mode UI Preload']).toBe('chunk missing');
+    expect(controller.getSnapshot().warnings['Current Mode UI Preload']).toBe('chunk missing');
   });
 
   it('can restart after a failed run', async () => {

@@ -385,6 +385,7 @@ export default defineConfig(({ command }) => {
       include: [
         "react",
         "react-dom",
+        "react-dom/client",
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
         "sonner",
@@ -438,7 +439,17 @@ export default defineConfig(({ command }) => {
 
     // Resolve aliases for cleaner imports
     resolve: {
-      dedupe: ["react", "react-dom"],
+      dedupe: [
+        "react",
+        "react-dom",
+        "@codemirror/autocomplete",
+        "@codemirror/commands",
+        "@codemirror/language",
+        "@codemirror/lint",
+        "@codemirror/search",
+        "@codemirror/state",
+        "@codemirror/view",
+      ],
       alias: {
         "@": "/src",
         "@components": "/src/components",

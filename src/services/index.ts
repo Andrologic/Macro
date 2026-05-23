@@ -133,6 +133,10 @@ export const services = {
   getMCPServerSettings: () => callProviderMethod('getMCPServerSettings'),
   updateMCPServerSettings: (settings: Parameters<ServiceProvider['updateMCPServerSettings']>[0]) =>
     callProviderMethod('updateMCPServerSettings', settings),
+  mcpDiscoverTools: (server: Parameters<ServiceProvider['mcpDiscoverTools']>[0]) =>
+    callProviderMethod('mcpDiscoverTools', server),
+  mcpCallTool: (data: Parameters<ServiceProvider['mcpCallTool']>[0]) =>
+    callProviderMethod('mcpCallTool', data),
 };
 
 export type Services = typeof services;

@@ -21,6 +21,7 @@ import {
   saveWebSearchSettings,
 } from '../../../services/webSearchSettings';
 import type { WebSearchSettings } from '../../../services/webSearchSettings';
+import { MCPServersPanel } from '../mcp/MCPServersPanel';
 
 export const ToolsView: React.FC = () => {
   const { t } = useTranslation();
@@ -30,6 +31,9 @@ export const ToolsView: React.FC = () => {
     loadSettings,
     toggleTool,
     toggleMCPServer,
+    upsertMCPServer,
+    removeMCPServer,
+    refreshMCPServerTools,
     isToolEnabled,
   } = useToolsStore();
   const mode = useAppStore((state) => state.mode);
@@ -111,15 +115,6 @@ export const ToolsView: React.FC = () => {
         (tool.name.toLowerCase().includes(query) || tool.description.toLowerCase().includes(query))
     );
   }, [internalTools, searchQuery]);
-
-  const filteredServers = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return mcpServers.filter(
-      (server) =>
-        server.name.toLowerCase().includes(query) ||
-        (server.website && server.website.toLowerCase().includes(query))
-    );
-  }, [mcpServers, searchQuery]);
 
   const modeHint =
     mode === 'Chat'
@@ -394,49 +389,14 @@ export const ToolsView: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="mcp" className="flex-1 overflow-y-auto pr-2 space-y-3">
-          {filteredServers.map((server) => (
-            <div
-              key={server.id}
-              className="flex items-start justify-between p-4 bg-card border border-border rounded-xl"
-            >
-              <div className="flex gap-4">
-                <div className="p-2 bg-blue-500/10 rounded-lg text-blue-500 h-fit">
-                  <Icon name="database" size={18} />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="font-medium text-foreground">{server.name}</h4>
-                  <p className="text-sm text-muted-foreground">
-                    {server.website || server.description}
-                  </p>
-                  <div className="flex items-center gap-2 text-xs">
-                    <span
-                      className={cn(
-                        'w-2 h-2 rounded-full',
-                        server.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'
-                      )}
-                    />
-                    <span className="text-muted-foreground capitalize">
-                      {server.status === 'online'
-                        ? t('common.online', 'Online')
-                        : t('common.offline', 'Offline')}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <Switch
-                checked={server.status === 'online'}
-                onCheckedChange={() => toggleMCPServer(server.id)}
-              />
-            </div>
-          ))}
-
-          {filteredServers.length === 0 && (
-            <div className="text-center py-8">
-              <p className="text-muted-foreground">
-                {t('tools.noCustomMcpServers', 'No custom MCP servers configured.')}
-              </p>
-            </div>
-          )}
+          <MCPServersPanel
+            servers={mcpServers}
+            searchQuery={searchQuery}
+            onToggleServer={toggleMCPServer}
+            onUpsertServer={upsertMCPServer}
+            onRemoveServer={removeMCPServer}
+            onRefreshServerTools={refreshMCPServerTools}
+          />
         </TabsContent>
       </Tabs>
 

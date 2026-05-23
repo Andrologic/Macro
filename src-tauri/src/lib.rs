@@ -51,6 +51,27 @@ struct WindowPositionPayload {
     y: i32,
 }
 
+const FRONTEND_LOG_MESSAGE_LIMIT: usize = 8_000;
+const FRONTEND_LOG_SCOPE_LIMIT: usize = 120;
+
+fn truncate_for_frontend_log(value: &str, max_chars: usize) -> String {
+    let mut truncated: String = value.chars().take(max_chars).collect();
+    if value.chars().count() > max_chars {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn normalize_frontend_log_level(level: &str) -> &'static str {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "debug" => "debug",
+        "info" => "info",
+        "warn" | "warning" => "warn",
+        "error" => "error",
+        _ => "warn",
+    }
+}
+
 // Command to show the main window explicitly from frontend
 #[tauri::command]
 async fn show_main_window(window: tauri::WebviewWindow) {
@@ -70,6 +91,38 @@ async fn show_main_window(window: tauri::WebviewWindow) {
             "Failed to show main window"
         );
     }
+}
+
+#[tauri::command]
+async fn frontend_log(level: String, scope: String, message: String) -> Result<(), String> {
+    let normalized_level = normalize_frontend_log_level(&level);
+    let normalized_scope = truncate_for_frontend_log(scope.trim(), FRONTEND_LOG_SCOPE_LIMIT);
+    let normalized_message = truncate_for_frontend_log(message.trim(), FRONTEND_LOG_MESSAGE_LIMIT);
+
+    match normalized_level {
+        "debug" => tracing::debug!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        "info" => tracing::info!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        "error" => tracing::error!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        _ => tracing::warn!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -301,6 +354,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // Database commands
+            frontend_log,
             show_main_window,
             window_close,
             window_minimize,
@@ -402,6 +456,10 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::mcp::mcp_discover_tools,
+            commands::mcp::mcp_call_tool,
+            commands::mcp::mcp_store_env_secret,
+            commands::mcp::mcp_delete_env_secret,
             commands::list_external_apps,
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,
@@ -466,6 +524,7 @@ pub fn run() {
             commands::git::git_worktree_create,
             commands::git::git_worktree_remove,
             commands::git::git_push,
+            commands::git::git_remote_add_origin,
             commands::git::git_pull,
             commands::git::macro_branch_ensure,
             commands::git::macro_branch_status,
@@ -510,4 +569,29 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod frontend_log_tests {
+    use super::{
+        normalize_frontend_log_level, truncate_for_frontend_log, FRONTEND_LOG_MESSAGE_LIMIT,
+    };
+
+    #[test]
+    fn frontend_log_normalizes_known_and_unknown_levels() {
+        assert_eq!(normalize_frontend_log_level("debug"), "debug");
+        assert_eq!(normalize_frontend_log_level("INFO"), "info");
+        assert_eq!(normalize_frontend_log_level("warning"), "warn");
+        assert_eq!(normalize_frontend_log_level("error"), "error");
+        assert_eq!(normalize_frontend_log_level("verbose"), "warn");
+    }
+
+    #[test]
+    fn frontend_log_truncates_long_messages() {
+        let message = "x".repeat(FRONTEND_LOG_MESSAGE_LIMIT + 10);
+        let truncated = truncate_for_frontend_log(&message, FRONTEND_LOG_MESSAGE_LIMIT);
+
+        assert_eq!(truncated.chars().count(), FRONTEND_LOG_MESSAGE_LIMIT + 3);
+        assert!(truncated.ends_with("..."));
+    }
 }

@@ -75,6 +75,7 @@ export const PREF_KEYS = {
   ARCHITECT_BUGFIX_BRANCH_TEMPLATE: "architectBugfixBranchTemplate",
   ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
+  METADATA_MISSING_UPSTREAM_POLICY: "metadataMissingUpstreamPolicy",
   TERMINAL_PANEL_HEIGHT: "terminalPanelHeight",
   TERMINAL_ACTIVE_TAB_ID: "terminalActiveTabId",
   TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: "terminalLastManualProjectByTask",
@@ -95,6 +96,7 @@ export const PREF_KEYS = {
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
+export type MetadataMissingUpstreamPolicy = "ask" | "ignore";
 export type PreferenceChangeListener<T = unknown> = (value: T, key: PrefKey) => void;
 
 const preferenceListeners = new Map<PrefKey, Set<PreferenceChangeListener>>();
@@ -290,6 +292,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: 'bugfix/{bugfixSlug}',
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
+  [PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY]: "ask",
   [PREF_KEYS.TERMINAL_PANEL_HEIGHT]: 280,
   [PREF_KEYS.TERMINAL_ACTIVE_TAB_ID]: null,
   [PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK]: {},
@@ -335,6 +338,9 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY) {
     return value === "merge_commit" || value === "fast_forward";
+  }
+  if (key === PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY) {
+    return value === "ask" || value === "ignore";
   }
   if (
     key === PREF_KEYS.COMPACTION_AUTO ||

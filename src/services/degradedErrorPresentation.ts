@@ -243,7 +243,7 @@ const METADATA_REASON_COPY: Record<MacroSyncReason, Pick<DegradedErrorPresentati
   missing_upstream: {
     title: '@macro has no upstream branch',
     body: 'The metadata branch exists locally but is not linked to a remote branch yet.',
-    nextStep: 'Push @macro to publish it and set the upstream.',
+    nextStep: 'Push @macro to publish it, or ignore this warning to keep metadata local.',
     primaryAction: 'sync_metadata',
     severity: 'warning',
   },

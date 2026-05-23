@@ -20,6 +20,8 @@ import type {
   ProjectGitSetupCommitResult,
   AppMode,
   Need,
+  MCPServer,
+  MCPTool,
   ProjectMount,
   ProviderTurnState,
   ToolTrace,
@@ -239,6 +241,11 @@ export interface GitSyncDto {
   branch: string;
   remote: string;
   output: string;
+}
+
+export interface GitRemoteDto {
+  remote: string;
+  url: string;
 }
 
 export interface GitMergeCheckDto {
@@ -1034,6 +1041,16 @@ export interface ToolModePolicyDto {
   enforce_macro_only_writes: boolean;
 }
 
+export interface MCPDiscoverToolsResponseDto {
+  tools: MCPTool[];
+}
+
+export interface MCPCallToolResponseDto {
+  content: string;
+  isError?: boolean;
+  rawResult?: unknown;
+}
+
 export interface TerminalSessionDto {
   id: string;
   project_id: string;
@@ -1083,6 +1100,13 @@ export interface TerminalOutputEvent {
 }
 
 export type WorkspaceScope = "default" | "metadata";
+export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface FrontendLogParams {
+  level: FrontendLogLevel;
+  scope: string;
+  message: string;
+}
 
 const normalizeGitStatus = (
   status: Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">,
@@ -1100,6 +1124,14 @@ const normalizeGitStatus = (
 };
 
 // ============ Conversations ============
+
+export async function frontendLog(params: FrontendLogParams): Promise<void> {
+  return invoke<void>("frontend_log", {
+    level: params.level,
+    scope: params.scope,
+    message: params.message,
+  });
+}
 
 export async function listConversations(): Promise<DbConversation[]> {
   return invoke<DbConversation[]>("db_list_conversations");
@@ -2104,6 +2136,16 @@ export async function gitPush(params: {
   });
 }
 
+export async function gitRemoteAddOrigin(params: {
+  repoPath: string;
+  url: string;
+}): Promise<GitRemoteDto> {
+  return invoke<GitRemoteDto>("git_remote_add_origin", {
+    repoPath: params.repoPath,
+    url: params.url,
+  });
+}
+
 export async function gitFetch(params: {
   repoPath: string;
   remote?: string;
@@ -2881,6 +2923,50 @@ export async function executeWorkspaceTool(params: {
     })),
     virtualRootEnabled: params.virtualRootEnabled ?? null,
     focusedProjectId: params.focusedProjectId ?? null,
+  });
+}
+
+export async function mcpDiscoverTools(params: {
+  server: MCPServer;
+}): Promise<MCPDiscoverToolsResponseDto> {
+  return invoke<MCPDiscoverToolsResponseDto>("mcp_discover_tools", {
+    server: params.server,
+  });
+}
+
+export async function mcpCallTool(params: {
+  server: MCPServer;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  timeoutMs?: number | null;
+}): Promise<MCPCallToolResponseDto> {
+  return invoke<MCPCallToolResponseDto>("mcp_call_tool", {
+    server: params.server,
+    toolName: params.toolName,
+    arguments: params.arguments,
+    timeoutMs: params.timeoutMs ?? null,
+  });
+}
+
+export async function mcpStoreEnvSecret(params: {
+  serverId: string;
+  key: string;
+  value: string;
+}): Promise<string> {
+  return invoke<string>("mcp_store_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
+    value: params.value,
+  });
+}
+
+export async function mcpDeleteEnvSecret(params: {
+  serverId: string;
+  key: string;
+}): Promise<void> {
+  return invoke("mcp_delete_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
   });
 }
 

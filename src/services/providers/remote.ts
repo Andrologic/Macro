@@ -25,8 +25,8 @@ import type { ServiceProvider } from '../contracts/serviceProvider';
 import {
   buildMCPServerSettingsPayload,
   buildToolSettingsPayload,
-  normalizeMCPServerEnablementInput,
-  writeStoredMCPServerEnablement,
+  normalizeMCPServerSettingsInput,
+  writeStoredMCPServers,
   writeStoredToolEnablement,
 } from './clientSettingsStorage';
 import {
@@ -217,8 +217,14 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> =>
   buildMCPServerSettingsPayload();
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  writeStoredMCPServerEnablement(normalizeMCPServerEnablementInput(settings));
+  writeStoredMCPServers(normalizeMCPServerSettingsInput(settings));
 };
+
+export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
+  remoteUnsupported('mcpDiscoverTools');
+
+export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
+  remoteUnsupported('mcpCallTool');
 
 export const provider: ServiceProvider = {
   getAppBootstrap,
@@ -253,4 +259,6 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
+  mcpDiscoverTools,
+  mcpCallTool,
 };

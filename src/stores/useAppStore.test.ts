@@ -73,6 +73,7 @@ const DEFAULT_UI_PREFS = {
   recentProjects: [],
   macroEnabledProjects: [],
   metadataAutoPush: false,
+  metadataMissingUpstreamPolicy: 'ask',
   notificationChannelModes: {},
 } as const;
 

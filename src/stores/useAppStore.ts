@@ -53,6 +53,7 @@ import type { StrategyMutationPreview } from "../services/architectStrategyMutat
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import {
   loadPreference,
+  type MetadataMissingUpstreamPolicy,
   purgeLegacyImplementExecutionModePreference,
   savePreference,
   savePreferenceDebounced,
@@ -107,6 +108,7 @@ export type SettingsTab =
   | "architect";
 export type UiZoomMode = "auto" | "override";
 export type MetadataSyncState = "clean" | "pending" | "failed" | "conflict";
+export type { MetadataMissingUpstreamPolicy };
 
 const normalizeCodeOverflowMode = (
   value: CodeOverflowMode | string | null | undefined,
@@ -1138,6 +1140,7 @@ interface AppStore {
   projectSwitchPolicy: ProjectSwitchPolicy;
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
+  metadataMissingUpstreamPolicy: MetadataMissingUpstreamPolicy;
   notificationChannelModes: NotificationChannelModes;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
@@ -1204,6 +1207,9 @@ interface AppStore {
   setCodeOverflowMode: (mode: CodeOverflowMode) => void;
   setProjectSwitchPolicy: (policy: ProjectSwitchPolicy) => Promise<void>;
   setMetadataAutoPush: (enabled: boolean) => void;
+  setMetadataMissingUpstreamPolicy: (
+    policy: MetadataMissingUpstreamPolicy,
+  ) => void;
   setNotificationChannelMode: (
     category: NotificationCategory,
     mode: NotificationChannelMode,
@@ -1366,6 +1372,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectSwitchPolicy: "resume_per_project",
   isProjectSwitching: false,
   metadataAutoPush: false,
+  metadataMissingUpstreamPolicy: "ask",
   notificationChannelModes: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   metadataSyncState: "clean",
   metadataSyncError: null,
@@ -1492,6 +1499,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMetadataAutoPush: (enabled) => {
     set({ metadataAutoPush: enabled });
     void savePreference(PREF_KEYS.METADATA_AUTO_PUSH, enabled);
+  },
+
+  setMetadataMissingUpstreamPolicy: (policy) => {
+    const normalized: MetadataMissingUpstreamPolicy =
+      policy === "ignore" ? "ignore" : "ask";
+    set({ metadataMissingUpstreamPolicy: normalized });
+    void savePreference(PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY, normalized);
   },
 
   setNotificationChannelMode: (category, mode) => {
@@ -3780,6 +3794,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         recentProjects,
         macroEnabledProjects,
         metadataAutoPush,
+        metadataMissingUpstreamPolicy,
         notificationChannelModes,
         storedProjectSwitchPolicy,
         sessionContext,
@@ -3799,6 +3814,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<RememberedProject[]>(PREF_KEYS.RECENT_PROJECTS),
         loadPreference<RememberedProject[]>(PREF_KEYS.MACRO_ENABLED_PROJECTS),
         loadPreference<boolean>(PREF_KEYS.METADATA_AUTO_PUSH),
+        loadPreference<MetadataMissingUpstreamPolicy>(
+          PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY,
+        ),
         loadPreference<NotificationChannelModes>(
           PREF_KEYS.NOTIFICATION_CHANNEL_MODES,
         ),
@@ -4008,6 +4026,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         uiZoomLevel: normalizedZoomLevel,
         codeOverflowMode: normalizedCodeOverflowMode,
         metadataAutoPush,
+        metadataMissingUpstreamPolicy:
+          metadataMissingUpstreamPolicy === "ignore" ? "ignore" : "ask",
         notificationChannelModes: sanitizeNotificationChannelModes(
           notificationChannelModes,
         ),

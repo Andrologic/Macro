@@ -172,4 +172,26 @@ describe("toolSecurityPolicy", () => {
 
     expect(result).toEqual(["need_update"]);
   });
+
+  it("treats MCP tools as external actions gated by risk level", () => {
+    const balanced = evaluateToolSecurity(
+      "mcp__github__list_issues",
+      { state: "open" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+      },
+    );
+    const strictIds = filterDeniedToolIdsForRiskLevel(
+      ["read_file", "mcp__github__list_issues"],
+      "strict",
+    );
+
+    expect(balanced.decision).toBe("ask");
+    expect(balanced.normalizedCall.actionGroup).toBe("escape");
+    expect(balanced.normalizedCall.summary).toBe(
+      "Call MCP tool list_issues on github",
+    );
+    expect(strictIds).toEqual(["read_file"]);
+  });
 });

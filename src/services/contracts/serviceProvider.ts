@@ -16,6 +16,8 @@ import type {
   ToolSettingsDto,
 } from './dtos';
 import type {
+  MCPServer,
+  MCPTool,
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
@@ -142,4 +144,11 @@ export interface ServiceProvider {
   updateToolSettings: (settings: ToolSettingsDto) => Promise<void>;
   getMCPServerSettings: () => Promise<MCPServerSettingsDto>;
   updateMCPServerSettings: (settings: MCPServerSettingsDto) => Promise<void>;
+  mcpDiscoverTools: (server: MCPServer) => Promise<{ tools: MCPTool[] }>;
+  mcpCallTool: (data: {
+    server: MCPServer;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    timeoutMs?: number | null;
+  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
 }

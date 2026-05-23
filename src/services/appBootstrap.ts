@@ -1,4 +1,4 @@
-import { preloadModeComponents } from '../components/layout/ModeRouter';
+import { preloadModePanels } from '../components/layout/modePanelLoaders';
 import type { AppMode } from '../types';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
 import { useAppStore } from '../stores/useAppStore';
@@ -46,7 +46,7 @@ interface AppBootstrapDependencies {
   initializeShortcuts: () => Promise<void>;
   checkSession: () => Promise<void>;
   getCurrentMode: () => AppMode;
-  preloadModeComponents: (mode: AppMode) => void;
+  preloadModeComponents: (mode: AppMode) => Promise<void>;
   scheduleLowPriority: (run: () => void) => void;
   now: () => number;
   log: (message: string) => void;
@@ -201,6 +201,16 @@ export const createAppBootstrapController = (
         initWithTracking('Chat Critical', dependencies.initializeChatCritical, 'critical'),
       ]);
 
+      if (!preloadTriggered) {
+        preloadTriggered = true;
+        await initWithTracking(
+          'Current Mode UI Preload',
+          () => dependencies.preloadModeComponents(dependencies.getCurrentMode()),
+          'critical',
+          { warningOnly: true }
+        );
+      }
+
       if (!dependencies.isPageShuttingDown()) {
         updateSnapshotForRun(activeRunId, (current) => ({
           ...current,
@@ -265,11 +275,6 @@ export const createAppBootstrapController = (
           phase: current.startupError ? 'error' : 'ready',
           ready: true,
         }));
-
-        if (!preloadTriggered) {
-          preloadTriggered = true;
-          dependencies.preloadModeComponents(dependencies.getCurrentMode());
-        }
       }
     })();
 
@@ -312,7 +317,25 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   initializeShortcuts: useShortcutsStore.getState().initialize,
   checkSession: useAuthStore.getState().checkSession,
   getCurrentMode: () => useAppStore.getState().mode,
-  preloadModeComponents,
+  preloadModeComponents: async (mode) => {
+    const state = useAppStore.getState();
+    const result = await preloadModePanels(mode, {
+      includeLeft: state.isLeftPanelOpen,
+      includeRight: state.isRightPanelOpen,
+      timeoutMs: 450,
+    });
+
+    if (result.failed.length > 0) {
+      throw new Error(
+        result.failed
+          .map(({ id, error }) => {
+            const message = error instanceof Error ? error.message : String(error);
+            return `${id}: ${message}`;
+          })
+          .join('; ')
+      );
+    }
+  },
   scheduleLowPriority: createWindowLowPriorityScheduler(),
   now: () => performance.now(),
   log: (message) => devLogger.log(message),

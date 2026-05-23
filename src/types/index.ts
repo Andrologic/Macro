@@ -236,6 +236,7 @@ export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
 export type ToolCategory = 'git' | 'filesystem' | 'web' | 'database' | 'terminal' | 'ai' | 'productivity' | 'external';
 export type MCPServerStatus = 'online' | 'offline' | 'degraded' | 'unconfigured';
 export type MCPServerCategory = 'database' | 'productivity' | 'communication' | 'development' | 'ai' | 'other';
+export type MCPTransportType = 'stdio' | 'sse' | 'streamable_http';
 export type ToolRiskLevel = 'strict' | 'balanced' | 'yolo';
 export type ToolSecurityActionGroup = 'observe' | 'change' | 'escape';
 export type ToolSecurityDecision = 'allow' | 'ask' | 'deny';
@@ -264,6 +265,31 @@ export interface ToolSettings {
 }
 
 // MCP Server interfaces
+export interface MCPStdioTransportConfig {
+  type: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface MCPHttpTransportConfig {
+  type: 'sse' | 'streamable_http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type MCPTransportConfig = MCPStdioTransportConfig | MCPHttpTransportConfig;
+
+export interface MCPTool {
+  id: string;
+  serverId: string;
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  enabled?: boolean;
+  discoveredAt?: string;
+}
+
 export interface MCPServer {
   id: string;
   name: string;
@@ -272,7 +298,11 @@ export interface MCPServer {
   description: string;
   icon: IconName;
   website?: string;
-  config?: Record<string, unknown>;
+  transport?: MCPTransportConfig;
+  tools?: MCPTool[];
+  lastError?: string | null;
+  discoveredAt?: string | null;
+  config?: Record<string, unknown> & { enabled?: boolean };
 }
 
 export interface MCPServerSettings {

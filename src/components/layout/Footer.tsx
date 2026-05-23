@@ -52,6 +52,48 @@ interface FooterMetadataSyncState {
   repositories: MetadataSyncRepositoryStatus[];
 }
 
+interface PushRemoteResolutionEntry {
+  projectId: string | null;
+  projectName: string;
+  repoPath: string;
+  url: string;
+  source: 'code' | 'metadata' | 'code_and_metadata';
+}
+
+interface PushPreflightCodeEntry {
+  project: ScopedProject;
+  status: tauriIpc.GitStatusDto | null;
+  error: string | null;
+}
+
+interface MetadataOriginCandidate {
+  repoPath: string;
+  projectId: string | null;
+  reason: tauriIpc.MacroSyncReason | null;
+  nextAction: tauriIpc.MacroSyncNextAction | null;
+}
+
+type MacroSyncResultWithRepositories = tauriIpc.MacroBranchSyncDto & {
+  repositories?: MetadataSyncRepositoryStatus[];
+};
+
+interface PushMissingOriginResolution {
+  kind: 'missing_origin';
+  scopeProjects: ScopedProject[];
+  readyProjects: ScopedProject[];
+  entries: PushRemoteResolutionEntry[];
+  error: string | null;
+}
+
+interface PushMissingUpstreamResolution {
+  kind: 'missing_upstream';
+  macroResult: tauriIpc.MacroBranchSyncDto;
+  scopeProjects: ScopedProject[];
+  context: 'push' | 'resolve';
+}
+
+type PushResolutionState = PushMissingOriginResolution | PushMissingUpstreamResolution;
+
 const ALL_PROJECTS_OPTION = '__all__';
 const DEFAULT_CODE_STATUS: CodeStatusSnapshot = { branch: null, ahead: 0, behind: 0 };
 const DEFAULT_FOOTER_METADATA_SYNC: FooterMetadataSyncState = {
@@ -97,10 +139,14 @@ export const Footer: React.FC = () => {
     selectedGroupId,
     selectedProjectId,
     projectGroups,
+    metadataMissingUpstreamPolicy,
+    setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     projectGroups: state.projectGroups,
+    metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
+    setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
   })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
@@ -116,6 +162,8 @@ export const Footer: React.FC = () => {
   const [syncAction, setSyncAction] = useState<FooterSyncAction | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
+  const [pushResolution, setPushResolution] = useState<PushResolutionState | null>(null);
+  const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
 
   const refreshRef = useRef<Promise<void> | null>(null);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
@@ -171,17 +219,19 @@ export const Footer: React.FC = () => {
       repositories: params.repositories ?? [],
     });
   }, []);
-  const scopedMacroSyncService = useMemo(
-    () => createMacroSyncService({
+  const createMacroSyncServiceForProjects = useCallback((projects: ScopedProject[]) =>
+    createMacroSyncService({
       tauriIpc,
       getAppState: () => ({
         ...useAppStore.getState(),
         setMetadataSyncStatus: setFooterMetadataSyncStatus,
       }),
       toServiceError,
-      resolveTargets: async () => scopeProjects.map((project) => ({ repoPath: project.path, projectId: project.id })),
-    }),
-    [scopeProjects, setFooterMetadataSyncStatus]
+      resolveTargets: async () => projects.map((project) => ({ repoPath: project.path, projectId: project.id })),
+    }), [setFooterMetadataSyncStatus]);
+  const scopedMacroSyncService = useMemo(
+    () => createMacroSyncServiceForProjects(scopeProjects),
+    [createMacroSyncServiceForProjects, scopeProjects]
   );
 
   const codeBehind = codeStatus.behind;
@@ -193,12 +243,30 @@ export const Footer: React.FC = () => {
   const hasPullWork = codeBehind > 0 || macroBehind > 0;
   const hasPushWork = codeAhead > 0 || macroAhead > 0;
   const hasUnreadNotificationDot = useMemo(() => hasUnreadNotifications(notificationItems), [notificationItems]);
-  const macroNeedsAttention = footerMetadataSync.state === 'conflict' || footerMetadataSync.state === 'failed';
+  const hasMissingUpstream =
+    footerMetadataSync.reason === 'missing_upstream' &&
+    footerMetadataSync.nextAction === 'push';
+  const hasMissingOrigin =
+    footerMetadataSync.reason === 'missing_origin' ||
+    footerMetadataSync.nextAction === 'configure_remote';
+  const shouldPromptForMissingUpstream =
+    hasMissingUpstream && metadataMissingUpstreamPolicy !== 'ignore';
+  const macroNeedsAttention =
+    !hasMissingOrigin &&
+    (
+      footerMetadataSync.state === 'conflict' ||
+      footerMetadataSync.state === 'failed' ||
+      shouldPromptForMissingUpstream
+    );
+  const isMissingUpstreamResolution = shouldPromptForMissingUpstream && footerMetadataSync.state !== 'conflict';
   const canUseMacroAssistant =
-    footerMetadataSync.state === 'conflict' ||
-    footerMetadataSync.reason === 'merge_conflict' ||
-    footerMetadataSync.reason === 'diverged' ||
-    footerMetadataSync.reason === 'unknown_error';
+    !isMissingUpstreamResolution &&
+    (
+      footerMetadataSync.state === 'conflict' ||
+      footerMetadataSync.reason === 'merge_conflict' ||
+      footerMetadataSync.reason === 'diverged' ||
+      footerMetadataSync.reason === 'unknown_error'
+    );
 
   const presentConflictIfNeeded = useCallback((result: tauriIpc.MacroBranchSyncDto, context: MacroConflictContext) => {
     if (result.state !== 'conflict') return;
@@ -268,6 +336,88 @@ export const Footer: React.FC = () => {
     }
   }, [focusedProjectPath, isTauriRuntime, t]);
 
+  const readScopedCodeStatuses = useCallback(async (projects: ScopedProject[] = scopeProjects) => {
+    const entries: PushPreflightCodeEntry[] = [];
+    for (const project of projects) {
+      try {
+        entries.push({ project, status: await tauriIpc.gitStatus(project.path), error: null });
+      } catch (error) {
+        entries.push({ project, status: null, error: toServiceError(error).message });
+      }
+    }
+    return entries;
+  }, [scopeProjects]);
+
+  const buildMissingOriginResolution = useCallback((
+    codeEntries: PushPreflightCodeEntry[],
+    macroResult: tauriIpc.MacroBranchSyncDto | null,
+    projects: ScopedProject[] = scopeProjects
+  ): PushMissingOriginResolution | null => {
+    const entriesByPath = new Map<string, PushRemoteResolutionEntry>();
+    const addEntry = (
+      project: { id: string | null; name: string; path: string },
+      source: PushRemoteResolutionEntry['source']
+    ) => {
+      const existing = entriesByPath.get(project.path);
+      if (existing) {
+        existing.source = existing.source === source ? source : 'code_and_metadata';
+        return;
+      }
+      entriesByPath.set(project.path, {
+        projectId: project.id,
+        projectName: project.name,
+        repoPath: project.path,
+        url: '',
+        source,
+      });
+    };
+
+    for (const entry of codeEntries) {
+      if (entry.status && !entry.status.has_origin) {
+        addEntry(entry.project, 'code');
+      }
+    }
+
+    const macroRepositories = (macroResult as MacroSyncResultWithRepositories | null)?.repositories ?? [];
+    const metadataRepositories: MetadataOriginCandidate[] = macroRepositories.length
+      ? macroRepositories
+      : macroResult?.reason === 'missing_origin'
+        ? projects.map((project) => ({
+            repoPath: project.path,
+            projectId: project.id,
+            reason: macroResult.reason,
+            nextAction: macroResult.next_action,
+          }))
+        : [];
+
+    for (const repository of metadataRepositories) {
+      if (repository.reason !== 'missing_origin' && repository.nextAction !== 'configure_remote') {
+        continue;
+      }
+      const project = projects.find((candidate) => candidate.path === repository.repoPath);
+      addEntry({
+        id: repository.projectId ?? project?.id ?? null,
+        name: project?.name ?? repository.repoPath,
+        path: repository.repoPath,
+      }, 'metadata');
+    }
+
+    const entries = Array.from(entriesByPath.values());
+    if (entries.length === 0) return null;
+    const missingPaths = new Set(entries.map((entry) => entry.repoPath));
+    const readyProjects = codeEntries
+      .filter((entry) => entry.status?.has_origin && !missingPaths.has(entry.project.path))
+      .map((entry) => entry.project);
+
+    return {
+      kind: 'missing_origin',
+      scopeProjects: projects,
+      readyProjects,
+      entries,
+      error: null,
+    };
+  }, [scopeProjects]);
+
   const refreshMacroStatus = useCallback(async (ensure = false) => {
     if (!isTauriRuntime) {
       setMacroSnapshot(null);
@@ -305,9 +455,12 @@ export const Footer: React.FC = () => {
     void refreshFocusedProjectBranch();
   }, [refreshFocusedProjectBranch]);
 
-  const runCodeAction = useCallback(async (action: FooterSyncAction): Promise<RepositorySyncResult[]> => {
+  const runCodeAction = useCallback(async (
+    action: FooterSyncAction,
+    projects: ScopedProject[] = scopeProjects
+  ): Promise<RepositorySyncResult[]> => {
     const results: RepositorySyncResult[] = [];
-    for (const project of scopeProjects) {
+    for (const project of projects) {
       try {
         const result = action === 'fetch'
           ? await tauriIpc.gitFetch({ repoPath: project.path })
@@ -342,15 +495,78 @@ export const Footer: React.FC = () => {
     return `@macro: ${getMacroSyncDescription(result) || formatGitOutput(result.output, translate)}`;
   }, [t, translate]);
 
-  const handleSyncAction = useCallback(async (action: FooterSyncAction) => {
-    if (!isTauriRuntime || syncAction || scopeProjects.length === 0) return;
+  const runPushPreflight = useCallback(async (projects: ScopedProject[]) => {
+    const macroSyncService = createMacroSyncServiceForProjects(projects);
+    const [codePreflight, preflight] = await Promise.all([
+      readScopedCodeStatuses(projects),
+      macroSyncService.refreshMacroSyncStatus({ ensure: true }),
+    ]);
+    if (preflight) {
+      setMacroSnapshot(preflight);
+    }
+    const missingOriginResolution = buildMissingOriginResolution(codePreflight, preflight, projects);
+    return {
+      codePreflight,
+      macroResult: preflight,
+      missingOriginResolution,
+      pushableProjects: missingOriginResolution?.readyProjects ?? projects,
+    };
+  }, [buildMissingOriginResolution, createMacroSyncServiceForProjects, readScopedCodeStatuses]);
+
+  const handleSyncAction = useCallback(async (
+    action: FooterSyncAction,
+    options?: {
+      publishMissingUpstream?: boolean;
+      skipMissingUpstreamPrompt?: boolean;
+      projects?: ScopedProject[];
+    }
+  ) => {
+    const actionProjects = options?.projects ?? scopeProjects;
+    if (!isTauriRuntime || syncAction || actionProjects.length === 0) return;
+    const actionMacroSyncService = options?.projects
+      ? createMacroSyncServiceForProjects(actionProjects)
+      : scopedMacroSyncService;
     setSyncAction(action);
     lastMacroConflictActionRef.current = action;
     try {
-      const codeResults = await runCodeAction(action);
-      const macroResult = action === 'fetch'
-        ? await scopedMacroSyncService.refreshMacroSyncStatus({ ensure: true })
-        : await scopedMacroSyncService.syncMacroMetadataForCodeAction({ action });
+      if (action === 'push') {
+        const { macroResult: preflight, missingOriginResolution } = await runPushPreflight(actionProjects);
+
+        if (missingOriginResolution) {
+          setPushResolution(missingOriginResolution);
+          return;
+        }
+
+        if (
+          metadataMissingUpstreamPolicy !== 'ignore' &&
+          !options?.publishMissingUpstream &&
+          !options?.skipMissingUpstreamPrompt &&
+          preflight?.reason === 'missing_upstream' &&
+          preflight.next_action === 'push'
+        ) {
+          setPushResolution({ kind: 'missing_upstream', macroResult: preflight, scopeProjects: actionProjects, context: 'push' });
+          return;
+        }
+      }
+
+      const codeResults = await runCodeAction(action, actionProjects);
+      let macroResult = action === 'fetch'
+        ? await actionMacroSyncService.refreshMacroSyncStatus({ ensure: true })
+        : await actionMacroSyncService.syncMacroMetadataForCodeAction({ action });
+      if (
+        action === 'push' &&
+        macroResult?.reason === 'missing_upstream' &&
+        macroResult.next_action === 'push'
+      ) {
+        if (options?.publishMissingUpstream) {
+          macroResult = await actionMacroSyncService.pushMacroMetadata();
+        } else if (
+          metadataMissingUpstreamPolicy !== 'ignore' &&
+          !options?.skipMissingUpstreamPrompt
+        ) {
+          setPushResolution({ kind: 'missing_upstream', macroResult, scopeProjects: actionProjects, context: 'push' });
+        }
+      }
       if (macroResult) {
         setMacroSnapshot(macroResult);
         presentConflictIfNeeded(macroResult, action);
@@ -392,7 +608,7 @@ export const Footer: React.FC = () => {
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [describeMacroResultForToast, isTauriRuntime, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, scopeProjects.length, scopedMacroSyncService, syncAction, t]);
+  }, [createMacroSyncServiceForProjects, describeMacroResultForToast, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runPushPreflight, scopeProjects, scopedMacroSyncService, syncAction, t]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -441,6 +657,18 @@ export const Footer: React.FC = () => {
   };
 
   const handleRetryMacroSync = async () => {
+    if (isMissingUpstreamResolution) {
+      const result = await scopedMacroSyncService.pushMacroMetadata();
+      if (result) {
+        setMacroSnapshot(result);
+        if (result.state !== 'pending' || result.reason !== 'missing_upstream') {
+          setShowConflictModal(false);
+        }
+      }
+      await refreshFooterStatus({ showBusy: true });
+      return;
+    }
+
     const action = lastMacroConflictActionRef.current;
     if (action === 'fetch' || action === 'pull' || action === 'push') {
       await handleSyncAction(action);
@@ -448,6 +676,147 @@ export const Footer: React.FC = () => {
     }
     await refreshFooterStatus({ ensureMacro: true, showBusy: true });
     if (footerMetadataSyncRef.current.state !== 'conflict') setShowConflictModal(false);
+  };
+
+  const continuePushAfterMissingUpstreamChoice = async (
+    choice: 'push_macro' | 'ignore_forever' | 'ask_next_time'
+  ) => {
+    if (!pushResolution || pushResolution.kind !== 'missing_upstream') return;
+    const projects = pushResolution.scopeProjects;
+    setPushResolution(null);
+    if (choice === 'ignore_forever') {
+      setMetadataMissingUpstreamPolicy('ignore');
+    }
+    await handleSyncAction('push', {
+      projects,
+      publishMissingUpstream: choice === 'push_macro',
+      skipMissingUpstreamPrompt: choice !== 'push_macro',
+    });
+  };
+
+  const resolveMissingUpstreamChoice = async (
+    choice: 'push_macro' | 'ignore_forever'
+  ) => {
+    if (!pushResolution || pushResolution.kind !== 'missing_upstream') return;
+    const macroSyncService = createMacroSyncServiceForProjects(pushResolution.scopeProjects);
+    setPushResolution(null);
+    if (choice === 'ignore_forever') {
+      setMetadataMissingUpstreamPolicy('ignore');
+      return;
+    }
+
+    const result = await macroSyncService.pushMacroMetadata();
+    if (result) {
+      setMacroSnapshot(result);
+    }
+    await refreshFooterStatus({ showBusy: true });
+  };
+
+  const updatePushResolutionRemoteUrl = (repoPath: string, url: string) => {
+    setPushResolution((current) => {
+      if (!current || current.kind !== 'missing_origin') return current;
+      return {
+        ...current,
+        error: null,
+        entries: current.entries.map((entry) =>
+          entry.repoPath === repoPath ? { ...entry, url } : entry
+        ),
+      };
+    });
+  };
+
+  const configureMissingOriginsAndContinue = async () => {
+    if (!pushResolution || pushResolution.kind !== 'missing_origin') return;
+    const entries = pushResolution.entries;
+    const entriesToConfigure = entries.filter((entry) => entry.url.trim().length > 0);
+    if (pushResolution.readyProjects.length === 0 && entriesToConfigure.length === 0) {
+      setPushResolution({
+        ...pushResolution,
+        error: t(
+          'footer.sync.remoteUrlRequired',
+          'Enter at least one origin URL, or cancel to keep every repository local.'
+        ),
+      });
+      return;
+    }
+
+    setIsConfiguringRemote(true);
+    try {
+      for (const entry of entriesToConfigure) {
+        await tauriIpc.gitRemoteAddOrigin({
+          repoPath: entry.repoPath,
+          url: entry.url.trim(),
+        });
+      }
+      const { missingOriginResolution, pushableProjects } = await runPushPreflight(pushResolution.scopeProjects);
+      if (pushableProjects.length === 0) {
+        setPushResolution({
+          ...(missingOriginResolution ?? pushResolution),
+          error: t(
+            'footer.sync.remoteUrlRequired',
+            'Enter at least one origin URL, or cancel to keep every repository local.'
+          ),
+        });
+        return;
+      }
+      setPushResolution(null);
+      await refreshFooterStatus({ ensureMacro: true, showBusy: true });
+      await handleSyncAction('push', { projects: pushableProjects });
+    } catch (error) {
+      setPushResolution({
+        ...pushResolution,
+        error: toServiceError(error).message,
+      });
+    } finally {
+      setIsConfiguringRemote(false);
+    }
+  };
+
+  const ignoreMissingUpstreamFromResolve = () => {
+    setMetadataMissingUpstreamPolicy('ignore');
+    setShowConflictModal(false);
+  };
+
+  const openPushResolution = () => {
+    if (footerMetadataSync.reason === 'missing_origin' || footerMetadataSync.nextAction === 'configure_remote') {
+      const repositories: MetadataOriginCandidate[] = footerMetadataSync.repositories.length > 0
+        ? footerMetadataSync.repositories
+        : scopeProjects.map((project) => ({
+            repoPath: project.path,
+            projectId: project.id,
+            reason: footerMetadataSync.reason,
+            nextAction: footerMetadataSync.nextAction,
+          }));
+      const entriesByPath = new Map<string, PushRemoteResolutionEntry>();
+      for (const repository of repositories) {
+        if (repository.reason !== 'missing_origin' && repository.nextAction !== 'configure_remote') continue;
+        const project = scopeProjects.find((candidate) => candidate.path === repository.repoPath);
+        entriesByPath.set(repository.repoPath, {
+          projectId: repository.projectId ?? project?.id ?? null,
+          projectName: project?.name ?? repository.repoPath,
+          repoPath: repository.repoPath,
+          url: '',
+          source: 'metadata',
+        });
+      }
+      if (entriesByPath.size > 0) {
+        setPushResolution({
+          kind: 'missing_origin',
+          scopeProjects,
+          readyProjects: [],
+          entries: Array.from(entriesByPath.values()),
+          error: null,
+        });
+        return;
+      }
+    }
+
+    if (shouldPromptForMissingUpstream && macroSnapshot) {
+      setPushResolution({ kind: 'missing_upstream', macroResult: macroSnapshot, scopeProjects, context: 'resolve' });
+      return;
+    }
+
+    setShowConflictModal(true);
   };
 
   return (
@@ -551,7 +920,7 @@ export const Footer: React.FC = () => {
                 size="sm"
                 variant="error"
                 className="h-6 px-2 text-[11px]"
-                onClick={() => setShowConflictModal(true)}
+                onClick={openPushResolution}
               >
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
@@ -583,15 +952,168 @@ export const Footer: React.FC = () => {
               description={metadataSyncPresentation.nextStep || metadataSyncPresentation.body}
               repositories={macroConflictEntries}
               error={metadataSyncPresentation.technicalDetails}
-              retryLabel={t('footer.sync.retrySync', 'Retry sync')}
+              retryLabel={
+                isMissingUpstreamResolution
+                  ? t('footer.sync.pushMacroBranch', 'Push @macro')
+                  : t('footer.sync.retrySync', 'Retry sync')
+              }
               retryDisabled={Boolean(syncAction)}
               retryLoading={Boolean(syncAction) || isRefreshing}
               showConflictFiles={footerMetadataSync.state === 'conflict'}
-              onDismiss={() => setShowConflictModal(false)}
-              dismissLabel={t('common.close', 'Close')}
+              onDismiss={
+                isMissingUpstreamResolution
+                  ? ignoreMissingUpstreamFromResolve
+                  : () => setShowConflictModal(false)
+              }
+              dismissLabel={
+                isMissingUpstreamResolution
+                  ? t('footer.sync.ignoreMissingUpstream', 'Ignore missing upstream')
+                  : t('common.close', 'Close')
+              }
               onRetry={() => void handleRetryMacroSync()}
               onUseAiAssistant={canUseMacroAssistant ? () => void openAiConflictAssistant() : undefined}
             />
+          </div>
+        </div>
+      )}
+
+      {pushResolution && (
+        <div className="fixed inset-0 z-[96] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setPushResolution(null)} />
+          <div
+            className="relative w-full max-w-lg rounded-lg border border-border bg-card p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="push-resolution-title"
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-md bg-amber-500/10 p-2 text-amber-500">
+                <Icon name="git-branch" size={16} />
+              </div>
+              <div className="min-w-0">
+                <h3 id="push-resolution-title" className="text-sm font-semibold text-foreground">
+                  {pushResolution.kind === 'missing_origin'
+                    ? t('footer.sync.missingOriginPromptTitle', 'Remote origin is missing')
+                    : t('footer.sync.missingUpstreamPromptTitle', '@macro has no remote branch yet')}
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {pushResolution.kind === 'missing_origin'
+                    ? t(
+                        'footer.sync.missingOriginPromptDescription',
+                        'Add origins for repositories you want to publish now. Leave a field blank to keep that repository local for this push.'
+                      )
+                    : t(
+                        'footer.sync.missingUpstreamPromptDescription',
+                        'Choose whether this push should publish the @macro metadata branch or keep it local.'
+                      )}
+                </p>
+              </div>
+            </div>
+            {pushResolution.kind === 'missing_origin' ? (
+              <>
+                <p className="mt-4 rounded border border-border/80 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                  {t(
+                    'footer.sync.missingOriginPromptSummary',
+                    `${pushResolution.readyProjects.length} repositories ready to push. ${pushResolution.entries.length} need an origin.`
+                  )}
+                </p>
+                <div className="mt-4 space-y-3">
+                  {pushResolution.entries.map((entry) => (
+                    <label key={entry.repoPath} className="block space-y-1.5">
+                      <span className="flex items-center justify-between gap-2 text-xs font-medium text-foreground">
+                        <span className="truncate">{entry.projectName}</span>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                          {entry.source === 'code_and_metadata'
+                            ? t('footer.sync.remoteNeededCodeAndMetadata', 'code + @macro')
+                            : entry.source === 'metadata'
+                              ? t('footer.sync.remoteNeededMetadata', '@macro')
+                              : t('footer.sync.remoteNeededCode', 'code')}
+                        </span>
+                      </span>
+                      <input
+                        className="h-8 w-full rounded border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+                        value={entry.url}
+                        placeholder="https://github.com/org/repo.git"
+                        disabled={isConfiguringRemote}
+                        onChange={(event) => updatePushResolutionRemoteUrl(entry.repoPath, event.target.value)}
+                      />
+                      <span className="block truncate text-[11px] text-muted-foreground">{entry.repoPath}</span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        {t('footer.sync.remoteUrlOptional', 'Leave blank to skip this repository for this push.')}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {pushResolution.error && (
+                  <p className="mt-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                    {pushResolution.error}
+                  </p>
+                )}
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isConfiguringRemote}
+                    onClick={() => setPushResolution(null)}
+                  >
+                    {t('common.cancel', 'Cancel')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    disabled={Boolean(syncAction) || isConfiguringRemote}
+                    isLoading={isConfiguringRemote}
+                    onClick={() => void configureMissingOriginsAndContinue()}
+                  >
+                    {t('footer.sync.pushAvailableRepositories', 'Push available repositories')}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                {pushResolution.context === 'push' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={Boolean(syncAction)}
+                    onClick={() => void continuePushAfterMissingUpstreamChoice('ask_next_time')}
+                  >
+                    {t('footer.sync.askNextTime', 'Ask next time')}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={Boolean(syncAction)}
+                  onClick={() => void (
+                    pushResolution.context === 'resolve'
+                      ? resolveMissingUpstreamChoice('ignore_forever')
+                      : continuePushAfterMissingUpstreamChoice('ignore_forever')
+                  )}
+                >
+                  {pushResolution.context === 'resolve'
+                    ? t('footer.sync.ignoreMissingUpstream', 'Ignore missing upstream')
+                    : t('footer.sync.doNotAskAgain', "Don't ask again")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  disabled={Boolean(syncAction)}
+                  onClick={() => void (
+                    pushResolution.context === 'resolve'
+                      ? resolveMissingUpstreamChoice('push_macro')
+                      : continuePushAfterMissingUpstreamChoice('push_macro')
+                  )}
+                >
+                  {t('footer.sync.pushMacroBranch', 'Push @macro')}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}

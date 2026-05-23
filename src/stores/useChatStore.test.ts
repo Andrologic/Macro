@@ -296,6 +296,16 @@ const toolsStoreState = {
   isToolEnabled: (_toolId: string) => true,
   isChatToolEnabled: (_toolId: string) => true,
   getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch', 'question'],
+  getEnabledMCPToolIds: () => [] as string[],
+  getEnabledMCPTools: () => [] as Array<{
+    id: string;
+    serverId: string;
+    name: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
+  }>,
+  getMCPToolById: (_toolId: string) => null,
+  callMCPTool: mock(async (_toolId: string, _args: Record<string, unknown>) => 'mcp-result'),
   loadSettings: mock(async () => undefined),
 };
 
@@ -1789,6 +1799,19 @@ const createScenarioPlan = (
   }
 };
 
+const activateArchitectPlanForTest = (
+  overrides: Partial<ArchitectPlanRecord> = {}
+): ArchitectPlanRecord => {
+  const plan = createScenarioPlan('started', overrides);
+  architectPlans.set(plan.id, plan);
+  appState.activeArchitectPlanId = plan.id;
+  appState.activePlanContext = {
+    id: plan.id,
+    targetBranch: plan.targetBranch,
+  };
+  return plan;
+};
+
 const createTranscriptEntry = (
   overrides: Partial<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }> = {}
 ) => ({
@@ -2220,6 +2243,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'read_sources',
       'edit_source_passage',
     ];
+    toolsStoreState.getEnabledMCPToolIds = () => [];
+    toolsStoreState.getEnabledMCPTools = () => [];
+    toolsStoreState.getMCPToolById = () => null;
+    toolsStoreState.callMCPTool.mockClear();
     appState.activateArchitectPlan.mockClear();
     appState.switchProjectContext.mockClear();
   });
@@ -2252,7 +2279,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
-  it('resolves the current conversation during context restore when startup has no selected conversation yet', async () => {
+  it('clears Architect conversation selection when no plan is selected', async () => {
     const { useChatStore } = await loadChatStore();
     useChatStore.setState(
       createIdleChatStoreState({
@@ -2266,9 +2293,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     await useChatStore.getState().reapplySelectionForCurrentContext();
 
-    expect(useChatStore.getState().selectedConversationId).toBe('conv-a');
-    expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBe('conv-a');
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
     expect(useChatStore.getState().restoreStatus).toBe('ready');
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+    expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse remembered Architect conversations when no plan is selected', async () => {
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createIdleChatStoreState({
+        conversations: [createConversation('remembered-conv')],
+        selectedConversationId: 'remembered-conv',
+        selectedConversationIdsByMode: { Architect: 'remembered-conv' },
+        hydrationStatus: 'ready',
+        restoreStatus: 'ready',
+      }),
+    );
+
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(ensuredId).toBeNull();
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+    expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects Architect sends before creating messages when no plan is selected', async () => {
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createIdleChatStoreState({
+        conversations: [createConversation('stale-architect-conv')],
+        selectedConversationId: 'stale-architect-conv',
+        selectedConversationIdsByMode: { Architect: 'stale-architect-conv' },
+        hydrationStatus: 'ready',
+        restoreStatus: 'ready',
+      }),
+    );
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'stale-architect-conv',
+        content: 'Prépare un plan.',
+      }),
+    ).rejects.toThrow('Select a plan before sending an Architect message.');
+
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationMessages('stale-architect-conv')).toHaveLength(0);
   });
 
   it('restores the provider, model, and thinking for the selected conversation', async () => {
@@ -2400,6 +2474,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         reasoning_effort: 'low',
       }),
     ];
+    activateArchitectPlanForTest({ conversationId: 'conv-a' });
 
     const { useChatStore } = await loadChatStore();
     await useChatStore.getState().initialize();
@@ -2454,6 +2529,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         updated_at: '2026-03-19T00:00:00.000Z',
       }),
     ];
+    activateArchitectPlanForTest({ conversationId: 'conv-a' });
 
     const { useChatStore } = await loadChatStore();
     await useChatStore.getState().initialize();
@@ -5394,6 +5470,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
 
     const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'plan-conv' });
     useChatStore.setState({
       conversations: [createConversation('plan-conv')],
       messages: [],
@@ -5445,6 +5522,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
 
     const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'plan-conv' });
     useChatStore.setState({
       conversations: [createConversation('plan-conv')],
       messages: [],
@@ -5494,6 +5572,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     localStorage.setItem('macro_toolRiskLevel', JSON.stringify('strict'));
 
     const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'plan-conv' });
     useChatStore.setState({
       conversations: [createConversation('plan-conv')],
       messages: [],
@@ -5576,6 +5655,53 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       allowedToolIds: string[];
     };
     expect(streamOptions.allowedToolIds).toContain('question');
+  });
+
+  it('passes enabled discovered MCP tools through Chat mode streaming options', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    toolsStoreState.getEnabledMCPToolIds = () => ['mcp__github__list_issues'];
+    toolsStoreState.getEnabledMCPTools = () => [
+      {
+        id: 'mcp__github__list_issues',
+        serverId: 'github',
+        name: 'list_issues',
+        description: 'List issues',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv')],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Use GitHub context.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      allowedToolIds: string[];
+      mcpTools?: Array<{ id: string }>;
+    };
+    expect(streamOptions.allowedToolIds).toContain('mcp__github__list_issues');
+    expect(streamOptions.mcpTools?.map((tool) => tool.id)).toEqual([
+      'mcp__github__list_issues',
+    ]);
   });
 
   it('adds a guided retry when the user explicitly asks to use the question tool', async () => {
@@ -7958,6 +8084,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'conv-1' });
     useChatStore.setState({
       conversations: [createConversation('conv-1')],
       messages: [],
@@ -8044,6 +8171,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'conv-1' });
     useChatStore.setState({
       conversations: [createConversation('conv-1')],
       messages: [],

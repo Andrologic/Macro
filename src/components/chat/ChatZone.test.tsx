@@ -322,6 +322,7 @@ const translationMock = createTranslationMock({
   'chat.typeMessage': 'Type your message',
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
+  'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
   'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
   'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
   'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
@@ -1822,7 +1823,7 @@ describe('ChatZone', () => {
     ).not.toBeNull();
   });
 
-  it('hides context controls when Architect has no selected plan', async () => {
+  it('locks Architect chat when no plan is selected', async () => {
     appState = {
       ...appState,
       mode: 'Architect',
@@ -1851,10 +1852,45 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
     ).toBeNull();
+    expect(requireContainer().textContent).not.toContain('Conversation architecte');
+    expect(requireContainer().textContent).toContain('Select or create a plan to start architecting.');
+    expect(requireContainer().textContent).not.toContain('New Conversation');
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.disabled).toBe(true);
+    const sendButton = requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement | null;
+    expect(sendButton?.disabled).toBe(true);
     expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 
-  it('shows the context indicator when Architect has an active plan id before plan details load', async () => {
+  it('does not create or send an Architect message when no plan is selected', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+    chatState = {
+      ...chatState,
+      selectedConversationId: null,
+      ensureConversationForCurrentMode: mock(async () => 'conv-1'),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    composerEditorValue = 'Peux-tu préparer le plan ?';
+    await act(async () => {
+      await (latestComposerProps?.onSend as (() => Promise<void>) | undefined)?.();
+    });
+
+    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps Architect chat enabled when an active plan id exists before plan details load', async () => {
     appState = {
       ...appState,
       mode: 'Architect',
@@ -1876,9 +1912,11 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
     ).not.toBeNull();
+    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
+    expect(composer?.disabled).toBe(false);
   });
 
-  it('shows the context indicator when Architect has an active plan context', async () => {
+  it('does not treat an Architect plan context alone as a selected plan', async () => {
     appState = {
       ...appState,
       mode: 'Architect',
@@ -1899,7 +1937,8 @@ describe('ChatZone', () => {
 
     expect(
       requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(requireContainer().textContent).toContain('Select or create a plan to start architecting.');
   });
 
   it('blocks orphan architect conversations when no project is available', async () => {
