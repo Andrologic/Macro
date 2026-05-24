@@ -69,13 +69,19 @@ src-tauri/target/release/bundle/dmg/
 The macOS DMG presentation intentionally stays minimal and native: app on the
 left, `Applications` shortcut on the right, no custom background image.
 
-## Apple Silicon Runtime Sidecar
+Build a universal macOS DMG for both Apple Silicon and Intel Macs:
+
+```bash
+bun run tauri:build:dmg:mac-universal:test
+```
+
+## macOS Runtime Sidecar
 
 Desktop builds compile an auxiliary AI runtime sidecar into `src-tauri/binaries/`
 before packaging.
 
-- Local macOS Apple Silicon builds emit
-  `macro-ai-runtime-aarch64-apple-darwin`.
+- Local universal macOS builds emit `macro-ai-runtime-universal-apple-darwin`
+  by combining Apple Silicon and Intel sidecars with `lipo`.
 - Tauri embeds the final packaged sidecar as `macro-ai-runtime` inside the app
   bundle.
 - The sidecar uses macOS entitlements compatible with Bun's JavaScript runtime.
@@ -94,7 +100,7 @@ The workflow:
 - bumps the app to the next weekly prerelease;
 - commits the version files;
 - tags `v<version>`;
-- publishes a signed Apple Silicon GitHub prerelease.
+- publishes a signed universal macOS GitHub prerelease.
 
 Release candidates remain manual and should be cut locally with:
 
@@ -112,7 +118,7 @@ Stable macOS releases are published through:
 
 The current stable release workflow:
 
-- targets Apple Silicon only (`aarch64-apple-darwin`);
+- targets universal macOS (`universal-apple-darwin`);
 - builds notarized `.app` and `.dmg` artifacts;
 - keeps auto-update disabled, so users update by downloading a newer release;
 - expects Apple signing and notarization secrets in GitHub Actions.
@@ -126,7 +132,7 @@ The current stable release workflow:
    `APPLE_API_KEY`, `APPLE_API_ISSUER`, and `APPLE_API_KEY_P8`.
 4. Trigger `.github/workflows/release-macos.yml`.
 5. Wait for the workflow to build, sign, notarize, staple, and validate the
-   Apple Silicon `.app` and `.dmg`.
-6. Smoke test on a clean Apple Silicon Mac: app launch from Finder, terminal
-   commands, Git access, AI runtime startup, provider secret storage, and
-   notifications.
+   universal macOS `.app` and `.dmg`.
+6. Smoke test on clean Apple Silicon and Intel Macs when available: app launch
+   from Finder, terminal commands, Git access, AI runtime startup, provider
+   secret storage, and notifications.

@@ -11,9 +11,10 @@ Open the latest GitHub release:
 https://github.com/Andrologic/Macro/releases/latest
 
 For the 0.1 release line, support is focused on the desktop workflow.
-Signed and notarized macOS Apple Silicon artifacts are the primary supported
-release package. Other platforms and weekly prereleases may be available, but
-they are best-effort unless called out in a release note.
+Signed and notarized universal macOS artifacts are the primary supported release
+package and run on Apple Silicon and Intel Macs. Other platforms and weekly
+prereleases may be available, but they are best-effort unless called out in a
+release note.
 
 After installing, configure your AI providers from the app settings. Macro does
 not require provider keys to launch, but agentic workflows need at least one
@@ -34,6 +35,8 @@ configured provider.
 
 - Xcode Command Line Tools: `xcode-select --install`
 - Full Xcode is only needed for signed or notarized release builds.
+- Universal local builds require both Rust macOS targets,
+  `aarch64-apple-darwin` and `x86_64-apple-darwin`.
 
 **Windows**
 
@@ -82,6 +85,18 @@ The DMG is written to:
 
 ```text
 src-tauri/target/release/bundle/dmg/
+```
+
+On macOS, build a universal DMG for Apple Silicon and Intel Macs with:
+
+```bash
+bun run tauri:build:dmg:mac-universal:test
+```
+
+The universal DMG is written under:
+
+```text
+src-tauri/target/universal-apple-darwin/release/bundle/
 ```
 
 For release-candidate versions on Windows, the build scripts use NSIS

@@ -33,6 +33,7 @@ The repo uses:
 | `bun run build` | Build the frontend for production. |
 | `bun run tauri:build` | Build the Tauri desktop app. |
 | `bun run tauri:build:dmg` | Build a native macOS DMG. |
+| `bun run tauri:build:dmg:mac-universal:test` | Build a universal macOS DMG for Apple Silicon and Intel Macs. |
 | `bun run typecheck` | Run TypeScript type checking. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
@@ -97,6 +98,17 @@ Notes:
 - `bun run dev`, `bun run build`, and `bun run tauri:build` do not load it.
 - Remove any legacy `public/ai-keys.local.json`; builds fail if secret files are
   left in `public/`.
+
+## macOS Universal Builds
+
+Use `bun run tauri:build:dmg:mac-universal:test` to produce a DMG that runs on
+Apple Silicon and Intel Macs. The build requires both Rust targets,
+`aarch64-apple-darwin` and `x86_64-apple-darwin`, and Apple's `lipo` tool from
+Xcode Command Line Tools. With rustup:
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+```
 
 ## Validation
 
