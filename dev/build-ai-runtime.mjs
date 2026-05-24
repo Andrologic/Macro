@@ -42,6 +42,12 @@ const TARGETS = {
   },
 };
 
+const UNIVERSAL_APPLE_TARGET = {
+  tauriTriple: 'universal-apple-darwin',
+  members: ['aarch64-apple-darwin', 'x86_64-apple-darwin'],
+  extension: '',
+};
+
 const HOST_TARGET_KEYS = {
   'darwin:arm64': 'aarch64-apple-darwin',
   'darwin:x64': 'x86_64-apple-darwin',
@@ -57,7 +63,10 @@ const TARGET_ALIASES = {
   aarch64: 'aarch64-apple-darwin',
   x64: 'x86_64-apple-darwin',
   x86_64: 'x86_64-apple-darwin',
+  universal: 'universal-apple-darwin',
 };
+
+const targetKeys = () => [...Object.keys(TARGETS), UNIVERSAL_APPLE_TARGET.tauriTriple];
 
 const resolveTargetKey = () => {
   const requestedTarget =
@@ -73,45 +82,83 @@ const resolveTargetKey = () => {
   return HOST_TARGET_KEYS[hostKey] || hostKey;
 };
 
+const resolveRuntimeTarget = (targetKey) => {
+  if (targetKey === UNIVERSAL_APPLE_TARGET.tauriTriple) {
+    return UNIVERSAL_APPLE_TARGET;
+  }
+  return TARGETS[targetKey] || null;
+};
+
 const targetKey = resolveTargetKey();
-const target = TARGETS[targetKey];
+const target = resolveRuntimeTarget(targetKey);
 
 if (!target) {
   throw new Error(
-    `Unsupported Macro AI runtime target "${targetKey}". Supported targets: ${Object.keys(TARGETS).join(', ')}.`
+    `Unsupported Macro AI runtime target "${targetKey}". Supported targets: ${targetKeys().join(', ')}.`
   );
 }
 
-const output = resolve(
+const outputPath = ({ tauriTriple, extension }) => resolve(
   binariesDir,
-  `${OUTPUT_BASENAME}-${target.tauriTriple}${target.extension}`
+  `${OUTPUT_BASENAME}-${tauriTriple}${extension}`
 );
-const legacyOutput = resolve(
+const legacyOutputPath = ({ tauriTriple, extension }) => resolve(
   binariesDir,
-  `${LEGACY_OUTPUT_BASENAME}-${target.tauriTriple}${target.extension}`
+  `${LEGACY_OUTPUT_BASENAME}-${tauriTriple}${extension}`
 );
 
-await mkdir(dirname(output), { recursive: true });
-await rm(output, { force: true });
-await rm(legacyOutput, { force: true });
-
-const child = spawn(
-  bunExecutable,
-  ['build', entry, '--compile', `--target=${target.bunTarget}`, '--outfile', output],
-  {
+const runCommand = async (command, args) => {
+  const child = spawn(command, args, {
     cwd: root,
     stdio: 'inherit',
-  }
-);
-
-await new Promise((resolvePromise, rejectPromise) => {
-  child.on('exit', (code) => {
-    if (code === 0) {
-      console.log(`Built ${output} for ${target.tauriTriple} using ${target.bunTarget}.`);
-      resolvePromise();
-      return;
-    }
-    rejectPromise(new Error(`bun build --compile failed with exit code ${code ?? -1}`));
   });
-  child.on('error', rejectPromise);
-});
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    child.on('exit', (code) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(new Error(`${command} ${args.join(' ')} failed with exit code ${code ?? -1}`));
+    });
+    child.on('error', rejectPromise);
+  });
+};
+
+const buildTarget = async (buildTarget) => {
+  const output = outputPath(buildTarget);
+  const legacyOutput = legacyOutputPath(buildTarget);
+
+  await mkdir(dirname(output), { recursive: true });
+  await rm(output, { force: true });
+  await rm(legacyOutput, { force: true });
+
+  await runCommand(bunExecutable, [
+    'build',
+    entry,
+    '--compile',
+    `--target=${buildTarget.bunTarget}`,
+    '--outfile',
+    output,
+  ]);
+
+  console.log(`Built ${output} for ${buildTarget.tauriTriple} using ${buildTarget.bunTarget}.`);
+  return output;
+};
+
+if (targetKey === UNIVERSAL_APPLE_TARGET.tauriTriple) {
+  const memberOutputs = [];
+  for (const memberTargetKey of target.members) {
+    const memberTarget = resolveRuntimeTarget(memberTargetKey);
+    memberOutputs.push(await buildTarget(memberTarget));
+  }
+
+  const output = outputPath(target);
+  const legacyOutput = legacyOutputPath(target);
+  await rm(output, { force: true });
+  await rm(legacyOutput, { force: true });
+  await runCommand('lipo', ['-create', ...memberOutputs, '-output', output]);
+  console.log(`Built ${output} for ${target.tauriTriple} using lipo.`);
+} else {
+  await buildTarget(target);
+}

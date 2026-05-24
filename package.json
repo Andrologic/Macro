@@ -41,6 +41,7 @@
     "tauri:build:nsis": "bun dev/tauri-cli.mjs build --bundles nsis",
     "tauri:build:dmg": "bun dev/tauri-cli.mjs build --bundles dmg",
     "tauri:build:dmg:mac-arm64:test": "APPLE_SIGNING_IDENTITY=\"-\" NODE_ENV=production bun dev/tauri-cli.mjs build --target aarch64-apple-darwin --bundles app,dmg",
+    "tauri:build:dmg:mac-universal:test": "APPLE_SIGNING_IDENTITY=\"-\" NODE_ENV=production bun dev/tauri-cli.mjs build --target universal-apple-darwin --bundles app,dmg",
     "tauri:build:debug": "bun dev/tauri-cli.mjs build --debug",
     "mac:verify-bundle": "bun ./dev/verify-macos-bundle.mjs",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",

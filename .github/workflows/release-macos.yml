@@ -100,7 +100,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -128,21 +128,21 @@ jobs:
         with:
           tagName: ${{ needs.prepare-release.outputs.tag }}
           releaseName: ${{ needs.prepare-release.outputs.release_name }}
-          releaseBody: 'Signed and notarized Apple Silicon release.'
+          releaseBody: 'Signed and notarized universal macOS release for Apple Silicon and Intel Macs.'
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
-          args: --target aarch64-apple-darwin --bundles app,dmg
+          args: --target universal-apple-darwin --bundles app,dmg
 
       - name: Verify bundle contents, architecture, and code signing
         run: |
-          APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -name '*.app' -maxdepth 3 | head -n 1)"
-          DMG_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -name '*.dmg' -maxdepth 3 | head -n 1)"
+          APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle -name '*.app' -maxdepth 3 | head -n 1)"
+          DMG_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle -name '*.dmg' -maxdepth 3 | head -n 1)"
 
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
 
-          bun ./dev/verify-macos-bundle.mjs
+          bun ./dev/verify-macos-bundle.mjs --target universal-apple-darwin
           spctl --assess --type execute "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
           xcrun stapler validate "$DMG_PATH"
