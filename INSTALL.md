@@ -11,10 +11,9 @@ Open the latest GitHub release:
 https://github.com/Andrologic/Macro/releases/latest
 
 For the 0.1 release line, support is focused on the desktop workflow.
-Signed and notarized universal macOS artifacts are the primary supported release
-package and run on Apple Silicon and Intel Macs. Other platforms and weekly
-prereleases may be available, but they are best-effort unless called out in a
-release note.
+Stable GitHub releases include a universal macOS DMG, a Windows NSIS installer,
+Linux AppImage/deb/rpm packages, checksums, and GitHub source archives. The
+macOS package is signed, notarized, and runs on Apple Silicon and Intel Macs.
 
 After installing, configure your AI providers from the app settings. Macro does
 not require provider keys to launch, but agentic workflows need at least one
@@ -48,7 +47,7 @@ configured provider.
 
 ```bash
 sudo apt update
-sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
 ```
 
 ## Run In Development
@@ -99,8 +98,8 @@ The universal DMG is written under:
 src-tauri/target/universal-apple-darwin/release/bundle/
 ```
 
-For release-candidate versions on Windows, the build scripts use NSIS
-automatically because MSI requires a numeric-only prerelease identifier.
+Official releases use stable `x.y.z` versions only. The GitHub release workflow
+builds Windows with NSIS and Linux with AppImage, deb, and rpm packages.
 
 ## Provider Keys And Local Secrets
 
