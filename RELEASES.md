@@ -1,6 +1,8 @@
 # Releases
 
 `package.json` is the source of truth for the Macro application version.
+Official GitHub releases use stable SemVer only: `major.minor.patch`.
+Prerelease versions such as `-rc`, `-weekly`, or `-beta` are not published.
 
 ## Version Manifests
 
@@ -25,24 +27,45 @@ bun run version:sync
 
 ## Version Bumps
 
-Use the version helper:
+Use stable bumps for official releases:
 
 ```bash
 bun run version:bump patch
-bun run version:bump rc
-bun run version:bump weekly
-bun run version:bump weekly 20260325
+bun run version:bump minor
+bun run version:bump major
 ```
 
-Release channels:
+The release workflow rejects any version that is not strict `x.y.z`. Before the
+next official release, `0.1.0-rc.8` must become a stable version such as
+`0.1.0`.
 
-- stable releases use `major`, `minor`, and `patch`;
-- release candidates use `bun run version:bump rc`;
-- weekly releases use `bun run version:bump weekly`.
+## GitHub Release Workflow
+
+Official releases are prepared by:
+
+```text
+.github/workflows/release.yml
+```
+
+The workflow runs only from `main`, either on push or manual dispatch from
+`main`. It validates the repository, builds desktop packages for macOS,
+Windows, and Linux, then creates a GitHub Release draft named `v<version>`.
+
+The draft contains:
+
+- `Macro_<version>_macOS_universal.dmg`
+- `Macro_<version>_Windows_x64_setup.exe`
+- `Macro_<version>_Linux_x64.AppImage`
+- `Macro_<version>_Linux_x64.deb`
+- `Macro_<version>_Linux_x64.rpm`
+- `SHA256SUMS.txt`
+- GitHub's automatic source archives.
+
+Review the draft release in GitHub before publishing it manually.
 
 ## Build Outputs
 
-Build the desktop app:
+Build the desktop app locally:
 
 ```bash
 bun run tauri:build
@@ -54,85 +77,40 @@ Desktop bundles are written to:
 src-tauri/target/release/bundle/
 ```
 
-Build a native macOS DMG:
-
-```bash
-bun run tauri:build:dmg
-```
-
-The DMG is written to:
-
-```text
-src-tauri/target/release/bundle/dmg/
-```
-
-The macOS DMG presentation intentionally stays minimal and native: app on the
-left, `Applications` shortcut on the right, no custom background image.
-
 Build a universal macOS DMG for both Apple Silicon and Intel Macs:
 
 ```bash
 bun run tauri:build:dmg:mac-universal:test
 ```
 
-## macOS Runtime Sidecar
-
-Desktop builds compile an auxiliary AI runtime sidecar into `src-tauri/binaries/`
-before packaging.
-
-- Local universal macOS builds emit `macro-ai-runtime-universal-apple-darwin`
-  by combining Apple Silicon and Intel sidecars with `lipo`.
-- Tauri embeds the final packaged sidecar as `macro-ai-runtime` inside the app
-  bundle.
-- The sidecar uses macOS entitlements compatible with Bun's JavaScript runtime.
-
-## Weekly Releases
-
-Weekly releases are automated through:
+Universal macOS bundles are written under:
 
 ```text
-.github/workflows/weekly-release.yml
+src-tauri/target/universal-apple-darwin/release/bundle/
 ```
 
-The workflow:
+## macOS Release Requirements
 
-- runs only from the repository default branch;
-- bumps the app to the next weekly prerelease;
-- commits the version files;
-- tags `v<version>`;
-- publishes a signed universal macOS GitHub prerelease.
+macOS release builds are universal (`arm64 + x86_64`), signed, notarized, and
+stapled. The GitHub release workflow requires these secrets:
 
-Release candidates remain manual and should be cut locally with:
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `KEYCHAIN_PASSWORD`
+- `APPLE_API_KEY`
+- `APPLE_API_ISSUER`
+- `APPLE_API_KEY_P8`
 
-```bash
-bun run version:bump rc
-```
+Desktop builds compile the Macro AI runtime sidecar into `src-tauri/binaries/`
+before packaging. Universal macOS builds combine the Apple Silicon and Intel
+sidecars with `lipo`, then Tauri embeds the packaged sidecar as
+`macro-ai-runtime` inside the app bundle.
 
-## Stable macOS Releases
+## Release Runbook
 
-Stable macOS releases are published through:
-
-```text
-.github/workflows/release-macos.yml
-```
-
-The current stable release workflow:
-
-- targets universal macOS (`universal-apple-darwin`);
-- builds notarized `.app` and `.dmg` artifacts;
-- keeps auto-update disabled, so users update by downloading a newer release;
-- expects Apple signing and notarization secrets in GitHub Actions.
-
-## macOS Release Runbook
-
-1. Ensure `bun run ci` passes locally.
-2. Bump and sync the version in `package.json`.
-3. Confirm Apple signing secrets are configured in GitHub Actions:
-   `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
-   `APPLE_API_KEY`, `APPLE_API_ISSUER`, and `APPLE_API_KEY_P8`.
-4. Trigger `.github/workflows/release-macos.yml`.
-5. Wait for the workflow to build, sign, notarize, staple, and validate the
-   universal macOS `.app` and `.dmg`.
-6. Smoke test on clean Apple Silicon and Intel Macs when available: app launch
-   from Finder, terminal commands, Git access, AI runtime startup, provider
-   secret storage, and notifications.
+1. Finish the feature branch and run the smallest relevant local checks.
+2. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
+3. Merge to `main`.
+4. Wait for `.github/workflows/release.yml` to create the draft release.
+5. Check the draft assets, notes, and checksums in GitHub.
+6. Publish the draft manually when it is ready for users.
