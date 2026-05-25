@@ -74,6 +74,69 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("tool:web_search");
   });
 
+  it("allows skill activation and resource reads as observe tools", () => {
+    const activate = evaluateToolSecurity(
+      "skill_activate",
+      { skill_id: "project:docs" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+    const read = evaluateToolSecurity(
+      "skill_read_resource",
+      { skill_id: "project:docs", path: "references/style.md" },
+      {
+        mode: "Implement",
+        riskLevel: "strict",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(activate.decision).toBe("allow");
+    expect(activate.normalizedCall.detail).toBe("project:docs");
+    expect(read.decision).toBe("allow");
+    expect(read.normalizedCall.detail).toBe("references/style.md");
+  });
+
+  it("gates skill script execution as an escape action", () => {
+    const balanced = evaluateToolSecurity(
+      "skill_run_script",
+      { skill_id: "global:formatter", script_path: "scripts/check.js" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+      },
+    );
+    const strictIds = filterDeniedToolIdsForRiskLevel(
+      ["skill_activate", "skill_read_resource", "skill_run_script"],
+      "strict",
+    );
+    const granted = evaluateToolSecurity(
+      "skill_run_script",
+      { skill_id: "global:formatter", script_path: "scripts/check.js" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        workspacePath: "/repo",
+        grants: [
+          {
+            toolId: "skill_run_script",
+            rememberKey: "tool:skill_run_script",
+            createdAt: "2026-04-21T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    expect(balanced.decision).toBe("ask");
+    expect(balanced.normalizedCall.detail).toBe("scripts/check.js");
+    expect(strictIds).toEqual(["skill_activate", "skill_read_resource"]);
+    expect(granted.decision).toBe("allow");
+  });
+
   it("allows additive Architect actions in balanced mode", () => {
     const needResult = evaluateToolSecurity(
       "need_add",

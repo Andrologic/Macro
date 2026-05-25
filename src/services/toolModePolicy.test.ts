@@ -8,6 +8,9 @@ import {
 
 const CHAT_ALLOWED_TOOL_IDS = [
   "question",
+  "skill_activate",
+  "skill_read_resource",
+  "skill_run_script",
   "mark_source_passage",
   "read_sources",
   "edit_source_passage",
@@ -34,6 +37,9 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("need_add")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_create")).toBe(false);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(false);
+    expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_read_resource")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_run_script")).toBe(true);
     expect(policy.allowedToolIds.includes("mark_source_passage")).toBe(true);
     expect(policy.allowedToolIds.includes("read_sources")).toBe(true);
     expect(policy.allowedToolIds.includes("edit_source_passage")).toBe(true);
@@ -59,6 +65,9 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("plan_delete")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_restore")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_set_active")).toBe(false);
+    expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_read_resource")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_run_script")).toBe(true);
     expect(policy.allowedToolIds.includes("need_list")).toBe(true);
     expect(policy.allowedToolIds.includes("need_get")).toBe(true);
     expect(policy.allowedToolIds.includes("need_update")).toBe(true);
@@ -88,6 +97,9 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("edit")).toBe(true);
     expect(policy.allowedToolIds.includes("delete")).toBe(true);
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_read_resource")).toBe(true);
+    expect(policy.allowedToolIds.includes("skill_run_script")).toBe(true);
     expect(policy.allowedToolIds.includes("git_status")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(true);
     expect(policy.enforceMacroOnlyWrites).toBe(false);
@@ -104,6 +116,8 @@ describe("toolModePolicy", () => {
 
     expect(policy.allowedToolIds).toEqual([
       "question",
+      "skill_activate",
+      "skill_read_resource",
       "read_file",
       "web_search",
       "web_fetch",
@@ -122,6 +136,7 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("edit")).toBe(false);
     expect(policy.allowedToolIds.includes("delete")).toBe(false);
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(false);
+    expect(policy.allowedToolIds.includes("skill_run_script")).toBe(false);
     expect(policy.allowedToolIds.includes("task_todo_update")).toBe(false);
     expect(policy.allowedToolIds.includes("git_add")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);

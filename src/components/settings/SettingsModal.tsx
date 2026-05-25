@@ -9,6 +9,7 @@ import { AppearanceView } from './views/AppearanceView';
 import { ProvidersSettings } from './views/ai/ProvidersSettings';
 import { ModelsSettings } from './views/ai/ModelsSettings';
 import { ToolsView } from './views/ToolsView';
+import { SkillsView } from './views/SkillsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
@@ -41,6 +42,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
+    { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
     { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Git workflow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
@@ -116,6 +118,7 @@ export const SettingsModal: React.FC = () => {
               {activeSettingsTab === 'providers' && <ProvidersSettings />}
               {activeSettingsTab === 'models' && <ModelsSettings />}
               {activeSettingsTab === 'tools' && <ToolsView />}
+              {activeSettingsTab === 'skills' && <SkillsView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}
               {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
               {activeSettingsTab === 'shortcuts' && <ShortcutsView />}

@@ -212,7 +212,7 @@ const PROTECTED_TOOL_CONTEXT_NAMES = new Set([
   'task_todo_get',
   'task_todo_update',
 ]);
-const PROTECTED_TOOL_CONTEXT_PREFIXES = ['need_', 'strategy_', 'plan_'];
+const PROTECTED_TOOL_CONTEXT_PREFIXES = ['need_', 'strategy_', 'plan_', 'skill_'];
 
 const normalizeWhitespace = (value: string): string =>
   value.replace(/\s+/g, ' ').trim();

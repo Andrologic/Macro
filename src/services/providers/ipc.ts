@@ -584,6 +584,21 @@ export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
   return tauriIpc.mcpCallTool(data);
 };
 
+export const listSkills: ServiceProvider['listSkills'] = async (data) =>
+  tauriIpc.skillsList({ projectRoots: data?.projectRoots ?? [] });
+
+export const getSkill: ServiceProvider['getSkill'] = async (data) =>
+  tauriIpc.skillsGet(data);
+
+export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async (data) =>
+  tauriIpc.skillsInstallFromLocalPath(data);
+
+export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) =>
+  tauriIpc.skillsReadResource(data);
+
+export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) =>
+  tauriIpc.skillsRunScript(data);
+
 export const provider: ServiceProvider = {
   getAppBootstrap,
   listConversations,
@@ -619,4 +634,9 @@ export const provider: ServiceProvider = {
   updateMCPServerSettings,
   mcpDiscoverTools,
   mcpCallTool,
+  listSkills,
+  getSkill,
+  installSkillFromLocalPath,
+  readSkillResource,
+  runSkillScript,
 };

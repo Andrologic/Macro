@@ -26,6 +26,7 @@ export interface ServiceRuntimeCapabilities {
   taskMutation: boolean;
   implementExecution: boolean;
   taskProjectCommands: boolean;
+  skills: boolean;
 }
 
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE = 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE';
@@ -52,6 +53,7 @@ const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: true,
   implementExecution: true,
   taskProjectCommands: true,
+  skills: true,
 };
 
 const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
@@ -72,6 +74,7 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: false,
   implementExecution: false,
   taskProjectCommands: false,
+  skills: false,
 };
 
 const hasTauriIpcInvoke = (): boolean => {

@@ -750,14 +750,69 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 Le mode Chat peut acceder :
 - au web
 - a certains outils MCP
+- aux skills activees par l'utilisateur
 
 La disponibilite de ces outils doit etre configurable.
 
 ---
 
-## 18. Modele d'automatisation et de notification
+## 18. Skills
 
-### 18.1 Appels d'attention
+### 18.1 Objectif fonctionnel
+
+Les skills permettent a l'utilisateur d'ajouter des instructions agent reutilisables sans modifier le code de Macro.
+
+Elles servent a orienter le comportement de l'IA dans Architect, Implement et Chat. Elles ne remplacent pas MCP et ne doivent pas creer de nouveaux outils externes arbitraires.
+
+### 18.2 Format et sources
+
+Une skill locale est un dossier contenant :
+
+- `SKILL.md` obligatoire
+- frontmatter YAML valide avec `name` et `description`
+- dossiers optionnels `references/`, `assets/` et `scripts/`
+
+La ligne 0.1 supporte uniquement :
+
+- les skills projet dans `.agents/skills`
+- les skills globales utilisateur dans `~/.agents/skills`
+- l'import local par copie vers `~/.agents/skills/<skill-name>`
+
+Elle ne supporte pas encore :
+
+- l'installation directe depuis GitHub
+- une marketplace
+- le scan natif de `~/.codex/skills` ou `~/.claude/skills`
+
+### 18.3 Activation et contexte
+
+Les skills decouvertes sont desactivees par defaut.
+
+L'utilisateur peut les activer dans les reglages Skills. Il peut aussi referencer une skill dans le composeur via selection explicite ou mention `$skill-name`.
+
+Macro doit charger les skills progressivement :
+
+- catalogue compact au tour agent
+- contenu complet de `SKILL.md` seulement sur activation
+- ressources et scripts seulement via les outils dedies
+
+En cas de collision de nom, une skill projet visible est prioritaire sur une skill globale. Les surfaces UI doivent afficher la source pour permettre une selection explicite.
+
+### 18.4 Securite
+
+Une skill peut etre activee sans etre trusted.
+
+Les scripts restent indisponibles tant que la skill n'est pas trusted et que l'option scripts n'est pas activee pour cette skill.
+
+Toute execution de script doit passer par la politique d'approbation Macro des outils a risque, capturer la sortie, appliquer un timeout et eviter l'injection de secrets par defaut.
+
+Les chemins hors dossier skill, traversals, fichiers caches non autorises et symlinks sortants doivent etre refuses.
+
+---
+
+## 19. Modele d'automatisation et de notification
+
+### 19.1 Appels d'attention
 
 Lorsque l'IA a besoin de l'utilisateur, Macro doit rendre cette demande d'attention explicite.
 
@@ -767,7 +822,7 @@ Exemples :
 - blocage d'execution
 - probleme d'integration
 
-### 18.2 Continuite desktop et mobile
+### 19.2 Continuite desktop et mobile
 
 La cible produit inclut une supervision distante depuis une application mobile compagnon.
 
@@ -781,7 +836,7 @@ La creation complete de plans depuis mobile n'est pas un besoin central initial.
 La supervision distante du mode Implement est la priorite.
 Dans la ligne 0.1, cette continuite reste une cible produit : le support stable concerne d'abord l'experience desktop local-first.
 
-### 18.3 Perimetre des notifications
+### 19.3 Perimetre des notifications
 
 Le systeme de notification fait partie de la cible produit meme s'il n'est pas encore entierement implemente.
 
@@ -793,16 +848,16 @@ Les notifications doivent au minimum couvrir :
 
 ---
 
-## 19. Kernel distant et continuite d'execution
+## 20. Kernel distant et continuite d'execution
 
-### 19.1 Le kernel distant est une capacite produit
+### 20.1 Le kernel distant est une capacite produit
 
 Le kernel distant fait partie de la specification produit, et pas seulement de l'architecture technique.
 
 Son role est de permettre a l'execution Macro de continuer independamment d'une seule session GUI locale.
 Dans la ligne 0.1, le kernel distant existe comme socle technique minimal et reste best-effort par rapport au workflow desktop local-first.
 
-### 19.2 Resultats fonctionnels attendus
+### 20.2 Resultats fonctionnels attendus
 
 Le kernel doit rendre possibles :
 - l'execution distante des IA
@@ -810,7 +865,7 @@ Le kernel doit rendre possibles :
 - l'execution continue sur une machine dediee ou un serveur heberge
 - la supervision distante depuis un client Macro ou mobile
 
-### 19.3 Scenarios utilisateurs cibles
+### 20.3 Scenarios utilisateurs cibles
 
 Le produit doit supporter au minimum les scenarios suivants :
 
@@ -820,12 +875,13 @@ Le produit doit supporter au minimum les scenarios suivants :
 
 ---
 
-## 20. Reglages et controle utilisateur
+## 21. Reglages et controle utilisateur
 
 Macro doit exposer un controle utilisateur sur au moins les dimensions suivantes :
 
 - fournisseurs et modeles IA
 - disponibilite des outils par mode
+- activation, confiance et scripts des skills
 - niveau d'automatisation de l'implementation
 - configuration du workflow Git
 - preferences d'apparence et d'interaction
@@ -836,9 +892,9 @@ Le produit doit permettre a l'utilisateur de modeler le comportement de l'IA san
 
 ---
 
-## 21. Donnees, audit et trace historique
+## 22. Donnees, audit et trace historique
 
-### 21.1 Auditabilite
+### 22.1 Auditabilite
 
 Macro doit conserver suffisamment de metadonnees pour auditer :
 - ce qui a ete planifie
@@ -846,7 +902,7 @@ Macro doit conserver suffisamment de metadonnees pour auditer :
 - ce qui a ete execute
 - ou un eventuel probleme a pu apparaitre
 
-### 21.2 Nature historique des artefacts de planification
+### 22.2 Nature historique des artefacts de planification
 
 Les besoins, noeuds de strategie et branches predictives sont durables comme historique, mais pas comme objets pilotes du futur une fois le plan clos.
 
@@ -855,13 +911,13 @@ Leur utilite principale apres execution est :
 - la retrospective
 - la tracabilite
 
-### 21.3 Persistance des metadonnees
+### 22.3 Persistance des metadonnees
 
 Les metadonnees liees aux plans doivent etre stockees dans la structure metadata de Macro afin que l'historique ne soit pas perdu.
 
 ---
 
-## 22. Exclusions publiques
+## 23. Exclusions publiques
 
 Les elements suivants sont exclus de la surface fonctionnelle publique tant qu'ils ne sont pas promus explicitement :
 
@@ -873,7 +929,7 @@ Ces elements peuvent exister dans l'application, mais ils ne font pas partie du 
 
 ---
 
-## 23. Regles produit non negociables
+## 24. Regles produit non negociables
 
 Les regles suivantes sont fondatrices :
 
@@ -891,11 +947,12 @@ Les regles suivantes sont fondatrices :
 - Une review humaine est obligatoire a la fin de chaque tache.
 - Une tache de finalisation synthetique converge depuis les feuilles de la strategie et pilote l'integration finale.
 - L'edition manuelle du code existe, mais comme mecanisme secondaire d'ajustement en review.
+- Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.
 
 ---
 
-## 24. Regles de maintenance du document
+## 25. Regles de maintenance du document
 
 Ce document doit etre mis a jour lorsque :
 - un workflow utilisateur change

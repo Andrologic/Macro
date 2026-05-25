@@ -32,6 +32,9 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read_sources",
   "edit_source_passage",
   "question",
+  "skill_activate",
+  "skill_read_resource",
+  "skill_run_script",
   "read_file",
   "web_fetch",
   "list",
@@ -220,6 +223,69 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["title", "passage"],
+    },
+  ),
+  objectTool(
+    "skill_activate",
+    "Load the full instructions for an enabled Macro skill. Use this when the user's task matches a listed skill or the user explicitly references a skill with $skill-name.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+      },
+      required: ["skill_id"],
+    },
+  ),
+  objectTool(
+    "skill_read_resource",
+    "Read a text resource bundled with an enabled Macro skill. Only references/ and assets/ paths are allowed.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+        path: {
+          type: "string",
+          description: "Relative path under references/ or assets/.",
+        },
+      },
+      required: ["skill_id", "path"],
+    },
+  ),
+  objectTool(
+    "skill_run_script",
+    "Run a script bundled with a trusted enabled Macro skill. This requires skill trust, scripts enabled, and may require user approval.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+        script_path: {
+          type: "string",
+          description: "Relative path under scripts/.",
+        },
+        args: {
+          type: "array",
+          description: "String command-line arguments to pass to the script.",
+          items: { type: "string" },
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Optional timeout in milliseconds, capped by Macro.",
+        },
+        allow_workspace: {
+          type: "boolean",
+          description: "Set true only when the script must run with the current workspace as cwd.",
+        },
+      },
+      required: ["skill_id", "script_path"],
     },
   ),
   objectTool(

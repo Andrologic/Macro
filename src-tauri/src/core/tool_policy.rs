@@ -16,6 +16,9 @@ pub struct ToolModePolicyResult {
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "read_file",
         "web_search",
         "web_fetch",
@@ -73,6 +76,9 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "mark_source_passage",
         "read_sources",
         "edit_source_passage",
@@ -85,6 +91,9 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "read_file",
         "web_search",
         "web_fetch",
@@ -284,6 +293,9 @@ mod tests {
             policy.allowed_tool_ids,
             vec![
                 "question".to_string(),
+                "skill_activate".to_string(),
+                "skill_read_resource".to_string(),
+                "skill_run_script".to_string(),
                 "mark_source_passage".to_string(),
                 "read_sources".to_string(),
                 "edit_source_passage".to_string(),
@@ -293,6 +305,15 @@ mod tests {
             ]
         );
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_activate".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_read_resource".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_run_script".to_string()));
         assert!(policy
             .allowed_tool_ids
             .contains(&"mark_source_passage".to_string()));

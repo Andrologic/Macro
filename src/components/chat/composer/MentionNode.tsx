@@ -13,11 +13,15 @@ import { $applyNodeReplacement, DecoratorNode } from 'lexical';
 import type { ContextRefKind } from '../../../types';
 import { MentionChip } from './MentionChip.tsx';
 
+export type MentionSurface = 'composer' | 'message-edit';
+
 export type SerializedMentionNode = Spread<
   {
     refId: string;
     kind: ContextRefKind;
     title: string;
+    surface?: MentionSurface;
+    syncContextRefs?: boolean;
   },
   SerializedLexicalNode
 >;
@@ -26,20 +30,38 @@ export class MentionNode extends DecoratorNode<ReactNode> {
   __refId: string;
   __kind: ContextRefKind;
   __title: string;
+  __surface: MentionSurface;
+  __syncContextRefs: boolean;
 
   static getType(): string {
     return 'mention';
   }
 
   static clone(node: MentionNode): MentionNode {
-    return new MentionNode(node.__kind, node.__refId, node.__title, node.__key);
+    return new MentionNode(
+      node.__kind,
+      node.__refId,
+      node.__title,
+      node.__key,
+      node.__surface,
+      node.__syncContextRefs
+    );
   }
 
-  constructor(kind: ContextRefKind, refId: string, title: string, key?: NodeKey) {
+  constructor(
+    kind: ContextRefKind,
+    refId: string,
+    title: string,
+    key?: NodeKey,
+    surface: MentionSurface = 'composer',
+    syncContextRefs = true
+  ) {
     super(key);
     this.__refId = refId;
     this.__kind = kind;
     this.__title = title;
+    this.__surface = surface;
+    this.__syncContextRefs = syncContextRefs;
   }
 
   // ---- DOM ----
@@ -73,7 +95,11 @@ export class MentionNode extends DecoratorNode<ReactNode> {
     return $createMentionNode(
       serializedNode.kind,
       serializedNode.refId,
-      serializedNode.title
+      serializedNode.title,
+      {
+        surface: serializedNode.surface ?? 'composer',
+        syncContextRefs: serializedNode.syncContextRefs ?? true,
+      }
     );
   }
 
@@ -84,6 +110,8 @@ export class MentionNode extends DecoratorNode<ReactNode> {
       refId: this.__refId,
       kind: this.__kind,
       title: this.__title,
+      surface: this.__surface,
+      syncContextRefs: this.__syncContextRefs,
     };
   }
 
@@ -99,6 +127,14 @@ export class MentionNode extends DecoratorNode<ReactNode> {
 
   getTitle(): string {
     return this.__title;
+  }
+
+  getSurface(): MentionSurface {
+    return this.__surface;
+  }
+
+  shouldSyncContextRefs(): boolean {
+    return this.__syncContextRefs;
   }
 
   // ---- Behavior ----
@@ -128,6 +164,8 @@ export class MentionNode extends DecoratorNode<ReactNode> {
         kind={this.__kind}
         refId={this.__refId}
         title={this.__title}
+        surface={this.__surface}
+        syncContextRefs={this.__syncContextRefs}
       />
     );
   }
@@ -136,9 +174,22 @@ export class MentionNode extends DecoratorNode<ReactNode> {
 export function $createMentionNode(
   kind: ContextRefKind,
   refId: string,
-  title: string
+  title: string,
+  options: {
+    surface?: MentionSurface;
+    syncContextRefs?: boolean;
+  } = {}
 ): MentionNode {
-  return $applyNodeReplacement(new MentionNode(kind, refId, title));
+  return $applyNodeReplacement(
+    new MentionNode(
+      kind,
+      refId,
+      title,
+      undefined,
+      options.surface ?? 'composer',
+      options.syncContextRefs ?? true
+    )
+  );
 }
 
 export function $isMentionNode(

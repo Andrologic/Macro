@@ -248,6 +248,7 @@ D'autres stores portent des responsabilites ciblees :
 - `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modeles IA
 - `useToolsStore` pour les outils internes et MCP
+- `useSkillsStore` pour la decouverte, les preferences et les activations de skills
 - `useAuthStore` pour les futurs usages lies au compte
 
 ### 6.5 Principe d'orchestration
@@ -292,6 +293,7 @@ Exemples principaux :
 - `remoteKernelApi`
 - `toolModePolicy`
 - `projectExecutionContext`
+- `skills` via le contrat provider et les commandes IPC dediees
 
 ### 7.3 Contrats et DTO
 
@@ -325,6 +327,7 @@ Le backend expose de nombreuses commandes Tauri, regroupees par domaine :
 - base de donnees
 - workspace
 - outils
+- skills
 - systeme de fichiers
 - Git
 
@@ -596,9 +599,65 @@ Cette couche unifie l'execution des outils cote produit.
 
 ---
 
-## 14. Streaming IA et orchestration conversationnelle
+## 14. Skills
 
-### 14.1 Chat streaming
+### 14.1 Role
+
+Les skills sont une couche de contexte agent distincte de MCP.
+
+Une skill fournit des instructions reutilisables a l'agent. Elle ne cree pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
+
+### 14.2 Format local
+
+La version locale supporte des dossiers contenant :
+
+- `SKILL.md` obligatoire
+- frontmatter YAML avec `name` et `description`
+- dossiers optionnels `references/`, `assets/` et `scripts/`
+
+Les sources supportees en 0.1 sont :
+
+- `.agents/skills` dans les projets visibles par Macro
+- `~/.agents/skills` pour les skills utilisateur globales
+
+Les skills projet sont listees avant les skills globales. En cas de meme nom, l'identifiant complet garde la source explicite.
+
+### 14.3 Chargement progressif
+
+Le chargement doit rester progressif :
+
+- au bootstrap, Macro ne charge que le manifeste compact
+- dans le prompt, Macro injecte seulement le catalogue des skills activees
+- le corps complet de `SKILL.md` est charge via `skill_activate`
+- les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
+- les scripts de `scripts/` sont executes via `skill_run_script`
+
+Les preferences d'activation sont persistees comme preferences Macro cote client, pas dans les dossiers de skills.
+
+### 14.4 Securite
+
+Les skills decouvertes sont desactivees par defaut.
+
+L'execution de scripts exige :
+
+- skill activee
+- skill marquee comme trusted
+- scripts actives pour cette skill
+- passage par la politique d'approbation d'outils a risque
+
+Le backend bloque les chemins hors skill, les traversals, les fichiers caches non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectes par defaut, avec timeout, sortie tronquee et repertoire temporaire par defaut.
+
+### 14.5 Transport remote
+
+En 0.1, le provider remote peut retourner une liste vide ou une erreur `unsupported` pour les operations de skills.
+
+La surface complete est supportee par le desktop local via Tauri IPC.
+
+---
+
+## 15. Streaming IA et orchestration conversationnelle
+
+### 15.1 Chat streaming
 
 Le streaming des reponses IA est gere cote frontend par un service dedie.
 
@@ -609,13 +668,13 @@ Cette couche s'occupe de :
 - mettre a jour la conversation en cours
 - annuler un stream si necessaire
 
-### 14.2 Couplage avec les plans
+### 15.2 Couplage avec les plans
 
 En mode Architect, certaines actions conversationnelles declenchent une sync metadata a la fin du stream.
 
 L'objectif est d'ancrer les changements de plan dans la branche metadata de facon reguliere.
 
-### 14.3 Couplage avec le mode Implement
+### 15.3 Couplage avec le mode Implement
 
 En mode Implement, le chat sert aussi de couche d'interaction pour :
 
@@ -627,9 +686,9 @@ Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestrati
 
 ---
 
-## 15. Backend distant et kernel headless
+## 16. Backend distant et kernel headless
 
-### 15.1 Role du kernel headless
+### 16.1 Role du kernel headless
 
 Le kernel headless est la version sans GUI du backend Macro.
 
@@ -641,7 +700,7 @@ Il doit permettre a un client Macro distant de :
 - executer certains outils
 - consulter l'etat Git
 
-### 15.2 Exposition HTTP
+### 16.2 Exposition HTTP
 
 Le kernel headless expose une API HTTP basee sur axum.
 
@@ -663,13 +722,13 @@ Cette API couvre au minimum :
 
 Cette surface remote est volontairement minimale en 0.1 et ne remplace pas encore toutes les commandes IPC desktop.
 
-### 15.3 Authentification
+### 16.3 Authentification
 
 Le kernel headless peut etre protege par un bearer token.
 
 Cette securisation est la base du modele de connexion distante, meme si le modele complet de compte et d'abonnement depasse l'etat courant du code.
 
-### 15.4 Position architecturale
+### 16.4 Position architecturale
 
 Le kernel headless n'est pas un service annexe.
 
@@ -682,9 +741,9 @@ Il constitue la base de :
 
 ---
 
-## 16. Configuration
+## 17. Configuration
 
-### 16.1 Configuration frontend
+### 17.1 Configuration frontend
 
 Le frontend depend notamment de variables d'environnement pour :
 
@@ -692,7 +751,7 @@ Le frontend depend notamment de variables d'environnement pour :
 - choisir le transport backend
 - configurer l'acces au backend distant
 
-### 16.2 Configuration backend
+### 17.2 Configuration backend
 
 Le backend Rust charge une configuration runtime pour :
 
@@ -700,7 +759,7 @@ Le backend Rust charge une configuration runtime pour :
 - le chemin de la base SQLite
 - les options de runtime
 
-### 16.3 Configuration utilisateur
+### 17.3 Configuration utilisateur
 
 Les preferences utilisateur sont reparties entre :
 
@@ -708,10 +767,11 @@ Les preferences utilisateur sont reparties entre :
 - settings backend
 - configurations providers et modeles
 - regles de workflow Git et d'automatisation
+- preferences de skills activees, trusted et scripts
 
 ---
 
-## 17. Principes de separation entre documents
+## 18. Principes de separation entre documents
 
 Le present document doit decrire :
 
@@ -733,7 +793,7 @@ Ces sujets appartiennent respectivement a :
 
 ---
 
-## 18. Regles de maintenance du document
+## 19. Regles de maintenance du document
 
 Ce document doit etre mis a jour lorsque :
 

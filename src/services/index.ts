@@ -137,6 +137,16 @@ export const services = {
     callProviderMethod('mcpDiscoverTools', server),
   mcpCallTool: (data: Parameters<ServiceProvider['mcpCallTool']>[0]) =>
     callProviderMethod('mcpCallTool', data),
+  listSkills: (data?: Parameters<ServiceProvider['listSkills']>[0]) =>
+    callProviderMethod('listSkills', data),
+  getSkill: (data: Parameters<ServiceProvider['getSkill']>[0]) =>
+    callProviderMethod('getSkill', data),
+  installSkillFromLocalPath: (data: Parameters<ServiceProvider['installSkillFromLocalPath']>[0]) =>
+    callProviderMethod('installSkillFromLocalPath', data),
+  readSkillResource: (data: Parameters<ServiceProvider['readSkillResource']>[0]) =>
+    callProviderMethod('readSkillResource', data),
+  runSkillScript: (data: Parameters<ServiceProvider['runSkillScript']>[0]) =>
+    callProviderMethod('runSkillScript', data),
 };
 
 export type Services = typeof services;

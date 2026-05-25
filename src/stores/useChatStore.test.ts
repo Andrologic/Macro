@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   Conversation,
   ProjectGroup,
+  SkillManifest,
 } from '../types';
 import type { ArchitectPlanRecord } from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
@@ -237,6 +238,9 @@ const providerState = {
 };
 
 const ALL_INTERNAL_TOOL_IDS = [
+  'skill_activate',
+  'skill_read_resource',
+  'skill_run_script',
   'mark_source_passage',
   'read_sources',
   'edit_source_passage',
@@ -295,7 +299,15 @@ const toolsStoreState = {
   lastError: null as string | null,
   isToolEnabled: (_toolId: string) => true,
   isChatToolEnabled: (_toolId: string) => true,
-  getEnabledChatToolIds: () => ['read_file', 'web_search', 'web_fetch', 'question'],
+  getEnabledChatToolIds: () => [
+    'skill_activate',
+    'skill_read_resource',
+    'skill_run_script',
+    'read_file',
+    'web_search',
+    'web_fetch',
+    'question',
+  ],
   getEnabledMCPToolIds: () => [] as string[],
   getEnabledMCPTools: () => [] as Array<{
     id: string;
@@ -832,6 +844,9 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
     return {
       allowed_tool_ids: [
         'question',
+        'skill_activate',
+        'skill_read_resource',
+        'skill_run_script',
         'mark_source_passage',
         'read_sources',
         'edit_source_passage',
@@ -846,6 +861,9 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
   if (mode === 'Architect') {
     return {
       allowed_tool_ids: [
+        'skill_activate',
+        'skill_read_resource',
+        'skill_run_script',
         'mark_source_passage',
         'read_sources',
         'edit_source_passage',
@@ -882,6 +900,9 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
 
   return {
     allowed_tool_ids: [
+      'skill_activate',
+      'skill_read_resource',
+      'skill_run_script',
       'mark_source_passage',
       'read_sources',
       'edit_source_passage',
@@ -2053,6 +2074,27 @@ const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const createSkillManifest = (
+  overrides: Partial<SkillManifest> = {},
+): SkillManifest => ({
+  id: 'global:test-skill',
+  name: 'test-skill',
+  description: 'Skill de test pour vérifier l’activation dans Macro.',
+  rootPath: '/Users/test/.agents/skills/test-skill',
+  skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
+  source: {
+    kind: 'global',
+    projectId: null,
+    projectName: null,
+    rootPath: '/Users/test/.agents/skills',
+  },
+  resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 120 }],
+  scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
+  validationErrors: [],
+  isValid: true,
+  ...overrides,
+});
+
 const startImplementToolConversation = async (
   content = 'Travaille sur cette tâche.',
   options: { agentType?: AgentType } = {},
@@ -2134,6 +2176,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
+    const { useSkillsStore } = await import('./useSkillsStore');
+    useSkillsStore.setState({
+      skills: [],
+      settingsBySkillId: {},
+      activationsByConversationId: {},
+      isLoading: false,
+      saving: false,
+      lastError: null,
+    });
 
     toolsStoreState.internalTools = Object.fromEntries(
       ALL_INTERNAL_TOOL_IDS.map((toolId) => [toolId, { id: toolId }])
@@ -2235,6 +2286,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     resetSendChatNonStreamingImplementation();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => [
+      'skill_activate',
+      'skill_read_resource',
+      'skill_run_script',
       'read_file',
       'web_search',
       'web_fetch',
@@ -5874,6 +5928,383 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(result)).toContain('full attached file body');
   });
 
+  it('injects a compact enabled skill catalog and explicit mention hint without the full body', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+
+    const { useChatStore } = await loadChatStore();
+    const { useSkillsStore } = await import('./useSkillsStore');
+    const skill: SkillManifest = {
+      id: 'project:project-1:docs',
+      name: 'docs',
+      description: 'Use the local documentation style.',
+      rootPath: '/repos/web/.agents/skills/docs',
+      skillFilePath: '/repos/web/.agents/skills/docs/SKILL.md',
+      source: {
+        kind: 'project',
+        projectId: 'project-1',
+        projectName: 'Web',
+        rootPath: '/repos/web',
+      },
+      resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 120 }],
+      scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
+      validationErrors: [],
+      isValid: true,
+    };
+    useSkillsStore.setState({
+      skills: [skill],
+      settingsBySkillId: {
+        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      },
+    });
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Utilise $docs pour cette reponse. FULL BODY SHOULD NOT BE IN CATALOG',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: unknown }>;
+    }>();
+    const serializedMessages = JSON.stringify(streamOptions.messages);
+    expect(streamOptions.allowedToolIds).toContain('skill_activate');
+    expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
+    expect(streamOptions.allowedToolIds).toContain('skill_run_script');
+    expect(serializedMessages).toContain('Available Macro skills');
+    expect(serializedMessages).toContain('id=project:project-1:docs');
+    expect(serializedMessages).toContain('The user explicitly referenced these enabled skills');
+    expect(serializedMessages).not.toContain('# Instructions');
+  });
+
+  it('keeps locked skill tools available even when hidden from chat toolbox settings', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    toolsStoreState.getEnabledChatToolIds = () => ['read_file', 'web_search', 'web_fetch'];
+
+    const { useChatStore } = await loadChatStore();
+    const { useSkillsStore } = await import('./useSkillsStore');
+    const skill: SkillManifest = {
+      id: 'global:test-skill',
+      name: 'test-skill',
+      description: 'Skill de test pour vérifier l’activation dans Macro.',
+      rootPath: '/Users/test/.agents/skills/test-skill',
+      skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
+      source: {
+        kind: 'global',
+        projectId: null,
+        projectName: null,
+        rootPath: '/Users/test/.agents/skills',
+      },
+      resources: [],
+      scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
+      validationErrors: [],
+      isValid: true,
+    };
+    useSkillsStore.setState({
+      skills: [skill],
+      settingsBySkillId: {
+        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      },
+    });
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Utilise $test-skill et lance son check.sh.',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: unknown }>;
+    }>();
+    const serializedMessages = JSON.stringify(streamOptions.messages);
+
+    expect(streamOptions.allowedToolIds).toContain('skill_activate');
+    expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
+    expect(streamOptions.allowedToolIds).toContain('skill_run_script');
+    expect(serializedMessages).toContain('Available Macro skills');
+    expect(serializedMessages).toContain('id=global:test-skill');
+    expect(serializedMessages).toContain('call skill_activate with the exact id');
+    expect(serializedMessages).toContain('The user explicitly referenced these enabled skills');
+  });
+
+  it('does not inject skill catalog or activation hints without native tool calling', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => false;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const skill = createSkillManifest();
+
+    const { useChatStore } = await loadChatStore();
+    const { useSkillsStore } = await import('./useSkillsStore');
+    useSkillsStore.setState({
+      skills: [skill],
+      settingsBySkillId: {
+        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      },
+    });
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [{
+        id: skill.id,
+        kind: 'skill',
+        title: skill.name,
+        data: skill,
+      }],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Utilise $test-skill.',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: unknown }>;
+    }>();
+    const serializedMessages = JSON.stringify(streamOptions.messages);
+
+    expect(streamOptions.allowedToolIds).toEqual([]);
+    expect(serializedMessages).not.toContain('Available Macro skills');
+    expect(serializedMessages).not.toContain('Activation: call skill_activate');
+    expect(serializedMessages).not.toContain('Skill ID: global:test-skill');
+  });
+
+  it('keeps skill read tools but blocks skill scripts in strict risk mode', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('strict'));
+    const skill = createSkillManifest();
+
+    const { useChatStore } = await loadChatStore();
+    const { useSkillsStore } = await import('./useSkillsStore');
+    useSkillsStore.setState({
+      skills: [skill],
+      settingsBySkillId: {
+        [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+      },
+    });
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Utilise $test-skill.',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: unknown }>;
+    }>();
+    const serializedMessages = JSON.stringify(streamOptions.messages);
+
+    expect(streamOptions.allowedToolIds).toContain('skill_activate');
+    expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
+    expect(streamOptions.allowedToolIds).not.toContain('skill_run_script');
+    expect(serializedMessages).toContain('Available Macro skills');
+  });
+
+  it('routes skill tool calls through the skills store', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    const { useSkillsStore } = await import('./useSkillsStore');
+    const activateSkill = mock(async () => 'activated docs');
+    const readSkillResource = mock(async () => 'resource content');
+    const runSkillScript = mock(async () => 'script result');
+    useSkillsStore.setState({
+      activateSkill,
+      readSkillResource,
+      runSkillScript,
+    });
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Use the docs skill.',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      onToolCall?: (
+        toolName: string,
+        args: Record<string, unknown>,
+        toolCallId?: string,
+      ) => Promise<unknown>;
+    }>();
+    expect(streamOptions.onToolCall).toBeDefined();
+    if (!streamOptions.onToolCall) {
+      throw new Error('Expected skill tool handler');
+    }
+
+    await expect(streamOptions.onToolCall(
+      'skill_activate',
+      { skill_id: 'project:project-1:docs' },
+      'call-activate',
+    )).resolves.toBe('activated docs');
+    await expect(streamOptions.onToolCall(
+      'skill_read_resource',
+      { skill_id: 'project:project-1:docs', path: 'references/style.md' },
+      'call-resource',
+    )).resolves.toBe('resource content');
+    await expect(streamOptions.onToolCall(
+      'skill_run_script',
+      {
+        skill_id: 'project:project-1:docs',
+        script_path: 'scripts/check.sh',
+        args: ['--check'],
+        timeout_ms: 1_000,
+        allow_workspace: true,
+      },
+      'call-script',
+    )).resolves.toBe('script result');
+
+    expect(activateSkill).toHaveBeenCalledWith('project:project-1:docs', 'chat-conv');
+    expect(readSkillResource).toHaveBeenCalledWith(
+      'project:project-1:docs',
+      'references/style.md',
+    );
+    expect(runSkillScript).toHaveBeenCalledWith({
+      skillId: 'project:project-1:docs',
+      scriptPath: 'scripts/check.sh',
+      args: ['--check'],
+      timeoutMs: 1_000,
+      allowWorkspace: true,
+    });
+  });
+
   it('persists, reads, updates, reclassifies, and deletes chat source passages', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
@@ -6189,7 +6620,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }
   });
 
-  it('does not create a task-scoped implement conversation when no task is eligible for the current scope', async () => {
+  it('clears implement selection and does not create a conversation when no task is eligible for the current scope', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = null;
     taskStoreState.tasks = [
@@ -6219,14 +6650,57 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().ensureConversationForCurrentMode();
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
 
+    expect(ensuredId).toBeNull();
     expect(appState.selectedTaskId).toBeNull();
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Implement ?? null).toBeNull();
+    expect(useChatStore.getState().conversations).toHaveLength(0);
     expect(
       useChatStore
         .getState()
         .conversations.some((conversation: Conversation) => Boolean(conversation.task_id))
     ).toBe(false);
+  });
+
+  it('clears a previously selected taskless implement conversation when no tasks are available', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = null;
+    taskStoreState.tasks = [];
+    getLocalProjectContextStateMock.mockImplementationOnce(async () => ({
+      architectConversationId: null,
+      implementConversationId: 'debug-conv',
+      lastTaskId: null,
+    }));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('debug-conv'),
+          scope_mode: 'Implement',
+          task_id: null,
+          title: 'Repository review',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'debug-conv',
+      selectedConversationIdsByMode: { Implement: 'debug-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+
+    expect(ensuredId).toBeNull();
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBeNull();
+    expect(useChatStore.getState().conversations).toHaveLength(1);
   });
 
   it('syncs the selected task when an existing implement conversation is restored', async () => {

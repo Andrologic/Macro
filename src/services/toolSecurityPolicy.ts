@@ -40,6 +40,9 @@ export const DEFAULT_TOOL_RISK_LEVEL: ToolRiskLevel = "balanced";
 
 export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "question",
+  "skill_activate",
+  "skill_read_resource",
+  "skill_run_script",
   "read_file",
   "web_search",
   "mark_source_passage",
@@ -69,6 +72,24 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Read an attached file",
     attachmentOnly: true,
+  },
+  skill_activate: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Load skill instructions",
+  },
+  skill_read_resource: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read a skill resource",
+  },
+  skill_run_script: {
+    actionGroup: "escape",
+    rememberStrategy: "tool",
+    destructiveStrategy: "always",
+    summary: "Run a skill script",
   },
   read_sources: {
     actionGroup: "observe",
@@ -548,6 +569,15 @@ const getPrimaryDetail = (
   }
   if (toolId === "read_file") {
     return cleanString(args.file) ?? undefined;
+  }
+  if (toolId === "skill_activate") {
+    return cleanString(args.skill_id) ?? undefined;
+  }
+  if (toolId === "skill_read_resource") {
+    return cleanString(args.path) ?? cleanString(args.skill_id) ?? undefined;
+  }
+  if (toolId === "skill_run_script") {
+    return cleanString(args.script_path) ?? cleanString(args.skill_id) ?? undefined;
   }
   if (pathCandidates.length === 1) {
     return pathCandidates[0];

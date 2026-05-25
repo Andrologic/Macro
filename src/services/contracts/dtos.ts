@@ -11,6 +11,7 @@ import type {
   AIModel,
   Project,
   MCPServer,
+  SkillManifest,
 } from '../../types';
 import type {
   CatalogedImplementTask,
@@ -83,6 +84,21 @@ export interface ToolSettingsDto {
 
 export interface MCPServerSettingsDto {
   servers: Record<string, MCPServer | boolean | Record<string, unknown>>;
+}
+
+export interface SkillListDto {
+  skills: SkillManifest[];
+}
+
+export interface SkillDetailDto {
+  skill: SkillManifest;
+  body: string;
+}
+
+export interface SkillResourceReadDto {
+  skillId: string;
+  path: string;
+  content: string;
 }
 
 export interface ChatCompletionRequestDto {

@@ -1158,12 +1158,25 @@ pub async fn list_tasks(
     metadata_root: &Path,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
+    let project_count = count_projects(&state.project_groups);
+    let manual_feature_count = state.manual_features.len();
     let manual_tasks = state
         .manual_features
         .iter()
         .map(manual_feature_to_task_value)
         .collect::<Vec<_>>();
     let Some(plan) = state.current_plan else {
+        if manual_tasks.is_empty() {
+            tracing::warn!(
+                action = "workspace_task_catalog_empty",
+                reason = "no_current_plan",
+                project_count,
+                manual_feature_count,
+                workspace_path = %workspace_path.display(),
+                metadata_root = %metadata_root.display(),
+                "Workspace task catalog is empty because no current plan or manual features were found."
+            );
+        }
         return Ok(WorkspaceTaskCatalogDto {
             tasks: manual_tasks.clone(),
             plans: Vec::new(),
@@ -1223,6 +1236,30 @@ pub async fn list_tasks(
     } else {
         "empty".to_string()
     };
+
+    if fallback_tasks.is_empty() {
+        let empty_reason = if task_count == 0 && !is_executable_plan {
+            "non_executable_plan_without_tasks"
+        } else if task_count == 0 {
+            "executable_plan_without_tasks"
+        } else {
+            "no_catalog_tasks"
+        };
+        tracing::warn!(
+            action = "workspace_task_catalog_empty",
+            reason = empty_reason,
+            source = %source,
+            plan_id = %plan.id,
+            plan_status = %plan.status,
+            plan_task_count = task_count,
+            manual_feature_count,
+            project_count,
+            is_executable_plan,
+            workspace_path = %workspace_path.display(),
+            metadata_root = %metadata_root.display(),
+            "Workspace task catalog is empty after loading workspace metadata."
+        );
+    }
 
     Ok(WorkspaceTaskCatalogDto {
         tasks: fallback_tasks,

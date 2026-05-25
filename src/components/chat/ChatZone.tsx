@@ -19,6 +19,8 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
+import { SkillDropdown } from './SkillDropdown';
+import { ContextReferenceChip } from './ContextReferenceChip';
 import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
@@ -40,7 +42,6 @@ import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
-import { NeedReferenceChip } from '../architect/NeedReferenceChip';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
 import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
 import {
@@ -226,7 +227,7 @@ interface ChatMessageRowProps {
   needsByTitle: Map<string, Need>;
 }
 
-const NEED_MENTION_PATTERN = /\[need:\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill):\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
@@ -266,21 +267,25 @@ const UserMessageContent: React.FC<{
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
         let match: RegExpExecArray | null;
-        const needMentionPattern = new RegExp(NEED_MENTION_PATTERN);
+        const contextMentionPattern = new RegExp(USER_CONTEXT_MENTION_PATTERN);
 
-        while ((match = needMentionPattern.exec(line)) !== null) {
+        while ((match = contextMentionPattern.exec(line)) !== null) {
           if (match.index > lastIndex) {
             parts.push(line.slice(lastIndex, match.index));
           }
 
-          const title = match[1]?.trim() ?? '';
-          const need = needsByTitle.get(normalizeNeedMentionTitle(title));
+          const kind = match[1]?.toLocaleLowerCase() === 'need' ? 'need' : 'skill';
+          const title = match[2]?.trim() ?? '';
+          const need = kind === 'need'
+            ? needsByTitle.get(normalizeNeedMentionTitle(title))
+            : undefined;
           parts.push(
-            <NeedReferenceChip
+            <ContextReferenceChip
               key={`${lineIndex}-${match.index}-${title}`}
+              kind={kind}
               need={need}
               title={title}
-              surface="composer"
+              surface="message"
               priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
             />
           );
@@ -326,6 +331,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
+  const editingEditorRef = useRef<ComposerEditorHandle>(null);
   const visibleImages = isEditing ? editingImages : messageImages;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
@@ -339,6 +345,19 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     message.role === 'assistant' &&
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
+
+  useEffect(() => {
+    if (!isEditing) {
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      editingEditorRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [isEditing, message.id]);
 
   return (
     <div
@@ -406,16 +425,24 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
-              <textarea
-                value={editingValue}
-                onChange={(event) => onEditingValueChange(event.target.value)}
+              <div
                 onPasteCapture={(event) => {
                   void onEditingPaste(event);
                 }}
-                placeholder={t('common.editMessage') || 'Edit your message...'}
-                className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
-                autoFocus
-              />
+              >
+                <LazyComposerEditor
+                  key={message.id}
+                  ref={editingEditorRef}
+                  editable
+                  initialText={editingValue}
+                  placeholder={t('common.editMessage') || 'Edit your message...'}
+                  onTextChange={onEditingValueChange}
+                  onSend={onEditSave}
+                  surface="message-edit"
+                  syncContextRefs={false}
+                  className="w-full min-h-[120px] max-h-[400px] overflow-y-auto rounded-lg border-2 border-border bg-background p-3 text-sm leading-5 text-foreground transition-all focus:border-primary/50 focus:ring-2 focus:ring-primary/10"
+                />
+              </div>
               <div className="flex items-center gap-2 justify-end">
                 <button
                   onClick={onEditCancel}
@@ -732,9 +759,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
-  const { selectedProviderId, selectedModelId } = useProviderStore(useShallow((state) => ({
+  const { selectedProviderId, selectedModelId, nativeToolsSupported } = useProviderStore(useShallow((state) => ({
     selectedProviderId: state.selectedProviderId,
     selectedModelId: state.selectedModelId,
+    nativeToolsSupported: state.selectedSupportsNativeToolCalling(),
   })));
   const needs = useNeedsStore((state) => state.needs);
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
@@ -1761,6 +1789,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         ? Boolean(inputValue.trim())
         : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
     );
+  const hasComposerSkillReference = useMemo(
+    () => composerContextRefs.some((ref) => ref.kind === 'skill'),
+    [composerContextRefs]
+  );
+  const hasComposerSkillMention = useMemo(
+    () => /\$[A-Za-z0-9_-]{1,80}\b/.test(inputValue),
+    [inputValue]
+  );
+  const showSkillNativeToolWarning =
+    !nativeToolsSupported && (hasComposerSkillReference || hasComposerSkillMention);
 
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
@@ -2132,6 +2170,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ProviderDropdown />
                 <ModelDropdown />
                 <ReasoningDropdown />
+                <SkillDropdown />
               </div>
               {mode === 'Architect' && (
               <button
@@ -2238,6 +2277,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             {composerError && (
               <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
                 {composerError}
+              </div>
+            )}
+
+            {showSkillNativeToolWarning && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <Icon name="triangle-alert" size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {t(
+                    'skills.nativeToolRequiredWarning',
+                    'Skills require a native tool-calling model/provider.'
+                  )}
+                </span>
               </div>
             )}
 

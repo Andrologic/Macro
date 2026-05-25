@@ -103,6 +103,7 @@ export type SettingsTab =
   | "providers"
   | "models"
   | "tools"
+  | "skills"
   | "shortcuts"
   | "prompts"
   | "architect";

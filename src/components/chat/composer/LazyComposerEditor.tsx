@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { cn } from '../../../utils/cn';
 import type { ComposerEditorHandle } from './ComposerEditor';
+import type { MentionSurface } from './MentionNode';
 
 interface LazyComposerEditorProps {
   editable: boolean;
@@ -17,6 +18,9 @@ interface LazyComposerEditorProps {
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
   className?: string;
+  initialText?: string;
+  surface?: MentionSurface;
+  syncContextRefs?: boolean;
 }
 
 type ComposerEditorComponent = ForwardRefExoticComponent<
@@ -36,11 +40,22 @@ const syncComposerText = (
 };
 
 export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerEditorProps>(
-  ({ editable, placeholder, onTextChange, onSend, onPromptHistory, className }, ref) => {
+  ({
+    editable,
+    placeholder,
+    onTextChange,
+    onSend,
+    onPromptHistory,
+    className,
+    initialText = '',
+    surface = 'composer',
+    syncContextRefs = true,
+  }, ref) => {
     const [LoadedEditor, setLoadedEditor] = useState<ComposerEditorComponent | null>(null);
     const loadedEditorRef = useRef<ComposerEditorHandle>(null);
     const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
-    const fallbackTextRef = useRef('');
+    const fallbackTextRef = useRef(initialText);
+    const lastInitialTextRef = useRef(initialText);
 
     useEffect(() => {
       let isMounted = true;
@@ -71,6 +86,24 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         window.cancelAnimationFrame(frameId);
       };
     }, [LoadedEditor]);
+
+    useEffect(() => {
+      if (initialText === lastInitialTextRef.current) {
+        return;
+      }
+
+      lastInitialTextRef.current = initialText;
+      fallbackTextRef.current = initialText;
+      onTextChange(initialText);
+
+      if (loadedEditorRef.current) {
+        loadedEditorRef.current.setText(initialText);
+      }
+
+      if (fallbackTextareaRef.current) {
+        fallbackTextareaRef.current.value = initialText;
+      }
+    }, [initialText, onTextChange]);
 
     useImperativeHandle(ref, () => ({
       clear: () => {
@@ -126,6 +159,8 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           onSend={onSend}
           onPromptHistory={onPromptHistory}
           className={className}
+          surface={surface}
+          syncContextRefs={syncContextRefs}
         />
       );
     }

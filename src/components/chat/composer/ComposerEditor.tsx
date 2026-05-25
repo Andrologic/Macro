@@ -10,8 +10,10 @@ import {
   $getNodeByKey,
   $createParagraphNode,
   $createTextNode,
+  $createLineBreakNode,
   $getSelection,
   $isRangeSelection,
+  type ElementNode,
   COMMAND_PRIORITY_HIGH,
   KEY_ENTER_COMMAND,
   KEY_ARROW_UP_COMMAND,
@@ -23,7 +25,7 @@ import {
 import { useChatStore } from '../../../stores/useChatStore';
 import type { ContextRefKind } from '../../../types';
 import { cn } from '../../../utils/cn';
-import { MentionNode } from './MentionNode';
+import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
 
 // ------ Types ------
@@ -42,6 +44,8 @@ interface ComposerEditorProps {
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
   className?: string;
+  surface?: MentionSurface;
+  syncContextRefs?: boolean;
 }
 
 // ------ Theme ------
@@ -60,10 +64,77 @@ const initializeComposerState = () => {
   root.append($createParagraphNode());
 };
 
+const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill):\s*([^\]]+)\]/gi;
+
+const appendTextWithContextReferences = (
+  parent: ElementNode,
+  text: string,
+  surface: MentionSurface,
+  syncContextRefs: boolean
+) => {
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const pattern = new RegExp(EDITOR_CONTEXT_MENTION_PATTERN);
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parent.append($createTextNode(text.slice(lastIndex, match.index)));
+    }
+
+    const kind = match[1]?.toLowerCase() as 'need' | 'skill' | undefined;
+    const title = match[2]?.trim() ?? '';
+    if (kind && title) {
+      parent.append(
+        $createMentionNode(kind, title, title, {
+          surface,
+          syncContextRefs,
+        })
+      );
+    } else {
+      parent.append($createTextNode(match[0]));
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parent.append($createTextNode(text.slice(lastIndex)));
+  }
+};
+
+const setEditorPlainText = (
+  text: string,
+  surface: MentionSurface,
+  syncContextRefs: boolean
+) => {
+  const root = $getRoot();
+  root.clear();
+  const paragraph = $createParagraphNode();
+  const lines = text.split('\n');
+
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      paragraph.append($createLineBreakNode());
+    }
+    appendTextWithContextReferences(paragraph, line, surface, syncContextRefs);
+  });
+
+  root.append(paragraph);
+  paragraph.selectEnd();
+};
+
 // ------ Inner component that accesses the editor ------
 
 const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
-  ({ editable, placeholder, onTextChange, onSend, onPromptHistory, className }, ref) => {
+  ({
+    editable,
+    placeholder,
+    onTextChange,
+    onSend,
+    onPromptHistory,
+    className,
+    surface = 'composer',
+    syncContextRefs = true,
+  }, ref) => {
     const [editor] = useLexicalComposerContext();
     const textRef = useRef('');
 
@@ -76,29 +147,19 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     useImperativeHandle(ref, () => ({
       clear: () => {
         editor.update(() => {
-          const root = $getRoot();
-          root.clear();
-          const p = $createParagraphNode();
-          root.append(p);
-          p.select();
+          setEditorPlainText('', surface, syncContextRefs);
         });
         textRef.current = '';
       },
       setText: (text: string) => {
         editor.update(() => {
-          const root = $getRoot();
-          root.clear();
-          const p = $createParagraphNode();
-          p.append($createTextNode(text));
-          root.append(p);
-          // Move cursor to end
-          p.selectEnd();
+          setEditorPlainText(text, surface, syncContextRefs);
         });
         textRef.current = text;
       },
       getTextContent: () => textRef.current,
       focus: () => editor.focus(),
-    }), [editor]);
+    }), [editor, surface, syncContextRefs]);
 
     // On-change: extract plain text (MentionNodes serialize to [kind: title])
     const handleChange = useCallback(
@@ -140,6 +201,9 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     // We keep a map of nodeKey → {refId, kind} so we can look up data after destruction
     const mentionMapRef = useRef<Map<string, { refId: string; kind: string }>>(new Map());
     useEffect(() => {
+      if (!syncContextRefs) {
+        return undefined;
+      }
       return editor.registerMutationListener(
         MentionNode,
         (mutations: Map<string, NodeMutation>) => {
@@ -168,7 +232,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           }
         }
       );
-    }, [editor]);
+    }, [editor, syncContextRefs]);
 
     // Prompt history via ArrowUp (when cursor at start)
     useEffect(() => {
@@ -249,7 +313,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         />
         <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
         <HistoryPlugin />
-        <MentionPlugin />
+        {syncContextRefs && <MentionPlugin />}
       </>
     );
   }

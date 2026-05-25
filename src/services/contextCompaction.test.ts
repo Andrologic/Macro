@@ -171,6 +171,34 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(String(result.messages[3]?.content)).toContain('need detail');
   });
 
+  it('preserves activated skill context during normal pruning', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Activate the docs skill.'),
+      makeMessage('a1', 'assistant', 'Skill result.', {
+        hidden_context:
+          `<tool_context tool="skill_activate" detail="project:docs">\n${'skill instruction\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Inspect old files.'),
+      makeMessage('a2', 'assistant', 'Old file result.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u3', 'user', 'Recent turn.'),
+      makeMessage('a3', 'assistant', 'Recent answer.'),
+      makeMessage('u4', 'user', 'Continue with that skill.'),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: false },
+    );
+
+    expect(result.prunedMessageIds).toEqual(['a2']);
+    expect(String(result.messages[1]?.content)).toContain('skill instruction');
+    expect(String(result.messages[3]?.content)).toContain('[pruned tool context]');
+  });
+
   it('limits protected tool output during forced pruning', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect plan state.'),
