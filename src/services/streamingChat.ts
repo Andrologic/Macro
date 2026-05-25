@@ -1507,6 +1507,9 @@ const createStreamAccumulator = (
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
 const QUESTION_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('question'));
+const SKILL_ACTIVATE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_activate'));
+const SKILL_READ_RESOURCE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_read_resource'));
+const SKILL_RUN_SCRIPT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_run_script'));
 const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('mark_source_passage')
 );
@@ -2021,6 +2024,9 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
   if (allowedTools.has('question')) tools.push(QUESTION_TOOL);
+  if (allowedTools.has('skill_activate')) tools.push(SKILL_ACTIVATE_TOOL);
+  if (allowedTools.has('skill_read_resource')) tools.push(SKILL_READ_RESOURCE_TOOL);
+  if (allowedTools.has('skill_run_script')) tools.push(SKILL_RUN_SCRIPT_TOOL);
   if (allowedTools.has('read_file')) tools.push(READ_FILE_TOOL);
   if (allowedTools.has('mark_source_passage')) tools.push(MARK_SOURCE_PASSAGE_TOOL);
   if (allowedTools.has('read_sources')) tools.push(READ_SOURCES_TOOL);

@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
+import { useSkillsStore } from '../stores/useSkillsStore';
 import { useTaskStore } from '../stores/useTaskStore';
 import { useTerminalStore } from '../stores/useTerminalStore';
 import { useToolsStore } from '../stores/useToolsStore';
@@ -41,6 +42,7 @@ interface AppBootstrapDependencies {
   resumeTasksAfterInitialize: () => Promise<void>;
   initializeTerminal: () => Promise<void>;
   initializeTools: () => Promise<void>;
+  initializeSkills: () => Promise<void>;
   initializeProviders: () => Promise<void>;
   restoreChatSelectionAfterProviderInit: () => Promise<void>;
   initializeShortcuts: () => Promise<void>;
@@ -247,6 +249,7 @@ export const createAppBootstrapController = (
           void (async () => {
             await Promise.all([
               initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
+              initWithTracking('Skills Store', dependencies.initializeSkills, 'low'),
               initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
             ]);
             await highPriorityInit;
@@ -311,6 +314,7 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   resumeTasksAfterInitialize: useTaskStore.getState().resumeAfterInitialize,
   initializeTerminal: useTerminalStore.getState().initialize,
   initializeTools: useToolsStore.getState().loadSettings,
+  initializeSkills: useSkillsStore.getState().loadSettings,
   initializeProviders: useProviderStore.getState().initialize,
   restoreChatSelectionAfterProviderInit:
     useChatStore.getState().reapplySelectionForCurrentContext,

@@ -4,12 +4,12 @@ use super::protocol::{initialize, read_response, write_frame};
 use super::result_format::format_tool_call_result;
 use super::types::{McpCallToolResponse, McpServerDto, McpToolDto, McpTransportDto};
 use crate::commands::{command_error, CommandResult};
+use crate::core::process::background_tokio_command;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
@@ -69,7 +69,7 @@ where
     Fut: std::future::Future<Output = CommandResult<T>>,
 {
     let (command, args, env) = resolve_stdio_transport(server)?;
-    let mut child = Command::new(command)
+    let mut child = background_tokio_command(command)
         .args(args)
         .envs(env)
         .stdin(Stdio::piped())
@@ -218,12 +218,12 @@ pub(crate) async fn call_stdio_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::process::background_command;
     use std::fs;
     use std::path::PathBuf;
-    use std::process::Command as StdCommand;
 
     fn python3() -> Option<String> {
-        StdCommand::new("python3")
+        background_command("python3")
             .arg("--version")
             .output()
             .ok()

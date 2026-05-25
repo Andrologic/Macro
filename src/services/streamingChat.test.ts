@@ -225,6 +225,20 @@ describe('streamingChat tool rendering helpers', () => {
     expect(block).toContain('const ok = true;');
   });
 
+  it('collects internal skill tools when they are allowed', async () => {
+    const { __testables } = await loadStreamingChat();
+    const tools = __testables.collectAllowedTools({
+      allowedTools: new Set(['skill_activate', 'skill_read_resource', 'skill_run_script']),
+      enableWebSearch: false,
+      enableWebFetch: false,
+    });
+
+    const serializedTools = JSON.stringify(tools);
+    expect(serializedTools).toContain('skill_activate');
+    expect(serializedTools).toContain('skill_read_resource');
+    expect(serializedTools).toContain('skill_run_script');
+  });
+
   it('retries once when a required native tool was not used', async () => {
     const { __testables } = await loadStreamingChat();
     expect(

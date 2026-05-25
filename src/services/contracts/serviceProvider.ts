@@ -12,6 +12,9 @@ import type {
   ModelsDto,
   ProjectDto,
   ProvidersDto,
+  SkillDetailDto,
+  SkillListDto,
+  SkillResourceReadDto,
   TaskCatalogDto,
   ToolSettingsDto,
 } from './dtos';
@@ -24,6 +27,10 @@ import type {
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  SkillManifest,
+  SkillProjectRoot,
+  SkillScriptRunRequest,
+  SkillScriptRunResult,
 } from '../../types';
 
 export interface ServiceProvider {
@@ -151,4 +158,21 @@ export interface ServiceProvider {
     arguments: Record<string, unknown>;
     timeoutMs?: number | null;
   }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  listSkills: (data?: { projectRoots?: SkillProjectRoot[] }) => Promise<SkillListDto>;
+  getSkill: (data: {
+    skillId: string;
+    projectRoots?: SkillProjectRoot[];
+  }) => Promise<SkillDetailDto>;
+  installSkillFromLocalPath: (data: { sourcePath: string }) => Promise<SkillManifest>;
+  readSkillResource: (data: {
+    skillId: string;
+    resourcePath: string;
+    projectRoots?: SkillProjectRoot[];
+  }) => Promise<SkillResourceReadDto>;
+  runSkillScript: (
+    data: SkillScriptRunRequest & {
+      projectRoots?: SkillProjectRoot[];
+      workspacePath?: string | null;
+    }
+  ) => Promise<SkillScriptRunResult>;
 }

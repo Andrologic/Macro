@@ -226,6 +226,20 @@ export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
 export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
   remoteUnsupported('mcpCallTool');
 
+export const listSkills: ServiceProvider['listSkills'] = async () => ({ skills: [] });
+
+export const getSkill: ServiceProvider['getSkill'] = async () =>
+  remoteUnsupported('getSkill');
+
+export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async () =>
+  remoteUnsupported('installSkillFromLocalPath');
+
+export const readSkillResource: ServiceProvider['readSkillResource'] = async () =>
+  remoteUnsupported('readSkillResource');
+
+export const runSkillScript: ServiceProvider['runSkillScript'] = async () =>
+  remoteUnsupported('runSkillScript');
+
 export const provider: ServiceProvider = {
   getAppBootstrap,
   listConversations,
@@ -261,4 +275,9 @@ export const provider: ServiceProvider = {
   updateMCPServerSettings,
   mcpDiscoverTools,
   mcpCallTool,
+  listSkills,
+  getSkill,
+  installSkillFromLocalPath,
+  readSkillResource,
+  runSkillScript,
 };

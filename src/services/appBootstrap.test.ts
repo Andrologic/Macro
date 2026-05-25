@@ -11,6 +11,7 @@ describe('appBootstrap', () => {
   let initializeTerminal: ReturnType<typeof mock>;
   let initializeChat: ReturnType<typeof mock>;
   let initializeTools: ReturnType<typeof mock>;
+  let initializeSkills: ReturnType<typeof mock>;
   let initializeProviders: ReturnType<typeof mock>;
   let restoreChatSelectionAfterProviderInit: ReturnType<typeof mock>;
   let initializeShortcuts: ReturnType<typeof mock>;
@@ -41,6 +42,9 @@ describe('appBootstrap', () => {
     initializeTools = mock(async () => {
       callOrder.push('tools');
     });
+    initializeSkills = mock(async () => {
+      callOrder.push('skills');
+    });
     initializeProviders = mock(async () => {
       callOrder.push('providers');
     });
@@ -67,6 +71,7 @@ describe('appBootstrap', () => {
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
       initializeTools,
+      initializeSkills,
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
@@ -147,6 +152,7 @@ describe('appBootstrap', () => {
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
       initializeTools,
+      initializeSkills,
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
@@ -188,6 +194,7 @@ describe('appBootstrap', () => {
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
       initializeTools,
+      initializeSkills,
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
@@ -231,6 +238,7 @@ describe('appBootstrap', () => {
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
       initializeTools,
+      initializeSkills,
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
@@ -282,6 +290,7 @@ describe('appBootstrap', () => {
       resumeTasksAfterInitialize: resumeTasks,
       initializeTerminal,
       initializeTools,
+      initializeSkills,
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,

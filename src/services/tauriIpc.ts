@@ -24,6 +24,9 @@ import type {
   MCPTool,
   ProjectMount,
   ProviderTurnState,
+  SkillManifest,
+  SkillProjectRoot,
+  SkillScriptRunResult,
   ToolTrace,
 } from "../types";
 import { parseToolTracesJson as parseSerializedToolTracesJson } from "./toolTraceState";
@@ -1049,6 +1052,21 @@ export interface MCPCallToolResponseDto {
   content: string;
   isError?: boolean;
   rawResult?: unknown;
+}
+
+export interface SkillListResponseDto {
+  skills: SkillManifest[];
+}
+
+export interface SkillDetailResponseDto {
+  skill: SkillManifest;
+  body: string;
+}
+
+export interface SkillResourceReadResponseDto {
+  skillId: string;
+  path: string;
+  content: string;
 }
 
 export interface TerminalSessionDto {
@@ -2967,6 +2985,64 @@ export async function mcpDeleteEnvSecret(params: {
   return invoke("mcp_delete_env_secret", {
     serverId: params.serverId,
     key: params.key,
+  });
+}
+
+export async function skillsList(params: {
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillListResponseDto> {
+  return invoke<SkillListResponseDto>("skills_list", {
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsGet(params: {
+  skillId: string;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillDetailResponseDto> {
+  return invoke<SkillDetailResponseDto>("skills_get", {
+    skillId: params.skillId,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsInstallFromLocalPath(params: {
+  sourcePath: string;
+}): Promise<SkillManifest> {
+  return invoke<SkillManifest>("skills_install_from_local_path", {
+    sourcePath: params.sourcePath,
+  });
+}
+
+export async function skillsReadResource(params: {
+  skillId: string;
+  resourcePath: string;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillResourceReadResponseDto> {
+  return invoke<SkillResourceReadResponseDto>("skills_read_resource", {
+    skillId: params.skillId,
+    resourcePath: params.resourcePath,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsRunScript(params: {
+  skillId: string;
+  scriptPath: string;
+  args?: string[];
+  timeoutMs?: number | null;
+  allowWorkspace?: boolean;
+  workspacePath?: string | null;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillScriptRunResult> {
+  return invoke<SkillScriptRunResult>("skills_run_script", {
+    skillId: params.skillId,
+    scriptPath: params.scriptPath,
+    args: params.args ?? [],
+    timeoutMs: params.timeoutMs ?? null,
+    allowWorkspace: params.allowWorkspace ?? false,
+    workspacePath: params.workspacePath ?? null,
+    projectRoots: params.projectRoots ?? [],
   });
 }
 

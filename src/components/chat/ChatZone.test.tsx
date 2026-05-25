@@ -180,6 +180,7 @@ type AppStoreState = {
 type ProviderState = {
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  selectedSupportsNativeToolCalling: () => boolean;
 };
 
 type NeedsState = {
@@ -337,7 +338,9 @@ const markdownRendererContentMock = mock(
 );
 const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
+let messageEditEditorValue = '';
 let latestComposerProps: Record<string, unknown> | null = null;
+let latestMessageEditProps: Record<string, unknown> | null = null;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -460,32 +463,77 @@ const loadChatZoneModule = async () => {
       getTextContent: () => string;
       clear: () => void;
       setText: (_value: string) => void;
+      focus: () => void;
     }>) => {
+      const isMessageEdit = props.surface === 'message-edit';
+      if (isMessageEdit && typeof props.initialText === 'string') {
+        messageEditEditorValue = props.initialText;
+      }
       React.useEffect(() => {
-        latestComposerProps = props;
-      }, [props]);
+        if (isMessageEdit) {
+          latestMessageEditProps = props;
+        } else {
+          latestComposerProps = props;
+        }
+      }, [isMessageEdit, props]);
       React.useImperativeHandle(ref, () => ({
-        getTextContent: () => composerEditorValue,
+        getTextContent: () => isMessageEdit ? messageEditEditorValue : composerEditorValue,
         clear: () => {
-          composerEditorValue = '';
+          if (isMessageEdit) {
+            messageEditEditorValue = '';
+          } else {
+            composerEditorValue = '';
+          }
         },
         setText: (value: string) => {
-          composerEditorValue = value;
+          if (isMessageEdit) {
+            messageEditEditorValue = value;
+          } else {
+            composerEditorValue = value;
+          }
         },
+        focus: () => undefined,
       }));
+      const value = isMessageEdit ? messageEditEditorValue : composerEditorValue;
+      const renderedParts = isMessageEdit
+        ? value.split(/(\[(?:need|skill):\s*[^\]]+\])/gi).map((part, index) => {
+            const match = /^\[(need|skill):\s*([^\]]+)\]$/i.exec(part);
+            if (!match) return part;
+            const kind = match[1].toLowerCase();
+            const title = match[2].trim();
+            return (
+              <span
+                key={`${kind}-${title}-${index}`}
+                data-context-reference-kind={kind}
+                data-context-reference-surface="message-edit"
+              >
+                {kind === 'skill' ? 'Skill' : 'Need'} {title}
+              </span>
+            );
+          })
+        : null;
       return (
-        <textarea
-          data-testid="composer-editor"
-          disabled={props.editable === false}
-          placeholder={typeof props.placeholder === 'string' ? props.placeholder : ''}
-          value={composerEditorValue}
-          onChange={(event) => {
-            composerEditorValue = event.target.value;
-            if (typeof props.onTextChange === 'function') {
-              props.onTextChange(event.target.value);
-            }
-          }}
-        />
+        <div>
+          {isMessageEdit && (
+            <div data-testid="message-edit-rich-preview">{renderedParts}</div>
+          )}
+          <textarea
+            data-testid={isMessageEdit ? 'message-edit-editor' : 'composer-editor'}
+            disabled={props.editable === false}
+            placeholder={typeof props.placeholder === 'string' ? props.placeholder : ''}
+            value={value}
+            onChange={(event) => {
+              if (isMessageEdit) {
+                messageEditEditorValue = event.target.value;
+              } else {
+                composerEditorValue = event.target.value;
+              }
+              if (typeof props.onTextChange === 'function') {
+                props.onTextChange(event.target.value);
+              }
+            }}
+          />
+        </div>
       );
     }),
   }));
@@ -647,6 +695,7 @@ const resetState = () => {
   providerState = {
     selectedProviderId: 'provider-1',
     selectedModelId: 'model-1',
+    selectedSupportsNativeToolCalling: () => true,
   };
 
   needsState = {
@@ -664,7 +713,9 @@ const resetState = () => {
     startTask: mock(async () => undefined),
   };
   composerEditorValue = '';
+  messageEditEditorValue = '';
   latestComposerProps = null;
+  latestMessageEditProps = null;
   scrollMagnetActiveValues.length = 0;
 };
 
@@ -740,6 +791,145 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('renders skill references in user messages as composer-style chips', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: '[skill: test-skill] utilise ce skill\nsur deux lignes',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const skillChip = requireContainer().querySelector(
+      '[data-context-reference-kind="skill"]'
+    );
+    expect(skillChip).toBeTruthy();
+    expect(skillChip?.getAttribute('data-context-reference-surface')).toBe('message');
+    expect(skillChip?.className).toContain('h-5');
+    expect(skillChip?.className).toContain('align-middle');
+    expect(skillChip?.className).not.toContain('align-[-0.1875rem]');
+    expect(skillChip?.textContent).toContain('Skill');
+    expect(skillChip?.textContent).toContain('test-skill');
+    expect(requireContainer().textContent).not.toContain('[skill: test-skill]');
+    expect(requireContainer().textContent).toContain('utilise ce skill');
+    expect(requireContainer().textContent).toContain('sur deux lignes');
+  });
+
+  it('renders skill chips while editing user messages and saves bracket text', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: '[skill: test-skill] utilise ce skill',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const editChip = requireContainer().querySelector(
+      '[data-context-reference-surface="message-edit"]'
+    );
+    expect(editChip).toBeTruthy();
+    expect(editChip?.textContent).toContain('Skill test-skill');
+    expect(latestMessageEditProps?.syncContextRefs).toBe(false);
+
+    const editor = requireContainer().querySelector(
+      '[data-testid="message-edit-editor"]'
+    ) as HTMLTextAreaElement | null;
+    expect(editor).toBeTruthy();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        editor,
+        '[skill: test-skill] utilise ce skill modifié'
+      );
+      editor!.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const saveButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'chat.saveRegenerate'
+    );
+    expect(saveButton).not.toBeNull();
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(chatState.editMessage).toHaveBeenCalledWith(
+      'msg-user-1',
+      '[skill: test-skill] utilise ce skill modifié',
+      { skipAgentCodeReplayCheck: undefined }
+    );
+  });
+
+  it('warns when a selected or mentioned skill cannot use native tool calls', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => false;
+    chatState = {
+      ...chatState,
+      composerContextRefs: [
+        {
+          kind: 'skill',
+          id: 'global:test-skill',
+          title: 'test-skill',
+          data: {},
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).toContain(
+      'Skills require a native tool-calling model/provider.'
+    );
+
+    await act(async () => {
+      useChatStore.setState({ composerContextRefs: [] });
+      requireRoot().render(<ChatZone />);
+      await Promise.resolve();
+    });
+
+    const editor = requireContainer().querySelector(
+      '[data-testid="composer-editor"]'
+    ) as HTMLTextAreaElement | null;
+    expect(editor).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        editor,
+        'Use $test-skill'
+      );
+      editor!.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(requireContainer().textContent).toContain(
+      'Skills require a native tool-calling model/provider.'
+    );
   });
 
   it('renders a vertical compaction boundary in the transcript', async () => {

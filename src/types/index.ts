@@ -212,15 +212,15 @@ export interface Need {
   updatedAt: string;
 }
 
-// Context references for chat composer (tag needs, nodes, branches)
-export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch';
+// Context references for chat composer (tag needs, nodes, branches, skills)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill';
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: Need | PlanNode | PredictedBranch;
+  data: Need | PlanNode | PredictedBranch | SkillManifest;
 }
 
 // Activity indicator for projects
@@ -307,6 +307,72 @@ export interface MCPServer {
 
 export interface MCPServerSettings {
   servers: Record<string, MCPServer>;
+}
+
+export type SkillSourceKind = 'global' | 'project';
+
+export interface SkillProjectRoot {
+  projectId: string;
+  projectName: string;
+  path: string;
+}
+
+export interface SkillSource {
+  kind: SkillSourceKind;
+  projectId?: string | null;
+  projectName?: string | null;
+  rootPath: string;
+}
+
+export type SkillResourceKind = 'reference' | 'asset' | 'script';
+
+export interface SkillResource {
+  path: string;
+  kind: SkillResourceKind;
+  sizeBytes: number;
+}
+
+export interface SkillManifest {
+  id: string;
+  name: string;
+  description: string;
+  rootPath: string;
+  skillFilePath: string;
+  source: SkillSource;
+  resources: SkillResource[];
+  scripts: SkillResource[];
+  validationErrors: string[];
+  isValid: boolean;
+}
+
+export interface SkillSettings {
+  enabled: boolean;
+  trusted: boolean;
+  scriptsEnabled: boolean;
+}
+
+export interface SkillActivation {
+  skillId: string;
+  activatedAt: string;
+  body: string;
+}
+
+export interface SkillScriptRunRequest {
+  skillId: string;
+  scriptPath: string;
+  args?: string[];
+  timeoutMs?: number | null;
+  allowWorkspace?: boolean;
+}
+
+export interface SkillScriptRunResult {
+  skillId: string;
+  scriptPath: string;
+  stdout: string;
+  stderr: string;
+  exitCode?: number | null;
+  timedOut: boolean;
+  truncated: boolean;
 }
 
 export interface ProjectDependency {

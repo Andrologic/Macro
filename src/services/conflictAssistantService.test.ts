@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 const setModeMock = mock(() => undefined);
-const ensureConversationForCurrentModeMock = mock(async () => "repo-auditor-conv");
+const ensureConversationForCurrentModeMock = mock(async (): Promise<string | null> => "repo-auditor-conv");
 const createConversationMock = mock(async () => ({
   id: "repo-auditor-conv",
 }));
@@ -13,6 +13,8 @@ const sendMessageMock = mock(async () => ({
 }));
 const appStoreState = {
   setMode: setModeMock,
+  selectedProjectId: null as string | null,
+  selectedGroupId: null as string | null,
 };
 const chatStoreState = {
   ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
@@ -36,8 +38,11 @@ describe("conflictAssistantService", () => {
     mock.restore();
     setModeMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
+    ensureConversationForCurrentModeMock.mockImplementation(async () => "repo-auditor-conv");
     createConversationMock.mockClear();
     sendMessageMock.mockClear();
+    appStoreState.selectedProjectId = null;
+    appStoreState.selectedGroupId = null;
 
     mock.module("../stores/useAppStore", () => ({
       useAppStore: createStoreHook(appStoreState),
@@ -59,6 +64,28 @@ describe("conflictAssistantService", () => {
     expect(sendMessageMock).toHaveBeenCalledWith({
       conversationId: "repo-auditor-conv",
       content: "Resolve these blockers.",
+      internalAgentProfile: "repo_auditor",
+    });
+  });
+
+  it("creates an explicit repository review conversation when Implement has no selected task", async () => {
+    ensureConversationForCurrentModeMock.mockImplementationOnce(async () => null);
+
+    const moduleId = `./conflictAssistantService.ts?repo-auditor-create`;
+    const { openConflictAssistant } = await import(moduleId);
+
+    const conversationId = await openConflictAssistant("Diagnose metadata conflicts.");
+
+    expect(conversationId).toBe("repo-auditor-conv");
+    expect(createConversationMock).toHaveBeenCalledWith(
+      "Repository review",
+      null,
+      null,
+      null
+    );
+    expect(sendMessageMock).toHaveBeenCalledWith({
+      conversationId: "repo-auditor-conv",
+      content: "Diagnose metadata conflicts.",
       internalAgentProfile: "repo_auditor",
     });
   });

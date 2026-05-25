@@ -37,7 +37,7 @@ interface NeedReferenceChipProps {
   category?: NeedCategory;
   priority?: Need['priority'];
   tags?: string[];
-  surface: 'card' | 'composer';
+  surface: 'card' | 'composer' | 'message' | 'message-edit';
   selected?: boolean;
   className?: string;
   onClick?: () => void;
@@ -64,23 +64,32 @@ export const NeedReferenceChip: React.FC<NeedReferenceChipProps> = ({
   const resolvedTags = need?.tags ?? tags ?? [];
   const description = need?.description;
 
-  if (surface === 'composer') {
+  if (surface === 'composer' || surface === 'message' || surface === 'message-edit') {
     const iconName = resolvedCategory ? NEED_CATEGORY_ICONS[resolvedCategory] : 'target';
     const iconColorClass = resolvedCategory ? NEED_CATEGORY_COLORS[resolvedCategory] : 'text-primary';
 
     return (
       <span
+        data-need-reference-surface={surface}
         className={cn(
-          'mx-0.5 inline-flex h-6 max-w-[240px] items-center gap-1.5 rounded-md border px-1.5',
+          'mx-0.5 inline-flex max-w-[240px] items-center rounded-md border',
           'align-middle text-xs leading-none cursor-default',
-          'bg-card/80 border-border/80 shadow-sm translate-y-[-0.5px]',
+          'bg-card/80 border-border/80 shadow-sm',
+          surface === 'composer'
+            ? 'h-6 gap-1.5 px-1.5 translate-y-[-0.5px]'
+            : 'h-5 gap-1 px-1.5',
           className
         )}
       >
-        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center justify-center',
+            surface === 'composer' ? 'h-4 w-4' : 'h-3.5 w-3.5'
+          )}
+        >
           <Icon
             name={iconName}
-            size={12}
+            size={surface === 'composer' ? 12 : 10}
             className={cn('stroke-[2.25]', iconColorClass)}
           />
         </span>

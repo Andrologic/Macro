@@ -17,6 +17,7 @@ import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskSto
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
 const actualTauriIpc = await import('../services/tauriIpc');
+const { services } = await import('../services');
 
 let isolatedTaskStoreImportCounter = 0;
 let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }) => Promise<void>) | null = null;
@@ -110,14 +111,32 @@ const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
 const persistArchitectPlanMergeWorkflowSessionMock = mock(async () => undefined);
 const ensureConversationForCurrentModeMock = mock(async () => null as string | null);
+const reapplySelectionForCurrentContextMock = mock(async () => undefined);
 const createConversationMock = mock(async () => ({ id: 'conv-1' }));
 const sendMessageMock = mock(async () => undefined);
 const deleteConversationMock = mock(async () => undefined);
 let chatStoreConversations: Array<{ id: string }> = [];
 const appStoreState = {
+  mode: 'Implement' as const,
   selectedTaskId: null as string | null,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: null as string | null,
+  projectGroups: [
+    {
+      id: 'group-1',
+      name: 'Group One',
+      isOpen: true,
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+        },
+      ],
+    },
+  ],
+  activeArchitectPlanId: null as string | null,
+  activePlanContext: null as { targetBranch?: string | null } | null,
   getProjectById: (_projectId: string) => null as null | {
     id: string;
     name: string;
@@ -198,6 +217,7 @@ mock.module('./useChatStore', () => ({
   useChatStore: {
     getState: () => ({
       ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
+      reapplySelectionForCurrentContext: reapplySelectionForCurrentContextMock,
       createConversation: createConversationMock,
       sendMessage: sendMessageMock,
       deleteConversation: deleteConversationMock,
@@ -421,6 +441,49 @@ describe('getPlanActivationCandidateTask', () => {
   });
 });
 
+describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('clears a missing selected task and reapplies chat selection when the catalog becomes empty', async () => {
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty' as const,
+    }));
+    ensureConversationForCurrentModeMock.mockClear();
+    reapplySelectionForCurrentContextMock.mockClear();
+    appStoreState.selectedTaskId = 'task-1';
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = null;
+    appStoreState.mode = 'Implement';
+    appStoreState.setSelectedTask.mockClear();
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({
+        tasks: [buildTask({ id: 'task-1' })],
+        source: 'architect',
+        isLoading: false,
+        lastError: null,
+      });
+
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: true,
+      });
+
+      expect(appStoreState.selectedTaskId).toBeNull();
+      expect(reapplySelectionForCurrentContextMock).toHaveBeenCalledTimes(1);
+      expect(ensureConversationForCurrentModeMock).not.toHaveBeenCalled();
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+});
+
 describe('useTaskStore merge workflow review loading', () => {
   beforeEach(() => {
     gitStatusMock.mockClear();
@@ -446,13 +509,17 @@ describe('useTaskStore merge workflow review loading', () => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
+    reapplySelectionForCurrentContextMock.mockClear();
     createConversationMock.mockClear();
     sendMessageMock.mockClear();
     deleteConversationMock.mockClear();
     chatStoreConversations = [];
+    appStoreState.mode = 'Implement';
     appStoreState.selectedTaskId = null;
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
+    appStoreState.activeArchitectPlanId = null;
+    appStoreState.activePlanContext = null;
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',
       name: 'Project One',

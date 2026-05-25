@@ -2116,6 +2116,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const restoreSelection = options?.restoreSelection !== false;
     const activateSelectedTask = options?.activateSelectedTask !== false;
     try {
+      const previousTaskCount = get().tasks.length;
+      const previousSource = get().source;
+      const appStateBeforeRefresh = useAppStore.getState();
+      const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       const catalog = await services.listTasks();
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
@@ -2225,9 +2229,31 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const selectedTaskAfterRestore = useAppStore.getState().selectedTaskId;
+      if (previousTaskCount > 0 && tasks.length === 0) {
+        const appStateAfterRestore = useAppStore.getState();
+        devLogger.warn('[tasks] Implement task catalog became empty after refresh.', {
+          previousTaskCount,
+          nextTaskCount: tasks.length,
+          previousSource,
+          nextSource: catalog.source,
+          selectedTaskIdBeforeRefresh,
+          selectedTaskIdAfterRefresh: appStateAfterRestore.selectedTaskId,
+          selectedGroupId: appStateAfterRestore.selectedGroupId,
+          selectedProjectId: appStateAfterRestore.selectedProjectId,
+          activeArchitectPlanId: appStateAfterRestore.activeArchitectPlanId,
+          activePlanTargetBranch: appStateAfterRestore.activePlanContext?.targetBranch ?? null,
+        });
+      }
       if (activateSelectedTask && selectedTaskAfterRestore) {
         void get().activateTask(selectedTaskAfterRestore);
         void useChatStore.getState().ensureConversationForCurrentMode();
+      } else if (
+        restoreSelection &&
+        useAppStore.getState().mode === 'Implement' &&
+        !selectedTaskAfterRestore &&
+        (selectedTaskIdBeforeRefresh || tasks.length === 0)
+      ) {
+        await useChatStore.getState().reapplySelectionForCurrentContext();
       }
     } catch (error) {
       const normalized = toServiceError(error);
