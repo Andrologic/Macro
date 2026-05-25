@@ -63,6 +63,7 @@ export interface DbMessage {
   hidden_context: string | null;
   provider_input_items_json: string | null;
   provider_turn_state_json: string | null;
+  context_refs_json?: string | null;
 }
 
 export interface DbConversationCompactionState {
@@ -1342,6 +1343,7 @@ export async function createMessage(
     hiddenContext?: string;
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
+    contextRefs?: unknown[];
   },
 ): Promise<DbMessage> {
   return invoke<DbMessage>("db_create_message", {
@@ -1361,6 +1363,9 @@ export async function createMessage(
         : null,
       providerTurnStateJson: options?.providerTurnState
         ? JSON.stringify(options.providerTurnState)
+        : null,
+      contextRefsJson: options?.contextRefs
+        ? JSON.stringify(options.contextRefs)
         : null,
     },
   });
@@ -1386,6 +1391,7 @@ export async function updateMessage(
     hiddenContext?: string;
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
+    contextRefs?: unknown[];
   },
 ): Promise<void> {
   return invoke("db_update_message", {
@@ -1403,6 +1409,9 @@ export async function updateMessage(
         : null,
       providerTurnStateJson: options?.providerTurnState
         ? JSON.stringify(options.providerTurnState)
+        : null,
+      contextRefsJson: options?.contextRefs
+        ? JSON.stringify(options.contextRefs)
         : null,
     },
   });

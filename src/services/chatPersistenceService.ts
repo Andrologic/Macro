@@ -14,6 +14,7 @@ import {
   buildUserMessagePresentation,
   mapDbConversationToConversation,
   mapDbMessageToChatMessage,
+  parseDbContextRefs,
   parseDbProviderInputItems,
   parseDbProviderTurnState,
 } from "./chatDbMappers";
@@ -35,6 +36,7 @@ export interface ChatPersistenceIpc {
       hiddenContext?: string;
       providerInputItems?: unknown[];
       providerTurnState?: ProviderTurnState;
+      contextRefs?: ChatMessage["context_refs"];
     },
   ) => Promise<DbMessage>;
   updateMessage: (
@@ -47,6 +49,7 @@ export interface ChatPersistenceIpc {
       hiddenContext?: string;
       providerInputItems?: unknown[];
       providerTurnState?: ProviderTurnState;
+      contextRefs?: ChatMessage["context_refs"];
     },
   ) => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -170,6 +173,7 @@ export const createUserMessage = async (
     content: string;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   },
 ): Promise<ChatMessage> => {
   const now = adapters.now ?? defaultNow;
@@ -189,6 +193,7 @@ export const createUserMessage = async (
       timestamp: now().toISOString(),
       hidden_context: params.hiddenContext,
       provider_input_items: cloneProviderInputItems(params.providerInputItems),
+      context_refs: params.contextRefs,
       questionnaire_response_summary:
         presentation.questionnaire_response_summary,
     };
@@ -202,6 +207,7 @@ export const createUserMessage = async (
       turnId: params.turnId,
       hiddenContext: params.hiddenContext,
       providerInputItems: params.providerInputItems,
+      contextRefs: params.contextRefs,
     },
   );
   const dbPresentation = buildUserMessagePresentation(
@@ -220,6 +226,7 @@ export const createUserMessage = async (
     provider_input_items: parseDbProviderInputItems(
       dbMessage.provider_input_items_json,
     ),
+    context_refs: parseDbContextRefs(dbMessage.context_refs_json),
     questionnaire_response_summary:
       dbPresentation.questionnaire_response_summary,
   };
@@ -307,6 +314,7 @@ export const updateProviderInputItemsForMessage = async (
       hiddenContext: params.message.hidden_context,
       providerInputItems: params.providerInputItems,
       providerTurnState: params.message.provider_turn_state,
+      contextRefs: params.message.context_refs,
     });
   }
 
@@ -321,6 +329,7 @@ export const updateEditedUserMessage = async (
     turnId?: string | null;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   },
 ): Promise<void> => {
   if (!adapters.isTauriAvailable()) {
@@ -333,6 +342,7 @@ export const updateEditedUserMessage = async (
     hiddenContext: params.hiddenContext,
     providerInputItems: params.providerInputItems,
     providerTurnState: params.message.provider_turn_state,
+    contextRefs: params.contextRefs ?? params.message.context_refs,
   });
 };
 

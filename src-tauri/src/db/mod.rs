@@ -364,6 +364,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
             hidden_context TEXT,
             provider_input_items_json TEXT,
             provider_turn_state_json TEXT,
+            context_refs_json TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
         "#,
@@ -404,6 +405,11 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
     }
     if !columns.contains("provider_turn_state_json") {
         sqlx::query("ALTER TABLE messages ADD COLUMN provider_turn_state_json TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("context_refs_json") {
+        sqlx::query("ALTER TABLE messages ADD COLUMN context_refs_json TEXT")
             .execute(pool)
             .await?;
     }

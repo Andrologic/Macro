@@ -223,6 +223,15 @@ export interface ContextReference {
   data: Need | PlanNode | PredictedBranch | SkillManifest;
 }
 
+export interface PersistedContextReference {
+  id: string;
+  kind: ContextRefKind;
+  title: string;
+  subtitle?: string;
+  skillFilePath?: string;
+  source?: SkillSource;
+}
+
 // Activity indicator for projects
 export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
@@ -310,6 +319,7 @@ export interface MCPServerSettings {
 }
 
 export type SkillSourceKind = 'global' | 'project';
+export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude';
 
 export interface SkillProjectRoot {
   projectId: string;
@@ -319,9 +329,11 @@ export interface SkillProjectRoot {
 
 export interface SkillSource {
   kind: SkillSourceKind;
+  namespace?: SkillSourceNamespace;
   projectId?: string | null;
   projectName?: string | null;
   rootPath: string;
+  skillRootPath?: string;
 }
 
 export type SkillResourceKind = 'reference' | 'asset' | 'script';
@@ -859,6 +871,7 @@ export interface ChatMessage {
   hidden_context?: string;
   provider_input_items?: unknown[];
   provider_turn_state?: ProviderTurnState;
+  context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
 }
 

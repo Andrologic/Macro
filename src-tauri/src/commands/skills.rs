@@ -9,12 +9,13 @@ use std::time::Duration;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-const SKILLS_DIR: &str = ".agents/skills";
 const SKILL_FILE: &str = "SKILL.md";
+const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
+const MAX_DISCOVERY_DEPTH: usize = 6;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,9 +29,11 @@ pub struct SkillProjectRootDto {
 #[serde(rename_all = "camelCase")]
 pub struct SkillSourceDto {
     pub kind: String,
+    pub namespace: String,
     pub project_id: Option<String>,
     pub project_name: Option<String>,
     pub root_path: String,
+    pub skill_root_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,6 +133,17 @@ fn normalize_skill_name(value: &str, fallback: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn stable_path_hash(path: &Path) -> String {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized = canonical.to_string_lossy().replace('\\', "/");
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in normalized.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
+    }
+    format!("{:016x}", hash)
 }
 
 fn has_hidden_path_component(path: &Path) -> bool {
@@ -334,13 +348,19 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         &parsed.name,
         root.file_name().and_then(OsStr::to_str).unwrap_or("skill"),
     );
+    let path_hash = stable_path_hash(&skill_file);
     let id = match source.kind.as_str() {
         "project" => format!(
-            "project:{}:{}",
+            "project:{}:{}:{}:{}",
             source.project_id.as_deref().unwrap_or("unknown"),
-            normalized_name
+            source.namespace,
+            normalized_name,
+            path_hash,
         ),
-        _ => format!("global:{}", normalized_name),
+        _ => format!(
+            "global:{}:{}:{}",
+            source.namespace, normalized_name, path_hash,
+        ),
     };
 
     let mut validation_errors = parsed.validation_errors;
@@ -367,59 +387,142 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
 }
 
 fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(base) else {
+    let Ok(metadata) = fs::symlink_metadata(base) else {
         return Vec::new();
     };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Vec::new();
+    }
+
+    let mut roots = Vec::new();
+    let mut stack = vec![(base.to_path_buf(), 0_usize)];
+    while let Some((current, depth)) = stack.pop() {
+        let skill_file = current.join(SKILL_FILE);
+        if fs::symlink_metadata(&skill_file)
+            .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            roots.push(current.clone());
+        }
+        if depth >= MAX_DISCOVERY_DEPTH {
+            continue;
+        }
+
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
             let Ok(relative) = path.strip_prefix(base) else {
-                return false;
+                continue;
             };
             if has_hidden_path_component(relative) {
-                return false;
+                continue;
             }
-            let Ok(metadata) = fs::symlink_metadata(path) else {
-                return false;
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
             };
-            metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && path.join(SKILL_FILE).is_file()
-        })
-        .collect()
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    roots.sort();
+    roots
+}
+
+struct SkillSearchRoot {
+    namespace: &'static str,
+    path: PathBuf,
+}
+
+fn project_skill_search_roots(project_path: &Path) -> Vec<SkillSearchRoot> {
+    vec![
+        SkillSearchRoot {
+            namespace: "agents",
+            path: project_path.join(AGENTS_SKILLS_DIR),
+        },
+        SkillSearchRoot {
+            namespace: "codex",
+            path: project_path.join(".codex").join("skills"),
+        },
+        SkillSearchRoot {
+            namespace: "opencode",
+            path: project_path.join(".opencode").join("skills"),
+        },
+        SkillSearchRoot {
+            namespace: "opencode",
+            path: project_path.join(".opencode").join("skill"),
+        },
+        SkillSearchRoot {
+            namespace: "claude",
+            path: project_path.join(".claude").join("skills"),
+        },
+    ]
+}
+
+fn global_skill_search_roots(home: &Path) -> Vec<SkillSearchRoot> {
+    vec![
+        SkillSearchRoot {
+            namespace: "agents",
+            path: home.join(AGENTS_SKILLS_DIR),
+        },
+        SkillSearchRoot {
+            namespace: "codex",
+            path: home.join(".codex").join("skills"),
+        },
+        SkillSearchRoot {
+            namespace: "opencode",
+            path: home.join(".config").join("opencode").join("skills"),
+        },
+        SkillSearchRoot {
+            namespace: "opencode",
+            path: home.join(".config").join("opencode").join("skill"),
+        },
+        SkillSearchRoot {
+            namespace: "claude",
+            path: home.join(".claude").join("skills"),
+        },
+    ]
 }
 
 fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDto> {
     let mut skills = Vec::new();
 
     for project in project_roots {
-        let base = PathBuf::from(&project.path).join(SKILLS_DIR);
-        for root in discover_skill_roots(&base) {
-            skills.push(build_manifest(
-                &root,
-                SkillSourceDto {
-                    kind: "project".to_string(),
-                    project_id: Some(project.project_id.clone()),
-                    project_name: Some(project.project_name.clone()),
-                    root_path: project.path.clone(),
-                },
-            ));
+        let project_path = PathBuf::from(&project.path);
+        for search_root in project_skill_search_roots(&project_path) {
+            for root in discover_skill_roots(&search_root.path) {
+                skills.push(build_manifest(
+                    &root,
+                    SkillSourceDto {
+                        kind: "project".to_string(),
+                        namespace: search_root.namespace.to_string(),
+                        project_id: Some(project.project_id.clone()),
+                        project_name: Some(project.project_name.clone()),
+                        root_path: project.path.clone(),
+                        skill_root_path: search_root.path.to_string_lossy().to_string(),
+                    },
+                ));
+            }
         }
     }
 
     if let Some(home) = home_dir() {
-        let base = home.join(SKILLS_DIR);
-        for root in discover_skill_roots(&base) {
-            skills.push(build_manifest(
-                &root,
-                SkillSourceDto {
-                    kind: "global".to_string(),
-                    project_id: None,
-                    project_name: None,
-                    root_path: base.to_string_lossy().to_string(),
-                },
-            ));
+        for search_root in global_skill_search_roots(&home) {
+            for root in discover_skill_roots(&search_root.path) {
+                skills.push(build_manifest(
+                    &root,
+                    SkillSourceDto {
+                        kind: "global".to_string(),
+                        namespace: search_root.namespace.to_string(),
+                        project_id: None,
+                        project_name: None,
+                        root_path: search_root.path.to_string_lossy().to_string(),
+                        skill_root_path: search_root.path.to_string_lossy().to_string(),
+                    },
+                ));
+            }
         }
     }
 
@@ -619,7 +722,7 @@ pub async fn skills_install_from_local_path(
 
     let home =
         home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
-    let destination_base = home.join(SKILLS_DIR);
+    let destination_base = home.join(AGENTS_SKILLS_DIR);
     let skill_dir_name = normalize_skill_name(
         &parsed.name,
         source
@@ -639,9 +742,11 @@ pub async fn skills_install_from_local_path(
         &destination,
         SkillSourceDto {
             kind: "global".to_string(),
+            namespace: "agents".to_string(),
             project_id: None,
             project_name: None,
             root_path: destination_base.to_string_lossy().to_string(),
+            skill_root_path: destination_base.to_string_lossy().to_string(),
         },
     ))
 }
@@ -748,6 +853,18 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn write_skill(root: &Path, name: &str) {
+        fs::create_dir_all(root).expect("mkdir skill");
+        fs::write(
+            root.join(SKILL_FILE),
+            format!(
+                "---\nname: {}\ndescription: Skill {}\n---\n\n# {}\n",
+                name, name, name
+            ),
+        )
+        .expect("write skill");
+    }
+
     #[test]
     fn parses_valid_skill_frontmatter() {
         let dir = tempdir().expect("tempdir");
@@ -827,7 +944,7 @@ mod tests {
     #[test]
     fn discovers_project_and_global_skills_with_project_precedence() {
         let project = tempdir().expect("project");
-        let skill_dir = project.path().join(SKILLS_DIR).join("local");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("local");
         fs::create_dir_all(&skill_dir).expect("mkdir");
         fs::write(
             skill_dir.join(SKILL_FILE),
@@ -840,7 +957,100 @@ mod tests {
             project_name: "Project".to_string(),
             path: project.path().to_string_lossy().to_string(),
         }]);
-        assert!(skills.iter().any(|skill| skill.id == "project:p1:local"));
+        let local = skills
+            .iter()
+            .find(|skill| skill.name == "local")
+            .expect("local skill");
+        assert!(local.id.starts_with("project:p1:agents:local:"));
+        assert_eq!(local.source.namespace, "agents");
+        assert_eq!(
+            local.source.skill_root_path,
+            project
+                .path()
+                .join(AGENTS_SKILLS_DIR)
+                .to_string_lossy()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn discovers_codex_opencode_claude_and_agents_project_skill_sources() {
+        let project = tempdir().expect("project");
+        let sources = [
+            ("agents", ".agents/skills", "agent-skill"),
+            ("codex", ".codex/skills", "codex-skill"),
+            ("opencode", ".opencode/skills", "opencode-skills-skill"),
+            ("opencode", ".opencode/skill", "opencode-skill-skill"),
+            ("claude", ".claude/skills", "claude-skill"),
+        ];
+        for (_, root, name) in sources {
+            write_skill(&project.path().join(root).join(name), name);
+        }
+
+        let skills = discover_skills(&[SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }]);
+
+        for (namespace, _, name) in sources {
+            let skill = skills
+                .iter()
+                .find(|skill| skill.source.kind == "project" && skill.name == name)
+                .expect("skill source");
+            assert_eq!(skill.source.namespace, namespace);
+            assert!(skill
+                .id
+                .starts_with(&format!("project:p1:{}:{}:", namespace, name)));
+        }
+    }
+
+    #[test]
+    fn discovers_nested_and_root_skill_files_like_codex_and_opencode() {
+        let base = tempdir().expect("base");
+        write_skill(base.path(), "root-skill");
+        write_skill(&base.path().join("nested").join("deep-skill"), "deep-skill");
+        fs::create_dir_all(base.path().join(".hidden").join("hidden-skill")).expect("mkdir hidden");
+        fs::write(
+            base.path()
+                .join(".hidden")
+                .join("hidden-skill")
+                .join(SKILL_FILE),
+            "---\nname: hidden-skill\ndescription: Hidden\n---\n",
+        )
+        .expect("write hidden");
+
+        let roots = discover_skill_roots(base.path());
+        assert!(roots.contains(&base.path().to_path_buf()));
+        assert!(roots.contains(&base.path().join("nested").join("deep-skill")));
+        assert!(!roots.contains(&base.path().join(".hidden").join("hidden-skill")));
+    }
+
+    #[test]
+    fn lists_codex_opencode_claude_and_agents_global_roots() {
+        let home = PathBuf::from("/tmp/macro-home");
+        let roots = global_skill_search_roots(&home);
+        let paths = roots
+            .iter()
+            .map(|root| {
+                (
+                    root.namespace,
+                    root.path.to_string_lossy().replace('\\', "/"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&("agents", "/tmp/macro-home/.agents/skills".to_string())));
+        assert!(paths.contains(&("codex", "/tmp/macro-home/.codex/skills".to_string())));
+        assert!(paths.contains(&(
+            "opencode",
+            "/tmp/macro-home/.config/opencode/skills".to_string()
+        )));
+        assert!(paths.contains(&(
+            "opencode",
+            "/tmp/macro-home/.config/opencode/skill".to_string()
+        )));
+        assert!(paths.contains(&("claude", "/tmp/macro-home/.claude/skills".to_string())));
     }
 
     #[test]
@@ -858,9 +1068,11 @@ mod tests {
             &skill_dir,
             SkillSourceDto {
                 kind: "global".to_string(),
+                namespace: "agents".to_string(),
                 project_id: None,
                 project_name: None,
                 root_path: dir.path().to_string_lossy().to_string(),
+                skill_root_path: dir.path().to_string_lossy().to_string(),
             },
         );
         assert!(resolve_resource_path(&skill, "references/info.md", &["references"]).is_ok());
@@ -883,7 +1095,7 @@ mod tests {
         .expect("write external skill");
         fs::write(external_skill.join("references/info.md"), "outside").expect("write external");
 
-        let skills_dir = project.path().join(SKILLS_DIR);
+        let skills_dir = project.path().join(AGENTS_SKILLS_DIR);
         fs::create_dir_all(&skills_dir).expect("mkdir skills");
         symlink(&external_skill, skills_dir.join("linked")).expect("symlink root");
         assert!(discover_skill_roots(&skills_dir).is_empty());
@@ -905,9 +1117,11 @@ mod tests {
             &local_skill,
             SkillSourceDto {
                 kind: "project".to_string(),
+                namespace: "agents".to_string(),
                 project_id: Some("p1".to_string()),
                 project_name: Some("Project".to_string()),
                 root_path: project.path().to_string_lossy().to_string(),
+                skill_root_path: skills_dir.to_string_lossy().to_string(),
             },
         );
         assert!(resolve_resource_path(&skill, "references/outside.md", &["references"]).is_err());
@@ -916,7 +1130,7 @@ mod tests {
     #[tokio::test]
     async fn test_skill_fixture_can_activate_read_resource_and_run_check_script() {
         let project = tempdir().expect("project");
-        let skill_dir = project.path().join(SKILLS_DIR).join("test-skill");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("test-skill");
         fs::create_dir_all(skill_dir.join("references")).expect("mkdir references");
         fs::create_dir_all(skill_dir.join("scripts")).expect("mkdir scripts");
         fs::write(
@@ -929,7 +1143,8 @@ mod tests {
             "Regle de reference: utiliser un ton concis.",
         )
         .expect("write reference");
-        fs::write(skill_dir.join("scripts/check.sh"), "echo \"script ok\"\n").expect("write script");
+        fs::write(skill_dir.join("scripts/check.sh"), "echo \"script ok\"\n")
+            .expect("write script");
 
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
@@ -937,14 +1152,26 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let detail = skills_get("project:p1:test-skill".to_string(), project_roots.clone())
+        let discovered = skills_list(project_roots.clone())
+            .await
+            .expect("skills list");
+        let skill_id = discovered
+            .skills
+            .iter()
+            .find(|skill| skill.name == "test-skill")
+            .expect("test skill")
+            .id
+            .clone();
+        assert!(skill_id.starts_with("project:p1:agents:test-skill:"));
+
+        let detail = skills_get(skill_id.clone(), project_roots.clone())
             .await
             .expect("skill detail");
         assert_eq!(detail.skill.name, "test-skill");
         assert!(detail.body.contains("Reponds court"));
 
         let resource = skills_read_resource(
-            "project:p1:test-skill".to_string(),
+            skill_id.clone(),
             "references/style.md".to_string(),
             project_roots.clone(),
         )
@@ -953,7 +1180,7 @@ mod tests {
         assert!(resource.content.contains("ton concis"));
 
         let script = skills_run_script(
-            "project:p1:test-skill".to_string(),
+            skill_id,
             "scripts/check.sh".to_string(),
             vec![],
             Some(5_000),
@@ -970,7 +1197,7 @@ mod tests {
     #[tokio::test]
     async fn script_runs_are_timed_out_and_truncated() {
         let project = tempdir().expect("project");
-        let skill_dir = project.path().join(SKILLS_DIR).join("runner");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("runner");
         fs::create_dir_all(skill_dir.join("scripts")).expect("mkdir scripts");
         fs::write(
             skill_dir.join(SKILL_FILE),
@@ -989,8 +1216,19 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
+        let discovered = skills_list(project_roots.clone())
+            .await
+            .expect("skills list");
+        let skill_id = discovered
+            .skills
+            .iter()
+            .find(|skill| skill.name == "runner")
+            .expect("runner skill")
+            .id
+            .clone();
+
         let timed_out = skills_run_script(
-            "project:p1:runner".to_string(),
+            skill_id.clone(),
             "scripts/slow.sh".to_string(),
             vec![],
             Some(1_000),
@@ -1004,7 +1242,7 @@ mod tests {
         assert!(timed_out.stderr.contains("timed out"));
 
         let truncated = skills_run_script(
-            "project:p1:runner".to_string(),
+            skill_id,
             "scripts/noisy.sh".to_string(),
             vec![],
             Some(5_000),

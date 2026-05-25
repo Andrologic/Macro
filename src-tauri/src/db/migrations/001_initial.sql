@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS messages (
     hidden_context TEXT,
     provider_input_items_json TEXT,
     provider_turn_state_json TEXT,
+    context_refs_json TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 

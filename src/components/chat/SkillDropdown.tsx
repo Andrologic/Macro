@@ -63,10 +63,27 @@ export const SkillDropdown: React.FC = () => {
     };
   }, [isOpen]);
 
-  const formatSourceLabel = (skill: SkillManifest): string =>
+  const formatNamespaceLabel = (skill: SkillManifest): string => {
+    switch (skill.source.namespace) {
+      case 'codex':
+        return t('skills.source.codex', 'Codex');
+      case 'opencode':
+        return t('skills.source.opencode', 'OpenCode');
+      case 'claude':
+        return t('skills.source.claude', 'Claude');
+      case 'agents':
+      default:
+        return t('skills.source.agents', 'Agents');
+    }
+  };
+
+  const formatScopeLabel = (skill: SkillManifest): string =>
     skill.source.kind === 'project'
       ? skill.source.projectName || t('skills.projectSource', 'Project')
       : t('skills.globalSource', 'Global');
+
+  const formatSourceLabel = (skill: SkillManifest): string =>
+    `${formatNamespaceLabel(skill)} · ${formatScopeLabel(skill)}`;
 
   const openSkillsSettings = () => {
     useAppStore.getState().openSettings('skills');
@@ -143,7 +160,8 @@ export const SkillDropdown: React.FC = () => {
           {menuSkills.map((skill) => {
             const selected = selectedSkillIds.has(skill.id);
             const enabled = settingsBySkillId[skill.id]?.enabled === true;
-            const sourceLabel = formatSourceLabel(skill);
+            const namespaceLabel = formatNamespaceLabel(skill);
+            const scopeLabel = formatScopeLabel(skill);
 
             if (!enabled) {
               return (
@@ -154,7 +172,14 @@ export const SkillDropdown: React.FC = () => {
                   <Icon name="lock" size={14} className="mt-0.5 shrink-0" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium">{skill.name}</span>
-                    <span className="block truncate text-xs opacity-75">{sourceLabel}</span>
+                    <span className="mt-1 flex min-w-0 flex-wrap gap-1">
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase">
+                        {namespaceLabel}
+                      </span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                        {scopeLabel}
+                      </span>
+                    </span>
                     <span className="mt-1 block text-xs opacity-80">
                       {t('skills.enableInSettings', 'Enable this skill in Settings before using it.')}
                     </span>
@@ -185,7 +210,24 @@ export const SkillDropdown: React.FC = () => {
                 <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{skill.name}</span>
-                  <span className="block truncate text-xs opacity-75">{sourceLabel}</span>
+                  <span className="mt-1 flex min-w-0 flex-wrap gap-1">
+                    <span
+                      className={cn(
+                        'rounded px-1.5 py-0.5 text-[10px] font-medium uppercase',
+                        selected ? 'bg-primary-foreground/15' : 'bg-muted'
+                      )}
+                    >
+                      {namespaceLabel}
+                    </span>
+                    <span
+                      className={cn(
+                        'rounded px-1.5 py-0.5 text-[10px]',
+                        selected ? 'bg-primary-foreground/15' : 'bg-muted'
+                      )}
+                    >
+                      {scopeLabel}
+                    </span>
+                  </span>
                 </span>
                 {selected && <Icon name="check" size={14} className="mt-0.5 shrink-0" />}
               </button>

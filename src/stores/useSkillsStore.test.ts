@@ -12,22 +12,28 @@ const buildSkill = (
   overrides: Partial<SkillManifest> = {},
 ): SkillManifest => ({
   id,
-  name: id.split(':').at(-1) ?? 'skill',
+  name: id.startsWith('project:')
+    ? id.split(':').at(-2) ?? 'skill'
+    : id.split(':').at(-2) ?? id.split(':').at(-1) ?? 'skill',
   description: 'Reusable agent guidance',
   rootPath: `/skills/${id.replaceAll(':', '-')}`,
   skillFilePath: `/skills/${id.replaceAll(':', '-')}/SKILL.md`,
   source: id.startsWith('project:')
     ? {
         kind: 'project',
+        namespace: (id.split(':')[2] as SkillManifest['source']['namespace']) ?? 'agents',
         projectId: 'project-1',
         projectName: 'Web',
         rootPath: '/repos/web',
+        skillRootPath: '/repos/web/.agents/skills',
       }
     : {
         kind: 'global',
+        namespace: (id.split(':')[1] as SkillManifest['source']['namespace']) ?? 'agents',
         projectId: null,
         projectName: null,
         rootPath: '/Users/test/.agents/skills',
+        skillRootPath: '/Users/test/.agents/skills',
       },
   resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 12 }],
   scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 20 }],
@@ -113,7 +119,7 @@ describe('useSkillsStore', () => {
   });
 
   it('loads persisted settings and sends active project roots to the service', async () => {
-    const skill = buildSkill('project:project-1:docs', { name: 'docs' });
+    const skill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
     localStorage.setItem(
       'macro_skill_settings',
       JSON.stringify({
@@ -139,7 +145,7 @@ describe('useSkillsStore', () => {
   });
 
   it('imports local skills as enabled but untrusted global skills', async () => {
-    const skill = buildSkill('global:formatter', { name: 'formatter' });
+    const skill = buildSkill('global:agents:formatter:aaa111', { name: 'formatter' });
     const { useSkillsStore, services } = await loadSkillsStore([skill]);
 
     await useSkillsStore.getState().installSkillFromLocalPath('/tmp/formatter');
@@ -160,7 +166,7 @@ describe('useSkillsStore', () => {
   });
 
   it('activates instructions and reads resources only for enabled valid skills', async () => {
-    const skill = buildSkill('project:project-1:docs', { name: 'docs' });
+    const skill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
     const { useSkillsStore, services } = await loadSkillsStore([skill]);
     await useSkillsStore.getState().loadSettings();
 
@@ -192,7 +198,7 @@ describe('useSkillsStore', () => {
   });
 
   it('blocks script execution until the skill is trusted and scripts are enabled', async () => {
-    const skill = buildSkill('project:project-1:runner', { name: 'runner' });
+    const skill = buildSkill('project:project-1:agents:runner:aaa111', { name: 'runner' });
     const { useSkillsStore, services } = await loadSkillsStore([skill]);
     await useSkillsStore.getState().loadSettings();
 
@@ -227,9 +233,9 @@ describe('useSkillsStore', () => {
     });
   });
 
-  it('prefers project skills over global skills for explicit name mentions', async () => {
-    const projectSkill = buildSkill('project:project-1:docs', { name: 'docs' });
-    const globalSkill = buildSkill('global:docs', { name: 'docs' });
+  it('refuses ambiguous explicit name mentions', async () => {
+    const projectSkill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
+    const globalSkill = buildSkill('global:agents:docs:bbb222', { name: 'docs' });
     localStorage.setItem(
       'macro_skill_settings',
       JSON.stringify({
@@ -244,14 +250,20 @@ describe('useSkillsStore', () => {
 
     await useSkillsStore.getState().loadSettings();
 
-    expect(useSkillsStore.getState().findEnabledSkillByName('docs')).toEqual(projectSkill);
-    expect(useSkillsStore.getState().resolveEnabledSkillMentions('Use $docs')).toEqual([
-      projectSkill,
-    ]);
+    expect(useSkillsStore.getState().findEnabledSkillByName('docs')).toBeNull();
+    expect(useSkillsStore.getState().resolveEnabledSkillMentions('Use $docs')).toEqual([]);
+
+    const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: 'Use $docs',
+      toolsAvailable: true,
+    });
+    expect(preparation.systemInstructionBlocks).toEqual([]);
+    expect(preparation.warnings[0]).toContain('ambiguous');
   });
 
   it('resolves enabled skill mentions from dollar and bracket syntax without duplicates', async () => {
-    const skill = buildSkill('global:test-skill', { name: 'test-skill' });
+    const skill = buildSkill('global:agents:test-skill:aaa111', { name: 'test-skill' });
     localStorage.setItem(
       'macro_skill_settings',
       JSON.stringify({
@@ -270,5 +282,97 @@ describe('useSkillsStore', () => {
         .getState()
         .resolveEnabledSkillMentions('Use $test-skill then [skill: test-skill]')
     ).toEqual([skill]);
+  });
+
+  it('migrates legacy settings when a single new skill id matches', async () => {
+    const skill = buildSkill('global:agents:formatter:aaa111', { name: 'formatter' });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          'global:formatter': { enabled: true, trusted: true, scriptsEnabled: true },
+        },
+      }),
+    );
+    const { useSkillsStore } = await loadSkillsStore([skill]);
+
+    await useSkillsStore.getState().loadSettings();
+
+    expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
+      enabled: true,
+      trusted: true,
+      scriptsEnabled: true,
+    });
+    const stored = JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}');
+    expect(stored.skills['global:formatter']).toBeUndefined();
+    expect(stored.skills[skill.id]).toEqual({
+      enabled: true,
+      trusted: true,
+      scriptsEnabled: true,
+    });
+  });
+
+  it('preloads explicit structured skill refs by id and path', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa111', { name: 'test-skill' });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+
+    const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: '[skill: test-skill] use it',
+      contextRefs: [
+        {
+          id: skill.id,
+          kind: 'skill',
+          title: skill.name,
+          skillFilePath: skill.skillFilePath,
+          source: skill.source,
+        },
+      ],
+      toolsAvailable: false,
+    });
+
+    expect(services.getSkill).toHaveBeenCalledWith({
+      skillId: skill.id,
+      projectRoots: [PROJECT_ROOT],
+    });
+    expect(preparation.explicitSkillIds).toEqual([skill.id]);
+    expect(preparation.systemInstructionBlocks[0]).toContain('<skill_content');
+    expect(preparation.systemInstructionBlocks[0]).toContain('# Instructions');
+    expect(preparation.toolsAvailable).toBe(false);
+  });
+
+  it('loads a non-ambiguous bracket mention even when native tools are unavailable', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa111', { name: 'test-skill' });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+
+    const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: '[skill: test-skill] use it',
+      toolsAvailable: false,
+    });
+
+    expect(preparation.explicitSkillIds).toEqual([skill.id]);
+    expect(preparation.systemInstructionBlocks[0]).toContain('Skill: test-skill');
   });
 });

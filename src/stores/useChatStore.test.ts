@@ -1107,6 +1107,7 @@ const createMessageMock = mock(
 	      hiddenContext?: string;
 	      providerInputItems?: unknown[];
 	      providerTurnState?: unknown;
+	      contextRefs?: unknown[];
 	    }
 	  ) => ({
 	    id: options?.id ?? `db-message-${++dbMessageCounter}`,
@@ -1123,6 +1124,9 @@ const createMessageMock = mock(
 	    provider_turn_state_json: options?.providerTurnState
 	      ? JSON.stringify(options.providerTurnState)
 	      : null,
+	    context_refs_json: options?.contextRefs
+	      ? JSON.stringify(options.contextRefs)
+	      : null,
 	  })
 	);
 const deleteConversationMock = mock(async (_conversationId: string) => undefined);
@@ -1136,10 +1140,11 @@ const updateMessageMock = mock(
       turnId?: string | null;
       tokenCount?: number;
       toolTraces?: unknown[];
-      hiddenContext?: string;
-      providerInputItems?: unknown[];
-      providerTurnState?: unknown;
-    }
+	          hiddenContext?: string;
+	          providerInputItems?: unknown[];
+	          providerTurnState?: unknown;
+	          contextRefs?: unknown[];
+	        }
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
@@ -1598,9 +1603,32 @@ const registerUseChatStoreMocks = async () => {
     dbGetArchitectPlanConversationSyncForPlan:
       dbGetArchitectPlanConversationSyncForPlanMock,
     dbUpsertArchitectPlanConversationSync: dbUpsertArchitectPlanConversationSyncMock,
-    dbDeleteArchitectPlanConversationSync: dbDeleteArchitectPlanConversationSyncMock,
-    getToolModePolicy: getToolModePolicyMock,
-    updateMessage: updateMessageMock,
+	    dbDeleteArchitectPlanConversationSync: dbDeleteArchitectPlanConversationSyncMock,
+	    getToolModePolicy: getToolModePolicyMock,
+	    skillsGet: async ({ skillId }: { skillId: string }) => {
+	      const { useSkillsStore } = await import('./useSkillsStore');
+	      const skill = useSkillsStore.getState().getSkillById(skillId) ?? createSkillManifest({ id: skillId });
+	      return {
+	        skill,
+	        body: '# Instructions\nUse loaded skill body.',
+	      };
+	    },
+	    skillsList: async () => ({ skills: [] }),
+	    skillsReadResource: async ({ skillId, resourcePath }: { skillId: string; resourcePath: string }) => ({
+	      skillId,
+	      path: resourcePath,
+	      content: 'resource content',
+	    }),
+	    skillsRunScript: async ({ skillId, scriptPath }: { skillId: string; scriptPath: string }) => ({
+	      skillId,
+	      scriptPath,
+	      stdout: 'script result',
+	      stderr: '',
+	      exitCode: 0,
+	      timedOut: false,
+	      truncated: false,
+	    }),
+	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     updateConversationDetails: updateConversationDetailsMock,
     updateConversationAISelection: updateConversationAISelectionMock,
@@ -2077,16 +2105,18 @@ const createImplementTask = (overrides: Record<string, unknown> = {}) => ({
 const createSkillManifest = (
   overrides: Partial<SkillManifest> = {},
 ): SkillManifest => ({
-  id: 'global:test-skill',
+  id: 'global:agents:test-skill:aaa111',
   name: 'test-skill',
   description: 'Skill de test pour vérifier l’activation dans Macro.',
   rootPath: '/Users/test/.agents/skills/test-skill',
   skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
   source: {
     kind: 'global',
+    namespace: 'agents',
     projectId: null,
     projectName: null,
     rootPath: '/Users/test/.agents/skills',
+    skillRootPath: '/Users/test/.agents/skills',
   },
   resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 120 }],
   scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
@@ -2094,6 +2124,38 @@ const createSkillManifest = (
   isValid: true,
   ...overrides,
 });
+
+const installSkillActivationMock = (
+  useSkillsStore: typeof import('./useSkillsStore')['useSkillsStore'],
+) => {
+  const activateSkill = mock(async (skillId: string, conversationId?: string) => {
+    const skill = useSkillsStore.getState().getSkillById(skillId);
+    if (conversationId) {
+      useSkillsStore.setState((state) => ({
+        activationsByConversationId: {
+          ...state.activationsByConversationId,
+          [conversationId]: [
+            ...(state.activationsByConversationId[conversationId] ?? []),
+            {
+              skillId,
+              activatedAt: '2026-03-19T00:00:00.000Z',
+              body: '# Instructions\nUse loaded skill body.',
+            },
+          ],
+        },
+      }));
+    }
+    return [
+      `# Skill: ${skill?.name ?? skillId}`,
+      '',
+      '## Instructions',
+      '# Instructions',
+      'Use loaded skill body.',
+    ].join('\n');
+  });
+  useSkillsStore.setState({ activateSkill });
+  return activateSkill;
+};
 
 const startImplementToolConversation = async (
   content = 'Travaille sur cette tâche.',
@@ -5928,7 +5990,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(result)).toContain('full attached file body');
   });
 
-  it('injects a compact enabled skill catalog and explicit mention hint without the full body', async () => {
+  it('preloads explicit skill mentions and keeps the compact enabled skill catalog', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -5937,16 +5999,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const { useChatStore } = await loadChatStore();
     const { useSkillsStore } = await import('./useSkillsStore');
     const skill: SkillManifest = {
-      id: 'project:project-1:docs',
+      id: 'project:project-1:agents:docs:aaa111',
       name: 'docs',
       description: 'Use the local documentation style.',
       rootPath: '/repos/web/.agents/skills/docs',
       skillFilePath: '/repos/web/.agents/skills/docs/SKILL.md',
       source: {
         kind: 'project',
+        namespace: 'agents',
         projectId: 'project-1',
         projectName: 'Web',
         rootPath: '/repos/web',
+        skillRootPath: '/repos/web/.agents/skills',
       },
       resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 120 }],
       scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
@@ -5959,6 +6023,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
       },
     });
+    installSkillActivationMock(useSkillsStore);
     useChatStore.setState({
       conversations: [
         {
@@ -6000,9 +6065,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
     expect(streamOptions.allowedToolIds).toContain('skill_run_script');
     expect(serializedMessages).toContain('Available Macro skills');
-    expect(serializedMessages).toContain('id=project:project-1:docs');
+    expect(serializedMessages).toContain('id=project:project-1:agents:docs:aaa111');
+    expect(serializedMessages).toContain('<skill_content name=\\"docs\\"');
     expect(serializedMessages).toContain('The user explicitly referenced these enabled skills');
-    expect(serializedMessages).not.toContain('# Instructions');
+    expect(serializedMessages).toContain('# Instructions');
   });
 
   it('keeps locked skill tools available even when hidden from chat toolbox settings', async () => {
@@ -6015,16 +6081,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const { useChatStore } = await loadChatStore();
     const { useSkillsStore } = await import('./useSkillsStore');
     const skill: SkillManifest = {
-      id: 'global:test-skill',
+      id: 'global:agents:test-skill:aaa111',
       name: 'test-skill',
       description: 'Skill de test pour vérifier l’activation dans Macro.',
       rootPath: '/Users/test/.agents/skills/test-skill',
       skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
       source: {
         kind: 'global',
+        namespace: 'agents',
         projectId: null,
         projectName: null,
         rootPath: '/Users/test/.agents/skills',
+        skillRootPath: '/Users/test/.agents/skills',
       },
       resources: [],
       scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
@@ -6037,6 +6105,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
       },
     });
+    installSkillActivationMock(useSkillsStore);
     useChatStore.setState({
       conversations: [
         {
@@ -6079,12 +6148,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
     expect(streamOptions.allowedToolIds).toContain('skill_run_script');
     expect(serializedMessages).toContain('Available Macro skills');
-    expect(serializedMessages).toContain('id=global:test-skill');
+    expect(serializedMessages).toContain('id=global:agents:test-skill:aaa111');
+    expect(serializedMessages).toContain('<skill_content name=\\"test-skill\\"');
     expect(serializedMessages).toContain('call skill_activate with the exact id');
     expect(serializedMessages).toContain('The user explicitly referenced these enabled skills');
   });
 
-  it('does not inject skill catalog or activation hints without native tool calling', async () => {
+  it('preloads only explicit skills without native tool calling', async () => {
     providerState.selectedSupportsNativeToolCalling = () => false;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -6099,6 +6169,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
       },
     });
+    installSkillActivationMock(useSkillsStore);
     useChatStore.setState({
       conversations: [
         {
@@ -6145,7 +6216,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toEqual([]);
     expect(serializedMessages).not.toContain('Available Macro skills');
     expect(serializedMessages).not.toContain('Activation: call skill_activate');
-    expect(serializedMessages).not.toContain('Skill ID: global:test-skill');
+    expect(serializedMessages).toContain('Skill ID: global:agents:test-skill:aaa111');
+    expect(serializedMessages).toContain('<skill_content name=\\"test-skill\\"');
+    expect(serializedMessages).toContain('# Instructions');
   });
 
   it('keeps skill read tools but blocks skill scripts in strict risk mode', async () => {
@@ -6164,6 +6237,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
       },
     });
+    installSkillActivationMock(useSkillsStore);
     useChatStore.setState({
       conversations: [
         {
@@ -11952,6 +12026,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           hiddenContext?: string;
           providerInputItems?: unknown[];
           providerTurnState?: unknown;
+          contextRefs?: unknown[];
         }
       ) => ({
         id: 'db-user-message',
@@ -11967,6 +12042,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           : null,
         provider_turn_state_json: options?.providerTurnState
           ? JSON.stringify(options.providerTurnState)
+          : null,
+        context_refs_json: options?.contextRefs
+          ? JSON.stringify(options.contextRefs)
           : null,
       })
     );
