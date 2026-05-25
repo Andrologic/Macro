@@ -64,7 +64,7 @@ const initializeComposerState = () => {
   root.append($createParagraphNode());
 };
 
-const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill):\s*([^\]]+)\]/gi;
+const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 const appendTextWithContextReferences = (
   parent: ElementNode,
@@ -81,7 +81,7 @@ const appendTextWithContextReferences = (
       parent.append($createTextNode(text.slice(lastIndex, match.index)));
     }
 
-    const kind = match[1]?.toLowerCase() as 'need' | 'skill' | undefined;
+    const kind = match[1]?.toLowerCase() as ContextRefKind | undefined;
     const title = match[2]?.trim() ?? '';
     if (kind && title) {
       parent.append(
