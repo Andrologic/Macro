@@ -3621,6 +3621,7 @@ pub struct DbCreateMessageParams {
     hidden_context: Option<String>,
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
+    context_refs_json: Option<String>,
 }
 
 #[tauri::command]
@@ -3655,6 +3656,7 @@ pub async fn db_create_message(
             hidden_context: params.hidden_context,
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
+            context_refs_json: params.context_refs_json,
         },
     )
     .await
@@ -3685,6 +3687,7 @@ pub struct DbUpdateMessageParams {
     hidden_context: Option<String>,
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
+    context_refs_json: Option<String>,
 }
 
 #[tauri::command]
@@ -3705,6 +3708,7 @@ pub async fn db_update_message(
             hidden_context: params.hidden_context,
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
+            context_refs_json: params.context_refs_json,
         },
     )
     .await

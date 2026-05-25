@@ -33,6 +33,7 @@ pub struct Message {
     pub hidden_context: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
+    pub context_refs_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +221,7 @@ pub struct CreateMessageInput {
     pub hidden_context: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
+    pub context_refs_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

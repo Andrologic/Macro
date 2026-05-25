@@ -548,7 +548,7 @@ pub async fn update_git_worktree_project_access(
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
         FROM messages
         WHERE conversation_id = ?
         ORDER BY created_at ASC, id ASC
@@ -572,6 +572,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
             hidden_context: row.get("hidden_context"),
             provider_input_items_json: row.get("provider_input_items_json"),
             provider_turn_state_json: row.get("provider_turn_state_json"),
+            context_refs_json: row.get("context_refs_json"),
         })
         .collect();
 
@@ -581,7 +582,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
         FROM messages
         ORDER BY created_at ASC, id ASC
         "#,
@@ -603,6 +604,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
             hidden_context: row.get("hidden_context"),
             provider_input_items_json: row.get("provider_input_items_json"),
             provider_turn_state_json: row.get("provider_turn_state_json"),
+            context_refs_json: row.get("context_refs_json"),
         })
         .collect();
 
@@ -671,7 +673,7 @@ pub async fn get_chat_bootstrap_snapshot(
         let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
         let query = format!(
             r#"
-            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json
+            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
             FROM messages
             WHERE conversation_id IN ({})
             ORDER BY conversation_id ASC, created_at ASC, id ASC
@@ -696,6 +698,7 @@ pub async fn get_chat_bootstrap_snapshot(
                 hidden_context: row.get("hidden_context"),
                 provider_input_items_json: row.get("provider_input_items_json"),
                 provider_turn_state_json: row.get("provider_turn_state_json"),
+                context_refs_json: row.get("context_refs_json"),
             };
             messages_by_conversation_id
                 .entry(message.conversation_id.clone())
@@ -732,9 +735,10 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
             tool_traces_json,
             hidden_context,
             provider_input_items_json,
-            provider_turn_state_json
+            provider_turn_state_json,
+            context_refs_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -748,6 +752,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .bind(&input.hidden_context)
     .bind(&input.provider_input_items_json)
     .bind(&input.provider_turn_state_json)
+    .bind(&input.context_refs_json)
     .execute(pool)
     .await?;
 
@@ -765,6 +770,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         hidden_context: input.hidden_context,
         provider_input_items_json: input.provider_input_items_json,
         provider_turn_state_json: input.provider_turn_state_json,
+        context_refs_json: input.context_refs_json,
     })
 }
 
@@ -791,9 +797,10 @@ pub async fn import_messages(
                 tool_traces_json,
                 hidden_context,
                 provider_input_items_json,
-                provider_turn_state_json
+                provider_turn_state_json,
+                context_refs_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
             ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -823,6 +830,7 @@ pub async fn import_messages(
             hidden_context: None,
             provider_input_items_json: None,
             provider_turn_state_json: None,
+            context_refs_json: None,
         });
     }
 
@@ -879,6 +887,7 @@ pub struct UpdateMessageContentInput<'a> {
     pub hidden_context: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
+    pub context_refs_json: Option<String>,
 }
 
 pub async fn update_message_content(
@@ -894,6 +903,7 @@ pub async fn update_message_content(
         hidden_context,
         provider_input_items_json,
         provider_turn_state_json,
+        context_refs_json,
     } = input;
 
     let conversation_id: Option<String> =
@@ -905,7 +915,7 @@ pub async fn update_message_content(
     sqlx::query(
         r#"
         UPDATE messages
-        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?
+        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?, context_refs_json = ?
         WHERE id = ?
         "#,
     )
@@ -916,6 +926,7 @@ pub async fn update_message_content(
     .bind(hidden_context)
     .bind(provider_input_items_json)
     .bind(provider_turn_state_json)
+    .bind(context_refs_json)
     .bind(id)
     .execute(pool)
     .await?;

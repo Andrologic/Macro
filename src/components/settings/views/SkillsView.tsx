@@ -56,12 +56,35 @@ export const SkillsView: React.FC = () => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return skills;
     return skills.filter((skill) =>
-      [skill.name, skill.description, skill.id, skill.source.projectName ?? '', skill.rootPath]
+      [
+        skill.name,
+        skill.description,
+        skill.id,
+        skill.source.namespace ?? '',
+        skill.source.projectName ?? '',
+        skill.rootPath,
+        skill.skillFilePath,
+        skill.source.skillRootPath ?? '',
+      ]
         .join(' ')
         .toLowerCase()
         .includes(query)
     );
   }, [skills, searchQuery]);
+
+  const getNamespaceLabel = (skill: SkillManifest): string => {
+    switch (skill.source.namespace) {
+      case 'codex':
+        return t('skills.source.codex', 'Codex');
+      case 'opencode':
+        return t('skills.source.opencode', 'OpenCode');
+      case 'claude':
+        return t('skills.source.claude', 'Claude');
+      case 'agents':
+      default:
+        return t('skills.source.agents', 'Agents');
+    }
+  };
 
   const handleImport = async () => {
     const selectedPath = await open({
@@ -96,7 +119,7 @@ export const SkillsView: React.FC = () => {
     if (!nativeToolsSupported) {
       reasons.push(t(
         'skills.unavailable.providerUnsupported',
-        'Selected model does not support native tool calling.'
+        'Implicit skill loading and skill tools require native tool calling.'
       ));
     }
     if (skill.scripts.length > 0 && toolRiskLevel === 'strict') {
@@ -110,7 +133,7 @@ export const SkillsView: React.FC = () => {
       <div className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
         {t(
           'skills.modeHint',
-          'Skills add reusable agent instructions from ~/.agents/skills and project .agents/skills folders. Enable and trust only skills you have reviewed.'
+          'Skills add reusable agent instructions from Agents, Codex, OpenCode and Claude skill folders. Enable and trust only skills you have reviewed.'
         )}
       </div>
 
@@ -132,7 +155,7 @@ export const SkillsView: React.FC = () => {
           <span>
             {t(
               'skills.nativeToolSupportWarning',
-              'The selected provider or model does not support native tool calling. Skills can be configured here, but they will not be injected until a compatible model is selected.'
+              'The selected provider or model does not support native tool calling. Explicitly selected skills still load as instructions; implicit skill loading, resources and scripts require a compatible model.'
             )}
           </span>
         </div>
@@ -178,6 +201,8 @@ export const SkillsView: React.FC = () => {
           const sourceLabel = skill.source.kind === 'project'
             ? skill.source.projectName || t('skills.projectSource', 'Project')
             : t('skills.globalSource', 'Global');
+          const namespaceLabel = getNamespaceLabel(skill);
+          const rootPath = skill.source.skillRootPath ?? skill.rootPath;
           return (
             <div key={skill.id} className="rounded-lg border border-border bg-card p-4">
               <div className="flex items-start justify-between gap-4">
@@ -189,6 +214,9 @@ export const SkillsView: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-2">
                       <h4 className="font-medium text-foreground">{skill.name}</h4>
                       <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        {namespaceLabel}
+                      </span>
+                      <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                         {sourceLabel}
                       </span>
                       {!skill.isValid && (
@@ -198,8 +226,11 @@ export const SkillsView: React.FC = () => {
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">{skill.description || t('skills.noDescription', 'No description')}</p>
-                    <p className="truncate text-xs text-muted-foreground/70" title={skill.rootPath}>
-                      {skill.rootPath}
+                    <p className="truncate text-xs text-muted-foreground/70" title={skill.skillFilePath}>
+                      {skill.skillFilePath}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground/60" title={rootPath}>
+                      {rootPath}
                     </p>
                     <div className="flex flex-wrap gap-2 pt-1 text-xs">
                       <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">

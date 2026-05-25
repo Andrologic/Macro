@@ -251,7 +251,7 @@ describe('SkillDropdown', () => {
       id: enabledSkill.id,
       kind: 'skill',
       title: 'docs',
-      subtitle: 'Web',
+      subtitle: 'Agents · Web',
       data: enabledSkill,
     });
   });

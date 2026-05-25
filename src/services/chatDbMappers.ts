@@ -1,4 +1,9 @@
-import type { ChatMessage, Conversation, ReasoningEffort } from "../types";
+import type {
+  ChatMessage,
+  Conversation,
+  PersistedContextReference,
+  ReasoningEffort,
+} from "../types";
 import type { DbConversation, DbMessage } from "./tauriIpc";
 import { parseMessageQuickReplies } from "./chatQuickReplies";
 import {
@@ -78,6 +83,31 @@ export const parseDbProviderInputItems = (
   }
 };
 
+export const parseDbContextRefs = (
+  raw: string | null | undefined,
+): PersistedContextReference[] | undefined => {
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const refs = parsed.filter((item): item is PersistedContextReference => {
+      if (!item || typeof item !== "object") return false;
+      const candidate = item as Partial<PersistedContextReference>;
+      return (
+        typeof candidate.id === "string" &&
+        typeof candidate.kind === "string" &&
+        typeof candidate.title === "string"
+      );
+    });
+    return refs.length > 0 ? refs : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export const buildAssistantMessagePresentation = (
   content: string,
   hiddenContext?: string,
@@ -150,6 +180,7 @@ export const mapDbMessageToChatMessage = (
       provider_turn_state: parseDbProviderTurnState(
         message.provider_turn_state_json,
       ),
+      context_refs: parseDbContextRefs(message.context_refs_json),
     };
   }
 
@@ -175,5 +206,6 @@ export const mapDbMessageToChatMessage = (
     provider_turn_state: parseDbProviderTurnState(
       message.provider_turn_state_json,
     ),
+    context_refs: parseDbContextRefs(message.context_refs_json),
   };
 };

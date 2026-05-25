@@ -3,6 +3,8 @@ import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import type {
+  ContextReference,
+  PersistedContextReference,
   SkillActivation,
   SkillManifest,
   SkillProjectRoot,
@@ -24,6 +26,14 @@ const DEFAULT_SKILL_SETTINGS: SkillSettings = {
   trusted: false,
   scriptsEnabled: false,
 };
+
+export interface SkillTurnPreparation {
+  activatedSkills: SkillActivation[];
+  systemInstructionBlocks: string[];
+  explicitSkillIds: string[];
+  warnings: string[];
+  toolsAvailable: boolean;
+}
 
 const normalizeSkillSettings = (value: unknown): SkillSettings => {
   const candidate = value && typeof value === 'object' ? value as Partial<SkillSettings> : {};
@@ -59,6 +69,52 @@ const writeStoredSkillSettings = (settingsBySkillId: Record<string, SkillSetting
   );
 };
 
+const normalizeSkillNameForId = (value: string, fallback = 'skill'): string => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+};
+
+const legacySkillIdFor = (skill: SkillManifest): string => {
+  const normalizedName = normalizeSkillNameForId(skill.name);
+  return skill.source.kind === 'project'
+    ? `project:${skill.source.projectId ?? 'unknown'}:${normalizedName}`
+    : `global:${normalizedName}`;
+};
+
+const migrateLegacySkillSettings = (
+  settingsBySkillId: Record<string, SkillSettings>,
+  skills: SkillManifest[],
+): Record<string, SkillSettings> => {
+  const next = { ...settingsBySkillId };
+  const skillsByLegacyId = new Map<string, SkillManifest[]>();
+  for (const skill of skills) {
+    const legacyId = legacySkillIdFor(skill);
+    skillsByLegacyId.set(legacyId, [...(skillsByLegacyId.get(legacyId) ?? []), skill]);
+  }
+
+  let changed = false;
+  for (const [legacyId, settings] of Object.entries(settingsBySkillId)) {
+    const matches = skillsByLegacyId.get(legacyId) ?? [];
+    if (matches.length !== 1) continue;
+    const [skill] = matches;
+    if (!skill || skill.id === legacyId) continue;
+    if (!next[skill.id]) {
+      next[skill.id] = settings;
+    }
+    delete next[legacyId];
+    changed = true;
+  }
+
+  if (changed) {
+    writeStoredSkillSettings(next);
+  }
+  return next;
+};
+
 const getProjectRootsFromAppState = (): SkillProjectRoot[] => {
   const appState = useAppStore.getState();
   const projects = appState.projectGroups.flatMap((group) => group.projects);
@@ -88,6 +144,21 @@ const formatScriptResult = (result: SkillScriptRunResult): string => [
   result.stderr ? `\nSTDERR:\n${result.stderr}` : '',
 ].filter(Boolean).join('\n');
 
+const parseMentionNames = (content: string): string[] => {
+  const dollarMentions = Array.from(content.matchAll(/\$([A-Za-z0-9_:-]{1,120})/g))
+    .map((match) => match[1])
+    .filter((value): value is string => Boolean(value));
+  const bracketMentions = Array.from(content.matchAll(/\[skill:\s*([^\]]+)\]/gi))
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => Boolean(value));
+  return [...dollarMentions, ...bracketMentions];
+};
+
+const isSkillContextRef = (
+  ref: ContextReference | PersistedContextReference,
+): ref is (ContextReference | PersistedContextReference) & { kind: 'skill' } =>
+  ref.kind === 'skill';
+
 interface SkillsStore {
   skills: SkillManifest[];
   settingsBySkillId: Record<string, SkillSettings>;
@@ -107,6 +178,12 @@ interface SkillsStore {
   getEnabledSkills: () => SkillManifest[];
   findEnabledSkillByName: (name: string) => SkillManifest | null;
   resolveEnabledSkillMentions: (content: string) => SkillManifest[];
+  prepareSkillsForTurn: (params: {
+    conversationId: string;
+    content: string;
+    contextRefs?: Array<ContextReference | PersistedContextReference>;
+    toolsAvailable: boolean;
+  }) => Promise<SkillTurnPreparation>;
   activateSkill: (skillId: string, conversationId?: string) => Promise<string>;
   readSkillResource: (skillId: string, resourcePath: string) => Promise<string>;
   runSkillScript: (request: SkillScriptRunRequest) => Promise<string>;
@@ -125,9 +202,10 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     try {
       const settingsBySkillId = readStoredSkillSettings();
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      const migratedSettings = migrateLegacySkillSettings(settingsBySkillId, response.skills);
       set({
         skills: response.skills,
-        settingsBySkillId,
+        settingsBySkillId: migratedSettings,
         isLoading: false,
       });
     } catch (error) {
@@ -139,7 +217,8 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     set({ isLoading: true, lastError: null });
     try {
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
-      set({ skills: response.skills, isLoading: false });
+      const migratedSettings = migrateLegacySkillSettings(get().settingsBySkillId, response.skills);
+      set({ skills: response.skills, settingsBySkillId: migratedSettings, isLoading: false });
     } catch (error) {
       set({ isLoading: false, lastError: toServiceError(error).message });
     }
@@ -212,23 +291,105 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     const normalized = name.trim().replace(/^\$/, '').toLowerCase();
     if (!normalized) return null;
     const matches = get().getEnabledSkills().filter((skill) =>
-      skill.name.toLowerCase() === normalized || skill.id.toLowerCase().endsWith(`:${normalized}`)
+      skill.name.toLowerCase() === normalized || skill.id.toLowerCase() === normalized
     );
-    return matches[0] ?? null;
+    return matches.length === 1 ? matches[0] ?? null : null;
   },
 
   resolveEnabledSkillMentions: (content) => {
-    const dollarMentions = Array.from(content.matchAll(/\$([A-Za-z0-9_-]{1,80})/g))
-      .map((match) => match[1])
-      .filter((value): value is string => Boolean(value));
-    const bracketMentions = Array.from(content.matchAll(/\[skill:\s*([^\]]+)\]/gi))
-      .map((match) => match[1]?.trim())
-      .filter((value): value is string => Boolean(value));
-    const mentions = [...dollarMentions, ...bracketMentions];
-    const resolved = mentions
+    const resolved = parseMentionNames(content)
       .map((mention) => get().findEnabledSkillByName(mention))
       .filter((skill): skill is SkillManifest => Boolean(skill));
     return Array.from(new Map(resolved.map((skill) => [skill.id, skill])).values());
+  },
+
+  prepareSkillsForTurn: async ({ conversationId, content, contextRefs = [], toolsAvailable }) => {
+    const state = get();
+    const enabledSkills = state.getEnabledSkills();
+    const enabledSkillsById = new Map(enabledSkills.map((skill) => [skill.id, skill]));
+    const allSkillsById = new Map(state.skills.map((skill) => [skill.id, skill]));
+    const selectedSkills: SkillManifest[] = [];
+    const warnings: string[] = [];
+    const seenIds = new Set<string>();
+
+    const addSkill = (skill: SkillManifest) => {
+      if (seenIds.has(skill.id)) return;
+      seenIds.add(skill.id);
+      selectedSkills.push(skill);
+    };
+
+    for (const ref of contextRefs.filter(isSkillContextRef)) {
+      const persistedPath = 'skillFilePath' in ref ? ref.skillFilePath : undefined;
+      const refData = 'data' in ref ? ref.data : undefined;
+      const dataPath =
+        refData && 'skillFilePath' in refData ? refData.skillFilePath : undefined;
+      const expectedPath = persistedPath ?? dataPath;
+      const skill = enabledSkillsById.get(ref.id);
+      const discovered = allSkillsById.get(ref.id);
+      if (!skill) {
+        warnings.push(
+          discovered
+            ? `Skill ${ref.title} is disabled. Enable it in Settings > Skills before using it.`
+            : `Skill ${ref.title} is no longer available. Refresh Skills or remove it from the composer.`,
+        );
+        continue;
+      }
+      if (expectedPath && skill.skillFilePath !== expectedPath) {
+        warnings.push(`Skill ${ref.title} changed location. Re-select it from the Skills menu.`);
+        continue;
+      }
+      addSkill(skill);
+    }
+
+    const enabledByNormalizedName = new Map<string, SkillManifest[]>();
+    for (const skill of enabledSkills) {
+      const key = skill.name.toLowerCase();
+      enabledByNormalizedName.set(key, [...(enabledByNormalizedName.get(key) ?? []), skill]);
+    }
+    for (const mention of parseMentionNames(content)) {
+      const key = mention.trim().replace(/^\$/, '').toLowerCase();
+      if (!key) continue;
+      const matches = enabledByNormalizedName.get(key) ?? [];
+      if (matches.length === 1 && matches[0]) {
+        addSkill(matches[0]);
+      } else if (matches.length > 1) {
+        warnings.push(
+          `Skill "${mention}" is ambiguous. Select the exact skill from the Skills menu.`,
+        );
+      }
+    }
+
+    const systemInstructionBlocks: string[] = [];
+    const activatedSkills: SkillActivation[] = [];
+    for (const skill of selectedSkills) {
+      try {
+        const block = await state.activateSkill(skill.id, conversationId);
+        systemInstructionBlocks.push(
+          [
+            `<skill_content name="${skill.name}" id="${skill.id}">`,
+            block,
+            `Path: ${skill.skillFilePath}`,
+            `Source: ${skill.source.kind}/${skill.source.namespace ?? 'agents'}`,
+            '</skill_content>',
+          ].join('\n'),
+        );
+        const activation = get().activationsByConversationId[conversationId]
+          ?.find((item) => item.skillId === skill.id);
+        if (activation) {
+          activatedSkills.push(activation);
+        }
+      } catch (error) {
+        warnings.push(`Skill ${skill.name} could not be loaded: ${toServiceError(error).message}`);
+      }
+    }
+
+    return {
+      activatedSkills,
+      systemInstructionBlocks,
+      explicitSkillIds: selectedSkills.map((skill) => skill.id),
+      warnings,
+      toolsAvailable,
+    };
   },
 
   activateSkill: async (skillId, conversationId) => {

@@ -21,6 +21,7 @@ import {
   CompactionSummarySource,
   MCPTool,
   PendingToolApproval,
+  PersistedContextReference,
   ProviderTurnState,
   ProjectGroup,
   ReasoningEffort,
@@ -1024,6 +1025,7 @@ interface ChatStore {
         | "hidden_context"
         | "provider_input_items"
         | "provider_turn_state"
+        | "context_refs"
         | "completion_reason"
       >
     >,
@@ -5302,6 +5304,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ...citation,
   });
 
+  const persistableContextRefs = (
+    refs: ContextReference[],
+  ): PersistedContextReference[] | undefined => {
+    const persisted = refs.map((ref) => {
+      const skill =
+        ref.kind === "skill" &&
+        ref.data &&
+        typeof ref.data === "object" &&
+        "skillFilePath" in ref.data
+          ? (ref.data as SkillManifest)
+          : null;
+      return {
+        id: ref.id,
+        kind: ref.kind,
+        title: ref.title,
+        subtitle: ref.subtitle,
+        ...(skill
+          ? {
+              skillFilePath: skill.skillFilePath,
+              source: skill.source,
+            }
+          : {}),
+      } satisfies PersistedContextReference;
+    });
+    return persisted.length > 0 ? persisted : undefined;
+  };
+
   const cloneStreamContextDiagnosticsBaseline = (
     baseline: StreamContextDiagnosticsBaseline,
   ): StreamContextDiagnosticsBaseline => ({
@@ -5379,6 +5408,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const lastUserIndex = orderedMessages
       .map((m) => m.role)
       .lastIndexOf("user");
+    const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
+    const skillPreparation =
+      lastUserMessage?.role === "user"
+        ? await useSkillsStore.getState().prepareSkillsForTurn({
+            conversationId,
+            content: lastUserMessage.content,
+            contextRefs: lastUserMessage.context_refs ?? get().composerContextRefs,
+            toolsAvailable: allowedToolIds.includes("skill_activate"),
+          })
+        : {
+            activatedSkills: [],
+            systemInstructionBlocks: [],
+            explicitSkillIds: [],
+            warnings: [],
+            toolsAvailable: allowedToolIds.includes("skill_activate"),
+          };
+    const explicitSkillIdSet = new Set(skillPreparation.explicitSkillIds);
     const messageImagesByMessageId = get().messageImagesByMessageId;
 
     const providerInputItemsByMessageId: Record<string, unknown[] | undefined> =
@@ -5406,8 +5452,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         const skillActivationAvailable = allowedToolIds.includes("skill_activate");
-        const contextRefs = get().composerContextRefs.filter(
-          (ref) => ref.kind !== "skill" || skillActivationAvailable,
+        const contextRefs = (message.context_refs ?? get().composerContextRefs).filter(
+          (ref) => ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable,
         );
         if (contextRefs.length > 0) {
           const refsBlock = contextRefs
@@ -5416,31 +5462,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
               if (ref.subtitle) lines.push(`Category: ${ref.subtitle}`);
               if (ref.kind === "skill") {
                 lines.push(`Skill ID: ${ref.id}`);
-                lines.push("Activation: call skill_activate with this id before applying the skill.");
-                if ("source" in ref.data && ref.data.source.kind === "project") {
+                if (explicitSkillIdSet.has(ref.id)) {
+                  lines.push("Activation: Macro has already loaded this explicit skill for this turn.");
+                } else {
+                  lines.push("Activation: call skill_activate with this id before applying the skill.");
+                }
+                if ("source" in ref && ref.source?.kind === "project") {
+                  lines.push(`Source project: ${ref.source.projectName ?? ref.source.projectId ?? "unknown"}`);
+                } else if ("data" in ref && "source" in ref.data && ref.data.source.kind === "project") {
                   lines.push(`Source project: ${ref.data.source.projectName ?? ref.data.source.projectId ?? "unknown"}`);
                 }
               }
-              if ("description" in ref.data && ref.data.description) {
+              if ("data" in ref && "description" in ref.data && ref.data.description) {
                 lines.push(`Description: ${ref.data.description}`);
               }
-              if ("status" in ref.data && ref.data.status) {
+              if ("data" in ref && "status" in ref.data && ref.data.status) {
                 lines.push(`Status: ${ref.data.status}`);
               }
-              if ("priority" in ref.data && ref.data.priority) {
+              if ("data" in ref && "priority" in ref.data && ref.data.priority) {
                 lines.push(`Priority: ${ref.data.priority}`);
               }
               if (
+                "data" in ref &&
                 "tags" in ref.data &&
                 Array.isArray(ref.data.tags) &&
                 ref.data.tags.length > 0
               ) {
                 lines.push(`Tags: ${ref.data.tags.join(", ")}`);
               }
-              if ("type" in ref.data && ref.data.type) {
+              if ("data" in ref && "type" in ref.data && ref.data.type) {
                 lines.push(`Type: ${ref.data.type}`);
               }
               if (
+                "data" in ref &&
                 "dependencies" in ref.data &&
                 Array.isArray(ref.data.dependencies) &&
                 ref.data.dependencies.length > 0
@@ -5507,6 +5561,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
 
     const systemInstructions: string[] = [];
+    if (skillPreparation.systemInstructionBlocks.length > 0) {
+      systemInstructions.push(
+        [
+          "Explicit Macro skills selected for this turn have already been loaded below. Follow these skill instructions for this turn; do not call skill_activate again for these ids unless you need to refresh after an error.",
+          ...skillPreparation.systemInstructionBlocks,
+        ].join("\n\n"),
+      );
+    }
+    if (skillPreparation.warnings.length > 0) {
+      systemInstructions.push(
+        `Macro skill warnings for this turn:\n${skillPreparation.warnings.map((warning) => `- ${warning}`).join("\n")}`,
+      );
+    }
     if (allowedToolIds.includes("read_file")) {
       systemInstructions.push(
         `When the user asks to inspect or analyze an attached file, call read_file first using the file name/path. Available files: ${availableFiles || "none"}.`,
@@ -5576,12 +5643,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         systemInstructions.push(
           `Available Macro skills are listed below. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary and after explaining why.\n${catalog}`,
         );
-        const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
         const mentionedSkills =
           lastUserMessage?.role === "user"
             ? skillsState.resolveEnabledSkillMentions(lastUserMessage.content)
             : [];
-        const selectedSkillRefs = get().composerContextRefs.filter((ref) => ref.kind === "skill");
+        const selectedSkillRefs = (lastUserMessage?.context_refs ?? get().composerContextRefs)
+          .filter((ref) => ref.kind === "skill");
         const selectedSkills = selectedSkillRefs
           .map((ref) => skillsState.getSkillById(ref.id))
           .filter((skill): skill is SkillManifest => Boolean(skill));
@@ -5590,7 +5657,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (explicitSkills.length > 0) {
           systemInstructions.push(
-            `The user explicitly referenced these enabled skills: ${explicitSkills.map((skill) => `${skill.name} (${skill.id})`).join(", ")}. Activate the relevant skill before answering.`,
+            `The user explicitly referenced these enabled skills: ${explicitSkills.map((skill) => `${skill.name} (${skill.id})`).join(", ")}. If a referenced skill is not already loaded above, activate it before answering.`,
           );
         }
       }
@@ -7263,6 +7330,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     content: string;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   }): Promise<ChatMessage> => {
     try {
       return await createUserMessage(chatPersistenceAdapters, params);
@@ -11981,6 +12049,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hiddenContext,
         providerInputItems,
       } = payload;
+      const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
       let assistantMessageId: string | null = null;
@@ -12134,6 +12203,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           content,
           hiddenContext,
           providerInputItems,
+          contextRefs: contextRefsForMessage,
         });
 
         get().addMessage(userMessage);
