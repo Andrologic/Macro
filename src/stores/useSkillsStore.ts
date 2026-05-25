@@ -218,9 +218,13 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   },
 
   resolveEnabledSkillMentions: (content) => {
-    const mentions = Array.from(content.matchAll(/\$([A-Za-z0-9_-]{1,80})/g))
+    const dollarMentions = Array.from(content.matchAll(/\$([A-Za-z0-9_-]{1,80})/g))
       .map((match) => match[1])
       .filter((value): value is string => Boolean(value));
+    const bracketMentions = Array.from(content.matchAll(/\[skill:\s*([^\]]+)\]/gi))
+      .map((match) => match[1]?.trim())
+      .filter((value): value is string => Boolean(value));
+    const mentions = [...dollarMentions, ...bracketMentions];
     const resolved = mentions
       .map((mention) => get().findEnabledSkillByName(mention))
       .filter((skill): skill is SkillManifest => Boolean(skill));

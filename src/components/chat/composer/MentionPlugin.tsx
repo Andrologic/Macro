@@ -33,6 +33,16 @@ export const MentionPlugin: React.FC = () => {
       insertedKeysRef.current.add(key);
 
       editor.update(() => {
+        const existingMention = $nodesOfType(MentionNode).some(
+          (node) =>
+            $isMentionNode(node) &&
+            node.__kind === ref.kind &&
+            (node.__refId === ref.id || node.getTitle() === ref.title)
+        );
+        if (existingMention) {
+          return;
+        }
+
         const mentionNode = $createMentionNode(ref.kind, ref.id, ref.title);
         const spaceAfter = $createTextNode(' ');
 

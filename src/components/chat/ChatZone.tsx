@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
-import type { ChatMessage, Need } from '../../types';
+import type { ChatMessage, ContextReference, Need } from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
@@ -206,21 +206,15 @@ interface ChatMessageRowProps {
   assistantActivity: AssistantMessageActivity;
   showToolTraces: boolean;
   isEditing: boolean;
-  editingValue: string;
-  editingImages: MessageImageAttachment[];
   messageImages: MessageImageAttachment[];
   isCopied: boolean;
   isHighlighted: boolean;
-  onEditingValueChange: (value: string) => void;
-  onEditingPaste: (event: React.ClipboardEvent<HTMLElement>) => Promise<void>;
-  onRemoveEditingImage: (imageId: string) => void;
   onImageMouseDown: (event: React.MouseEvent<HTMLElement>) => void;
   onOpenImagePreview: (
     event: React.MouseEvent<HTMLElement>,
     image: MessageImageAttachment
   ) => void;
   onEditCancel: () => void;
-  onEditSave: () => void;
   onCopy: (content: string, messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
@@ -231,6 +225,14 @@ const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill):\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
+
+interface ComposerEditSession {
+  messageId: string;
+  originalContent: string;
+  savedDraftText: string;
+  savedDraftImages: MessageImageAttachment[];
+  savedDraftContextRefs: ContextReference[];
+}
 
 const resolveAssistantActivityAnchorId = (
   messages: ChatMessage[],
@@ -312,18 +314,12 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   assistantActivity,
   showToolTraces,
   isEditing,
-  editingValue,
-  editingImages,
   messageImages,
   isCopied,
   isHighlighted,
-  onEditingValueChange,
-  onEditingPaste,
-  onRemoveEditingImage,
   onImageMouseDown,
   onOpenImagePreview,
   onEditCancel,
-  onEditSave,
   onCopy,
   onEditStart,
   onRegenerate,
@@ -331,8 +327,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
-  const editingEditorRef = useRef<ComposerEditorHandle>(null);
-  const visibleImages = isEditing ? editingImages : messageImages;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
   const hasAssistantActivity =
@@ -345,19 +339,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     message.role === 'assistant' &&
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
-
-  useEffect(() => {
-    if (!isEditing) {
-      return undefined;
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      editingEditorRef.current?.focus();
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [isEditing, message.id]);
 
   return (
     <div
@@ -375,9 +356,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         className={cn(
           'relative transition-all duration-200',
           message.role === 'user'
-            ? isEditing
-              ? 'ml-auto mr-0 max-w-3xl'
-              : 'ml-auto mr-0 max-w-lg'
+            ? 'ml-auto mr-0 max-w-lg'
             : 'mr-auto ml-0 max-w-none'
         )}
       >
@@ -399,64 +378,23 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         >
           {isEditing ? (
-            <div className="space-y-2">
-              {visibleImages.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {visibleImages.map((image) => (
-                    <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/40">
-                      <button
-                        type="button"
-                        onMouseDown={onImageMouseDown}
-                        onClick={(event) => onOpenImagePreview(event, image)}
-                        className="w-full h-full cursor-zoom-in"
-                        title={t('chat.openImage', 'Open image')}
-                      >
-                        <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveEditingImage(image.id)}
-                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
-                        title={t('chat.removeImage', 'Remove image')}
-                      >
-                        <Icon name="x" size={11} className="text-muted-foreground" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div
-                onPasteCapture={(event) => {
-                  void onEditingPaste(event);
-                }}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Icon name="edit" size={12} className="shrink-0 text-muted-foreground/80" />
+              <span className="min-w-0 flex-1 truncate">
+                {t(
+                  'chat.messageEditingInComposer',
+                  'Editing in composer'
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={onEditCancel}
+                className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title={t('common.cancel')}
+                aria-label={t('common.cancel')}
               >
-                <LazyComposerEditor
-                  key={message.id}
-                  ref={editingEditorRef}
-                  editable
-                  initialText={editingValue}
-                  placeholder={t('common.editMessage') || 'Edit your message...'}
-                  onTextChange={onEditingValueChange}
-                  onSend={onEditSave}
-                  surface="message-edit"
-                  syncContextRefs={false}
-                  className="w-full min-h-[120px] max-h-[400px] overflow-y-auto rounded-lg border-2 border-border bg-background p-3 text-sm leading-5 text-foreground transition-all focus:border-primary/50 focus:ring-2 focus:ring-primary/10"
-                />
-              </div>
-              <div className="flex items-center gap-2 justify-end">
-                <button
-                  onClick={onEditCancel}
-                  className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  onClick={onEditSave}
-                  className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
-                >
-                  {t('chat.saveRegenerate')}
-                </button>
-              </div>
+                {t('common.cancel')}
+              </button>
             </div>
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
@@ -576,8 +514,6 @@ const MemoizedChatMessageRow = React.memo(
     prev.virtualMessage.item === next.virtualMessage.item &&
     prev.virtualMessage.start === next.virtualMessage.start &&
     prev.isEditing === next.isEditing &&
-    prev.editingValue === next.editingValue &&
-    prev.editingImages === next.editingImages &&
     prev.messageImages === next.messageImages &&
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
@@ -696,6 +632,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName,
     composerContextRefs,
+    addComposerContextRef,
+    clearComposerContextRefs,
     questionnaireDraftsByConversationId,
     getPendingToolApproval,
     approvePendingToolApprovalOnce,
@@ -741,6 +679,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
+    addComposerContextRef: state.addComposerContextRef,
+    clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
     getPendingToolApproval: state.getPendingToolApproval,
     approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
@@ -783,7 +723,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
 
   const [inputValue, setInputValue] = useState('');
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [composerEditSession, setComposerEditSession] =
+    useState<ComposerEditSession | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
@@ -794,8 +735,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
 
-  const [editingValue, setEditingValue] = useState('');
-  const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
@@ -1523,7 +1462,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   };
 
-  const appendPastedImages = async (files: File[], destination: 'composer' | 'editing') => {
+  const appendPastedImages = async (files: File[]) => {
     const nextImages: MessageImageAttachment[] = [];
 
     for (const file of files) {
@@ -1543,11 +1482,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
 
     if (nextImages.length > 0) {
-      if (destination === 'editing') {
-        setEditingImages((prev) => [...prev, ...nextImages]);
-      } else {
-        setComposerImages((prev) => [...prev, ...nextImages]);
-      }
+      setComposerImages((prev) => [...prev, ...nextImages]);
     }
   };
 
@@ -1574,10 +1509,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const handlePasteFor = async (
-    event: React.ClipboardEvent<HTMLElement>,
-    destination: 'composer' | 'editing'
-  ) => {
+  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
     const directFiles = Array.from(event.clipboardData.items || [])
       .filter((item) => item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
@@ -1587,15 +1519,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (files.length === 0) return;
 
     event.preventDefault();
-    await appendPastedImages(files, destination);
-  };
-
-  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    await handlePasteFor(event, 'composer');
-  };
-
-  const handleEditingPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    await handlePasteFor(event, 'editing');
+    await appendPastedImages(files);
   };
 
   const removeComposerImage = (imageId: string) => {
@@ -1604,10 +1528,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       clearLastError();
     }
     setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
-  };
-
-  const removeEditingImage = (imageId: string) => {
-    setEditingImages((prev) => prev.filter((image) => image.id !== imageId));
   };
 
   const preventImageMouseDown = (event: React.MouseEvent<HTMLElement>) => {
@@ -1624,11 +1544,32 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setPreviewImage(image);
   };
 
+  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
+    setComposerEditSession(null);
+    setComposerImages(session.savedDraftImages);
+    setInputValue(session.savedDraftText);
+    clearComposerContextRefs();
+    composerEditorRef.current?.setText(session.savedDraftText);
+    session.savedDraftContextRefs.forEach((ref) => {
+      addComposerContextRef(ref);
+    });
+  }, [addComposerContextRef, clearComposerContextRefs]);
+
   const handleSend = async () => {
     if (isComposerDisabled || activeQuestionnaire) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (composerEditSession) {
+      if (!text || isBusySending) return;
+      await requestReplay({
+        kind: 'edit',
+        messageId: composerEditSession.messageId,
+        content: text,
+        images: [...composerImages],
+      });
+      return;
+    }
     if (isImplementComposerInKickoffMode) {
       if (!text || isBusySending) return;
       try {
@@ -1704,34 +1645,52 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleEditStart = (message: ChatMessage) => {
+    if (composerEditSession || isBusySending || activePendingToolApproval) {
+      return;
+    }
+
     if (message.questionnaire_response_summary) {
       const opened = startQuestionnaireResponseEdit(message.id);
       if (opened) {
-        setEditingMessageId(null);
-        setEditingValue('');
-        setEditingImages([]);
+        setComposerEditSession(null);
       }
       return;
     }
 
+    if (activeQuestionnaire) {
+      return;
+    }
+
     const content = message.content;
-    const messageId = message.id;
-    setEditingMessageId(messageId);
-    setEditingValue(content);
-    setEditingImages(getMessageImages(messageId));
+    const draftText = composerEditorRef.current?.getTextContent() ?? inputValue;
+    const session: ComposerEditSession = {
+      messageId: message.id,
+      originalContent: content,
+      savedDraftText: draftText,
+      savedDraftImages: [...composerImages],
+      savedDraftContextRefs: [...composerContextRefs],
+    };
+    setComposerEditSession(session);
+    clearComposerContextRefs();
+    setComposerImages(getMessageImages(message.id));
+    setInputValue(content);
+    setPromptHistoryIndex(null);
+    composerEditorRef.current?.setText(content);
+    requestAnimationFrame(() => {
+      composerEditorRef.current?.focus();
+    });
   };
 
   const handleEditCancel = () => {
-    setEditingMessageId(null);
-    setEditingValue('');
-    setEditingImages([]);
+    if (!composerEditSession) return;
+    restoreComposerDraft(composerEditSession);
   };
 
   const handleEditCommitted = useCallback(() => {
-    setEditingMessageId(null);
-    setEditingValue('');
-    setEditingImages([]);
-  }, []);
+    const session = composerEditSession;
+    if (!session) return;
+    restoreComposerDraft(session);
+  }, [composerEditSession, restoreComposerDraft]);
 
   const handleQuestionnaireCancel = () => {
     if (!activeQuestionnaire) {
@@ -1751,20 +1710,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     restoreAgentCodeForReplay,
     editMessage,
     setMessageImages,
+    getMessageImages,
     onEditCommitted: handleEditCommitted,
   });
-
-  const handleEditSave = async () => {
-    if (!editingMessageId) return;
-    const content = editingValue.trim();
-    if (!content) return;
-    await requestReplay({
-      kind: 'edit',
-      messageId: editingMessageId,
-      content,
-      images: editingImages,
-    });
-  };
 
   const handleCopy = async (content: string, messageId: string) => {
     await navigator.clipboard.writeText(content);
@@ -1785,7 +1733,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !activeQuestionnaire &&
     !isConversationPending &&
     (
-      isImplementComposerInKickoffMode
+      composerEditSession
+        ? Boolean(inputValue.trim())
+        : isImplementComposerInKickoffMode
         ? Boolean(inputValue.trim())
         : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
     );
@@ -1794,7 +1744,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     [composerContextRefs]
   );
   const hasComposerSkillMention = useMemo(
-    () => /\$[A-Za-z0-9_-]{1,80}\b/.test(inputValue),
+    () => /(?:\$[A-Za-z0-9_-]{1,80}\b|\[skill:\s*[^\]]+\])/i.test(inputValue),
     [inputValue]
   );
   const showSkillNativeToolWarning =
@@ -2026,7 +1976,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
                 const virtualMessage = virtualItem as RenderedMessageItem;
                 const message = virtualMessage.item.message;
-                const isEditing = editingMessageId === message.id;
+                const isEditing = composerEditSession?.messageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
@@ -2039,18 +1989,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     assistantActivity={assistantActivity}
                     showToolTraces
                     isEditing={isEditing}
-                    editingValue={editingValue}
-                    editingImages={editingImages}
                     messageImages={messageImages}
                     isCopied={copiedMessageId === message.id}
                     isHighlighted={highlightedMessageId === message.id}
-                    onEditingValueChange={setEditingValue}
-                    onEditingPaste={handleEditingPaste}
-                    onRemoveEditingImage={removeEditingImage}
                     onImageMouseDown={preventImageMouseDown}
                     onOpenImagePreview={openImagePreview}
                     onEditCancel={handleEditCancel}
-                    onEditSave={handleEditSave}
                     onCopy={handleCopy}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
@@ -2334,7 +2278,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               />
             ) : (
               <div
-                className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
+                data-chat-composer-editing={
+                  composerEditSession ? 'true' : undefined
+                }
+                className={cn(
+                  'flex items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors',
+                  composerEditSession
+                    ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                    : 'border-border bg-card/80'
+                )}
                 onPasteCapture={handleComposerPaste}
                 data-tour-id="chat-composer"
               >
@@ -2343,7 +2295,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     ref={composerEditorRef}
                     editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                     placeholder={
-                      isConversationPending
+                      composerEditSession
+                        ? t('chat.editMessagePlaceholder', 'Edit message...')
+                      : isConversationPending
                         ? t('chat.loadingConversation', 'Restoring conversation...')
                       : isModeProjectWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
@@ -2379,12 +2333,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     }}
                     onSend={handleSend}
                     onPromptHistory={
+                      !composerEditSession &&
                       promptHistoryNavigationMode === 'contextual_arrows'
                         ? navigatePromptHistory
                         : undefined
                     }
                   />
                 </Suspense>
+              {composerEditSession && !isStreaming && (
+                <button
+                  type="button"
+                  onClick={handleEditCancel}
+                  data-tour-id="chat-edit-cancel-button"
+                  aria-label={t('common.cancel')}
+                  title={t('common.cancel')}
+                  className="flex h-9 min-w-[2.375rem] items-center justify-center rounded-lg bg-muted px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              )}
               {isStreaming ? (
                 <button
                   onClick={stopStreaming}

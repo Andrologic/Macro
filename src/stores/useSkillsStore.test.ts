@@ -249,4 +249,26 @@ describe('useSkillsStore', () => {
       projectSkill,
     ]);
   });
+
+  it('resolves enabled skill mentions from dollar and bracket syntax without duplicates', async () => {
+    const skill = buildSkill('global:test-skill', { name: 'test-skill' });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore } = await loadSkillsStore([skill]);
+
+    await useSkillsStore.getState().loadSettings();
+
+    expect(
+      useSkillsStore
+        .getState()
+        .resolveEnabledSkillMentions('Use $test-skill then [skill: test-skill]')
+    ).toEqual([skill]);
+  });
 });

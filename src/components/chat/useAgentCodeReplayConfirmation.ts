@@ -24,6 +24,7 @@ interface UseAgentCodeReplayConfirmationParams {
     options?: { skipAgentCodeReplayCheck?: boolean },
   ) => Promise<void>;
   setMessageImages: (messageId: string, images: MessageImageAttachment[]) => void;
+  getMessageImages: (messageId: string) => MessageImageAttachment[];
   onEditCommitted: () => void;
 }
 
@@ -32,6 +33,7 @@ export const useAgentCodeReplayConfirmation = ({
   restoreAgentCodeForReplay,
   editMessage,
   setMessageImages,
+  getMessageImages,
   onEditCommitted,
 }: UseAgentCodeReplayConfirmationParams) => {
   const [pendingReplayConfirmation, setPendingReplayConfirmation] =
@@ -43,15 +45,27 @@ export const useAgentCodeReplayConfirmation = ({
     async (
       params: AgentCodeReplayRequest & { skipAgentCodeReplayCheck?: boolean },
     ) => {
+      const previousImages = params.kind === 'edit'
+        ? getMessageImages(params.messageId)
+        : [];
       if (params.kind === 'edit') {
         setMessageImages(params.messageId, params.images ?? []);
+      }
+      try {
+        await editMessage(params.messageId, params.content, {
+          skipAgentCodeReplayCheck: params.skipAgentCodeReplayCheck,
+        });
+      } catch (error) {
+        if (params.kind === 'edit') {
+          setMessageImages(params.messageId, previousImages);
+        }
+        throw error;
+      }
+      if (params.kind === 'edit') {
         onEditCommitted();
       }
-      await editMessage(params.messageId, params.content, {
-        skipAgentCodeReplayCheck: params.skipAgentCodeReplayCheck,
-      });
     },
-    [editMessage, onEditCommitted, setMessageImages],
+    [editMessage, getMessageImages, onEditCommitted, setMessageImages],
   );
 
   const requestReplay = useCallback(

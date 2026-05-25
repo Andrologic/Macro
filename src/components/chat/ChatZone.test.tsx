@@ -161,6 +161,8 @@ type MockChatState = {
   retryArchitectPlanNamingRecovery: ReturnType<typeof mock>;
   submitArchitectPlanManualName: ReturnType<typeof mock>;
   composerContextRefs: unknown[];
+  addComposerContextRef: ReturnType<typeof mock>;
+  clearComposerContextRefs: ReturnType<typeof mock>;
 };
 
 type AppStoreState = {
@@ -340,7 +342,6 @@ const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
 let messageEditEditorValue = '';
 let latestComposerProps: Record<string, unknown> | null = null;
-let latestMessageEditProps: Record<string, unknown> | null = null;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
@@ -466,13 +467,12 @@ const loadChatZoneModule = async () => {
       focus: () => void;
     }>) => {
       const isMessageEdit = props.surface === 'message-edit';
+      const chipSurface = typeof props.surface === 'string' ? props.surface : 'composer';
       if (isMessageEdit && typeof props.initialText === 'string') {
         messageEditEditorValue = props.initialText;
       }
       React.useEffect(() => {
-        if (isMessageEdit) {
-          latestMessageEditProps = props;
-        } else {
+        if (!isMessageEdit) {
           latestComposerProps = props;
         }
       }, [isMessageEdit, props]);
@@ -495,7 +495,7 @@ const loadChatZoneModule = async () => {
         focus: () => undefined,
       }));
       const value = isMessageEdit ? messageEditEditorValue : composerEditorValue;
-      const renderedParts = isMessageEdit
+      const renderedParts = value
         ? value.split(/(\[(?:need|skill):\s*[^\]]+\])/gi).map((part, index) => {
             const match = /^\[(need|skill):\s*([^\]]+)\]$/i.exec(part);
             if (!match) return part;
@@ -505,7 +505,7 @@ const loadChatZoneModule = async () => {
               <span
                 key={`${kind}-${title}-${index}`}
                 data-context-reference-kind={kind}
-                data-context-reference-surface="message-edit"
+                data-context-reference-surface={chipSurface}
               >
                 {kind === 'skill' ? 'Skill' : 'Need'} {title}
               </span>
@@ -514,9 +514,9 @@ const loadChatZoneModule = async () => {
         : null;
       return (
         <div>
-          {isMessageEdit && (
-            <div data-testid="message-edit-rich-preview">{renderedParts}</div>
-          )}
+          <div data-testid={isMessageEdit ? 'message-edit-rich-preview' : 'composer-rich-preview'}>
+            {renderedParts}
+          </div>
           <textarea
             data-testid={isMessageEdit ? 'message-edit-editor' : 'composer-editor'}
             disabled={props.editable === false}
@@ -690,6 +690,20 @@ const resetState = () => {
     retryArchitectPlanNamingRecovery: mock(async () => false),
     submitArchitectPlanManualName: mock(async () => false),
     composerContextRefs: [],
+    addComposerContextRef: mock((ref: unknown) => {
+      chatState = {
+        ...chatState,
+        composerContextRefs: [...chatState.composerContextRefs, ref],
+      };
+      useChatStore.emit();
+    }),
+    clearComposerContextRefs: mock(() => {
+      chatState = {
+        ...chatState,
+        composerContextRefs: [],
+      };
+      useChatStore.emit();
+    }),
   };
 
   providerState = {
@@ -715,7 +729,6 @@ const resetState = () => {
   composerEditorValue = '';
   messageEditEditorValue = '';
   latestComposerProps = null;
-  latestMessageEditProps = null;
   scrollMagnetActiveValues.length = 0;
 };
 
@@ -735,6 +748,66 @@ describe('ChatZone', () => {
       throw new Error('Expected mounted root');
     }
     return root;
+  };
+
+  const getComposerEditor = (): HTMLTextAreaElement => {
+    const editor = requireContainer().querySelector(
+      '[data-testid="composer-editor"]'
+    ) as HTMLTextAreaElement | null;
+    if (!editor) {
+      throw new Error('Expected composer editor');
+    }
+    return editor;
+  };
+
+  const setComposerText = async (value: string): Promise<HTMLTextAreaElement> => {
+    const editor = getComposerEditor();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        editor,
+        value
+      );
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    return editor;
+  };
+
+  const clickSendButton = async () => {
+    const sendButton = requireContainer().querySelector(
+      '[data-tour-id="chat-send-button"]'
+    );
+    if (!sendButton) {
+      throw new Error('Expected send button');
+    }
+    await act(async () => {
+      sendButton.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+  };
+
+  const clickFirstMessageEditButton = async () => {
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    if (!editButton) {
+      throw new Error('Expected edit button');
+    }
+    await act(async () => {
+      editButton.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+  };
+
+  const clickButtonWithText = async (label: string) => {
+    const button = Array.from(requireContainer().querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === label
+    );
+    if (!button) {
+      throw new Error(`Expected button with text: ${label}`);
+    }
+    await act(async () => {
+      button.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
   };
 
   beforeEach(async () => {
@@ -824,7 +897,7 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('sur deux lignes');
   });
 
-  it('renders skill chips while editing user messages and saves bracket text', async () => {
+  it('moves message editing into the composer and saves bracket text', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -848,17 +921,22 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
+    expect(requireContainer().textContent).toContain('Editing in composer');
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-edit-cancel-button"]')
+    ).not.toBeNull();
+
+    const editor = requireContainer().querySelector(
+      '[data-testid="composer-editor"]'
+    ) as HTMLTextAreaElement | null;
+    expect(editor).toBeTruthy();
+    expect(editor?.value).toBe('[skill: test-skill] utilise ce skill');
+
     const editChip = requireContainer().querySelector(
-      '[data-context-reference-surface="message-edit"]'
+      '[data-context-reference-surface="composer"]'
     );
     expect(editChip).toBeTruthy();
     expect(editChip?.textContent).toContain('Skill test-skill');
-    expect(latestMessageEditProps?.syncContextRefs).toBe(false);
-
-    const editor = requireContainer().querySelector(
-      '[data-testid="message-edit-editor"]'
-    ) as HTMLTextAreaElement | null;
-    expect(editor).toBeTruthy();
 
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
@@ -869,13 +947,13 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    const saveButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'chat.saveRegenerate'
+    const sendButton = requireContainer().querySelector(
+      '[data-tour-id="chat-send-button"]'
     );
-    expect(saveButton).not.toBeNull();
+    expect(sendButton).not.toBeNull();
 
     await act(async () => {
-      saveButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      sendButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -884,6 +962,200 @@ describe('ChatZone', () => {
       '[skill: test-skill] utilise ce skill modifié',
       { skipAgentCodeReplayCheck: undefined }
     );
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('restores an existing composer draft and context refs after canceling message editing', async () => {
+    chatState = {
+      ...chatState,
+      composerContextRefs: [
+        {
+          kind: 'skill',
+          id: 'global:draft-skill',
+          title: 'draft-skill',
+          data: {},
+        },
+      ],
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'Original message',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const composer = await setComposerText('Draft before edit');
+
+    const editButton = requireContainer().querySelector('button[title="common.edit"]');
+    await act(async () => {
+      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(composer.value).toBe('Original message');
+    expect(chatState.composerContextRefs).toEqual([]);
+
+    const cancelButton = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'common.cancel'
+    );
+    expect(cancelButton).not.toBeNull();
+
+    await act(async () => {
+      cancelButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(composer.value).toBe('Draft before edit');
+    expect(chatState.composerContextRefs).toEqual([
+      {
+        kind: 'skill',
+        id: 'global:draft-skill',
+        title: 'draft-skill',
+        data: {},
+      },
+    ]);
+  });
+
+  it('keeps composer editing active when checkpoint restoration is canceled', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Original message' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Code changed.' }),
+      ],
+      getAgentCodeReplayPreview: mock(async () => ({
+        conversationId: 'conv-1',
+        messageId: 'msg-user-1',
+        targetCheckpointId: null,
+        affectedFiles: [
+          {
+            path: 'src/new-file.ts',
+            realPath: '/repo/src/new-file.ts',
+            action: 'delete',
+            status: 'created',
+            target: { exists: false, content: null },
+          },
+        ],
+      })),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await clickFirstMessageEditButton();
+    await setComposerText('Edited message');
+    await clickSendButton();
+
+    expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
+    expect(requireContainer().textContent).toContain('src/new-file.ts');
+    expect(chatState.editMessage).not.toHaveBeenCalled();
+
+    await clickButtonWithText('Annuler');
+
+    expect(requireContainer().textContent).not.toContain('Revenir au point de contrôle du code ?');
+    expect(requireContainer().querySelector('[data-chat-composer-editing="true"]')).not.toBeNull();
+    expect(getComposerEditor().value).toBe('Edited message');
+    expect(chatState.editMessage).not.toHaveBeenCalled();
+  });
+
+  it('confirms checkpoint restoration, saves the edit, and restores the prior draft', async () => {
+    const preview = {
+      conversationId: 'conv-1',
+      messageId: 'msg-user-1',
+      targetCheckpointId: null,
+      affectedFiles: [
+        {
+          path: 'src/changed.ts',
+          realPath: '/repo/src/changed.ts',
+          action: 'modify',
+          status: 'modified',
+          target: { exists: true, content: 'before' },
+        },
+      ],
+    };
+    composerEditorValue = 'Draft before edit';
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Original message' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Code changed.' }),
+      ],
+      getAgentCodeReplayPreview: mock(async () => preview),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await clickFirstMessageEditButton();
+    await setComposerText('Edited after checkpoint');
+    await clickSendButton();
+    await clickButtonWithText('Restaurer et sauvegarder');
+
+    expect(chatState.restoreAgentCodeForReplay).toHaveBeenCalledWith(preview);
+    expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited after checkpoint', {
+      skipAgentCodeReplayCheck: true,
+    });
+    expect(getComposerEditor().value).toBe('Draft before edit');
+    expect(requireContainer().querySelector('[data-chat-composer-editing="true"]')).toBeNull();
+  });
+
+  it('moves message images into the composer while editing and saves image changes', async () => {
+    const image = {
+      id: 'img-1',
+      dataUrl: 'data:image/png;base64,AAAA',
+      mimeType: 'image/png',
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'Original image message',
+        }),
+      ],
+      getMessageImages: mock((messageId: string) => (
+        messageId === 'msg-user-1' ? [image] : []
+      )),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await clickFirstMessageEditButton();
+
+    expect(chatState.getMessageImages).toHaveBeenCalledWith('msg-user-1');
+    expect(
+      requireContainer().querySelector('img[alt="Pasted image"]')
+    ).not.toBeNull();
+
+    const removeImageButton = requireContainer().querySelector(
+      'button[title="Remove image"]'
+    );
+    expect(removeImageButton).not.toBeNull();
+
+    await act(async () => {
+      removeImageButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+
+    await setComposerText('Edited image message');
+    await clickSendButton();
+
+    expect(chatState.editMessage).toHaveBeenCalledWith('msg-user-1', 'Edited image message', {
+      skipAgentCodeReplayCheck: undefined,
+    });
+    expect(chatState.setMessageImages).toHaveBeenCalledWith('msg-user-1', []);
   });
 
   it('warns when a selected or mentioned skill cannot use native tool calls', async () => {
@@ -3805,22 +4077,23 @@ describe('ChatZone', () => {
         }),
       ],
       startQuestionnaireResponseEdit: mock((messageId: string) => {
-        chatState.questionnaireDraftsByConversationId = {
-          'conv-1': {
-            mode: 'editing_response',
-            assistantMessageId: 'assistant-questionnaire',
-            responseMessageId: messageId,
-            currentStepIndex: 0,
-            answersByStepId: {
-              scope: 'Balanced',
-              risk: 'Stay below one day of rework',
-            },
-            draftTextByStepId: {
-              risk: 'Stay below one day of rework',
+        useChatStore.setState({
+          questionnaireDraftsByConversationId: {
+            'conv-1': {
+              mode: 'editing_response',
+              assistantMessageId: 'assistant-questionnaire',
+              responseMessageId: messageId,
+              currentStepIndex: 0,
+              answersByStepId: {
+                scope: 'Balanced',
+                risk: 'Stay below one day of rework',
+              },
+              draftTextByStepId: {
+                risk: 'Stay below one day of rework',
+              },
             },
           },
-        };
-        useChatStore.emit();
+        });
         return true;
       }),
     };
