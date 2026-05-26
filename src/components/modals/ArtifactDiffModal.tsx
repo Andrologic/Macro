@@ -3,12 +3,15 @@ import { useTranslation } from 'react-i18next';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
 import {
+  putTaskArtifact,
   readVisibleTaskArtifactDiff,
   type VisiblePlanTaskArtifactDiff,
   type VisiblePlanTaskArtifactReviewEntry,
 } from '../../services/architectPlanArtifactService';
 import { cn } from '../../utils/cn';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
+import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { DiffMergeView } from '../ui/DiffMergeView';
 import { Icon } from '../ui/Icon';
 
@@ -21,8 +24,14 @@ interface ArtifactDiffModalProps {
   onSelectArtifact: (artifactId: string) => void;
   onValidate: (artifactId: string) => Promise<void> | void;
   onUnvalidate: (artifactId: string) => Promise<void> | void;
+  onArtifactSaved: (artifactId: string) => Promise<void> | void;
   onClose: () => void;
 }
+
+type ArtifactViewMode = 'preview' | 'code';
+type PendingDiscardAction =
+  | { type: 'close' }
+  | { type: 'select'; artifactId: string };
 
 const getArtifactLanguage = (contentType: string): string =>
   contentType === 'json' ? 'javascript' : 'text';
@@ -39,19 +48,28 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
   onSelectArtifact,
   onValidate,
   onUnvalidate,
+  onArtifactSaved,
   onClose,
 }) => {
   const { t } = useTranslation();
   const titleId = useId();
   const [diff, setDiff] = useState<VisiblePlanTaskArtifactDiff | null>(null);
+  const [draftContent, setDraftContent] = useState('');
+  const [activeView, setActiveView] = useState<ArtifactViewMode>('code');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isMutatingReview, setIsMutatingReview] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [pendingDiscardAction, setPendingDiscardAction] = useState<PendingDiscardAction | null>(null);
 
   const activeEntry = useMemo(
     () => entries.find((entry) => entry.artifact.id === artifactId) || null,
     [artifactId, entries],
   );
+  const isDirty = Boolean(diff && draftContent !== diff.content);
+  const canPreviewMarkdown = diff?.artifact.contentType === 'markdown';
+  const showCode = Boolean(diff && !isLoading && !error && activeView === 'code');
+  const showPreview = Boolean(diff && !isLoading && !error && activeView === 'preview' && canPreviewMarkdown);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -61,15 +79,47 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
     };
   }, []);
 
+  const requestClose = useCallback(() => {
+    if (isDirty) {
+      setPendingDiscardAction({ type: 'close' });
+      return;
+    }
+    onClose();
+  }, [isDirty, onClose]);
+
+  const requestSelectArtifact = useCallback((nextArtifactId: string) => {
+    if (nextArtifactId === artifactId) return;
+    if (isDirty) {
+      setPendingDiscardAction({ type: 'select', artifactId: nextArtifactId });
+      return;
+    }
+    onSelectArtifact(nextArtifactId);
+  }, [artifactId, isDirty, onSelectArtifact]);
+
+  const handleCancelDiscard = useCallback(() => {
+    setPendingDiscardAction(null);
+  }, []);
+
+  const handleConfirmDiscard = useCallback(() => {
+    const action = pendingDiscardAction;
+    setPendingDiscardAction(null);
+    if (!action) return;
+    if (action.type === 'close') {
+      onClose();
+      return;
+    }
+    onSelectArtifact(action.artifactId);
+  }, [onClose, onSelectArtifact, pendingDiscardAction]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      onClose();
+      requestClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [requestClose]);
 
   useEffect(() => {
     let disposed = false;
@@ -85,6 +135,8 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
       .then((result) => {
         if (!disposed) {
           setDiff(result);
+          setDraftContent(result.content);
+          setActiveView(result.artifact.contentType === 'markdown' ? 'preview' : 'code');
         }
       })
       .catch((loadError) => {
@@ -122,16 +174,72 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
     }
   }, [activeEntry, isMutatingReview, onUnvalidate]);
 
+  const handleSave = useCallback(async () => {
+    if (!diff || isSaving || draftContent.trim().length === 0 || draftContent === diff.content) {
+      return;
+    }
+    const artifact = diff.artifact;
+    const isInherited = artifact.visibility === 'inherited';
+    setIsSaving(true);
+    setError(null);
+    try {
+      const savedArtifact = await putTaskArtifact({
+        target: {
+          branchName,
+          plan,
+          task,
+          currentTask: task,
+        },
+        args: {
+          title: artifact.title,
+          kind: artifact.kind,
+          summary: artifact.summary,
+          content_type: artifact.contentType,
+          content: draftContent,
+          ...(isInherited ? {} : { artifact_id: artifact.id }),
+          ...(isInherited ? { supersedes_artifact_id: artifact.id } : {}),
+          ...(!isInherited && artifact.contractId ? { contract_id: artifact.contractId } : {}),
+        },
+        createdBy: 'user',
+      });
+
+      if (savedArtifact.id === artifact.id) {
+        setDiff((current) =>
+          current && current.artifact.id === artifact.id
+            ? {
+                ...current,
+                artifact: {
+                  ...savedArtifact,
+                  visibility: 'own',
+                },
+                content: draftContent,
+              }
+            : current,
+        );
+      }
+
+      await onArtifactSaved(savedArtifact.id);
+    } catch (saveError) {
+      const message =
+        saveError instanceof Error
+          ? saveError.message
+          : t('implement.artifacts.saveFailed', 'Failed to save artifact.');
+      setError(message);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [branchName, diff, draftContent, isSaving, onArtifactSaved, plan, task, t]);
+
   const artifact = diff?.artifact || activeEntry?.artifact || null;
   const sourceNode = artifact ? plan.nodes.find((node) => node.id === artifact.taskId) : null;
   const layout = diff?.status === 'modified' ? 'split' : 'right-only';
-  const showDiff = Boolean(diff && !isLoading && !error);
+  const canSave = Boolean(diff && isDirty && draftContent.trim().length > 0 && !isLoading && !isSaving);
 
   return (
     <div
       className="fixed inset-0 z-[95] flex items-center justify-center bg-background/95 p-4 pt-12 sm:p-6 sm:pt-14"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) requestClose();
       }}
       role="dialog"
       aria-modal="true"
@@ -157,7 +265,7 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
                 <button
                   key={entry.artifact.id}
                   type="button"
-                  onClick={() => onSelectArtifact(entry.artifact.id)}
+                  onClick={() => requestSelectArtifact(entry.artifact.id)}
                   disabled={current || isMutatingReview}
                   className={cn(
                     'group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
@@ -228,7 +336,39 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
                 </div>
               )}
             </div>
-            <Button variant="ghost" size="sm" onClick={onClose} aria-label={t('common.close', 'Close')}>
+            {artifact && (
+              <div className="flex shrink-0 items-center rounded-md border border-border bg-muted/40 p-0.5">
+                {canPreviewMarkdown && (
+                  <button
+                    type="button"
+                    data-artifact-view-tab="preview"
+                    onClick={() => setActiveView('preview')}
+                    className={cn(
+                      'h-7 rounded px-2.5 text-xs font-medium transition-colors',
+                      activeView === 'preview'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {t('implement.artifacts.previewTab', 'Preview')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-artifact-view-tab="code"
+                  onClick={() => setActiveView('code')}
+                  className={cn(
+                    'h-7 rounded px-2.5 text-xs font-medium transition-colors',
+                    activeView === 'code'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {t('implement.artifacts.codeTab', 'Code')}
+                </button>
+              </div>
+            )}
+            <Button variant="ghost" size="sm" onClick={requestClose} aria-label={t('common.close', 'Close')}>
               <Icon name="x" size={16} />
             </Button>
           </header>
@@ -250,34 +390,58 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
                 <p className="max-w-md text-sm text-destructive">{error}</p>
               </div>
             )}
-            {showDiff && diff && (
+            {showPreview && (
+              <div
+                data-artifact-markdown-preview="true"
+                className="h-full overflow-y-auto px-6 py-5"
+              >
+                <MarkdownRenderer
+                  content={draftContent}
+                  className="mx-auto max-w-4xl text-sm leading-relaxed"
+                />
+              </div>
+            )}
+            {showCode && diff && (
               <DiffMergeView
                 key={diff.artifact.id}
                 original={diff.previousContent}
-                modified={diff.content}
+                modified={draftContent}
                 language={getArtifactLanguage(diff.artifact.contentType)}
                 layout={layout}
                 presentationMode="full"
                 className="h-full w-full border-none md:border-none"
-                editable={false}
-                autoFocus={false}
+                editable
+                autoFocus={activeView === 'code'}
+                onChange={setDraftContent}
               />
             )}
           </div>
 
           <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 bg-card/95 px-6 py-4">
             <div className="text-xs text-muted-foreground">
-              {activeEntry?.hasValidatedReview
+              {isDirty
+                ? t('implement.unsavedDraft', 'Unsaved draft. Save to validate or reset.')
+                : activeEntry?.hasValidatedReview
                 ? t('implement.artifacts.validatedHelp', 'This artifact has been validated for the current task.')
                 : t('implement.artifacts.reviewHelp', 'Validate the artifact after reviewing its content.')}
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleSave()}
+                disabled={!canSave || isMutatingReview}
+              >
+                {isSaving
+                  ? t('implement.artifacts.savingAction', 'Saving...')
+                  : t('implement.artifacts.saveAction', 'Save')}
+              </Button>
               {activeEntry?.hasValidatedReview ? (
                 <Button
                   variant="secondary"
                   size="sm"
                   onClick={() => void handleUnvalidate()}
-                  disabled={isLoading || isMutatingReview}
+                  disabled={isLoading || isMutatingReview || isSaving || isDirty}
                 >
                   {t('implement.artifacts.unvalidateAction', 'Unvalidate')}
                 </Button>
@@ -286,19 +450,34 @@ export const ArtifactDiffModal: React.FC<ArtifactDiffModalProps> = ({
                   variant="primary"
                   size="sm"
                   onClick={() => void handleValidate()}
-                  disabled={isLoading || isMutatingReview || !activeEntry}
+                  disabled={isLoading || isMutatingReview || isSaving || isDirty || !activeEntry}
                   className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   {t('implement.artifacts.validateAction', 'Validate artifact')}
                 </Button>
               )}
-              <Button variant="secondary" size="sm" onClick={onClose} disabled={isMutatingReview}>
+              <Button variant="secondary" size="sm" onClick={requestClose} disabled={isMutatingReview || isSaving}>
                 {t('common.close', 'Close')}
               </Button>
             </div>
           </footer>
         </main>
       </div>
+      {pendingDiscardAction && (
+        <ConfirmPromptModal
+          isOpen={Boolean(pendingDiscardAction)}
+          title={t('implement.artifacts.unsavedChangesTitle', 'Discard unsaved artifact changes?')}
+          description={t(
+            'implement.artifacts.unsavedChangesDescription',
+            'You have unsaved edits to this artifact. Discard them to continue.'
+          )}
+          confirmLabel={t('implement.discardButton', 'Discard changes')}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          confirmVariant="error"
+          onConfirm={handleConfirmDiscard}
+          onCancel={handleCancelDiscard}
+        />
+      )}
     </div>
   );
 };

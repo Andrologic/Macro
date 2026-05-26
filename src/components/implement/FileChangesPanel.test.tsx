@@ -179,11 +179,30 @@ const loadFileChangesPanelModules = async () => {
 
   const reactModule = await import('react');
   mock.module('../modals/ArtifactDiffModal', () => ({
-    ArtifactDiffModal: ({ artifactId }: { artifactId: string }) =>
-      reactModule.createElement('div', {
-        'data-artifact-diff-modal': 'true',
-        'data-artifact-id': artifactId,
-      }),
+    ArtifactDiffModal: ({
+      artifactId,
+      onArtifactSaved,
+    }: {
+      artifactId: string;
+      onArtifactSaved: (artifactId: string) => Promise<void> | void;
+    }) =>
+      reactModule.createElement(
+        'div',
+        {
+          'data-artifact-diff-modal': 'true',
+          'data-artifact-id': artifactId,
+        },
+        reactModule.createElement(
+          'button',
+          {
+            type: 'button',
+            onClick: () => {
+              void onArtifactSaved('audit-findings-task-1');
+            },
+          },
+          'Mock artifact saved'
+        )
+      ),
   }));
 
   mock.module('../modals/MergeWorkflowConflictResolverModal', () => ({
@@ -898,6 +917,65 @@ describe('FileChangesPanel', () => {
     expect(validateArtifactMock.mock.calls[0]?.[0]).toMatchObject({
       artifactId: 'api-contract',
     });
+  });
+
+  it('reloads artifacts and selects the saved artifact version after modal saves', async () => {
+    const plan = buildArtifactPlan();
+    let entries = buildArtifactEntries();
+    const savedEntry: VisiblePlanTaskArtifactReviewEntry = {
+      artifact: {
+        ...entries[1]!.artifact,
+        id: 'audit-findings-task-1',
+        taskId: 'task-1',
+        title: 'Audit findings',
+        contentHash: 'saved',
+        supersedes: 'audit-findings',
+        visibility: 'own',
+      },
+      review: null,
+      hasValidatedReview: false,
+      hasPendingReview: true,
+    };
+    getArchitectPlanMock = mock(async () => plan);
+    listArtifactEntriesMock = mock(async () => entries);
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts',
+        plan_target_branch: 'feature/artifacts',
+        dependencies: ['audit'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+    const artifactButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Audit findings')) as HTMLButtonElement | undefined;
+    await act(async () => {
+      artifactButton?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-artifact-diff-modal="true"]')?.getAttribute('data-artifact-id')).toBe('audit-findings');
+
+    entries = [...entries, savedEntry];
+    const mockSaveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Mock artifact saved')) as HTMLButtonElement | undefined;
+    await act(async () => {
+      mockSaveButton?.click();
+      await flushRender();
+    });
+
+    expect(listArtifactEntriesMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(document.body.querySelector('[data-artifact-diff-modal="true"]')?.getAttribute('data-artifact-id')).toBe('audit-findings-task-1');
   });
 
   it('toggles a repository section without creating a selected repository state', async () => {

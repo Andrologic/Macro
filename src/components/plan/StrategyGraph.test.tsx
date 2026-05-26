@@ -1557,6 +1557,14 @@ describe('StrategyGraph', () => {
 
     const statusFilter = document.querySelector('select') as HTMLSelectElement | null;
     expect(statusFilter).not.toBeNull();
+    expect(statusFilter?.parentElement?.className).toContain('min-w-0');
+    expect(statusFilter?.parentElement?.className).not.toContain('flex-wrap');
+    expect(searchInput?.className).toContain('min-w-0');
+    expect(searchInput?.className).toContain('flex-1');
+    expect(statusFilter?.className).toContain('w-fit');
+    expect(statusFilter?.className).toContain('shrink-0');
+    expect(statusFilter?.className).toContain('pr-8');
+    expect(statusFilter?.className).toContain('truncate');
     const setSelectValue = (select: HTMLSelectElement, value: string) => {
       const valueSetter = Object.getOwnPropertyDescriptor(
         window.HTMLSelectElement.prototype,
