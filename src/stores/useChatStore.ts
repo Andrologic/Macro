@@ -104,6 +104,7 @@ import {
   getArchitectPlanNeeds,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
+  isArchitectPlanStrategyMutationLocked,
   isArchitectPlanSlugAvailable,
   isArchitectPlanSlugMutable,
   listArchitectPlans,
@@ -138,6 +139,14 @@ import {
   formatTaskTodoResult,
   resolveTaskTodoTarget,
 } from "../services/taskTodoToolService";
+import {
+  buildTaskArtifactContextBlock,
+  formatTaskArtifactGetResult,
+  formatTaskArtifactListResult,
+  formatTaskArtifactPutResult,
+  putTaskArtifact,
+  resolveTaskArtifactTarget,
+} from "../services/architectPlanArtifactService";
 import {
   buildToolRiskLevelSystemInstruction,
   DEFAULT_TOOL_RISK_LEVEL,
@@ -328,6 +337,11 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
+const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
+  "strategy_generate",
+  "strategy_update",
+  "strategy_delete",
+]);
 const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
@@ -4578,6 +4592,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return formatTaskTodoResult("task_todo_update", updatedTarget);
   };
 
+  const handleTaskArtifactToolCall = async (
+    conversationId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    if (
+      toolName !== "task_artifact_list" &&
+      toolName !== "task_artifact_get" &&
+      toolName !== "task_artifact_put"
+    ) {
+      return undefined;
+    }
+
+    const taskState = useTaskStore.getState();
+    const target = await resolveTaskArtifactTarget({
+      args,
+      executionContext: resolveConversationExecutionContext(conversationId),
+      selectedTaskId: useAppStore.getState().selectedTaskId,
+      tasks: taskState.tasks,
+      getArchitectPlan,
+      mutating: toolName === "task_artifact_put",
+    });
+
+    if (toolName === "task_artifact_list") {
+      return formatTaskArtifactListResult(target, args);
+    }
+    if (toolName === "task_artifact_get") {
+      return formatTaskArtifactGetResult(target, args);
+    }
+
+    const artifact = await putTaskArtifact({ target, args });
+    return formatTaskArtifactPutResult(artifact);
+  };
+
   const getLoadedAgentCodeCheckpoints = async (
     conversationId: string,
   ): Promise<AgentCodeCheckpoint[]> => {
@@ -5052,6 +5100,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     if (taskTodoToolResult !== undefined) {
       return taskTodoToolResult;
+    }
+
+    const taskArtifactToolResult = await handleTaskArtifactToolCall(
+      conversationId,
+      normalizedToolName,
+      args,
+    );
+    if (taskArtifactToolResult !== undefined) {
+      return taskArtifactToolResult;
     }
 
     const architectToolResult = await handleArchitectToolCall({
@@ -5756,6 +5813,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         }
       }
+      if (task && (task.task_source === "architect" || isPlanFinalizationTaskSource(task.task_source))) {
+        const artifactContextBlock = await buildTaskArtifactContextBlock({
+          task,
+          getPlan: getArchitectPlan,
+          allowWrites: allowedToolIds.includes("task_artifact_put"),
+        });
+        if (artifactContextBlock) {
+          systemInstructions.push(artifactContextBlock);
+        }
+      }
     }
 
     if (appMode === "Architect") {
@@ -6456,8 +6523,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             strategyFilterForSelectedProvider(toolIds),
           )
         : strategyFilterForSelectedProvider(toolIds);
+    const appState = useAppStore.getState();
+    const mode = modeOverride ?? appState.mode;
+    const activePlanContext = appState.activePlanContext;
+    const filterStrategyMutationToolsForActivePlan = (toolIds: string[]): string[] => {
+      if (
+        mode !== "Architect" ||
+        !isArchitectPlanStrategyMutationLocked(activePlanContext?.status)
+      ) {
+        return toolIds;
+      }
+      return toolIds.filter((toolId) => !ARCHITECT_STRATEGY_MUTATION_TOOL_IDS.has(toolId));
+    };
     const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
-      const uniqueToolIds = Array.from(new Set(toolIds));
+      const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
+        Array.from(new Set(toolIds)),
+      );
       const filteredToolIds = filterToolIdsForInternalAgentProfile(
         filterForSelectedProvider(uniqueToolIds),
         internalAgentProfile,
@@ -6478,8 +6559,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return riskFilteredToolIds;
     };
 
-    const appState = useAppStore.getState();
-    const mode = modeOverride ?? appState.mode;
     const agentType =
       mode === "Implement"
         ? (agentTypeOverride ?? appState.agentType)

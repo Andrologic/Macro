@@ -1538,6 +1538,7 @@
     "regenerateStrategy": "Strategie neu generieren",
     "generateStrategyHint": "Generieren Sie eine Strategie aus den identifizierten Bedürfnissen",
     "regenerateStrategyHint": "Erneuern Sie die Strategie anhand aktueller Anforderungen",
+    "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "Wählen Sie zunächst einen aktiven Plan aus",
     "generateStrategyNeedPrompt": "Fügen Sie mindestens einen Bedarf hinzu, bevor Sie eine Strategie erstellen",
     "nodeStatus": {
@@ -1583,6 +1584,8 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
+    "taskTodos": "TODO attaché",
+    "expectedArtifacts": "Expected artifacts",
     "strategyPreviewTitle": "Regeneration preview",
     "strategyPreviewBlockedTitle": "Regeneration blocked",
     "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",

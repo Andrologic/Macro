@@ -1564,6 +1564,9 @@ export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
 const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
 const GET_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_get'));
 const UPDATE_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_update'));
+const LIST_TASK_ARTIFACTS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_list'));
+const GET_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_get'));
+const PUT_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_put'));
 const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_update')
 );
@@ -2070,6 +2073,9 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
   if (allowedTools.has('task_todo_get')) tools.push(GET_TASK_TODOS_TOOL);
   if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);
+  if (allowedTools.has('task_artifact_list')) tools.push(LIST_TASK_ARTIFACTS_TOOL);
+  if (allowedTools.has('task_artifact_get')) tools.push(GET_TASK_ARTIFACT_TOOL);
+  if (allowedTools.has('task_artifact_put')) tools.push(PUT_TASK_ARTIFACT_TOOL);
   if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
   (mcpTools ?? []).forEach((tool) => {

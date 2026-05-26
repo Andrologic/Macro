@@ -56,6 +56,8 @@ const TASK_REVIEWER_TOOL_IDS = new Set([
   "git_branch_list",
   "git_diff",
   "git_get_tree",
+  "task_artifact_list",
+  "task_artifact_get",
   "terminal_create_session",
   "terminal_run",
   "terminal_read",

@@ -69,6 +69,9 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "strategy_update",
   "task_todo_get",
   "task_todo_update",
+  "task_artifact_list",
+  "task_artifact_get",
+  "task_artifact_put",
   "plan_create",
   "plan_list",
   "plan_get",
@@ -102,6 +105,29 @@ const planNodeTodoSchema = (description?: string): JsonSchema => ({
       },
     },
     required: ["title"],
+  },
+});
+
+const planNodeArtifactContractSchema = (description?: string): JsonSchema => ({
+  type: "array",
+  description:
+    description ||
+    "Required durable handoff artifacts this node must produce for dependent tasks. Declare only critical handoffs; omit artifactContracts when no durable handoff is needed.",
+  items: {
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        description: "Stable artifact contract id, for example audit-findings or api-contract.",
+      },
+      title: { type: "string" },
+      kind: {
+        type: "string",
+        description: "Short artifact category such as audit, migration_map, api_contract, risk_register, note.",
+      },
+      description: { type: "string" },
+    },
+    required: ["id", "title", "kind"],
   },
 });
 
@@ -933,7 +959,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist, choosing the natural count for each task rather than a fixed number. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist, and declare artifactContracts only when a task must hand off critical durable knowledge such as audit findings, a migration map, an API contract, or a risk register. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1025,6 +1051,12 @@ export const MACRO_TOOL_REGISTRY = [
               },
               todos: planNodeTodoSchema(
                 "Concrete implementation checklist for this node. Choose the natural number of todos for the task: small tasks may need 1-2, larger tasks may need more. Do not pad every task to the same count.",
+              ),
+              artifactContracts: planNodeArtifactContractSchema(
+                "Required expected handoff artifacts this node must produce for dependent tasks. Declare only critical handoffs; omit this field when no durable handoff is needed.",
+              ),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
               ),
             },
             required: ["title", "type"],
@@ -1266,8 +1298,102 @@ export const MACRO_TOOL_REGISTRY = [
     },
   ),
   objectTool(
+    "task_artifact_list",
+    "List durable task artifacts visible from the current Implement task. Returns metadata only; use task_artifact_get for full content.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        include_inherited: {
+          type: "boolean",
+          description:
+            "Include artifacts from transitive dependency tasks. Defaults to true.",
+        },
+        include_own: {
+          type: "boolean",
+          description:
+            "Include artifacts produced by this task. Defaults to true.",
+        },
+      },
+      required: [],
+    },
+  ),
+  objectTool(
+    "task_artifact_get",
+    "Read the full content of a durable task artifact that is visible from the current Implement task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        artifact_id: {
+          type: "string",
+          description: "Artifact id from task_artifact_list.",
+        },
+      },
+      required: ["artifact_id"],
+    },
+  ),
+  objectTool(
+    "task_artifact_put",
+    "Create or replace a durable artifact for the current Architect task. Use this for findings, maps, contracts, or decisions that dependent tasks need later.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional current task id. Writes are rejected for any other task.",
+        },
+        artifact_id: {
+          type: "string",
+          description:
+            "Optional stable artifact id. If omitted, Macro derives one from contract_id or title.",
+        },
+        contract_id: {
+          type: "string",
+          description:
+            "Optional artifact contract id declared on this strategy node.",
+        },
+        supersedes_artifact_id: {
+          type: "string",
+          description:
+            "Optional visible artifact id this artifact replaces. Use this when modifying an inherited artifact; Macro keeps the parent artifact intact.",
+        },
+        kind: {
+          type: "string",
+          description:
+            "Short artifact category such as audit, migration_map, api_contract, risk_register, note.",
+        },
+        title: { type: "string" },
+        summary: {
+          type: "string",
+          description:
+            "Brief summary shown to dependent tasks before they fetch full content.",
+        },
+        content_type: {
+          type: "string",
+          enum: ["markdown", "json", "text"],
+        },
+        content: {
+          type: "string",
+          description:
+            "Full artifact content. V1 supports Markdown, JSON, or plain text.",
+        },
+      },
+      required: ["title", "summary", "content"],
+    },
+  ),
+  objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, and keep per-node todos current with a natural, task-specific count. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, keep per-node todos current, and declare artifactContracts only for critical required task handoffs. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1319,6 +1445,10 @@ export const MACRO_TOOL_REGISTRY = [
               },
               dependencies: { type: "array", items: { type: "string" } },
               todos: planNodeTodoSchema(),
+              artifactContracts: planNodeArtifactContractSchema(),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
+              ),
             },
             required: ["title", "type"],
           },
@@ -1363,6 +1493,10 @@ export const MACRO_TOOL_REGISTRY = [
               },
               dependencies: { type: "array", items: { type: "string" } },
               todos: planNodeTodoSchema(),
+              artifactContracts: planNodeArtifactContractSchema(),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
+              ),
             },
             required: ["action"],
           },

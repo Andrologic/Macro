@@ -56,6 +56,17 @@ export type ArchitectPlanStatus =
 
 export type ArchitectPlanRestorableStatus = Exclude<ArchitectPlanStatus, 'archived' | 'deleted'>;
 
+export const ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE =
+  'This plan has already been validated. Strategy changes are temporarily disabled for validated plans.';
+
+export const isArchitectPlanStrategyMutable = (
+  status: ArchitectPlanStatus | string | null | undefined,
+): boolean => status === 'draft';
+
+export const isArchitectPlanStrategyMutationLocked = (
+  status: ArchitectPlanStatus | string | null | undefined,
+): boolean => typeof status === 'string' && status.trim().length > 0 && !isArchitectPlanStrategyMutable(status);
+
 export type ArchitectPlanReplicationState =
   | 'healthy'
   | 'missing_projects'
@@ -73,6 +84,14 @@ export interface ArchitectPlanContentHashes {
   plan: string;
   needs: string;
   chat: string;
+}
+
+export interface ArchitectPlanArtifactManifestSummary {
+  count: number;
+  indexHash: string;
+  contentHash: string;
+  reviewHash?: string;
+  updatedAt: string;
 }
 
 export interface ArchitectPlanConversationSnapshot {
@@ -100,6 +119,7 @@ export interface ArchitectPlanManifest {
   revision: number;
   updatedAt: string;
   contentHashes: ArchitectPlanContentHashes;
+  artifacts?: ArchitectPlanArtifactManifestSummary;
   needCount?: number;
   conversation: ArchitectPlanConversationSnapshot;
   deletion: ArchitectPlanDeletionSnapshot | null;
@@ -1164,10 +1184,33 @@ export const resolvePlanProjectContextId = (
 const normalizePlanNodes = (nodes: PlanNode[]): PlanNode[] =>
   (Array.isArray(nodes) ? nodes : []).map((node) => {
     const projectIds = normalizeProjectIds(node.projectIds, node.projectId);
+    const artifactContracts = Array.isArray(node.artifactContracts)
+      ? node.artifactContracts
+          .filter(
+            (contract) =>
+              contract &&
+              typeof contract.id === 'string' &&
+              contract.id.trim().length > 0 &&
+              typeof contract.title === 'string' &&
+              contract.title.trim().length > 0
+          )
+          .map((contract) => ({
+            id: sanitizeId(contract.id),
+            title: contract.title.trim(),
+            kind: typeof contract.kind === 'string' && contract.kind.trim().length > 0
+              ? contract.kind.trim()
+              : 'note',
+            ...(typeof contract.description === 'string' && contract.description.trim().length > 0
+              ? { description: contract.description.trim() }
+              : {}),
+            required: true,
+          }))
+      : undefined;
     return {
       ...node,
       projectId: projectIds[0],
       projectIds,
+      artifactContracts: artifactContracts && artifactContracts.length > 0 ? artifactContracts : undefined,
     };
   });
 
@@ -1282,6 +1325,13 @@ const buildPlanMarkdown = (
       if (node.dependencies.length > 0) {
         lines.push(`  - depends_on: ${node.dependencies.join(', ')}`);
       }
+      if (node.artifactContracts && node.artifactContracts.length > 0) {
+        lines.push(
+          `  - expected_artifacts: ${node.artifactContracts
+            .map((contract) => contract.title)
+            .join(', ')}`
+        );
+      }
     }
   }
   lines.push('');
@@ -1313,6 +1363,13 @@ const buildTaskPlannedMarkdown = (plan: ArchitectPlanRecord, node: PlanNode): st
   lines.push(`- Status: ${node.status}`);
   if (node.dependencies.length > 0) {
     lines.push(`- Depends On: ${node.dependencies.join(', ')}`);
+  }
+  if (node.artifactContracts && node.artifactContracts.length > 0) {
+    lines.push('');
+    lines.push('## Expected Artifacts');
+    for (const contract of node.artifactContracts) {
+      lines.push(`- ${contract.title}`);
+    }
   }
   lines.push('');
   lines.push(node.description || 'No task description provided.');
@@ -2205,6 +2262,7 @@ const arePlanChatMessagesEquivalent = (
 const buildReplicaComparableSnapshot = (snapshot: ArchitectPlanReplicaSnapshot): unknown => ({
   plan: buildComparablePlanSnapshot(snapshot.plan),
   needs: snapshot.needs,
+  artifacts: snapshot.manifest.artifacts ?? null,
 });
 
 const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown => ({
@@ -2677,6 +2735,50 @@ const readStoredPlanManifestAtScope = async (
   );
 };
 
+const normalizeArtifactManifestSummary = (
+  value: unknown
+): ArchitectPlanArtifactManifestSummary | undefined => {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const parsed = value as Partial<ArchitectPlanArtifactManifestSummary>;
+  if (
+    typeof parsed.count !== 'number' ||
+    !Number.isFinite(parsed.count) ||
+    typeof parsed.indexHash !== 'string' ||
+    parsed.indexHash.trim().length === 0 ||
+    typeof parsed.contentHash !== 'string' ||
+    parsed.contentHash.trim().length === 0 ||
+    typeof parsed.updatedAt !== 'string' ||
+    parsed.updatedAt.trim().length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    count: Math.max(0, Math.floor(parsed.count)),
+    indexHash: parsed.indexHash,
+    contentHash: parsed.contentHash,
+    ...(typeof parsed.reviewHash === 'string' && parsed.reviewHash.trim().length > 0
+      ? { reviewHash: parsed.reviewHash }
+      : {}),
+    updatedAt: parsed.updatedAt,
+  };
+};
+
+const preservePlanArtifactManifestAtScope = async (
+  scope: ArchitectMetadataScope,
+  branchName: string,
+  planId: string,
+  manifest: ArchitectPlanManifest
+): Promise<ArchitectPlanManifest> => {
+  if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    return manifest;
+  }
+  const existing = await readStoredPlanManifestAtScope(scope, branchName, planId);
+  const artifacts = normalizeArtifactManifestSummary(existing?.artifacts);
+  return artifacts ? { ...manifest, artifacts } : manifest;
+};
+
 const readPlanManifestAtScope = async (params: {
   scope: ArchitectMetadataScope;
   branchName: string;
@@ -2753,6 +2855,7 @@ const readPlanManifestAtScope = async (params: {
               : fallbackManifest.contentHashes.chat,
         }
       : fallbackManifest.contentHashes,
+    artifacts: normalizeArtifactManifestSummary(parsed.artifacts),
     needCount:
       typeof parsed.needCount === 'number' && Number.isFinite(parsed.needCount) && parsed.needCount >= 0
         ? Math.floor(parsed.needCount)
@@ -2818,12 +2921,12 @@ const writePlanAtScope = async (
   await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
   const needs = options?.needs ?? await readPlanNeedsAtScope(scope, normalized, safeId);
   const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
-  const manifest = await buildPlanManifest({
+  const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
     plan: normalizedPlan,
     needs,
     chatMessages,
     registrySnapshot,
-  });
+  }));
   await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
 };
 
@@ -2851,12 +2954,12 @@ const writePlanNeedsAtScope = async (
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const chatMessages = await readPlanChatAtScope(scope, normalized, safeId);
-    const manifest = await buildPlanManifest({
+    const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
       plan: planResult.plan,
       needs: normalizedNeeds,
       chatMessages,
       registrySnapshot,
-    });
+    }));
     await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
   }
 };
@@ -2885,12 +2988,12 @@ const writePlanChatAtScope = async (
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const needs = await readPlanNeedsAtScope(scope, normalized, safeId);
-    const manifest = await buildPlanManifest({
+    const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
       plan: planResult.plan,
       needs,
       chatMessages: messages,
       registrySnapshot,
-    });
+    }));
     await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
   }
 };

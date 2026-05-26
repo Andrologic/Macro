@@ -443,6 +443,13 @@ const buildBranchCards = (params: {
     );
 };
 
+const getArtifactContractItems = (
+  node: Pick<PlanNode, 'artifactContracts'> | null | undefined,
+) =>
+  (node?.artifactContracts || []).filter(
+    (contract) => contract.title.trim().length > 0,
+  );
+
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
@@ -652,6 +659,46 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const hideFrozenBadgeTooltip = useCallback(() => {
     setHoveredFrozenBadge(null);
   }, []);
+
+  const renderArtifactContractsSection = useCallback(
+    (
+      node: Pick<PlanNode, 'artifactContracts'> | null | undefined,
+      options: { withTopBorder?: boolean } = {},
+    ) => {
+      const contracts = getArtifactContractItems(node);
+      if (contracts.length === 0) {
+        return null;
+      }
+
+      return (
+        <div
+          className={cn(
+            'space-y-1.5',
+            options.withTopBorder && 'mt-3 border-t border-border/50 pt-2'
+          )}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('architect.expectedArtifacts', 'Expected artifacts')}
+          </div>
+          <ul className="space-y-1">
+            {contracts.map((contract) => (
+              <li
+                key={contract.id}
+                className="grid grid-cols-[4px_minmax(0,1fr)] gap-x-1.5 text-[11px] leading-relaxed text-foreground"
+              >
+                <span
+                  aria-hidden="true"
+                  className="mt-[0.6em] h-1 w-1 rounded-full bg-muted-foreground/70"
+                />
+                <span>{contract.title}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    },
+    [t]
+  );
 
   useEffect(() => {
     if (viewMode !== 'branches' && hoveredFrozenBadge) {
@@ -1574,6 +1621,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   {hoveredNodeData.description}
                 </p>
 
+                {renderArtifactContractsSection(hoveredNodeData, { withTopBorder: true })}
+
                 <div className="space-y-2 pt-2 border-t border-border/50">
                   <div className="flex items-center text-[10px] text-muted-foreground">
                     <Icon name="git-branch" size={10} className="mr-2 opacity-70" />
@@ -1636,6 +1685,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               const progressPercent = branch.progressTotal > 0
                 ? Math.round((branch.progressDone / branch.progressTotal) * 100)
                 : 0;
+              const visibleBranchTasks = branch.tasks.filter(
+                (task) =>
+                  branch.todos.some((todo) => todo.taskId === task.id) ||
+                  getArtifactContractItems(task).length > 0
+              );
 
               return (
                 <div
@@ -1680,60 +1734,88 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                     )}
                   </div>
 
-                  {branch.todos.length > 0 && (
+                  {visibleBranchTasks.length > 0 && (
                     <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
-                      {branch.todos.map((todo, todoIndex) => {
-                        const task = branch.tasks.find((candidate) => candidate.id === todo.taskId) || null;
-                        const frozenTask = task ? frozenNodeById.get(task.id) || null : null;
+                      {visibleBranchTasks.map((task) => {
+                        const taskTodos = branch.todos.filter((todo) => todo.taskId === task.id);
+                        const frozenTask = frozenNodeById.get(task.id) || null;
+                        const artifactContracts = getArtifactContractItems(task);
                         return (
-                          <div key={todo.id} className="px-3 py-2" data-branch-task={todo.taskId} data-branch-todo={todo.id}>
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0 flex items-center gap-2">
-                                <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
-                                  {todoIndex + 1}.
-                                </span>
-                                <div className="min-w-0">
-                                  <div className="text-xs text-foreground truncate">{todo.title}</div>
-                                  {branch.tasks.length > 1 && (
-                                    <div className="text-[10px] text-muted-foreground truncate">{todo.taskTitle}</div>
-                                  )}
+                          <div
+                            key={task.id}
+                            className="py-2"
+                            data-branch-task={task.id}
+                          >
+                            {branch.tasks.length > 1 && (
+                              <div className="px-3 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground truncate">
+                                {task.title}
+                              </div>
+                            )}
+                            {taskTodos.length > 0 && (
+                              <div>
+                                <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  {t('architect.taskTodos', 'TODO attaché')}
                                 </div>
-                                {frozenTask && (
-                                  <span
-                                    className={cn(
-                                      'inline-flex shrink-0 cursor-help items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                                      lockedBadgeTone
-                                    )}
-                                    tabIndex={0}
-                                    onMouseEnter={(event) =>
-                                      showFrozenBadgeTooltip(
-                                        frozenTask.reason,
-                                        event.currentTarget
-                                      )
-                                    }
-                                    onMouseLeave={hideFrozenBadgeTooltip}
-                                    onFocus={(event) =>
-                                      showFrozenBadgeTooltip(
-                                        frozenTask.reason,
-                                        event.currentTarget
-                                      )
-                                    }
-                                    onBlur={hideFrozenBadgeTooltip}
-                                    aria-label={`${t('architect.frozenNodeLocked', 'Locked')}. ${getFrozenReasonTooltipDescription(frozenTask.reason)}`}
-                                    data-frozen-lock-badge={todo.taskId}
-                                  >
-                                    {t('architect.frozenNodeLocked', 'Locked')}
-                                  </span>
-                                )}
-                              </div>
+                                <div className="divide-y divide-border/40">
+                                  {taskTodos.map((todo, todoIndex) => (
+                                    <div key={todo.id} className="px-3 py-2" data-branch-todo={todo.id}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="min-w-0 flex items-center gap-2">
+                                          <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
+                                            {todoIndex + 1}.
+                                          </span>
+                                          <div className="min-w-0">
+                                            <div className="text-xs text-foreground truncate">{todo.title}</div>
+                                            {branch.tasks.length > 1 && (
+                                              <div className="text-[10px] text-muted-foreground truncate">{todo.taskTitle}</div>
+                                            )}
+                                          </div>
+                                          {frozenTask && (
+                                            <span
+                                              className={cn(
+                                                'inline-flex shrink-0 cursor-help items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                                lockedBadgeTone
+                                              )}
+                                              tabIndex={0}
+                                              onMouseEnter={(event) =>
+                                                showFrozenBadgeTooltip(
+                                                  frozenTask.reason,
+                                                  event.currentTarget
+                                                )
+                                              }
+                                              onMouseLeave={hideFrozenBadgeTooltip}
+                                              onFocus={(event) =>
+                                                showFrozenBadgeTooltip(
+                                                  frozenTask.reason,
+                                                  event.currentTarget
+                                                )
+                                              }
+                                              onBlur={hideFrozenBadgeTooltip}
+                                              aria-label={`${t('architect.frozenNodeLocked', 'Locked')}. ${getFrozenReasonTooltipDescription(frozenTask.reason)}`}
+                                              data-frozen-lock-badge={task.id}
+                                            >
+                                              {t('architect.frozenNodeLocked', 'Locked')}
+                                            </span>
+                                          )}
+                                        </div>
 
-                              <div className="shrink-0 flex items-center gap-2">
-                                {task?.estimatedTime && (
-                                  <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
-                                )}
-                                <TodoStatusIcon status={todo.status} />
+                                        <div className="shrink-0 flex items-center gap-2">
+                                          {task.estimatedTime && (
+                                            <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
+                                          )}
+                                          <TodoStatusIcon status={todo.status} />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
-                            </div>
+                            )}
+                            {artifactContracts.length > 0 && (
+                              <div className={cn('px-3', taskTodos.length > 0 && 'pt-2')}>
+                                {renderArtifactContractsSection(task)}
+                              </div>
+                            )}
                           </div>
                         );
                       })}

@@ -70,6 +70,10 @@ import {
 } from '../services/planFinalization';
 import { loadOpenTaskTodosForCompletion } from '../services/taskTodoToolService';
 import {
+  loadMissingRequiredArtifactsForCompletion,
+  loadUnvalidatedCurrentTaskArtifactsForCompletion,
+} from '../services/architectPlanArtifactService';
+import {
   buildInitialMergeWorkflowRuntimeState,
   buildMergeWorkflowFailureState,
   buildMergeWorkflowRepositoryBlockingState,
@@ -268,6 +272,44 @@ const createTaskTodosBlockedErrorFromPlan = async (
 ): Promise<Error | null> => {
   const openTodos = await loadOpenTaskTodosForCompletion(task, getArchitectPlan);
   return createTaskTodosBlockedError(openTodos);
+};
+
+const createTaskArtifactsBlockedErrorFromPlan = async (
+  task: Pick<
+    CatalogedImplementTask,
+    | 'id'
+    | 'task_source'
+    | 'plan_id'
+    | 'plan_storage_branch'
+    | 'plan_target_branch'
+    | 'project_id'
+    | 'project_ids'
+    | 'execution_targets'
+  >
+): Promise<Error | null> => {
+  const missingArtifacts = await loadMissingRequiredArtifactsForCompletion(task, getArchitectPlan);
+  if (missingArtifacts.length === 0) {
+    const unvalidatedArtifacts = await loadUnvalidatedCurrentTaskArtifactsForCompletion(task, getArchitectPlan);
+    if (unvalidatedArtifacts.length === 0) {
+      return null;
+    }
+    const labels = unvalidatedArtifacts.map((artifact) => artifact.title).join(', ');
+    return new Error(
+      tTask(
+        'implement.errors.taskArtifactsUnvalidatedForComplete',
+        'Cannot complete task while produced artifacts remain unvalidated: {{artifacts}}',
+        { artifacts: labels }
+      )
+    );
+  }
+  const labels = missingArtifacts.map((artifact) => artifact.contract.title).join(', ');
+  return new Error(
+    tTask(
+      'implement.errors.taskArtifactsMissingForComplete',
+      'Cannot complete task while required artifacts are missing: {{artifacts}}',
+      { artifacts: labels }
+    )
+  );
 };
 
 const getTaskPlanStorageBranch = (
@@ -3549,6 +3591,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         set({ lastError: todoError.message });
         throw todoError;
       }
+      const artifactError = await createTaskArtifactsBlockedErrorFromPlan(task);
+      if (artifactError) {
+        set({ lastError: artifactError.message });
+        throw artifactError;
+      }
     }
 
     const allowWithoutCodeChanges = options?.allowWithoutCodeChanges === true;
@@ -4382,6 +4429,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const todoError = await createTaskTodosBlockedErrorFromPlan(currentTask);
       if (todoError) {
         set({ lastError: todoError.message });
+        return;
+      }
+      const artifactError = await createTaskArtifactsBlockedErrorFromPlan(currentTask);
+      if (artifactError) {
+        set({ lastError: artifactError.message });
         return;
       }
     }

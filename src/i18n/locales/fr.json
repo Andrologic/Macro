@@ -1537,6 +1537,7 @@
     "regenerateStrategy": "Régénérer la stratégie",
     "generateStrategyHint": "Générer une stratégie à partir des besoins identifiés",
     "regenerateStrategyHint": "Régénérer la stratégie à partir des besoins actuels",
+    "strategyLockedAfterValidation": "La stratégie est verrouillée après validation du plan.",
     "generateStrategySelectPlan": "Sélectionnez d'abord un plan actif",
     "generateStrategyNeedPrompt": "Ajouter au moins un besoin avant de générer une stratégie",
     "nodeStatus": {
@@ -1582,6 +1583,8 @@
     "frozenReasonDependencyLockedTooltip": "Cette dépendance est verrouillée, car du travail commencé ou terminé en dépend déjà.",
     "frozenReasonStartedTooltip": "Cette tâche a déjà été commencée et ne peut plus être modifiée automatiquement.",
     "frozenNodeLocked": "Verrouillé",
+    "taskTodos": "TODO attaché",
+    "expectedArtifacts": "Artefacts attendus",
     "strategyPreviewTitle": "Aperçu de régénération",
     "strategyPreviewBlockedTitle": "Régénération bloquée",
     "strategyPreviewDescription": "Le travail gelé est préservé. Vérifiez les réécritures en attente avant d’appliquer la stratégie mise à jour.",

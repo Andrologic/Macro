@@ -37,6 +37,9 @@ let planState = {
       todos: undefined as
         | Array<{ id: string; title: string; status: 'pending' | 'in-progress' | 'done' }>
         | undefined,
+      artifactContracts: undefined as
+        | Array<{ id: string; title: string; kind: string; required: boolean }>
+        | undefined,
       archivedAt: null as string | null,
       archiveReason: null as 'merged' | null,
       mergedAt: null as string | null,
@@ -124,7 +127,7 @@ const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitBranchDeleteRemoteMock = mock(async () => undefined);
 const gitPullMock = mock(async () => undefined);
-const fsReadFileWithOptionsMock = mock(async () => {
+const fsReadFileWithOptionsMock = mock(async (_params?: { path?: string }): Promise<{ content: string }> => {
   throw new Error('not found');
 });
 const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
@@ -400,6 +403,7 @@ describe('useTaskStore.finishTask', () => {
           projectId: 'project-1',
           projectIds: ['project-1'],
           todos: undefined,
+          artifactContracts: undefined,
           archivedAt: null,
           archiveReason: null,
           mergedAt: null,
@@ -448,6 +452,11 @@ describe('useTaskStore.finishTask', () => {
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
     gitPullMock.mockClear();
+    fsReadFileWithOptionsMock.mockClear();
+    fsReadFileWithOptionsMock.mockImplementation(async () => {
+      throw new Error('not found');
+    });
+    fsWriteFileMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     syncTerminalDisplayMetadataMock.mockClear();
@@ -590,6 +599,90 @@ describe('useTaskStore.finishTask', () => {
 
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().lastError).toContain('Fresh plan todo');
+  });
+
+  it('blocks architect task completion while required artifacts are missing', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: undefined,
+          artifactContracts: [
+            {
+              id: 'audit-findings',
+              title: 'Audit findings',
+              kind: 'audit',
+              required: true,
+            },
+          ],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({ status: 'InReview', todos: undefined })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Audit findings',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Audit findings');
+  });
+
+  it('blocks architect task completion while produced artifacts remain unvalidated', async () => {
+    fsReadFileWithOptionsMock.mockImplementation(async (params?: { path?: string }) => {
+      if (params?.path?.endsWith('/artifacts/index.json')) {
+        return {
+          content: JSON.stringify({
+            schemaVersion: 1,
+            planId: 'plan-1',
+            updatedAt: '2026-05-26T00:00:00.000Z',
+            artifacts: [
+              {
+                id: 'handoff-note',
+                planId: 'plan-1',
+                taskId: 'task-1',
+                kind: 'note',
+                title: 'Handoff note',
+                summary: 'Important handoff',
+                contentType: 'markdown',
+                path: 'branches/develop/plans/plan-1/artifacts/tasks/task-1/handoff-note.md',
+                contentHash: 'hash',
+                createdAt: '2026-05-26T00:00:00.000Z',
+                updatedAt: '2026-05-26T00:00:00.000Z',
+                createdBy: 'agent',
+              },
+            ],
+            reviews: [],
+          }),
+        };
+      }
+      throw new Error('not found');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({ status: 'InReview', todos: undefined })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Handoff note',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Handoff note');
   });
 
   it('blocks direct completed status with fresh plan todos when the task snapshot is stale', async () => {

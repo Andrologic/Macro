@@ -156,6 +156,7 @@ Un plan contient :
 - les besoins extraits pendant la phase de planification
 - la strategie generee
 - la structure predictive de branches associee a cette strategie
+- les artefacts de relais produits par les taches planifiees pour transmettre de l'information aux taches dependantes
 
 Un plan sert a definir une vague de travail coherente.
 
@@ -192,6 +193,8 @@ Un noeud peut representer :
 
 Les noeuds de strategie definissent l'ordre, les dependances et la structure d'execution.
 
+Un noeud peut aussi declarer des contrats d'artefacts attendus. Ces contrats decrivent les informations critiques qu'une tache devra produire pour ses descendantes, par exemple des resultats d'audit, une carte de migration, un contrat d'API ou un registre de risques.
+
 ### 6.7 Branche predictive
 
 Une branche predictive est un artefact de planification qui represente la facon dont le travail doit etre decoupe dans Git pendant l'execution.
@@ -211,6 +214,22 @@ La tache est l'unite suivie dans le mode Implement.
 Une tache terminee avec succes se conclut toujours par un commit.
 
 La plupart des taches sont creees a partir d'un plan valide, mais Macro doit aussi supporter des taches autonomes pour les quick fixes ou les petites features ne justifiant pas un plan complet.
+
+### 6.9 Artefact de relais
+
+Un artefact de relais est une information durable produite par une tache issue d'un plan Architect.
+
+Il sert a transmettre du contexte exploitable aux taches qui dependent directement ou indirectement de la tache productrice.
+
+Les artefacts de relais :
+- sont rattaches a un plan et a une tache productrice
+- sont stockes dans les metadonnees `@macro`, pas dans le code source applicatif
+- peuvent etre declares a l'avance par la strategie ou produits librement par l'agent Implement
+- ne sont visibles que par la tache productrice, ses descendantes et la tache synthetique de finalisation du plan
+- ne sont pas partages entre taches paralleles sans dependance
+- sont affiches dans le panneau des changements comme un sous-projet `Artifacts`, avec revue et validation metadata separees du staging Git
+- peuvent superseder un artefact herite en creant une nouvelle version rattachee a la tache courante, sans ecraser la version parente
+- restent limites en v1 a du contenu texte, Markdown ou JSON
 
 ---
 
@@ -243,6 +262,7 @@ Le mode Architect doit supporter :
 - une conversation par plan
 - des besoins generes par l'IA
 - une strategie generee par l'IA
+- la declaration d'artefacts critiques attendus par tache
 - une visualisation des dependances et de la structure predictive
 - la validation d'un plan
 - la preparation automatique de la structure d'execution apres validation
@@ -265,6 +285,7 @@ Le mode Implement doit supporter :
 - une file de taches issue de plusieurs plans
 - le filtrage des taches par plan et par autres criteres pertinents
 - la prise en compte explicite des dependances et de l'etat de disponibilite d'une tache
+- la consultation des artefacts herites depuis les taches parentes et la production d'artefacts pour les taches dependantes
 - une review en fin de tache
 - une validation globale du plan avant merge du plan vers la branche de base
 

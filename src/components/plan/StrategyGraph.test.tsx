@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
+import type { PlanNodeArtifactContract, ProjectGitFlowSettings, TaskStatus } from '../../types';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -46,6 +46,7 @@ type MockPlanNode = {
     description?: string;
     status: 'pending' | 'in-progress' | 'done';
   }>;
+  artifactContracts?: PlanNodeArtifactContract[];
   archivedAt?: string | null;
 };
 
@@ -795,6 +796,270 @@ describe('StrategyGraph', () => {
     expect(document.body.textContent).toContain('Locked');
     expect(document.body.textContent).toContain(
       'can no longer be modified automatically'
+    );
+  });
+
+  it('shows expected artifact contracts inside graph node tooltips', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      planNodes: appState.planNodes.map((node) =>
+        node.id === 'task-1'
+          ? {
+              ...node,
+              artifactContracts: [
+                {
+                  id: 'contract-audit',
+                  title: 'Audit findings',
+                  kind: 'audit_findings',
+                  description: 'Capture the risky flows found during the audit.',
+                  required: true,
+                },
+                {
+                  id: 'contract-ux',
+                  title: 'Notes de cadrage UX',
+                  kind: 'ux_notes',
+                  required: false,
+                },
+              ],
+            }
+          : node
+      ),
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const graphNode = Array.from(document.querySelectorAll('g')).find(
+      (element) => (element as SVGGElement).style?.cursor === 'pointer'
+    ) as SVGGElement | undefined;
+    expect(graphNode).not.toBeUndefined();
+
+    Object.defineProperty(graphNode!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 120,
+        y: 120,
+        top: 120,
+        left: 120,
+        right: 144,
+        bottom: 144,
+        width: 24,
+        height: 24,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Expected artifacts');
+    expect(document.body.textContent).toContain('Audit findings');
+    expect(document.body.textContent).toContain('Notes de cadrage UX');
+    expect(document.body.textContent).not.toContain('Required: Audit findings');
+    expect(document.body.textContent).not.toContain('Optional: Notes de cadrage UX');
+    expect(document.body.textContent).not.toContain('Capture the risky flows found during the audit.');
+  });
+
+  it('omits the expected artifact section when graph nodes have no contracts', async () => {
+    seedStores('Pending');
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const graphNode = Array.from(document.querySelectorAll('g')).find(
+      (element) => (element as SVGGElement).style?.cursor === 'pointer'
+    ) as SVGGElement | undefined;
+    expect(graphNode).not.toBeUndefined();
+
+    Object.defineProperty(graphNode!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 120,
+        y: 120,
+        top: 120,
+        left: 120,
+        right: 144,
+        bottom: 144,
+        width: 24,
+        height: 24,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('Expected artifacts');
+  });
+
+  it('shows branch view task todos before expected artifact contracts', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      planNodes: appState.planNodes.map((node) =>
+        node.id === 'task-1'
+          ? {
+              ...node,
+              artifactContracts: [
+                {
+                  id: 'contract-audit',
+                  title: 'Audit findings',
+                  kind: 'audit_findings',
+                  description: 'Capture the risky flows found during the audit.',
+                  required: true,
+                },
+              ],
+            }
+          : node
+      ),
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/graph',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-1'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    const taskElement = document.querySelector('[data-branch-task="task-1"]');
+    const taskText = taskElement?.textContent || '';
+    expect(taskText).toContain('TODO attaché');
+    expect(taskText).toContain('Architect node todo');
+    expect(taskText).toContain('Expected artifacts');
+    expect(taskText).toContain('Audit findings');
+    expect(taskText.indexOf('TODO attaché')).toBeLessThan(taskText.indexOf('Architect node todo'));
+    expect(taskText.indexOf('Architect node todo')).toBeLessThan(
+      taskText.indexOf('Expected artifacts')
+    );
+    expect(taskText.indexOf('Expected artifacts')).toBeLessThan(
+      taskText.indexOf('Audit findings')
+    );
+    expect(taskText).not.toContain('Required: Audit findings');
+    expect(taskText).not.toContain('Capture the risky flows found during the audit.');
+  });
+
+  it('groups branch view artifacts with the task that owns them', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      planNodes: [
+        {
+          id: 'task-a',
+          title: 'Audit API',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          todos: [{ id: 'todo-a', title: 'Audit API todo', status: 'pending' }],
+          artifactContracts: [
+            {
+              id: 'api-audit',
+              title: 'API audit findings',
+              kind: 'audit',
+              required: true,
+            },
+          ],
+        },
+        {
+          id: 'task-b',
+          title: 'Map UI',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          todos: [{ id: 'todo-b', title: 'Map UI todo', status: 'pending' }],
+          artifactContracts: [
+            {
+              id: 'ui-map',
+              title: 'UI migration map',
+              kind: 'migration_map',
+              required: true,
+            },
+          ],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          name: 'feature/shared',
+          color: '#3b82f6',
+          parentBranch: 'plan/plan-1',
+          projectId: 'project-1',
+          taskIds: ['task-a', 'task-b'],
+          status: 'pending',
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Branches')
+    );
+    expect(branchesButton).not.toBeUndefined();
+
+    await act(async () => {
+      branchesButton?.click();
+      await flushRender();
+    });
+
+    expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
+    const auditTaskText = document.querySelector('[data-branch-task="task-a"]')?.textContent || '';
+    const mapTaskText = document.querySelector('[data-branch-task="task-b"]')?.textContent || '';
+    expect(auditTaskText).toContain('TODO attaché');
+    expect(auditTaskText).toContain('Audit API todo');
+    expect(auditTaskText).toContain('Expected artifacts');
+    expect(auditTaskText).toContain('API audit findings');
+    expect(mapTaskText).toContain('TODO attaché');
+    expect(mapTaskText).toContain('Map UI todo');
+    expect(mapTaskText).toContain('Expected artifacts');
+    expect(mapTaskText).toContain('UI migration map');
+    expect(auditTaskText.indexOf('Audit API')).toBeLessThan(auditTaskText.indexOf('TODO attaché'));
+    expect(auditTaskText.indexOf('TODO attaché')).toBeLessThan(
+      auditTaskText.indexOf('Audit API todo')
+    );
+    expect(auditTaskText.indexOf('Audit API todo')).toBeLessThan(
+      auditTaskText.indexOf('Expected artifacts')
+    );
+    expect(auditTaskText.indexOf('Expected artifacts')).toBeLessThan(
+      auditTaskText.indexOf('API audit findings')
+    );
+    expect(mapTaskText.indexOf('Map UI')).toBeLessThan(mapTaskText.indexOf('TODO attaché'));
+    expect(mapTaskText.indexOf('TODO attaché')).toBeLessThan(mapTaskText.indexOf('Map UI todo'));
+    expect(mapTaskText.indexOf('Map UI todo')).toBeLessThan(
+      mapTaskText.indexOf('Expected artifacts')
+    );
+    expect(mapTaskText.indexOf('Expected artifacts')).toBeLessThan(
+      mapTaskText.indexOf('UI migration map')
     );
   });
 

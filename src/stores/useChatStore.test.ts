@@ -8,7 +8,11 @@ import type {
   ProjectGroup,
   SkillManifest,
 } from '../types';
-import type { ArchitectPlanRecord } from '../services/architectPlanService';
+import {
+  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+  type ArchitectPlanRecord,
+  type ArchitectPlanStatus,
+} from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
 
 interface LocalStorageMock {
@@ -94,7 +98,11 @@ const appState = {
   activeThemeId: 'macro-dark',
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
-  activePlanContext: null as { id?: string; targetBranch: string } | null,
+  activePlanContext: null as {
+    id?: string;
+    targetBranch: string;
+    status?: ArchitectPlanStatus;
+  } | null,
   architectPlanSwitch: {
     requestId: 0,
     targetPlanId: null as string | null,
@@ -5100,11 +5108,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(architectPlans.get(blankSibling.id)?.label).toBe('new plan 2');
   });
 
-  it('stages a non-destructive preview during strategy generation when frozen work exists', async () => {
+  it('stages a non-destructive preview during draft strategy generation when frozen work exists', async () => {
     const activePlan = createPlan({
       id: 'started-plan',
       conversationId: 'plan-conv',
-      status: 'in_progress',
+      status: 'draft',
       nodes: [
         {
           id: 'task-a',
@@ -5195,7 +5203,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect((appState.strategyMutationPreview as { status: string }).status).toBe('valid');
   });
 
-  it('surfaces the same locked plan slug conflict for strategy generation and updates', async () => {
+  it('rejects strategy generation and updates after validation before slug checks', async () => {
     const activePlan = createPlan({
       id: 'plan-active',
       slug: 'checkout-refresh',
@@ -5228,10 +5236,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       nodes: [{ title: 'Implement checkout' }],
     });
 
-    expect(String(generateResult)).toContain('checkout-refresh');
-    expect(String(generateResult)).toContain('locked and cannot be changed');
-    expect(String(updateResult)).toContain('checkout-refresh');
-    expect(String(updateResult)).toContain('locked and cannot be changed');
+    expect(String(generateResult)).toBe(ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE);
+    expect(String(updateResult)).toBe(ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE);
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
@@ -5466,7 +5472,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const activePlan = createPlan({
       id: 'started-plan',
       conversationId: 'plan-conv',
-      status: 'in_progress',
+      status: 'draft',
       nodes: [
         {
           id: 'task-a',
@@ -5628,6 +5634,45 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
     );
+  });
+
+  it('removes strategy mutation tools from Architect turns after plan validation', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+
+    const { useChatStore } = await loadChatStore();
+    activateArchitectPlanForTest({ conversationId: 'plan-conv', status: 'validated' });
+    appState.activePlanContext = {
+      ...(appState.activePlanContext || { id: 'plan-1', targetBranch: 'develop' }),
+      status: 'validated',
+    };
+    useChatStore.setState({
+      conversations: [createConversation('plan-conv')],
+      messages: [],
+      selectedConversationId: 'plan-conv',
+      selectedConversationIdsByMode: { Architect: 'plan-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'plan-conv',
+      content: 'Analyse la stratégie validée.',
+    });
+
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      allowedToolIds: string[];
+    };
+    expect(streamOptions.allowedToolIds).toContain('strategy_get');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_generate');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_update');
+    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
   it('migrates the legacy guarded autonomy profile to strict tool risk filtering', async () => {

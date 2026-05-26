@@ -56,6 +56,7 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "strategy_update",
   "strategy_delete",
   "task_todo_update",
+  "task_artifact_put",
   "plan_update",
 ]);
 
@@ -193,6 +194,18 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Read task todos",
   },
+  task_artifact_list: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "List task artifacts",
+  },
+  task_artifact_get: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read a task artifact",
+  },
   write: {
     actionGroup: "change",
     rememberStrategy: "path",
@@ -252,6 +265,12 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "tool",
     destructiveStrategy: "always",
     summary: "Update task todos",
+  },
+  task_artifact_put: {
+    actionGroup: "change",
+    rememberStrategy: "tool",
+    destructiveStrategy: "always",
+    summary: "Store a task artifact",
   },
   git_add: {
     actionGroup: "change",
