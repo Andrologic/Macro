@@ -51,8 +51,8 @@ export const ContextReferenceChip: React.FC<ContextReferenceChipProps> = ({
         'text-xs leading-none cursor-default',
         'bg-primary/8 border-primary/20',
         surface === 'composer'
-          ? 'h-6 px-1.5 align-[-0.1875rem]'
-          : 'h-5 px-1 align-middle'
+          ? 'h-[1.375rem] px-1.5 align-[0em]'
+          : 'h-[1.125rem] px-1 align-[0em]'
       )}
     >
       <span

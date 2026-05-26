@@ -73,23 +73,23 @@ export const NeedReferenceChip: React.FC<NeedReferenceChipProps> = ({
         data-need-reference-surface={surface}
         className={cn(
           'mx-0.5 inline-flex max-w-[240px] items-center rounded-md border',
-          'align-middle text-xs leading-none cursor-default',
+          'text-xs leading-none cursor-default',
           'bg-card/80 border-border/80 shadow-sm',
           surface === 'composer'
-            ? 'h-6 gap-1.5 px-1.5 translate-y-[-0.5px]'
-            : 'h-5 gap-1 px-1.5',
+            ? 'h-[1.375rem] gap-1.5 px-1.5 align-[0em]'
+            : 'h-[1.125rem] gap-1 px-1.5 align-[0em]',
           className
         )}
       >
         <span
           className={cn(
             'inline-flex shrink-0 items-center justify-center',
-            surface === 'composer' ? 'h-4 w-4' : 'h-3.5 w-3.5'
+            surface === 'composer' ? 'h-3.5 w-3.5' : 'h-3 w-3'
           )}
         >
           <Icon
             name={iconName}
-            size={surface === 'composer' ? 12 : 10}
+            size={surface === 'composer' ? 11 : 9}
             className={cn('stroke-[2.25]', iconColorClass)}
           />
         </span>

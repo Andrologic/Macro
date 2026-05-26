@@ -262,10 +262,11 @@ const UserMessageContent: React.FC<{
   needsByTitle: Map<string, Need>;
 }> = ({ content, needsByTitle }) => {
   const { t } = useTranslation();
+  const lines = content.split('\n');
 
   return (
-    <>
-      {content.split('\n').map((line, lineIndex) => {
+    <div data-user-message-content="true" className="break-words leading-[1.35]">
+      {lines.map((line, lineIndex) => {
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
         let match: RegExpExecArray | null;
@@ -299,12 +300,13 @@ const UserMessageContent: React.FC<{
         }
 
         return (
-          <p key={lineIndex} className="mb-2 last:mb-0 break-words">
+          <React.Fragment key={lineIndex}>
             {parts.length > 0 ? parts : line}
-          </p>
+            {lineIndex < lines.length - 1 && <br />}
+          </React.Fragment>
         );
       })}
-    </>
+    </div>
   );
 };
 

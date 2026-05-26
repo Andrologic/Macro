@@ -92,6 +92,34 @@ describe('ComposerEditor context references', () => {
     expect(editorRef.current?.getTextContent()).toBe('[skill: test-skill] utilise ce skill');
   });
 
+  it('renders composer skill chips with the shared inline alignment', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('[skill: test-skill] utilise ce skill');
+      await Promise.resolve();
+    });
+
+    const skillChip = container.querySelector('[data-context-reference-kind="skill"]');
+    expect(skillChip).toBeTruthy();
+    expect(skillChip?.getAttribute('data-context-reference-surface')).toBe('composer');
+    expect(skillChip?.className).toContain('h-[1.375rem]');
+    expect(skillChip?.className).toContain('align-[0em]');
+    expect(skillChip?.className).not.toContain('align-[-0.1875rem]');
+  });
+
   it('does not remove composer context refs when deleting a message-edit chip', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
