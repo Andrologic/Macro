@@ -1,6 +1,9 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { PlanNode } from '../types';
-import type { ArchitectPlanRecord } from './architectPlanService';
+import {
+  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+  type ArchitectPlanRecord,
+} from './architectPlanService';
 import {
   applyStrategyMutationPreview,
   buildFrozenPlanNodeMap,
@@ -78,7 +81,6 @@ describe('architectStrategyMutationGuard', () => {
 
   it('stages a valid preview that preserves frozen ids and rewrites only editable pending work', () => {
     const plan = createPlan({
-      status: 'in_progress',
       nodes: [
         createNode({ id: 'task-a', title: 'Prepare schema' }),
         createNode({
@@ -185,7 +187,6 @@ describe('architectStrategyMutationGuard', () => {
 
   it('blocks the preview when a frozen node is modified or omitted', () => {
     const plan = createPlan({
-      status: 'in_progress',
       nodes: [
         createNode({ id: 'task-a', title: 'Prepare schema' }),
         createNode({
@@ -243,7 +244,7 @@ describe('architectStrategyMutationGuard', () => {
     expect(preview.removedPendingNodes.map((node) => node.title)).toEqual(['Legacy cleanup']);
   });
 
-  it('auto-provisions branches when applying a valid preview on an executable plan', async () => {
+  it('blocks strategy generation for validated plans', () => {
     const plan = createPlan({
       status: 'validated',
       nodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
@@ -258,41 +259,28 @@ describe('architectStrategyMutationGuard', () => {
       metadataUpdate: { description: plan.description },
     });
 
-    expect(preview.status).toBe('valid');
-    expect(preview.requiresPreview).toBe(false);
-    expect(preview.autoProvisionBranches).toBe(true);
+    expect(preview.status).toBe('blocked');
+    expect(preview.requiresPreview).toBe(true);
+    expect(preview.autoProvisionBranches).toBe(false);
+    expect(preview.conflicts).toEqual([ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE]);
+  });
 
-    const getArchitectPlanMock = mock(async () => plan);
-    const provisionPlanBranchesMock = mock(async () => ({
-      planBranchName: 'plan/plan-1',
-      repositories: [],
-      createdPlanBranch: false,
-      createdFeatureBranches: [],
-      existingFeatureBranches: [],
-    }));
-    const updateArchitectPlanMock = mock(async (params: {
-      status?: string;
-      nodes?: PlanNode[];
-    }) => ({
-      ...plan,
-      status: params.status ?? plan.status,
-      nodes: params.nodes ?? plan.nodes,
-      predictedBranches: preview.predictedBranches,
-    }));
+  it('blocks strategy generation for in-progress plans', () => {
+    const plan = createPlan({
+      status: 'in_progress',
+      nodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+    });
 
-    const updated = await applyStrategyMutationPreview(
-      { preview },
-      {
-        getArchitectPlan: getArchitectPlanMock as any,
-        updateArchitectPlan: updateArchitectPlanMock as any,
-        provisionPlanBranches: provisionPlanBranchesMock as any,
-      }
-    );
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan,
+      candidateNodes: [createNode({ id: 'task-a', title: 'Prepare schema' })],
+      metadataUpdate: { description: plan.description },
+    });
 
-    expect(provisionPlanBranchesMock).toHaveBeenCalledTimes(1);
-    expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
-    expect(updated.status).toBe('validated');
-    expect(updated.nodes).toHaveLength(2);
+    expect(preview.status).toBe('blocked');
+    expect(preview.autoProvisionBranches).toBe(false);
+    expect(preview.conflicts).toEqual([ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE]);
   });
 
   it('blocks the preview when metadata slug validation already failed', () => {

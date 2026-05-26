@@ -10,6 +10,8 @@ import {
   type ReviewRepositoryState,
 } from '../../stores/useFileChangesStore';
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
+import type { ArchitectPlanRecord } from '../../services/architectPlanService';
+import type { VisiblePlanTaskArtifactReviewEntry } from '../../services/architectPlanArtifactService';
 import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
 import {
   createTranslationMock,
@@ -31,6 +33,10 @@ let initialFileChangesState: ReturnType<typeof useFileChangesStore.getState> | n
 let notifySuccessMock: ReturnType<typeof mock>;
 let notifyErrorMock: ReturnType<typeof mock>;
 let notifyActionRequiredMock: ReturnType<typeof mock>;
+let getArchitectPlanMock: ReturnType<typeof mock>;
+let listArtifactEntriesMock: ReturnType<typeof mock>;
+let validateArtifactMock: ReturnType<typeof mock>;
+let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
 const translationMock = createTranslationMock();
@@ -86,6 +92,34 @@ const loadFileChangesPanelModules = async () => {
   );
   mock.module('../../services/preferences', () => ({
     ...preferencesModule,
+  }));
+
+  const architectPlanServiceModule = await import(
+    `../../services/architectPlanService.ts?file-changes-panel-plan-service-test=${importCounter}`
+  );
+  mock.module('../../services/architectPlanService', () => ({
+    ...architectPlanServiceModule,
+    getArchitectPlan: (...args: unknown[]) => getArchitectPlanMock(...args),
+  }));
+
+  const architectPlanArtifactServiceModule = await import(
+    `../../services/architectPlanArtifactService.ts?file-changes-panel-artifact-service-test=${importCounter}`
+  );
+  mock.module('../../services/architectPlanArtifactService', () => ({
+    ...architectPlanArtifactServiceModule,
+    listVisibleTaskArtifactReviewEntries: (...args: unknown[]) => listArtifactEntriesMock(...args),
+    normalizeArtifactContracts: (node: { artifactContracts?: unknown[] }) => node.artifactContracts || [],
+    validateVisibleTaskArtifact: (...args: unknown[]) => validateArtifactMock(...args),
+    unvalidateVisibleTaskArtifact: (...args: unknown[]) => unvalidateArtifactMock(...args),
+    loadMissingRequiredArtifactsForCompletion: mock(async () => []),
+    loadUnvalidatedCurrentTaskArtifactsForCompletion: mock(async () => []),
+    readVisibleTaskArtifactDiff: mock(async () => ({
+      artifact: null,
+      content: '',
+      previousArtifact: null,
+      previousContent: '',
+      status: 'added',
+    })),
   }));
 
   const appStoreModule = await import(
@@ -144,6 +178,14 @@ const loadFileChangesPanelModules = async () => {
   }));
 
   const reactModule = await import('react');
+  mock.module('../modals/ArtifactDiffModal', () => ({
+    ArtifactDiffModal: ({ artifactId }: { artifactId: string }) =>
+      reactModule.createElement('div', {
+        'data-artifact-diff-modal': 'true',
+        'data-artifact-id': artifactId,
+      }),
+  }));
+
   mock.module('../modals/MergeWorkflowConflictResolverModal', () => ({
     MergeWorkflowConflictResolverModal: ({
       repository,
@@ -246,6 +288,90 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
   lastError: null,
   lastCommitHash: null,
 });
+
+const buildArtifactPlan = (): ArchitectPlanRecord => ({
+  id: 'plan-1',
+  slug: 'plan-1',
+  title: 'Plan 1',
+  status: 'active',
+  targetBranch: 'feature/artifacts',
+  storageBranch: 'feature/artifacts',
+  projectId: 'project-1',
+  projectIds: ['project-1'],
+  nodes: [
+    {
+      id: 'audit',
+      title: 'Audit task',
+      type: 'task',
+      status: 'completed',
+      dependencies: [],
+    },
+    {
+      id: 'task-1',
+      title: 'Review panel actions',
+      type: 'task',
+      status: 'pending',
+      dependencies: ['audit'],
+      artifactContracts: [
+        {
+          id: 'api-contract',
+          title: 'API contract',
+          kind: 'api_contract',
+          required: true,
+        },
+      ],
+    },
+  ],
+} as unknown as ArchitectPlanRecord);
+
+const buildArtifactEntries = (): VisiblePlanTaskArtifactReviewEntry[] => [
+  {
+    artifact: {
+      id: 'api-contract',
+      planId: 'plan-1',
+      taskId: 'task-1',
+      kind: 'api_contract',
+      title: 'API contract',
+      summary: 'Routes and payloads',
+      contentType: 'markdown',
+      path: 'branches/feature/artifacts/plans/plan-1/artifacts/tasks/task-1/api-contract.md',
+      contentHash: 'own',
+      createdAt: '2026-05-26T00:00:00.000Z',
+      updatedAt: '2026-05-26T00:00:00.000Z',
+      createdBy: 'agent',
+      contractId: 'api-contract',
+      visibility: 'own',
+    },
+    review: null,
+    hasValidatedReview: false,
+    hasPendingReview: true,
+  },
+  {
+    artifact: {
+      id: 'audit-findings',
+      planId: 'plan-1',
+      taskId: 'audit',
+      kind: 'audit',
+      title: 'Audit findings',
+      summary: 'Security and migration notes',
+      contentType: 'markdown',
+      path: 'branches/feature/artifacts/plans/plan-1/artifacts/tasks/audit/audit-findings.md',
+      contentHash: 'inherited',
+      createdAt: '2026-05-26T00:00:00.000Z',
+      updatedAt: '2026-05-26T00:00:00.000Z',
+      createdBy: 'agent',
+      visibility: 'inherited',
+    },
+    review: {
+      artifactId: 'audit-findings',
+      taskId: 'task-1',
+      validatedAt: '2026-05-26T00:00:00.000Z',
+      validatedBy: 'user',
+    },
+    hasValidatedReview: true,
+    hasPendingReview: false,
+  },
+];
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -506,6 +632,10 @@ describe('FileChangesPanel', () => {
     notifySuccessMock = mock(() => undefined);
     notifyErrorMock = mock(() => undefined);
     notifyActionRequiredMock = mock(() => undefined);
+    getArchitectPlanMock = mock(async () => null);
+    listArtifactEntriesMock = mock(async () => []);
+    validateArtifactMock = mock(async () => undefined);
+    unvalidateArtifactMock = mock(async () => undefined);
     await loadFileChangesPanelModules();
     const resourcePressureBackoff = await import('../../services/resourcePressureBackoff');
     resourcePressureBackoff.__testables.reset();
@@ -616,6 +746,158 @@ describe('FileChangesPanel', () => {
     expect(stageChangesMock).toHaveBeenCalled();
     expect(stageChangesMock.mock.calls[0]?.[0]).toBe('repo-1');
     expect(notifySuccessMock).not.toHaveBeenCalled();
+  });
+
+  it('renders task artifacts as a changes subproject with new and inherited badges', async () => {
+    const plan = buildArtifactPlan();
+    const entries = buildArtifactEntries();
+    getArchitectPlanMock = mock(async () => plan);
+    listArtifactEntriesMock = mock(async () => entries);
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts',
+        plan_target_branch: 'feature/artifacts',
+        dependencies: ['audit'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    expect(artifactSection).not.toBeNull();
+    expect(document.body.textContent).toContain('Artifacts');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('API contract');
+    expect(document.body.textContent).toContain('Audit findings');
+    expect(document.body.textContent).toContain('new');
+    expect(document.body.textContent).toContain('hérité');
+    expect(document.body.textContent).toContain('Validated');
+  });
+
+  it('keeps application repository folders visible when artifacts are present', async () => {
+    const plan = buildArtifactPlan();
+    const entries = buildArtifactEntries();
+    getArchitectPlanMock = mock(async () => plan);
+    listArtifactEntriesMock = mock(async () => entries);
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts',
+        plan_target_branch: 'feature/artifacts',
+        dependencies: ['audit'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const sections = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[data-review-repository-section="true"]')
+    );
+    const repositorySection = sections.find(
+      (section) => !section.hasAttribute('data-artifacts-review-section')
+    );
+    const artifactSection = sections.find((section) =>
+      section.hasAttribute('data-artifacts-review-section')
+    );
+
+    expect(repositorySection?.getAttribute('data-review-repository-expanded')).toBe('true');
+    expect(repositorySection?.textContent).toContain('src');
+    expect(repositorySection?.textContent).toContain('main.ts');
+    expect(artifactSection?.getAttribute('data-review-repository-expanded')).toBe('false');
+    expect(document.body.textContent).toContain('Artifacts');
+  });
+
+  it('shows expected artifact contracts as a plain empty-state hint', async () => {
+    const plan = buildArtifactPlan();
+    getArchitectPlanMock = mock(async () => plan);
+    listArtifactEntriesMock = mock(async () => []);
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts',
+        plan_target_branch: 'feature/artifacts',
+        dependencies: ['audit'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+
+    expect(artifactSection?.textContent).toContain('Expected by this task: API contract');
+    expect(artifactSection?.textContent).not.toContain('Expected artifacts');
+    expect(artifactSection?.textContent).not.toContain('required');
+    expect(artifactSection?.textContent).toContain('API contract');
+    expect(artifactSection?.textContent).toContain('No produced artifacts yet.');
+  });
+
+  it('opens an artifact diff modal and validates pending artifacts from the global action', async () => {
+    const plan = buildArtifactPlan();
+    const entries = buildArtifactEntries();
+    getArchitectPlanMock = mock(async () => plan);
+    listArtifactEntriesMock = mock(async () => entries);
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts',
+        plan_target_branch: 'feature/artifacts',
+        dependencies: ['audit'],
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+
+    const artifactButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('API contract')) as HTMLButtonElement | undefined;
+    await act(async () => {
+      artifactButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-artifact-diff-modal="true"]')?.getAttribute('data-artifact-id')).toBe('api-contract');
+
+    const validateButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Validate changes')) as HTMLButtonElement | undefined;
+    await act(async () => {
+      validateButton?.click();
+      await flushRender();
+    });
+
+    expect(stageAllTaskChangesMock).toHaveBeenCalled();
+    expect(validateArtifactMock).toHaveBeenCalled();
+    expect(validateArtifactMock.mock.calls[0]?.[0]).toMatchObject({
+      artifactId: 'api-contract',
+    });
   });
 
   it('toggles a repository section without creating a selected repository state', async () => {

@@ -131,6 +131,8 @@ describe("toolModePolicy", () => {
       "git_diff",
       "git_get_tree",
       "task_todo_get",
+      "task_artifact_list",
+      "task_artifact_get",
     ]);
     expect(policy.allowedToolIds.includes("write")).toBe(false);
     expect(policy.allowedToolIds.includes("edit")).toBe(false);
@@ -138,6 +140,7 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("apply_patch")).toBe(false);
     expect(policy.allowedToolIds.includes("skill_run_script")).toBe(false);
     expect(policy.allowedToolIds.includes("task_todo_update")).toBe(false);
+    expect(policy.allowedToolIds.includes("task_artifact_put")).toBe(false);
     expect(policy.allowedToolIds.includes("git_add")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.allowedToolIds.includes("git_checkout")).toBe(false);

@@ -461,6 +461,8 @@ Cette branche contient notamment :
 - `branches/<target-branch>/plans/<plan-id>/runtime.json`
 - `branches/<target-branch>/plans/<plan-id>/manifest.json`
 - `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
 
 Le stockage metadata dans Git permet l'audit, la redondance et la conservation de l'historique de travail.
 
@@ -478,6 +480,12 @@ Les plans sont stockes dans une structure de type :
 - `branches/<target-branch>/plans/<plan-id>/runtime.json`
 - `branches/<target-branch>/plans/<plan-id>/manifest.json`
 - `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
+
+Les artefacts de relais de taches sont separes du dossier `tasks/<task-id>/`, qui reste reserve aux rendus generes comme `planned.md` et `executed.md`.
+
+`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement a marquer la revue de l'artefact pour la tache consommatrice courante.
 
 ### 11.2 Raison de cette structure
 
@@ -493,6 +501,7 @@ Cette structure sert a :
 Le frontend lit, ecrit et synchronise cette structure via :
 
 - les services de planification
+- le service d'artefacts de plan, qui calcule la fermeture transitive des dependances et applique les droits de lecture/ecriture par tache
 - les commandes FS avec scope metadata
 - les commandes Git de sync `@macro`
 

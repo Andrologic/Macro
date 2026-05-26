@@ -2818,6 +2818,38 @@ describe('ChatZone', () => {
     });
   });
 
+  it('disables strategy regeneration after plan validation', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    appState.activePlanContext = {
+      id: 'plan-1',
+      title: 'Plan verrouillé',
+      description: '',
+      status: 'validated',
+      targetBranch: 'develop',
+    };
+    appState.planNodes = [{ id: 'node-1', title: 'Existing strategy node' }];
+    needsState.needs = [{ id: 'need-1', planId: 'plan-1' }];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Regenerate Strategy')
+    ) as HTMLButtonElement | undefined;
+
+    expect(button).toBeDefined();
+    expect(button?.disabled).toBe(true);
+    expect(button?.title).toBe('Strategy is locked after plan validation.');
+
+    await act(async () => {
+      button?.click();
+    });
+
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('renders provider, model, and reasoning selectors in the toolbar', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);

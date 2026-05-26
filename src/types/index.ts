@@ -28,6 +28,7 @@ export type AgentType = 'build' | 'plan';
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
+export type PlanTaskArtifactContentType = 'markdown' | 'json' | 'text';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
 export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
@@ -117,6 +118,7 @@ export interface PlanNode {
   status: PlanNodeStatus;
   dependencies: string[];
   todos?: PlanNodeTodo[];
+  artifactContracts?: PlanNodeArtifactContract[];
   assignedBranch?: string;
   branchType?: Exclude<GitFlowBranchType, 'plan'>;
   branchSlug?: string;
@@ -133,6 +135,38 @@ export interface PlanNodeTodo {
   title: string;
   description?: string;
   status: PlanNodeTodoStatus;
+}
+
+export interface PlanNodeArtifactContract {
+  id: string;
+  title: string;
+  kind: string;
+  description?: string;
+  required: boolean;
+}
+
+export interface PlanTaskArtifact {
+  id: string;
+  planId: string;
+  taskId: string;
+  kind: string;
+  title: string;
+  summary: string;
+  contentType: PlanTaskArtifactContentType;
+  path: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  contractId?: string;
+  supersedes?: string;
+}
+
+export interface PlanTaskArtifactReview {
+  artifactId: string;
+  taskId: string;
+  validatedAt: string;
+  validatedBy: string;
 }
 
 export interface PlanEdge {

@@ -16,6 +16,20 @@ import {
   type ReviewRepositoryUiState,
 } from '../../services/implementMultiRepoSummary';
 import {
+  getArchitectPlan,
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  type ArchitectPlanRecord,
+} from '../../services/architectPlanService';
+import {
+  listVisibleTaskArtifactReviewEntries,
+  normalizeArtifactContracts,
+  validateVisibleTaskArtifact,
+  unvalidateVisibleTaskArtifact,
+  type VisiblePlanTaskArtifactReviewEntry,
+} from '../../services/architectPlanArtifactService';
+import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
+import {
   getServiceRuntimeCapabilities,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../../services';
@@ -55,6 +69,7 @@ import {
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
+import { ArtifactDiffModal } from '../modals/ArtifactDiffModal';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -90,6 +105,16 @@ interface CommitMessageEditState {
   fieldsByRepositoryId: Record<string, ConventionalCommitFields>;
   error: string | null;
 }
+
+interface ArtifactReviewPanelState {
+  branchName: string;
+  plan: ArchitectPlanRecord;
+  entries: VisiblePlanTaskArtifactReviewEntry[];
+  contracts: ReturnType<typeof normalizeArtifactContracts>;
+  lastError: string | null;
+}
+
+const ARTIFACT_REPOSITORY_ID = '__task-artifacts__';
 
 const PASSIVE_WORKTREE_WAITING_STATUSES = new Set([
   'Pending',
@@ -166,6 +191,18 @@ const getRepositoryDisplayName = (
   const tail = getRepositoryPathTail(repository.repoPath, repository.projectId);
   return projectName || tail;
 };
+
+const getTaskArtifactBranchName = (
+  task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
+): string => resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+
+const canShowTaskArtifacts = (
+  task: Pick<CatalogedImplementTask, 'task_source' | 'plan_id'> | null | undefined
+): task is CatalogedImplementTask =>
+  Boolean(
+    task?.plan_id &&
+      (task.task_source === 'architect' || isPlanFinalizationTaskSource(task.task_source))
+  );
 
 const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
   const value = raw.toLowerCase();
@@ -429,6 +466,111 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   );
 };
 
+interface ArtifactReviewItemProps {
+  entry: VisiblePlanTaskArtifactReviewEntry;
+  sourceTitle: string;
+  isSelected: boolean;
+  onOpen: () => void;
+  onValidate: () => void;
+  onUnvalidate: () => void;
+  labels: {
+    staged: string;
+    validate: string;
+    unstage: string;
+    revert: string;
+    new: string;
+    inherited: string;
+  };
+}
+
+const ArtifactReviewItem: React.FC<ArtifactReviewItemProps> = ({
+  entry,
+  sourceTitle,
+  isSelected,
+  onOpen,
+  onValidate,
+  onUnvalidate,
+  labels,
+}) => {
+  const { artifact } = entry;
+  const isOwn = artifact.visibility === 'own';
+  return (
+    <div
+      className={cn(
+        'group relative rounded-lg transition-all overflow-hidden',
+        isSelected
+          ? 'bg-primary/[0.035]'
+          : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
+      )}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-w-0 w-full appearance-none items-start gap-2 border-0 bg-transparent px-2 py-1.5 pr-2 text-left outline-none"
+      >
+        <span
+          className={cn(
+            'mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold font-mono',
+            isOwn ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+          )}
+        >
+          {isOwn ? '+' : 'I'}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm text-foreground">{artifact.title}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+            {artifact.summary || sourceTitle}
+          </span>
+        </span>
+        {entry.hasPendingReview && (
+          <span
+            data-pending-validation-indicator="true"
+            className={cn(
+              'mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+            )}
+          />
+        )}
+        <div
+          data-file-change-metadata="true"
+          className={cn(
+            'flex shrink-0 flex-wrap items-center justify-end gap-1 text-[11px] opacity-80',
+            (entry.hasPendingReview || entry.hasValidatedReview) &&
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+          )}
+        >
+          <span
+            className={cn(
+              'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+              isOwn
+                ? 'bg-primary/10 text-primary'
+                : 'bg-muted text-muted-foreground'
+            )}
+          >
+            {isOwn ? labels.new : labels.inherited}
+          </span>
+          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+            {artifact.kind}
+          </span>
+          {entry.hasValidatedReview && (
+            <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+              {labels.staged}
+            </span>
+          )}
+        </div>
+      </button>
+      {(entry.hasPendingReview || entry.hasValidatedReview) && (
+        <ScopeActionRail
+          onValidate={entry.hasPendingReview ? onValidate : undefined}
+          onUnstage={entry.hasValidatedReview ? onUnvalidate : undefined}
+          labels={labels}
+          className="rounded-r-lg"
+        />
+      )}
+    </div>
+  );
+};
+
 const renderRepositoryState = (
   repository: ReviewRepositoryState,
   repositorySummary: ReviewRepositorySummary | undefined,
@@ -464,6 +606,27 @@ const renderRepositoryState = (
   }
   return t('implement.repositoryValidationProgress', '{{pending}} pending', {
     pending: repository.stats.pendingVisibleFileCount,
+  });
+};
+
+const renderArtifactRepositoryState = (
+  pendingCount: number,
+  validatedCount: number,
+  t: TranslateFn
+): string => {
+  if (pendingCount > 0 && validatedCount > 0) {
+    return t('implement.artifacts.pendingAndValidated', '{{pending}} pending, {{validated}} validated', {
+      pending: pendingCount,
+      validated: validatedCount,
+    });
+  }
+  if (validatedCount > 0) {
+    return t('implement.artifacts.validatedOnly', '{{validated}} validated', {
+      validated: validatedCount,
+    });
+  }
+  return t('implement.artifacts.pendingOnly', '{{pending}} pending', {
+    pending: pendingCount,
   });
 };
 
@@ -535,6 +698,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const modelsByProvider = providerStore.modelsByProvider;
   const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? NO_REASONING_EFFORTS;
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
+  const [artifactPanelState, setArtifactPanelState] = useState<ArtifactReviewPanelState | null>(null);
+  const [isLoadingArtifacts, setIsLoadingArtifacts] = useState(false);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [pendingRevertScope, setPendingRevertScope] = useState<{
     repositoryId: string;
     changeIds: string[];
@@ -640,6 +806,54 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskAssistantRuntimeSignature.includes(':preparing:') ||
     selectedTaskAssistantRuntimeSignature.includes(':streaming:');
 
+  const loadArtifactReviewState = useCallback(async () => {
+    if (!canShowTaskArtifacts(currentTask)) {
+      setArtifactPanelState(null);
+      setSelectedArtifactId(null);
+      return;
+    }
+    setIsLoadingArtifacts(true);
+    try {
+      const branchName = getTaskArtifactBranchName(currentTask);
+      const plan = await getArchitectPlan(branchName, currentTask.plan_id);
+      if (!plan || plan.status === 'deleted') {
+        setArtifactPanelState(null);
+        setSelectedArtifactId(null);
+        return;
+      }
+      const entries = await listVisibleTaskArtifactReviewEntries({
+        branchName,
+        plan,
+        task: currentTask,
+        includeInherited: true,
+        includeOwn: true,
+      });
+      const node = plan.nodes.find((candidate) => candidate.id === currentTask.id);
+      setArtifactPanelState({
+        branchName,
+        plan,
+        entries,
+        contracts: normalizeArtifactContracts(node || {}),
+        lastError: null,
+      });
+      setSelectedArtifactId((current) =>
+        current && entries.some((entry) => entry.artifact.id === current)
+          ? current
+          : null
+      );
+    } catch (error) {
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
+      setArtifactPanelState((current) =>
+        current
+          ? { ...current, lastError: message }
+          : null
+      );
+      notify.error(message);
+    } finally {
+      setIsLoadingArtifacts(false);
+    }
+  }, [currentTask, t]);
+
   useEffect(() => {
     let disposed = false;
     void loadMetadataModelConfig()
@@ -677,6 +891,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       unsubscribe();
     };
   }, [normalizeCommitModelConfig]);
+
+  useEffect(() => {
+    void loadArtifactReviewState();
+  }, [loadArtifactReviewState]);
 
   useEffect(() => {
     if (commitModelChoiceMode !== 'dedicated') return;
@@ -952,6 +1170,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             ...(isDiffModalOpen ? { preserveDiffModalSession: true } : {}),
           });
         }
+        await loadArtifactReviewState();
       } catch {
         // Silent refresh: the panel will surface explicit errors on the next user action.
       } finally {
@@ -971,6 +1190,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isGeneratingCommitMessages,
     isPlanFinalizationTask,
     isReadOnlyRemoteMode,
+    loadArtifactReviewState,
     loadCurrentChanges,
     loadMergeWorkflowReview,
     postAssistantRefreshToken,
@@ -978,8 +1198,35 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskHasPendingQuestionnaire,
   ]);
 
+  const artifactEntries = artifactPanelState?.entries ?? [];
+  const artifactContracts = artifactPanelState?.contracts ?? [];
+  const missingArtifactContracts = artifactContracts.filter(
+    (contract) =>
+      !artifactEntries.some(
+        (entry) =>
+          entry.artifact.taskId === currentTask?.id &&
+          (entry.artifact.contractId === contract.id || entry.artifact.id === contract.id)
+      )
+  );
+  const showArtifactRepository = Boolean(
+    artifactPanelState &&
+      (artifactEntries.length > 0 || artifactContracts.length > 0 || artifactPanelState.lastError)
+  );
+  const artifactPendingReviewCount = artifactEntries.filter((entry) => entry.hasPendingReview).length;
+  const ownArtifactPendingReviewCount = artifactEntries.filter(
+    (entry) => entry.hasPendingReview && entry.artifact.visibility === 'own'
+  ).length;
+  const artifactValidatedReviewCount = artifactEntries.filter((entry) => entry.hasValidatedReview).length;
+  const reviewSectionCount = repositories.length + (showArtifactRepository ? 1 : 0);
+  const hasActionableRepositoryChanges =
+    reviewSummary.actionCounts.pending_validation > 0 ||
+    reviewSummary.actionCounts.ready_to_commit > 0;
+  const shouldDefaultExpandArtifactRepository =
+    showArtifactRepository &&
+    (repositories.length === 0 || !hasActionableRepositoryChanges);
+
   useEffect(() => {
-    if (repositories.length === 0) return;
+    if (reviewSectionCount === 0) return;
     setExpandedRepositoryIds((current) => {
       const next = { ...current };
       repositories.forEach((repository) => {
@@ -988,28 +1235,52 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           repositories.length === 1 ||
           repository.id === reviewSummary.nextRepositoryId;
       });
+      if (showArtifactRepository && next[ARTIFACT_REPOSITORY_ID] === undefined) {
+        next[ARTIFACT_REPOSITORY_ID] = shouldDefaultExpandArtifactRepository;
+      }
       return next;
     });
-  }, [repositories, reviewSummary.nextRepositoryId]);
+  }, [
+    repositories,
+    reviewSectionCount,
+    reviewSummary.nextRepositoryId,
+    shouldDefaultExpandArtifactRepository,
+    showArtifactRepository,
+  ]);
 
   const repositorySummaryById = useMemo(
     () => new Map(reviewSummary.repositories.map((repository) => [repository.id, repository])),
     [reviewSummary.repositories]
   );
-  const multiRepositorySectionMaxHeight =
+  const repositoriesSectionMaxHeight =
     repositories.length > 1 && repositoryListHeight > 0
       ? Math.max(
           MULTI_REPOSITORY_MIN_SECTION_HEIGHT,
           Math.floor(repositoryListHeight / repositories.length)
         )
       : null;
+  const artifactSectionMaxHeight =
+    reviewSectionCount > 1 && repositoryListHeight > 0
+      ? Math.max(
+          MULTI_REPOSITORY_MIN_SECTION_HEIGHT,
+          Math.floor(repositoryListHeight / reviewSectionCount)
+        )
+      : null;
   const overallStats = getOverallStats();
-  const actionableFileCount =
-    overallStats.pendingVisibleFileCount + overallStats.validatedStagedFileCount;
-  const progressPercent = actionableFileCount > 0
-    ? (overallStats.validatedStagedFileCount / actionableFileCount) * 100
+  const actionableChangeCount =
+    overallStats.pendingVisibleFileCount +
+    overallStats.validatedStagedFileCount +
+    artifactPendingReviewCount +
+    artifactValidatedReviewCount;
+  const validatedChangeCount =
+    overallStats.validatedStagedFileCount + artifactValidatedReviewCount;
+  const pendingChangeCount =
+    overallStats.pendingVisibleFileCount + artifactPendingReviewCount;
+  const progressPercent = actionableChangeCount > 0
+    ? (validatedChangeCount / actionableChangeCount) * 100
     : 0;
-  const hasPendingValidation = reviewSummary.actionCounts.pending_validation > 0;
+  const hasPendingValidation =
+    reviewSummary.actionCounts.pending_validation > 0 || artifactPendingReviewCount > 0;
   const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
   const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
@@ -1032,6 +1303,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     allTaskRepositoriesResolved &&
     reviewSummary.actionCounts.pending_validation === 0 &&
     reviewSummary.actionCounts.ready_to_commit === 0 &&
+    ownArtifactPendingReviewCount === 0 &&
     hasTaskCommittedRepositories;
   const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
   const validateChangesDisabledReason = isGeneratingCommitMessages
@@ -1180,10 +1452,68 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     });
   };
 
+  const handleValidateArtifact = async (artifactId: string) => {
+    if (!artifactPanelState || !currentTask || !canShowTaskArtifacts(currentTask)) {
+      return;
+    }
+    try {
+      await validateVisibleTaskArtifact({
+        branchName: artifactPanelState.branchName,
+        plan: artifactPanelState.plan,
+        task: currentTask,
+        artifactId,
+      });
+      await loadArtifactReviewState();
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.artifacts.validateFailed', 'Failed to validate artifact.')
+      );
+    }
+  };
+
+  const handleUnvalidateArtifact = async (artifactId: string) => {
+    if (!artifactPanelState || !currentTask || !canShowTaskArtifacts(currentTask)) {
+      return;
+    }
+    try {
+      await unvalidateVisibleTaskArtifact({
+        branchName: artifactPanelState.branchName,
+        plan: artifactPanelState.plan,
+        task: currentTask,
+        artifactId,
+      });
+      await loadArtifactReviewState();
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.artifacts.unvalidateFailed', 'Failed to unvalidate artifact.')
+      );
+    }
+  };
+
   const handleValidateChanges = async () => {
     if (!hasPendingValidation) return;
     try {
-      await stageAllTaskChanges();
+      if (reviewSummary.actionCounts.pending_validation > 0) {
+        await stageAllTaskChanges();
+      }
+      if (artifactPanelState && currentTask && canShowTaskArtifacts(currentTask)) {
+        const pendingArtifactIds = artifactEntries
+          .filter((entry) => entry.hasPendingReview)
+          .map((entry) => entry.artifact.id);
+        for (const artifactId of pendingArtifactIds) {
+          await validateVisibleTaskArtifact({
+            branchName: artifactPanelState.branchName,
+            plan: artifactPanelState.plan,
+            task: currentTask,
+            artifactId,
+          });
+        }
+        if (pendingArtifactIds.length > 0) {
+          await loadArtifactReviewState();
+        }
+      }
     } catch (error) {
       notify.error(
         toServiceError(error).message ||
@@ -1328,6 +1658,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     unstage: t('implement.unstageAction', 'Unstage'),
     revert: t('implement.revertAction', 'Revert'),
   };
+  const artifactActionLabels = {
+    staged: t('implement.artifacts.validatedBadge', 'Validated'),
+    validate: t('implement.artifacts.validateAction', 'Validate artifact'),
+    unstage: t('implement.artifacts.unvalidateAction', 'Unvalidate'),
+    revert: t('implement.revertAction', 'Revert'),
+    new: t('implement.artifacts.newBadge', 'new'),
+    inherited: t('implement.artifacts.inheritedBadge', 'hérité'),
+  };
 
   if (isWorkspaceMissing) {
     return (
@@ -1416,17 +1754,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             />
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
-            {overallStats.validatedStagedFileCount > 0 && overallStats.pendingVisibleFileCount > 0
+            {validatedChangeCount > 0 && pendingChangeCount > 0
               ? translate('implement.overallPendingAndReadyCompact', '{{ready}} ready, {{pending}} pending', {
-                  ready: overallStats.validatedStagedFileCount,
-                  pending: overallStats.pendingVisibleFileCount,
+                  ready: validatedChangeCount,
+                  pending: pendingChangeCount,
                 })
-              : overallStats.validatedStagedFileCount > 0
+              : validatedChangeCount > 0
                 ? translate('implement.overallReadyCompact', '{{ready}} ready', {
-                    ready: overallStats.validatedStagedFileCount,
+                    ready: validatedChangeCount,
                   })
                 : translate('implement.overallPendingCompact', '{{pending}} pending', {
-                    pending: overallStats.pendingVisibleFileCount,
+                    pending: pendingChangeCount,
                   })}
           </span>
         </div>
@@ -1490,7 +1828,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
-        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && !showArtifactRepository && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
@@ -1524,9 +1862,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             .filter((change) => change.hasValidatedStage)
             .map((change) => change.id);
           const repositoryActionCount = repositoryChangeIds.length + repositoryStagedChangeIds.length;
-          const repositorySectionMaxHeight =
-            isExpanded && multiRepositorySectionMaxHeight
-              ? `${multiRepositorySectionMaxHeight}px`
+          const repositoryMaxHeight =
+            isExpanded && repositoriesSectionMaxHeight
+              ? `${repositoriesSectionMaxHeight}px`
               : undefined;
           return (
             <section
@@ -1539,7 +1877,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 isExpanded && repositories.length > 1 && 'shrink-0 overflow-hidden',
                 !isExpanded && 'shrink-0'
               )}
-              style={repositorySectionMaxHeight ? { maxHeight: repositorySectionMaxHeight } : undefined}
+              style={repositoryMaxHeight ? { maxHeight: repositoryMaxHeight } : undefined}
             >
               <div
                 className={cn(
@@ -1711,6 +2049,180 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             </section>
           );
         })}
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && showArtifactRepository && artifactPanelState && (() => {
+          const isExpanded =
+            expandedRepositoryIds[ARTIFACT_REPOSITORY_ID] ??
+            shouldDefaultExpandArtifactRepository;
+          const artifactMaxHeight =
+            isExpanded && artifactSectionMaxHeight
+              ? `${artifactSectionMaxHeight}px`
+              : undefined;
+          return (
+            <section
+              key={ARTIFACT_REPOSITORY_ID}
+              data-review-repository-section="true"
+              data-review-repository-expanded={isExpanded ? 'true' : 'false'}
+              data-artifacts-review-section="true"
+              className={cn(
+                'mx-2 flex min-h-0 flex-col',
+                isExpanded && reviewSectionCount === 1 && 'min-h-[7rem] flex-1 basis-0',
+                isExpanded && reviewSectionCount > 1 && 'shrink-0 overflow-hidden',
+                !isExpanded && 'shrink-0'
+              )}
+              style={artifactMaxHeight ? { maxHeight: artifactMaxHeight } : undefined}
+            >
+              <div
+                className={cn(
+                  'group relative w-full rounded-xl px-3 py-2.5 transition-colors overflow-hidden',
+                  isExpanded
+                    ? 'bg-accent/25'
+                    : 'bg-card hover:bg-accent/40'
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpandedRepositoryIds((current) => ({
+                        ...current,
+                        [ARTIFACT_REPOSITORY_ID]: !(
+                          current[ARTIFACT_REPOSITORY_ID] ??
+                          shouldDefaultExpandArtifactRepository
+                        ),
+                      }));
+                    }}
+                    className="min-w-0 flex flex-1 appearance-none items-center gap-2 border-0 bg-transparent text-left outline-none"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Icon
+                        name={isExpanded ? 'chevron-down' : 'chevron-right'}
+                        size={14}
+                        className="text-muted-foreground shrink-0"
+                      />
+                      <Icon
+                        name={isExpanded ? 'folder-open' : 'folder'}
+                        size={15}
+                        className="shrink-0 text-primary/80"
+                      />
+                      <span className="text-sm font-medium text-foreground truncate">
+                        {t('implement.artifacts.title', 'Artifacts')}
+                      </span>
+                      {!isExpanded && artifactPendingReviewCount > 0 && (
+                        <span
+                          data-pending-validation-indicator="true"
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                            HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                          )}
+                        />
+                      )}
+                    </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span
+                      data-repository-change-status="true"
+                      className={cn(
+                        'px-2 py-0.5 rounded-full text-[10px] shrink-0',
+                        (artifactPendingReviewCount > 0 || artifactValidatedReviewCount > 0) &&
+                          HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE,
+                        artifactPendingReviewCount > 0
+                          ? REVIEW_STATE_CLASSES.pending_validation
+                          : REVIEW_STATE_CLASSES.no_changes
+                      )}
+                    >
+                      {renderArtifactRepositoryState(
+                        artifactPendingReviewCount,
+                        artifactValidatedReviewCount,
+                        translate
+                      )}
+                    </span>
+                  </div>
+                </div>
+                {(artifactPendingReviewCount > 0 || artifactValidatedReviewCount > 0) && (
+                  <ScopeActionRail
+                    onValidate={
+                      artifactPendingReviewCount > 0
+                        ? () => void handleValidateChanges()
+                        : undefined
+                    }
+                    onUnstage={
+                      artifactValidatedReviewCount > 0
+                        ? () => {
+                            void (async () => {
+                              for (const entry of artifactEntries.filter((candidate) => candidate.hasValidatedReview)) {
+                                await handleUnvalidateArtifact(entry.artifact.id);
+                              }
+                            })();
+                          }
+                        : undefined
+                    }
+                    labels={artifactActionLabels}
+                    className="rounded-r-xl"
+                  />
+                )}
+              </div>
+
+              {isExpanded && (
+                <div className="ml-4 mr-3 mb-3 flex min-h-0 flex-1 flex-col pl-2">
+                  <div
+                    data-review-repository-scroll-region="true"
+                    className="min-h-0 flex-1 overflow-y-auto py-1 pr-1"
+                  >
+                    {isLoadingArtifacts && (
+                      <div className="flex items-center justify-center gap-2 px-2 py-4 text-sm text-muted-foreground">
+                        <Icon name="loader" size={14} className="animate-spin" />
+                        {t('implement.artifacts.loading', 'Loading artifacts...')}
+                      </div>
+                    )}
+                    {artifactPanelState.lastError && (
+                      <div className="px-2 py-4 text-center text-sm text-destructive">
+                        {artifactPanelState.lastError}
+                      </div>
+                    )}
+                    {!artifactPanelState.lastError && artifactEntries.length === 0 && (
+                      <div className="px-2 py-4 text-center">
+                        <div className="text-sm text-muted-foreground">
+                          {t('implement.artifacts.noneProduced', 'No produced artifacts yet.')}
+                        </div>
+                        {artifactContracts.length > 0 && (
+                          <div className="mx-auto mt-1 max-w-[18rem] text-xs leading-relaxed text-muted-foreground/80">
+                            {t('implement.artifacts.expectedInline', 'Expected by this task: {{items}}', {
+                              items: artifactContracts.map((contract) => contract.title).join(', '),
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!artifactPanelState.lastError &&
+                      artifactEntries.length > 0 &&
+                      missingArtifactContracts.length > 0 && (
+                        <div className="px-2 pb-1 text-xs leading-relaxed text-muted-foreground/80">
+                          {t('implement.artifacts.stillExpectedInline', 'Still expected: {{items}}', {
+                            items: missingArtifactContracts.map((contract) => contract.title).join(', '),
+                          })}
+                        </div>
+                      )}
+                    {!artifactPanelState.lastError && artifactEntries.map((entry) => {
+                      const sourceNode = artifactPanelState.plan.nodes.find((node) => node.id === entry.artifact.taskId);
+                      return (
+                        <ArtifactReviewItem
+                          key={entry.artifact.id}
+                          entry={entry}
+                          sourceTitle={sourceNode?.title || entry.artifact.taskId}
+                          isSelected={selectedArtifactId === entry.artifact.id}
+                          onOpen={() => setSelectedArtifactId(entry.artifact.id)}
+                          onValidate={() => void handleValidateArtifact(entry.artifact.id)}
+                          onUnvalidate={() => void handleUnvalidateArtifact(entry.artifact.id)}
+                          labels={artifactActionLabels}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })()}
       </div>
 
       <div className="p-3 border-t border-border shrink-0 space-y-2">
@@ -1751,6 +2263,20 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       {isDiffModalOpen && selectedDiffTarget && (
         <FileChangesDiffModal
           onClose={closeDiffModal}
+        />
+      )}
+
+      {selectedArtifactId && artifactPanelState && currentTask && canShowTaskArtifacts(currentTask) && (
+        <ArtifactDiffModal
+          branchName={artifactPanelState.branchName}
+          plan={artifactPanelState.plan}
+          task={currentTask}
+          entries={artifactEntries}
+          artifactId={selectedArtifactId}
+          onSelectArtifact={setSelectedArtifactId}
+          onValidate={handleValidateArtifact}
+          onUnvalidate={handleUnvalidateArtifact}
+          onClose={() => setSelectedArtifactId(null)}
         />
       )}
 

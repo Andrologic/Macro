@@ -1538,6 +1538,7 @@
     "regenerateStrategy": "再生戦略",
     "generateStrategyHint": "特定されたニーズから戦略を生成する",
     "regenerateStrategyHint": "現在のニーズから戦略を再構築する",
+    "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "最初に有効なプランを選択してください",
     "generateStrategyNeedPrompt": "戦略を作成する前に少なくとも 1 つのニーズを追加します",
     "nodeStatus": {
@@ -1583,6 +1584,8 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
+    "taskTodos": "TODO attaché",
+    "expectedArtifacts": "Expected artifacts",
     "strategyPreviewTitle": "Regeneration preview",
     "strategyPreviewBlockedTitle": "Regeneration blocked",
     "strategyPreviewDescription": "Frozen work is preserved. Review the pending rewrites before applying the updated strategy.",

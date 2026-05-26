@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import type { ArchitectPlanRecord } from './architectPlanService';
+import {
+  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+  type ArchitectPlanRecord,
+} from './architectPlanService';
 import type { PlanNode, Project, ProjectGroup } from '../types';
 import { handleArchitectToolCall } from './architectToolRuntime';
 
@@ -105,6 +108,7 @@ const createRuntime = (plan: ArchitectPlanRecord) => {
         activePlanContext: {
           id: plan.id,
           targetBranch: plan.targetBranch,
+          status: plan.status,
         },
         selectedGroupId: 'other-suite',
         selectedProjectId: 'opencode',
@@ -242,6 +246,48 @@ describe('architectToolRuntime strategy scope', () => {
     ]);
   });
 
+  it('coerces generated artifact contracts to required handoffs', async () => {
+    const runtime = createRuntime(createPlan());
+    runtime.params.args.nodes = [
+      {
+        title: 'Auditer les flux',
+        description: 'Identifier les risques.',
+        type: 'feature',
+        featureSlug: 'audit',
+        artifactContracts: [
+          {
+            id: 'audit-findings',
+            title: 'Audit findings',
+            kind: 'audit',
+            required: false,
+          },
+          {
+            id: 'migration-map',
+            title: 'Migration map',
+            kind: 'migration_map',
+          },
+        ],
+      },
+    ];
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.artifactContracts).toEqual([
+      {
+        id: 'audit-findings',
+        title: 'Audit findings',
+        kind: 'audit',
+        required: true,
+      },
+      {
+        id: 'migration-map',
+        title: 'Migration map',
+        kind: 'migration_map',
+        required: true,
+      },
+    ]);
+  });
+
   it('uses every editable subproject already attached to a multi-subproject plan', async () => {
     const runtime = createRuntime(createPlan({
       projectIds: ['mouillage-app', 'mouillage-docs'],
@@ -338,6 +384,76 @@ describe('architectToolRuntime strategy scope', () => {
         status: 'pending',
       }),
     ]);
+  });
+
+  it('rejects strategy mutations after plan validation', async () => {
+    const plan = createPlan({
+      status: 'validated',
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Configurer la release',
+          description: 'Préparer le build Android.',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'release',
+          branchType: 'feature',
+          branchSlug: 'release',
+          projectId: 'mouillage-app',
+          projectIds: ['mouillage-app'],
+        },
+      ],
+    });
+
+    const generateRuntime = createRuntime(plan);
+    await expect(handleArchitectToolCall(generateRuntime.params)).resolves.toBe(
+      ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+    );
+
+    const updateRuntime = createRuntime(plan);
+    updateRuntime.params.toolName = 'strategy_update';
+    updateRuntime.params.args = {
+      operations: [{ action: 'update', node_id: 'node-1', title: 'Release verrouillée' }],
+    };
+    await expect(handleArchitectToolCall(updateRuntime.params)).resolves.toBe(
+      ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+    );
+
+    const deleteRuntime = createRuntime(plan);
+    deleteRuntime.params.toolName = 'strategy_delete';
+    deleteRuntime.params.args = { confirm: true };
+    await expect(handleArchitectToolCall(deleteRuntime.params)).resolves.toBe(
+      ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+    );
+  });
+
+  it('keeps strategy_get available after plan validation', async () => {
+    const runtime = createRuntime(createPlan({
+      status: 'validated',
+      nodes: [
+        {
+          id: 'node-1',
+          title: 'Configurer la release',
+          description: 'Préparer le build Android.',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'release',
+          branchType: 'feature',
+          branchSlug: 'release',
+          projectId: 'mouillage-app',
+          projectIds: ['mouillage-app'],
+        },
+      ],
+    }));
+    runtime.params.toolName = 'strategy_get';
+    runtime.params.args = {};
+
+    const result = await handleArchitectToolCall(runtime.params);
+
+    expect(result).toContain('Loaded strategy');
+    expect(result).toContain('Configurer la release');
   });
 
   it('updates todos through strategy_update operations', async () => {

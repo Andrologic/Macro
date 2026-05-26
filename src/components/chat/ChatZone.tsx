@@ -31,6 +31,7 @@ import {
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
+import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
@@ -1187,6 +1188,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!activeArchitectPlanId) return false;
     return planNodes.length > 0 || predictedBranches.length > 0;
   }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
+  const isStrategyMutationLocked =
+    mode === 'Architect' &&
+    isArchitectPlanStrategyMutationLocked(activePlanContext?.status);
+  const isGenerateStrategyDisabled =
+    isModeProjectWorkspaceMissing ||
+    !activeArchitectPlanId ||
+    isConversationPending ||
+    isBusySending ||
+    isStrategyMutationLocked ||
+    (!hasExistingStrategy && activePlanNeedsCount === 0);
 
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -1631,6 +1642,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleGenerateStrategy = async () => {
     if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
+    if (isStrategyMutationLocked) return;
     if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
 
     const conversationId = await ensureConversation();
@@ -2123,20 +2135,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 type="button"
                 onClick={() => void handleGenerateStrategy()}
                 data-tour-id="architect-generate-strategy"
-                disabled={
-                  isModeProjectWorkspaceMissing ||
-                  !activeArchitectPlanId ||
-                  isConversationPending ||
-                  isBusySending ||
-                  (!hasExistingStrategy && activePlanNeedsCount === 0)
-                }
+                disabled={isGenerateStrategyDisabled}
                 className={cn(
                   'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                  isModeProjectWorkspaceMissing ||
-                  !activeArchitectPlanId ||
-                    isConversationPending ||
-                    isBusySending ||
-                    (!hasExistingStrategy && activePlanNeedsCount === 0)
+                  isGenerateStrategyDisabled
                       ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
@@ -2147,6 +2149,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : !activeArchitectPlanId
                       ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
+                      : isStrategyMutationLocked
+                        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
                       : !hasExistingStrategy && activePlanNeedsCount === 0
                         ? t('architect.generateStrategyNeedPrompt', 'Add at least one need before generating a strategy')
                         : hasExistingStrategy

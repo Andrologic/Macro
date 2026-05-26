@@ -62,11 +62,20 @@ const IMPLEMENT_TASK_TODO_TOOLS = [
   "task_todo_get",
   "task_todo_update",
 ] as const;
+const IMPLEMENT_TASK_ARTIFACT_READ_TOOLS = [
+  "task_artifact_list",
+  "task_artifact_get",
+] as const;
+const IMPLEMENT_TASK_ARTIFACT_TOOLS = [
+  ...IMPLEMENT_TASK_ARTIFACT_READ_TOOLS,
+  "task_artifact_put",
+] as const;
 const IMPLEMENT_PLAN_TOOLS = [
   ...SHARED_CONTEXT_TOOLS,
   ...WORKSPACE_READ_TOOLS,
   ...GIT_READ_TOOLS,
   "task_todo_get",
+  ...IMPLEMENT_TASK_ARTIFACT_READ_TOOLS,
 ] as const;
 
 const ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS = [
@@ -101,6 +110,7 @@ export const getToolModePolicy = (
     allowedToolIds: [
       ...ARCHITECT_AND_IMPLEMENT_WORKSPACE_TOOLS,
       ...IMPLEMENT_TASK_TODO_TOOLS,
+      ...IMPLEMENT_TASK_ARTIFACT_TOOLS,
       ...GIT_TOOLS,
       ...TERMINAL_TOOLS,
     ],
