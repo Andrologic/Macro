@@ -887,11 +887,15 @@ describe('ChatZone', () => {
     );
     expect(skillChip).toBeTruthy();
     expect(skillChip?.getAttribute('data-context-reference-surface')).toBe('message');
-    expect(skillChip?.className).toContain('h-5');
-    expect(skillChip?.className).toContain('align-middle');
+    expect(skillChip?.className).toContain('h-[1.125rem]');
+    expect(skillChip?.className).toContain('align-[0em]');
     expect(skillChip?.className).not.toContain('align-[-0.1875rem]');
     expect(skillChip?.textContent).toContain('Skill');
     expect(skillChip?.textContent).toContain('test-skill');
+    const userContent = requireContainer().querySelector('[data-user-message-content="true"]');
+    expect(userContent?.className).toContain('leading-[1.35]');
+    expect(userContent?.querySelectorAll('br')).toHaveLength(1);
+    expect(userContent?.querySelector('p')).toBeNull();
     expect(requireContainer().textContent).not.toContain('[skill: test-skill]');
     expect(requireContainer().textContent).toContain('utilise ce skill');
     expect(requireContainer().textContent).toContain('sur deux lignes');
