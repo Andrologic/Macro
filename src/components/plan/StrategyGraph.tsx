@@ -1661,17 +1661,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           </>
         ) : (
           <div className="h-full overflow-y-auto p-4 space-y-3">
-            <div className="rounded-lg border border-border bg-card p-2.5 flex items-center gap-2">
+            <div className="rounded-lg border border-border bg-card p-2.5 flex min-w-0 items-center gap-2">
               <input
                 value={branchSearch}
                 onChange={(event) => setBranchSearch(event.target.value)}
                 placeholder={t('architect.branchSearch', 'Search tasks...')}
-                className="flex-1 h-8 px-2.5 rounded-md border border-border bg-background text-xs"
+                className="min-w-0 flex-1 h-8 px-2.5 rounded-md border border-border bg-background text-xs"
               />
               <select
                 value={branchStatusFilter}
                 onChange={(event) => setBranchStatusFilter(event.target.value as 'all' | PlanNodeStatus)}
-                className="h-8 px-2 rounded-md border border-border bg-background text-xs"
+                className="h-8 w-fit max-w-[45%] shrink-0 rounded-md border border-border bg-background py-0 pl-2.5 pr-8 text-xs truncate"
               >
                 <option value="all">{t('architect.filterStatusAll', 'All statuses')}</option>
                 <option value="pending">{t('architect.nodeStatus.pending', 'Pending')}</option>

@@ -1492,6 +1492,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
   };
 
+  const handleArtifactSaved = async (artifactId: string) => {
+    await loadArtifactReviewState();
+    setSelectedArtifactId(artifactId);
+  };
+
   const handleValidateChanges = async () => {
     if (!hasPendingValidation) return;
     try {
@@ -2276,6 +2281,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           onSelectArtifact={setSelectedArtifactId}
           onValidate={handleValidateArtifact}
           onUnvalidate={handleUnvalidateArtifact}
+          onArtifactSaved={handleArtifactSaved}
           onClose={() => setSelectedArtifactId(null)}
         />
       )}
