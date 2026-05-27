@@ -866,6 +866,15 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('Type your message');
   });
 
+  it('does not render the legacy skills dropdown in the composer control row', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().querySelector('[data-tour-id="skill-dropdown"]')).toBeNull();
+    expect(requireContainer().querySelector('[data-tour-id="chat-control-row"]')).not.toBeNull();
+  });
+
   it('renders skill references in user messages as composer-style chips', async () => {
     chatState = {
       ...chatState,
@@ -899,6 +908,32 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('[skill: test-skill]');
     expect(requireContainer().textContent).toContain('utilise ce skill');
     expect(requireContainer().textContent).toContain('sur deux lignes');
+  });
+
+  it('renders file references in user messages as compact chips', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'Regarde [file: src/App.tsx] avant de répondre',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const fileChip = requireContainer().querySelector(
+      '[data-context-reference-kind="file"]'
+    );
+    expect(fileChip).toBeTruthy();
+    expect(fileChip?.getAttribute('data-context-reference-surface')).toBe('message');
+    expect(fileChip?.textContent).toContain('File');
+    expect(fileChip?.textContent).toContain('src/App.tsx');
+    expect(requireContainer().textContent).not.toContain('[file: src/App.tsx]');
   });
 
   it('moves message editing into the composer and saves bracket text', async () => {

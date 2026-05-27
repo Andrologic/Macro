@@ -65,6 +65,11 @@ export const SkillsView: React.FC = () => {
         skill.rootPath,
         skill.skillFilePath,
         skill.source.skillRootPath ?? '',
+        skill.compatibility ?? '',
+        skill.allowedTools ?? '',
+        skill.location?.uri ?? '',
+        skill.shadowedBySkillId ?? '',
+        ...(skill.diagnostics ?? []).map((diagnostic) => `${diagnostic.code} ${diagnostic.message}`),
       ]
         .join(' ')
         .toLowerCase()
@@ -112,6 +117,12 @@ export const SkillsView: React.FC = () => {
     }
     if (!skill.isValid) {
       reasons.push(t('skills.unavailable.invalid', 'Invalid skill.'));
+    }
+    if (skill.shadowedBySkillId) {
+      reasons.push(t(
+        'skills.unavailable.shadowed',
+        'Shadowed by a higher-priority skill. Select this exact source to use it.'
+      ));
     }
     if (!settings.enabled) {
       reasons.push(t('skills.unavailable.disabled', 'Disabled.'));
@@ -203,6 +214,8 @@ export const SkillsView: React.FC = () => {
             : t('skills.globalSource', 'Global');
           const namespaceLabel = getNamespaceLabel(skill);
           const rootPath = skill.source.skillRootPath ?? skill.rootPath;
+          const diagnostics = skill.diagnostics ?? [];
+          const metadataEntries = Object.entries(skill.metadata ?? {});
           return (
             <div key={skill.id} className="rounded-lg border border-border bg-card p-4">
               <div className="flex items-start justify-between gap-4">
@@ -224,14 +237,42 @@ export const SkillsView: React.FC = () => {
                           {t('skills.invalid', 'Invalid')}
                         </span>
                       )}
+                      {skill.specCompliant === false && (
+                        <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                          {t('skills.specWarning', 'Spec warning')}
+                        </span>
+                      )}
+                      {skill.shadowedBySkillId && (
+                        <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                          {t('skills.shadowed', 'Shadowed')}
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm text-muted-foreground">{skill.description || t('skills.noDescription', 'No description')}</p>
+                    {(skill.compatibility || skill.allowedTools || skill.license) && (
+                      <div className="space-y-0.5 text-xs text-muted-foreground">
+                        {skill.compatibility && (
+                          <p>{t('skills.compatibility', 'Compatibility')}: {skill.compatibility}</p>
+                        )}
+                        {skill.allowedTools && (
+                          <p>{t('skills.allowedTools', 'Allowed tools')}: {skill.allowedTools}</p>
+                        )}
+                        {skill.license && (
+                          <p>{t('skills.license', 'License')}: {skill.license}</p>
+                        )}
+                      </div>
+                    )}
                     <p className="truncate text-xs text-muted-foreground/70" title={skill.skillFilePath}>
                       {skill.skillFilePath}
                     </p>
                     <p className="truncate text-xs text-muted-foreground/60" title={rootPath}>
                       {rootPath}
                     </p>
+                    {skill.location && skill.location.kind !== 'local' && (
+                      <p className="truncate text-xs text-muted-foreground/60" title={skill.location.uri}>
+                        {skill.location.kind}: {skill.location.uri}
+                      </p>
+                    )}
                     <div className="flex flex-wrap gap-2 pt-1 text-xs">
                       <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">
                         {t('skills.resourcesCount', '{{count}} resources', { count: skill.resources.length })}
@@ -239,6 +280,11 @@ export const SkillsView: React.FC = () => {
                       <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">
                         {t('skills.scriptsCount', '{{count}} scripts', { count: skill.scripts.length })}
                       </span>
+                      {metadataEntries.length > 0 && (
+                        <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">
+                          {t('skills.metadataCount', '{{count}} metadata', { count: metadataEntries.length })}
+                        </span>
+                      )}
                     </div>
                     {availabilityReasons.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 pt-1 text-xs">
@@ -255,6 +301,24 @@ export const SkillsView: React.FC = () => {
                     {skill.validationErrors.length > 0 && (
                       <div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/5 px-2 py-1 text-xs text-destructive">
                         {skill.validationErrors.join(' ')}
+                      </div>
+                    )}
+                    {diagnostics.length > 0 && (
+                      <div className="mt-2 space-y-1 rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+                        {diagnostics.slice(0, 6).map((diagnostic) => (
+                          <div
+                            key={`${diagnostic.code}:${diagnostic.message}`}
+                            className={cn(
+                              diagnostic.severity === 'error' && 'text-destructive',
+                              diagnostic.severity === 'warning' && 'text-amber-700 dark:text-amber-300',
+                            )}
+                          >
+                            {diagnostic.severity}: {diagnostic.message}
+                          </div>
+                        ))}
+                        {diagnostics.length > 6 && (
+                          <div>{t('skills.moreDiagnostics', '+{{count}} more diagnostics', { count: diagnostics.length - 6 })}</div>
+                        )}
                       </div>
                     )}
                   </div>

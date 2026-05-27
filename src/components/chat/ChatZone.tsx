@@ -19,7 +19,6 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
-import { SkillDropdown } from './SkillDropdown';
 import { ContextReferenceChip } from './ContextReferenceChip';
 import {
   getFocusedProjectForGroup,
@@ -222,7 +221,7 @@ interface ChatMessageRowProps {
   needsByTitle: Map<string, Need>;
 }
 
-const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill):\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file):\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
@@ -278,7 +277,8 @@ const UserMessageContent: React.FC<{
             parts.push(line.slice(lastIndex, match.index));
           }
 
-          const kind = match[1]?.toLocaleLowerCase() === 'need' ? 'need' : 'skill';
+          const rawKind = match[1]?.toLocaleLowerCase();
+          const kind = rawKind === 'need' ? 'need' : rawKind === 'file' ? 'file' : 'skill';
           const title = match[2]?.trim() ?? '';
           const need = kind === 'need'
             ? needsByTitle.get(normalizeNeedMentionTitle(title))
@@ -2128,7 +2128,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ProviderDropdown />
                 <ModelDropdown />
                 <ReasoningDropdown />
-                <SkillDropdown />
               </div>
               {mode === 'Architect' && (
               <button

@@ -620,26 +620,30 @@ Une skill fournit des instructions reutilisables a l'agent. Elle ne cree pas de 
 
 La version locale supporte des dossiers contenant :
 
-- `SKILL.md` obligatoire
-- frontmatter YAML avec `name` et `description`
+- `SKILL.md` prioritaire, avec `skill.md` accepte en mode compatibilite
+- frontmatter YAML AgentSkills avec `name`, `description`, `license`, `compatibility`, `allowed-tools` et `metadata`
 - dossiers optionnels `references/`, `assets/` et `scripts/`
 
 Les sources supportees en 0.1 sont :
 
-- `.agents/skills` dans les projets visibles par Macro
-- `~/.agents/skills` pour les skills utilisateur globales
+- `.agents/skills`, `.codex/skills`, `.opencode/skills`, `.opencode/skill` et `.claude/skills` dans les projets visibles par Macro
+- `~/.agents/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills`, `~/.opencode/skill` et `~/.claude/skills` pour les skills utilisateur globales
 
-Les skills projet sont listees avant les skills globales. En cas de meme nom, l'identifiant complet garde la source explicite.
+La decouverte ignore les dossiers caches internes, `.git`, `node_modules`, les racines symlinkees et applique des limites de profondeur et de volume. La validation separe `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
+
+Les collisions sont resolues de facon deterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposee au catalogue agent et a la resolution `$skill-name`. Les skills shadowed restent listees dans Settings et peuvent etre chargees par selection explicite/id exact.
 
 ### 14.3 Chargement progressif
 
 Le chargement doit rester progressif :
 
 - au bootstrap, Macro ne charge que le manifeste compact
-- dans le prompt, Macro injecte seulement le catalogue des skills activees
-- le corps complet de `SKILL.md` est charge via `skill_activate`
+- dans le prompt, Macro injecte seulement le catalogue des skills activees, chargeables et non-shadowed
+- le corps body-only de `SKILL.md` est charge via `skill_activate` dans un bloc `<skill_content ...>` structure
 - les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
 - les scripts de `scripts/` sont executes via `skill_run_script`
+
+`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dedupliquees par conversation et rechargees seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistres aupres du modele que lorsqu'une skill activee et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts actives et un niveau de risque compatible.
 
 Les preferences d'activation sont persistees comme preferences Macro cote client, pas dans les dossiers de skills.
 
@@ -656,11 +660,15 @@ L'execution de scripts exige :
 
 Le backend bloque les chemins hors skill, les traversals, les fichiers caches non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectes par defaut, avec timeout, sortie tronquee et repertoire temporaire par defaut.
 
+`allowed-tools` est expose comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
+
 ### 14.5 Transport remote
 
-En 0.1, le provider remote peut retourner une liste vide ou une erreur `unsupported` pour les operations de skills.
+Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI, mais ajoute une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local.
 
-La surface complete est supportee par le desktop local via Tauri IPC.
+Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime distant courant ne supporte pas les skills. L'execution de scripts remote n'est possible que si le provider expose explicitement l'endpoint correspondant et reste soumise aux reglages trusted/scripts et a la politique Macro.
+
+La surface complete reste supportee par le desktop local via Tauri IPC.
 
 ---
 

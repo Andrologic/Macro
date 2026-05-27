@@ -27,6 +27,7 @@ import type { ContextRefKind } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
+import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
 
 // ------ Types ------
 
@@ -64,7 +65,7 @@ const initializeComposerState = () => {
   root.append($createParagraphNode());
 };
 
-const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 const appendTextWithContextReferences = (
   parent: ElementNode,
@@ -314,6 +315,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
         <HistoryPlugin />
         {syncContextRefs && <MentionPlugin />}
+        {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
       </>
     );
   }

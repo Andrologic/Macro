@@ -822,6 +822,26 @@ export interface FsDirEntryDto {
   is_readonly: boolean;
 }
 
+export interface WorkspaceFileSearchRootDto {
+  project_id?: string | null;
+  project_name?: string | null;
+  workspace_path: string;
+  mount_name?: string | null;
+  is_focused: boolean;
+}
+
+export interface WorkspaceFileSearchResultDto {
+  id: string;
+  path: string;
+  relative_path: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  language?: string | null;
+  size_bytes?: number | null;
+  modified?: string | null;
+  is_focused: boolean;
+}
+
 export interface FsFileStatsDto {
   path: string;
   name: string;
@@ -1479,6 +1499,22 @@ export async function fsListDir(params: {
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+  });
+}
+
+export async function fsSearchFiles(params: {
+  roots: WorkspaceFileSearchRootDto[];
+  query: string;
+  limit?: number;
+  includeHidden?: boolean;
+  virtualRootEnabled?: boolean;
+}): Promise<WorkspaceFileSearchResultDto[]> {
+  return invoke<WorkspaceFileSearchResultDto[]>("fs_search_files", {
+    roots: params.roots,
+    query: params.query,
+    limit: params.limit ?? null,
+    includeHidden: params.includeHidden ?? null,
+    virtualRootEnabled: params.virtualRootEnabled ?? null,
   });
 }
 

@@ -300,7 +300,7 @@
     "deleteConversationCount": "{{count}} les conversations seront supprimées.",
     "deletingConversation": "Suppression...",
     "deletingConversations": "Suppression...",
-    "typeMessage": "Tapez un message...",
+    "typeMessage": "Tapez un message, ou / pour ajouter du contexte...",
     "send": "Envoyer",
     "stop": "Arrêter",
     "saveRegenerate": "Enregistrer et régénérer",

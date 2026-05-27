@@ -7,15 +7,149 @@ import {
   installReactI18nextMock,
 } from '../../../test-utils/reactI18nextMock';
 import type { ComposerEditorHandle } from './ComposerEditor';
+import type { Need, ProjectGroup, SkillManifest, SkillSettings, WorkspaceFileReference } from '../../../types';
 
 const translationMock = createTranslationMock({});
 
 let removeComposerContextRef: ReturnType<typeof mock>;
+let addComposerContextRef: ReturnType<typeof mock>;
+let loadSettingsMock: ReturnType<typeof mock>;
+let refreshSkillsMock: ReturnType<typeof mock>;
+let openSettingsMock: ReturnType<typeof mock>;
+let composerContextRefs: Array<{
+  id: string;
+  kind: string;
+  title: string;
+  subtitle?: string;
+  data?: unknown;
+}>;
+let activeArchitectPlanId: string | null;
+let needs: Need[];
+let skills: SkillManifest[];
+let settingsBySkillId: Record<string, SkillSettings>;
+let fileSearchResults: WorkspaceFileReference[];
+let searchWorkspaceFilesMock: ReturnType<typeof mock>;
+
+const buildSkill = (
+  id: string,
+  overrides: Partial<SkillManifest> = {},
+): SkillManifest => ({
+  id,
+  name: id.split(':').at(-1) ?? id,
+  description: 'Reusable agent guidance',
+  rootPath: `/skills/${id.replaceAll(':', '-')}`,
+  skillFilePath: `/skills/${id.replaceAll(':', '-')}/SKILL.md`,
+  source: id.startsWith('project:')
+    ? {
+        kind: 'project',
+        namespace: 'agents',
+        projectId: 'project-1',
+        projectName: 'Web',
+        rootPath: '/repo/web',
+        skillRootPath: '/repo/web/.agents/skills',
+      }
+    : {
+        kind: 'global',
+        namespace: 'agents',
+        projectId: null,
+        projectName: null,
+        rootPath: '/Users/test/.agents/skills',
+        skillRootPath: '/Users/test/.agents/skills',
+      },
+  resources: [],
+  scripts: [],
+  validationErrors: [],
+  isValid: true,
+  ...overrides,
+});
+
+const buildNeed = (id: string, overrides: Partial<Need> = {}): Need => ({
+  id,
+  planId: 'plan-1',
+  title: id,
+  description: 'Tracked product need',
+  category: 'functional',
+  status: 'identified',
+  priority: 'medium',
+  tags: [],
+  createdAt: '2026-05-01T00:00:00.000Z',
+  updatedAt: '2026-05-01T00:00:00.000Z',
+  ...overrides,
+});
+
+const buildFile = (
+  path: string,
+  overrides: Partial<WorkspaceFileReference> = {},
+): WorkspaceFileReference => ({
+  id: `file:project-1:${path}`,
+  path,
+  relativePath: path,
+  projectId: 'project-1',
+  projectName: 'Web',
+  language: 'TypeScript',
+  sizeBytes: 1200,
+  modified: '2026-05-01T00:00:00.000Z',
+  isFocused: true,
+  ...overrides,
+});
+
+const projectGroups: ProjectGroup[] = [{
+  id: 'group-1',
+  name: 'Workspace',
+  isOpen: true,
+  projects: [{
+    id: 'project-1',
+    name: 'Web',
+    mountName: 'web',
+    path: '/repo/web',
+    created_at: '2026-05-01T00:00:00.000Z',
+    status: 'active',
+    metadata: {
+      description: '',
+      tags: [],
+      team_members: [],
+      api_contracts: [],
+      dependencies: [],
+    },
+    gitFlowSettings: {
+      baseBranch: 'develop',
+      mainBranch: 'main',
+      planBranchTemplate: 'plan/{slug}',
+      featureBranchTemplate: 'feature/{slug}',
+      standaloneFeatureBranchTemplate: 'feature/{slug}',
+      releaseBranchTemplate: 'release/{version}',
+      hotfixBranchTemplate: 'hotfix/{slug}',
+      bugfixBranchTemplate: 'bugfix/{slug}',
+    },
+  }],
+}];
 
 const installStoreMock = () => {
   removeComposerContextRef = mock(() => undefined);
+  addComposerContextRef = mock((ref: (typeof composerContextRefs)[number]) => {
+    if (!composerContextRefs.some((existing) => existing.id === ref.id && existing.kind === ref.kind)) {
+      composerContextRefs = [...composerContextRefs, ref];
+    }
+  });
   const chatState = {
-    composerContextRefs: [],
+    selectedConversationId: 'conversation-1',
+    conversations: [{
+      id: 'conversation-1',
+      title: 'Chat',
+      created_at: '2026-05-01T00:00:00.000Z',
+      updated_at: '2026-05-01T00:00:00.000Z',
+      scope_mode: 'Implement',
+      task_id: null,
+      group_id: 'group-1',
+      project_id: 'project-1',
+      provider_id: null,
+      model_id: null,
+      reasoning_effort: null,
+    }],
+    get composerContextRefs() {
+      return composerContextRefs;
+    },
+    addComposerContextRef,
     removeComposerContextRef,
   };
   const useChatStore = ((selector?: (state: typeof chatState) => unknown) =>
@@ -25,6 +159,79 @@ const installStoreMock = () => {
 
   mock.module('../../../stores/useChatStore', () => ({
     useChatStore,
+  }));
+
+  loadSettingsMock = mock(async () => undefined);
+  refreshSkillsMock = mock(async () => undefined);
+  const skillsState = {
+    get skills() {
+      return skills;
+    },
+    get settingsBySkillId() {
+      return settingsBySkillId;
+    },
+    isLoading: false,
+    loadSettings: loadSettingsMock,
+    refreshSkills: refreshSkillsMock,
+  };
+  const useSkillsStore = ((selector?: (state: typeof skillsState) => unknown) =>
+    selector ? selector(skillsState) : skillsState) as typeof import('../../../stores/useSkillsStore').useSkillsStore;
+  useSkillsStore.getState = () =>
+    skillsState as unknown as ReturnType<typeof useSkillsStore.getState>;
+  mock.module('../../../stores/useSkillsStore', () => ({
+    useSkillsStore,
+  }));
+
+  const taskState = {
+    tasks: [],
+    activeRepositoryPath: '/repo/web',
+    activeWorkspacePathOverridesByProjectId: {},
+    branchWorktrees: {},
+  };
+  const useTaskStore = ((selector?: (state: typeof taskState) => unknown) =>
+    selector ? selector(taskState) : taskState) as typeof import('../../../stores/useTaskStore').useTaskStore;
+  useTaskStore.getState = () =>
+    taskState as unknown as ReturnType<typeof useTaskStore.getState>;
+  mock.module('../../../stores/useTaskStore', () => ({
+    useTaskStore,
+  }));
+
+  const needsState = {
+    get needs() {
+      return needs;
+    },
+  };
+  const useNeedsStore = ((selector?: (state: typeof needsState) => unknown) =>
+    selector ? selector(needsState) : needsState) as typeof import('../../../stores/useNeedsStore').useNeedsStore;
+  useNeedsStore.getState = () =>
+    needsState as unknown as ReturnType<typeof useNeedsStore.getState>;
+  mock.module('../../../stores/useNeedsStore', () => ({
+    useNeedsStore,
+  }));
+
+  openSettingsMock = mock((_tab?: string) => undefined);
+  const appState = {
+    mode: 'Implement',
+    projectGroups,
+    selectedGroupId: 'group-1',
+    selectedProjectId: 'project-1',
+    selectedTaskId: null,
+    get activeArchitectPlanId() {
+      return activeArchitectPlanId;
+    },
+    openSettings: openSettingsMock,
+  };
+  const useAppStore = ((selector?: (state: typeof appState) => unknown) =>
+    selector ? selector(appState) : appState) as typeof import('../../../stores/useAppStore').useAppStore;
+  useAppStore.getState = () =>
+    appState as unknown as ReturnType<typeof useAppStore.getState>;
+  mock.module('../../../stores/useAppStore', () => ({
+    useAppStore,
+  }));
+
+  searchWorkspaceFilesMock = mock(async () => fileSearchResults);
+  mock.module('../../../services/workspaceFileSearch', () => ({
+    searchWorkspaceFiles: searchWorkspaceFilesMock,
   }));
 };
 
@@ -44,7 +251,14 @@ describe('ComposerEditor context references', () => {
       globalThis.cancelAnimationFrame = (id: number) => clearTimeout(id);
     }
     mock.restore();
+    window.localStorage.clear();
     installReactI18nextMock(translationMock);
+    composerContextRefs = [];
+    activeArchitectPlanId = 'plan-1';
+    needs = [];
+    skills = [];
+    settingsBySkillId = {};
+    fileSearchResults = [];
     installStoreMock();
 
     ({ ComposerEditor } = await import(`./ComposerEditor.tsx?composer-editor-test=${Date.now()}`));
@@ -52,6 +266,17 @@ describe('ComposerEditor context references', () => {
     document.body.appendChild(container);
     root = createRoot(container);
   });
+
+  const openSlashMenu = async (
+    editorRef: React.RefObject<ComposerEditorHandle | null>,
+    text: string,
+  ) => {
+    await act(async () => {
+      editorRef.current?.setText(text);
+      await Promise.resolve();
+    });
+    return document.body.querySelector('[data-slash-context-menu="true"]');
+  };
 
   afterEach(async () => {
     await act(async () => {
@@ -151,5 +376,343 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(removeComposerContextRef).not.toHaveBeenCalled();
+  });
+
+  it('opens the slash context menu at the start of text or after a space', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    skills = [skill];
+    settingsBySkillId = {
+      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    expect(refreshSkillsMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      editorRef.current?.setText('hello /');
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[data-slash-context-menu="true"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('test-skill');
+  });
+
+  it('does not open the slash context menu inside paths or urls', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    skills = [skill];
+    settingsBySkillId = {
+      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, 'http://')).toBeNull();
+    expect(await openSlashMenu(editorRef, 'foo/bar')).toBeNull();
+  });
+
+  it('shows skills and active-plan needs in the slash context menu', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    const activeNeed = buildNeed('need-1', { title: 'Auth flow', planId: 'plan-1' });
+    const otherPlanNeed = buildNeed('need-2', { title: 'Billing flow', planId: 'plan-2' });
+    skills = [skill];
+    needs = [activeNeed, otherPlanNeed];
+    settingsBySkillId = {
+      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    expect(document.body.textContent).toContain('Auth flow');
+    expect(document.body.textContent).toContain('test-skill');
+    expect(document.body.textContent).not.toContain('Billing flow');
+  });
+
+  it('filters slash context by needs and inserts a need as a single chip', async () => {
+    const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    const need = buildNeed('need-1', {
+      title: 'Auth flow',
+      description: 'Handle login and signup',
+      tags: ['auth'],
+    });
+    skills = [skill];
+    needs = [need];
+    settingsBySkillId = {
+      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    const menu = await openSlashMenu(editorRef, '/auth');
+    expect(menu).not.toBeNull();
+    expect(document.body.textContent).toContain('Auth flow');
+    expect(document.body.textContent).not.toContain('test-skill');
+
+    const option = document.body.querySelector('[data-slash-context-option="need:Auth flow"]');
+    expect(option).toBeTruthy();
+
+    await act(async () => {
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const needChips = container.querySelectorAll('[data-need-reference-surface="composer"]');
+    expect(needChips).toHaveLength(1);
+    expect(needChips[0]?.textContent).toContain('Auth flow');
+    expect(editorRef.current?.getTextContent().trim()).toBe('[need: Auth flow]');
+    expect(addComposerContextRef).toHaveBeenCalledWith({
+      id: need.id,
+      kind: 'need',
+      title: 'Auth flow',
+      subtitle: 'Handle login and signup',
+      data: need,
+    });
+  });
+
+  it('searches workspace files and inserts a file as a lazy context chip', async () => {
+    const file = buildFile('src/App.tsx');
+    fileSearchResults = [file];
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/src')).not.toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+
+    expect(searchWorkspaceFilesMock).toHaveBeenCalled();
+    expect(document.body.textContent).toContain('App.tsx');
+    expect(document.body.textContent).toContain('src/App.tsx');
+    expect(document.body.textContent).toContain('Web/src/App.tsx');
+
+    const option = document.body.querySelector('[data-slash-context-option="file:src/App.tsx"]');
+    expect(option).toBeTruthy();
+    expect(option?.getAttribute('title')).toBe('Web/src/App.tsx');
+
+    await act(async () => {
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const fileChips = container.querySelectorAll('[data-context-reference-kind="file"]');
+    expect(fileChips).toHaveLength(1);
+    expect(editorRef.current?.getTextContent().trim()).toBe('[file: src/App.tsx]');
+    expect(addComposerContextRef).toHaveBeenCalledWith({
+      id: file.id,
+      kind: 'file',
+      title: 'src/App.tsx',
+      subtitle: 'Web/src/App.tsx',
+      data: file,
+    });
+  });
+
+  it('does not list workspace files for an empty slash query', async () => {
+    fileSearchResults = [buildFile('src/App.tsx')];
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+
+    expect(searchWorkspaceFilesMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('src/App.tsx');
+  });
+
+  it('filters slash context and inserts an enabled skill as a single chip', async () => {
+    const testSkill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    const otherSkill = buildSkill('global:agents:other-skill:bbb', { name: 'other-skill' });
+    skills = [otherSkill, testSkill];
+    settingsBySkillId = {
+      [testSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [otherSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    const menu = await openSlashMenu(editorRef, '/test');
+    expect(menu).not.toBeNull();
+    expect(document.body.textContent).toContain('test-skill');
+    expect(document.body.textContent).not.toContain('other-skill');
+
+    const option = document.body.querySelector('[data-slash-context-option="skill:test-skill"]');
+    expect(option).toBeTruthy();
+
+    await act(async () => {
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const skillChips = container.querySelectorAll('[data-context-reference-kind="skill"]');
+    expect(skillChips).toHaveLength(1);
+    expect(skillChips[0]?.textContent).toContain('test-skill');
+    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: test-skill]');
+    expect(addComposerContextRef).toHaveBeenCalledWith({
+      id: testSkill.id,
+      kind: 'skill',
+      title: 'test-skill',
+      subtitle: 'Agents · Global',
+      data: testSkill,
+    });
+  });
+
+  it('navigates slash context with arrows and selects with Enter', async () => {
+    const alphaSkill = buildSkill('global:agents:alpha:aaa', { name: 'alpha' });
+    const betaSkill = buildSkill('global:agents:beta:bbb', { name: 'beta' });
+    skills = [alphaSkill, betaSkill];
+    settingsBySkillId = {
+      [alphaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [betaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(
+      document.body.querySelector('[data-slash-context-option="skill:beta"]')?.getAttribute('aria-selected')
+    ).toBe('true');
+
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: beta]');
+  });
+
+  it('shows disabled slash context skills without selecting them and opens settings', async () => {
+    const disabledSkill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    skills = [disabledSkill];
+    settingsBySkillId = {
+      [disabledSkill.id]: { enabled: false, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    expect(document.body.textContent).not.toContain('test-skill');
+
+    expect(await openSlashMenu(editorRef, '/test')).not.toBeNull();
+    expect(document.body.textContent).toContain('Agents · Global');
+    expect(document.body.textContent).not.toContain('Enable this skill in Settings before using it.');
+
+    await act(async () => {
+      document.body
+        .querySelector('button[aria-label="Open Settings"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(addComposerContextRef).not.toHaveBeenCalled();
+    expect(openSettingsMock).toHaveBeenCalledWith('skills');
   });
 });

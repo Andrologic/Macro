@@ -301,7 +301,7 @@
     "deleteConversationCount": "{{count}} Konversationen werden gelöscht.",
     "deletingConversation": "Löschen...",
     "deletingConversations": "Löschen...",
-    "typeMessage": "Geben Sie eine Nachricht ein...",
+    "typeMessage": "Nachricht eingeben oder / für Kontext...",
     "send": "Senden",
     "stop": "Stopp",
     "saveRegenerate": "Speichern und neu generieren",

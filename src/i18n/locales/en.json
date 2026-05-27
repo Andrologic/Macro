@@ -301,7 +301,7 @@
     "deleteConversationCount": "{{count}} conversations will be deleted.",
     "deletingConversation": "Deleting...",
     "deletingConversations": "Deleting...",
-    "typeMessage": "Type a message...",
+    "typeMessage": "Type a message, or / to add context...",
     "send": "Send",
     "stop": "Stop",
     "saveRegenerate": "Save & Regenerate",
