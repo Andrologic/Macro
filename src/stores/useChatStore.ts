@@ -28,6 +28,7 @@ import {
   SkillManifest,
   ToolRiskLevel,
   ToolTrace,
+  WorkspaceFileReference,
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
 import {
@@ -4384,10 +4385,109 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getCitationBody = (citation: Citation): string =>
     (citation.content || citation.snippet || "").trim();
 
-  const readConversationFileContext = (
+  const isFileContextRef = (
+    ref: ContextReference | PersistedContextReference,
+  ): ref is (ContextReference | PersistedContextReference) & { kind: "file" } =>
+    ref.kind === "file";
+
+  const getFileRefPath = (
+    ref: (ContextReference | PersistedContextReference) & { kind: "file" },
+  ): string => {
+    if ("path" in ref && ref.path) return ref.path;
+    if ("data" in ref && "path" in ref.data && ref.data.path) return ref.data.path;
+    return ref.title;
+  };
+
+  const getFileRefRelativePath = (
+    ref: (ContextReference | PersistedContextReference) & { kind: "file" },
+  ): string => {
+    if ("relativePath" in ref && ref.relativePath) return ref.relativePath;
+    if ("data" in ref && "relativePath" in ref.data && ref.data.relativePath) {
+      return ref.data.relativePath;
+    }
+    return getFileRefPath(ref);
+  };
+
+  const getFileRefProjectId = (
+    ref: (ContextReference | PersistedContextReference) & { kind: "file" },
+  ): string | null => {
+    if ("projectId" in ref && ref.projectId) return ref.projectId;
+    if ("data" in ref && "projectId" in ref.data && ref.data.projectId) {
+      return ref.data.projectId;
+    }
+    return null;
+  };
+
+  const getConversationFileRefs = (
+    conversationId: string,
+  ): Array<(ContextReference | PersistedContextReference) & { kind: "file" }> => {
+    const messageRefs = getOrderedConversationMessages(conversationId)
+      .flatMap((message) => message.context_refs ?? [])
+      .filter(isFileContextRef);
+    const composerRefs = get().composerContextRefs.filter(
+      (ref): ref is ContextReference & { kind: "file" } => ref.kind === "file",
+    );
+    const seen = new Set<string>();
+    return [...messageRefs, ...composerRefs].filter((ref) => {
+      const key = `${ref.id}:${getFileRefPath(ref)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const findFileRefForRequest = (
+    refs: Array<(ContextReference | PersistedContextReference) & { kind: "file" }>,
+    requested: string,
+  ) =>
+    refs.find((ref) => {
+      const title = normalizeContextLookup(ref.title);
+      const path = normalizeContextLookup(getFileRefPath(ref));
+      const relativePath = normalizeContextLookup(getFileRefRelativePath(ref));
+      return (
+        requested === title ||
+        requested === path ||
+        requested === relativePath ||
+        title.includes(requested) ||
+        path.includes(requested) ||
+        relativePath.includes(requested)
+      );
+    }) ?? null;
+
+  const readWorkspaceFileRef = async (
+    conversationId: string,
+    ref: (ContextReference | PersistedContextReference) & { kind: "file" },
+  ): Promise<string> => {
+    const executionContext = resolveConversationExecutionContext(conversationId);
+    const projectId = getFileRefProjectId(ref);
+    const workspacePath =
+      (projectId ? executionContext.workspacePathsByProjectId[projectId] : null) ||
+      executionContext.workspacePath;
+    if (!workspacePath) {
+      return `File not available: Macro has no workspace path for "${getFileRefPath(ref)}".`;
+    }
+
+    const readPath = getFileRefRelativePath(ref);
+    try {
+      const result = await tauriIpc.fsReadFileWithOptions({
+        path: readPath,
+        workspacePath,
+        allowOutsideWorkspace: false,
+      });
+      if (result.is_binary) {
+        return `FILE: ${getFileRefPath(ref)}\nSOURCE: WORKSPACE\n\nBinary file (${result.size} bytes, encoding=${result.encoding}).`;
+      }
+      return `FILE: ${getFileRefPath(ref)}\nSOURCE: WORKSPACE\nLANGUAGE: ${result.language}\n\n${result.content}`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `File not available: failed to read "${getFileRefPath(ref)}" from workspace. ${message}`;
+    }
+  };
+
+  const readConversationFileContext = async (
     conversationId: string,
     args: Record<string, unknown>,
-  ): string => {
+  ): Promise<string> => {
     const requestedRaw = typeof args.file === "string" ? args.file.trim() : "";
     const requested = normalizeContextLookup(requestedRaw);
     const extractText = args.extract_text === true;
@@ -4395,9 +4495,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .getState()
       .getConversationContextCitations(conversationId)
       .filter((citation) => citation.type === "file" || citation.type === "document");
-    const available = fileCitations
+    const fileRefs = getConversationFileRefs(conversationId);
+    const available = [
+      ...fileCitations
       .map((citation) => citation.path || citation.title || citation.source)
-      .filter(Boolean);
+        .filter(Boolean),
+      ...fileRefs.map(getFileRefPath),
+    ];
 
     if (!requested) {
       return `No file provided. Available files: ${available.join(", ") || "none"}`;
@@ -4416,6 +4520,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         path.includes(requested)
       );
     });
+
+    const matchedFileRef = findFileRefForRequest(fileRefs, requested);
+
+    if (!match && !matchedFileRef) {
+      return `File not found in context: "${requestedRaw}". Available files: ${
+        available.join(", ") || "none"
+      }`;
+    }
+
+    const matchedCitationHasContent = Boolean(match?.content?.trim());
+    if (matchedFileRef && !matchedCitationHasContent) {
+      return readWorkspaceFileRef(conversationId, matchedFileRef);
+    }
 
     if (!match) {
       return `File not found in context: "${requestedRaw}". Available files: ${
@@ -5372,6 +5489,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "skillFilePath" in ref.data
           ? (ref.data as SkillManifest)
           : null;
+      const file =
+        ref.kind === "file" &&
+        ref.data &&
+        typeof ref.data === "object" &&
+        "path" in ref.data
+          ? (ref.data as WorkspaceFileReference)
+          : null;
       return {
         id: ref.id,
         kind: ref.kind,
@@ -5381,6 +5505,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? {
               skillFilePath: skill.skillFilePath,
               source: skill.source,
+            }
+          : {}),
+        ...(file
+          ? {
+              path: file.path,
+              relativePath: file.relativePath,
+              projectId: file.projectId ?? null,
+              projectName: file.projectName ?? null,
             }
           : {}),
       } satisfies PersistedContextReference;
@@ -5457,15 +5589,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const fileCitations = contextCitations.filter(
       (c) => c.type === "file" || c.type === "document",
     );
-    const availableFiles = fileCitations
-      .map((c) => c.path || c.title || c.source)
-      .filter(Boolean)
-      .join(", ");
     const orderedMessages = getOrderedConversationMessages(conversationId);
     const lastUserIndex = orderedMessages
       .map((m) => m.role)
       .lastIndexOf("user");
     const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
+    const fileRefsForTurn = (lastUserMessage?.context_refs ?? get().composerContextRefs)
+      .filter(isFileContextRef);
+    const availableFiles = [
+      ...fileCitations
+        .map((c) => c.path || c.title || c.source)
+        .filter(Boolean),
+      ...fileRefsForTurn.map(getFileRefPath),
+    ].join(", ");
     const skillPreparation =
       lastUserMessage?.role === "user"
         ? await useSkillsStore.getState().prepareSkillsForTurn({
@@ -5528,6 +5664,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   lines.push(`Source project: ${ref.source.projectName ?? ref.source.projectId ?? "unknown"}`);
                 } else if ("data" in ref && "source" in ref.data && ref.data.source.kind === "project") {
                   lines.push(`Source project: ${ref.data.source.projectName ?? ref.data.source.projectId ?? "unknown"}`);
+                }
+              }
+              if (ref.kind === "file") {
+                const path =
+                  ("path" in ref && ref.path) ||
+                  ("data" in ref && "path" in ref.data ? ref.data.path : ref.title);
+                lines.push(`File path: ${path}`);
+                lines.push("Content: not preloaded. Use read_file with this exact path before analyzing file contents.");
+                if ("projectName" in ref && ref.projectName) {
+                  lines.push(`Project: ${ref.projectName}`);
+                } else if ("data" in ref && "projectName" in ref.data && ref.data.projectName) {
+                  lines.push(`Project: ${ref.data.projectName}`);
                 }
               }
               if ("data" in ref && "description" in ref.data && ref.data.description) {
@@ -5694,11 +5842,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const scripts = skill.scripts.length > 0
               ? ` scripts=${skill.scripts.map((script) => script.path).slice(0, 5).join(",")}`
               : "";
-            return `- id=${skill.id}; name=${skill.name}; source=${source}; description=${skill.description}${resources}${scripts}`;
+            const compatibility = skill.compatibility
+              ? ` compatibility=${skill.compatibility}`
+              : "";
+            const allowedTools = skill.allowedTools
+              ? ` allowed-tools(advisory)=${skill.allowedTools}`
+              : "";
+            const compliance = skill.specCompliant === false
+              ? " spec=warnings"
+              : "";
+            return `- id=${skill.id}; name=${skill.name}; source=${source}; description=${skill.description}${compatibility}${allowedTools}${compliance}${resources}${scripts}`;
           })
           .join("\n");
         systemInstructions.push(
-          `Available Macro skills are listed below. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary and after explaining why.\n${catalog}`,
+          `Available Macro skills are listed below. This catalog only includes the effective non-shadowed skill for each name. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary, trusted, enabled, and after explaining why. allowed-tools metadata is advisory and never overrides Macro tool policy.\n${catalog}`,
         );
         const mentionedSkills =
           lastUserMessage?.role === "user"
@@ -6535,6 +6692,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       return toolIds.filter((toolId) => !ARCHITECT_STRATEGY_MUTATION_TOOL_IDS.has(toolId));
     };
+    const filterSkillToolsForAvailability = (toolIds: string[]): string[] => {
+      const skillsState = useSkillsStore.getState();
+      const enabledLoadableSkills = skillsState.getEnabledLoadableSkills({
+        includeShadowed: true,
+      });
+      const hasEnabledLoadableSkill = enabledLoadableSkills.length > 0;
+      const hasRunnableSkill = skillsState.getRunnableSkillIds().length > 0;
+      return toolIds.filter((toolId) => {
+        if (toolId === "skill_activate" || toolId === "skill_read_resource") {
+          return hasEnabledLoadableSkill;
+        }
+        if (toolId === "skill_run_script") {
+          return hasEnabledLoadableSkill && hasRunnableSkill;
+        }
+        return true;
+      });
+    };
     const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
         Array.from(new Set(toolIds)),
@@ -6547,16 +6721,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         filteredToolIds,
         riskLevel,
       );
+      const availableToolIds = filterSkillToolsForAvailability(riskFilteredToolIds);
 
       if (
         internalAgentProfile === "task_reviewer" &&
         uniqueToolIds.includes("apply_patch") &&
-        !riskFilteredToolIds.includes("apply_patch")
+        !availableToolIds.includes("apply_patch")
       ) {
-        return Array.from(new Set([...riskFilteredToolIds, "apply_patch"]));
+        return Array.from(new Set([...availableToolIds, "apply_patch"]));
       }
 
-      return riskFilteredToolIds;
+      return availableToolIds;
     };
 
     const agentType =
@@ -7654,17 +7829,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : buildContextTooLargeErrorMessage(blockedFootprint),
       );
     }
-    const fileToolContext = useCitationsStore
+    const fileRefToolContext = preparedRequest.orderedMessages
+      .flatMap((message) => message.context_refs ?? [])
+      .filter(isFileContextRef)
+      .map((ref) => {
+        const path = getFileRefPath(ref);
+        return {
+          title: ref.title,
+          source: path,
+          path,
+          snippet: undefined,
+          content: undefined,
+        };
+      });
+    const fileToolContextByPath = new Map<string, {
+      title: string;
+      source: string;
+      path?: string;
+      snippet?: string;
+      content?: string;
+    }>();
+    useCitationsStore
       .getState()
       .getConversationContextCitations(params.conversationId)
       .filter((c) => c.type === "file" || c.type === "document")
-      .map((c) => ({
+      .forEach((c) => {
+        const item = {
         title: c.title,
         source: c.source,
         path: c.path,
         snippet: c.snippet,
         content: c.content,
-      }));
+        };
+        fileToolContextByPath.set(c.path || c.source || c.title, item);
+      });
+    fileRefToolContext.forEach((item) => {
+      if (!fileToolContextByPath.has(item.path)) {
+        fileToolContextByPath.set(item.path, item);
+      }
+    });
+    const fileToolContext = Array.from(fileToolContextByPath.values());
     const { enableWebSearch, enableWebFetch, webSearchOptions } =
       getStreamingWebSearchConfig();
     const guidedToolRetry = buildGuidedToolRetryPolicy({
@@ -7679,6 +7883,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .getState()
       .getEnabledMCPTools()
       .filter((tool) => allowedToolIds.includes(tool.id));
+    const skillsState = useSkillsStore.getState();
+    const skillToolIds = allowedToolIds.includes("skill_activate")
+      ? skillsState
+          .getEnabledLoadableSkills({ includeShadowed: true })
+          .map((skill) => skill.id)
+      : [];
+    const runnableSkillToolIds = allowedToolIds.includes("skill_run_script")
+      ? skillsState.getRunnableSkillIds()
+      : [];
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,
@@ -7710,6 +7923,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebFetch,
       webSearchOptions,
       mcpTools,
+      skillToolIds,
+      runnableSkillToolIds,
       guidedToolRetry,
       maxTurns,
       compactionDecision: compactedRequest.decision,
@@ -8108,6 +8323,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         executionContext: streamLaunch.executionContext,
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
+        skillToolIds: streamLaunch.skillToolIds,
+        runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
         guidedToolRetry: streamLaunch.guidedToolRetry,
         showToolTraces: streamLaunch.showToolTraces,
         enableWebSearch: streamLaunch.enableWebSearch,
@@ -8602,6 +8819,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       typeof getStreamingWebSearchConfig
     >["webSearchOptions"];
     mcpTools: MCPTool[];
+    skillToolIds: string[];
+    runnableSkillToolIds: string[];
     maxTurns: ChatMaxTurnsPreference;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
@@ -8805,6 +9024,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           executionContext: streamLaunch.executionContext,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
+          skillToolIds: streamLaunch.skillToolIds,
+          runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
           guidedToolRetry: streamLaunch.guidedToolRetry,
           showToolTraces: streamLaunch.showToolTraces,
           enableWebSearch: streamLaunch.enableWebSearch,
@@ -9418,6 +9639,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebFetch: params.enableWebFetch,
       webSearchOptions: params.webSearchOptions,
       mcpTools: params.mcpTools,
+      skillToolIds: params.skillToolIds,
+      runnableSkillToolIds: params.runnableSkillToolIds,
       maxTurns: params.maxTurns,
       sessionId: params.sessionId,
       signal: abortController.signal,
@@ -12289,6 +12512,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (images && images.length > 0) {
           get().setMessageImages(userMessage.id, images);
         }
+        for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
+          const path = getFileRefPath(ref);
+          useCitationsStore.getState().addCitation({
+            type: "file",
+            scope: "context",
+            source: path,
+            title: ref.title,
+            path,
+            messageId: userMessage.id,
+            conversationId,
+          });
+        }
         get().clearComposerContextRefs();
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
@@ -12406,6 +12641,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             executionContext: streamLaunch.executionContext,
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
+            skillToolIds: streamLaunch.skillToolIds,
+            runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,
             showToolTraces: streamLaunch.showToolTraces,
             enableWebSearch: streamLaunch.enableWebSearch,

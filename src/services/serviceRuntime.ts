@@ -74,7 +74,7 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: false,
   implementExecution: false,
   taskProjectCommands: false,
-  skills: false,
+  skills: true,
 };
 
 const hasTauriIpcInvoke = (): boolean => {

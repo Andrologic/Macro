@@ -21,6 +21,8 @@ import {
 } from './providerProtocolProfiles';
 import {
   isMacroToolCopilotBuiltInOverride,
+  type JsonSchema,
+  type MacroToolRegistryEntry,
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
@@ -377,6 +379,8 @@ export interface StreamingChatOptions {
     content?: string;
   }>;
   allowedToolIds?: string[];
+  skillToolIds?: string[];
+  runnableSkillToolIds?: string[];
   copilotSendTimeoutMs?: number | null;
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
@@ -1507,9 +1511,7 @@ const createStreamAccumulator = (
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
 const QUESTION_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('question'));
-const SKILL_ACTIVATE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_activate'));
-const SKILL_READ_RESOURCE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_read_resource'));
-const SKILL_RUN_SCRIPT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('skill_run_script'));
+const MAX_SKILL_TOOL_ENUM_IDS = 120;
 const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('mark_source_passage')
 );
@@ -1573,6 +1575,38 @@ const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
 const DELETE_STRATEGY_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_delete')
 );
+
+const cloneJsonSchema = (schema: JsonSchema): JsonSchema =>
+  JSON.parse(JSON.stringify(schema)) as JsonSchema;
+
+const buildSkillToolShape = (
+  toolId: 'skill_activate' | 'skill_read_resource' | 'skill_run_script',
+  skillIds: string[],
+): unknown => {
+  const entry = requireMacroToolRegistryEntry(toolId);
+  const parameters = cloneJsonSchema(entry.parameters);
+  if (
+    skillIds.length > 0 &&
+    skillIds.length <= MAX_SKILL_TOOL_ENUM_IDS &&
+    parameters.type === 'object'
+  ) {
+    const skillIdSchema = parameters.properties?.skill_id;
+    if (skillIdSchema?.type === 'string') {
+      parameters.properties = {
+        ...parameters.properties,
+        skill_id: {
+          ...skillIdSchema,
+          enum: skillIds,
+        },
+      };
+    }
+  }
+
+  return toFunctionToolShape({
+    ...entry,
+    parameters,
+  } satisfies MacroToolRegistryEntry);
+};
 
 /**
  * Send a streaming chat completion request
@@ -2015,8 +2049,18 @@ const collectAllowedTools = (params: {
   enableWebFetch: boolean;
   webSearchOptions?: WebSearchOptions;
   mcpTools?: MCPTool[];
+  skillToolIds?: string[];
+  runnableSkillToolIds?: string[];
 }): unknown[] => {
-  const { allowedTools, enableWebSearch, enableWebFetch, webSearchOptions, mcpTools } = params;
+  const {
+    allowedTools,
+    enableWebSearch,
+    enableWebFetch,
+    webSearchOptions,
+    mcpTools,
+    skillToolIds = [],
+    runnableSkillToolIds = [],
+  } = params;
   const tools: unknown[] = [];
 
   if (allowedTools.has('list')) tools.push(LIST_TOOL);
@@ -2027,9 +2071,15 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
   if (allowedTools.has('question')) tools.push(QUESTION_TOOL);
-  if (allowedTools.has('skill_activate')) tools.push(SKILL_ACTIVATE_TOOL);
-  if (allowedTools.has('skill_read_resource')) tools.push(SKILL_READ_RESOURCE_TOOL);
-  if (allowedTools.has('skill_run_script')) tools.push(SKILL_RUN_SCRIPT_TOOL);
+  if (allowedTools.has('skill_activate') && skillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_activate', skillToolIds));
+  }
+  if (allowedTools.has('skill_read_resource') && skillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_read_resource', skillToolIds));
+  }
+  if (allowedTools.has('skill_run_script') && runnableSkillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_run_script', runnableSkillToolIds));
+  }
   if (allowedTools.has('read_file')) tools.push(READ_FILE_TOOL);
   if (allowedTools.has('mark_source_passage')) tools.push(MARK_SOURCE_PASSAGE_TOOL);
   if (allowedTools.has('read_sources')) tools.push(READ_SOURCES_TOOL);
@@ -2552,6 +2602,8 @@ const streamChatViaNativeToolCallingProvider = async (
     enableWebFetch,
     webSearchOptions,
     mcpTools: options.mcpTools,
+    skillToolIds: options.skillToolIds,
+    runnableSkillToolIds: options.runnableSkillToolIds,
   });
   const streamAccumulator = createStreamAccumulator({
     onToken,
@@ -3253,6 +3305,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     enableWebFetch,
     webSearchOptions,
     mcpTools: options.mcpTools,
+    skillToolIds: options.skillToolIds,
+    runnableSkillToolIds: options.runnableSkillToolIds,
   });
 
   const readEvidenceBySource = new Map<string, string>();

@@ -246,15 +246,27 @@ export interface Need {
   updatedAt: string;
 }
 
-// Context references for chat composer (tag needs, nodes, branches, skills)
-export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill';
+export interface WorkspaceFileReference {
+  id: string;
+  path: string;
+  relativePath: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  language?: string | null;
+  sizeBytes?: number | null;
+  modified?: string | null;
+  isFocused?: boolean;
+}
+
+// Context references for chat composer (tag needs, nodes, branches, skills, files)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill' | 'file';
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: Need | PlanNode | PredictedBranch | SkillManifest;
+  data: Need | PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference;
 }
 
 export interface PersistedContextReference {
@@ -264,6 +276,10 @@ export interface PersistedContextReference {
   subtitle?: string;
   skillFilePath?: string;
   source?: SkillSource;
+  path?: string;
+  relativePath?: string;
+  projectId?: string | null;
+  projectName?: string | null;
 }
 
 // Activity indicator for projects
@@ -354,6 +370,8 @@ export interface MCPServerSettings {
 
 export type SkillSourceKind = 'global' | 'project';
 export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude';
+export type SkillLocationKind = 'local' | 'remote' | 'bundled';
+export type SkillDiagnosticSeverity = 'error' | 'warning' | 'info';
 
 export interface SkillProjectRoot {
   projectId: string;
@@ -378,15 +396,35 @@ export interface SkillResource {
   sizeBytes: number;
 }
 
+export interface SkillLocation {
+  kind: SkillLocationKind;
+  uri: string;
+}
+
+export interface SkillDiagnostic {
+  severity: SkillDiagnosticSeverity;
+  code: string;
+  message: string;
+}
+
 export interface SkillManifest {
   id: string;
   name: string;
   description: string;
+  license?: string | null;
+  compatibility?: string | null;
+  allowedTools?: string | null;
+  metadata?: Record<string, string>;
   rootPath: string;
   skillFilePath: string;
+  location?: SkillLocation;
   source: SkillSource;
   resources: SkillResource[];
   scripts: SkillResource[];
+  diagnostics?: SkillDiagnostic[];
+  specCompliant?: boolean;
+  shadowedBySkillId?: string | null;
+  contentHash?: string;
   validationErrors: string[];
   isValid: boolean;
 }
@@ -401,6 +439,8 @@ export interface SkillActivation {
   skillId: string;
   activatedAt: string;
   body: string;
+  contentHash?: string;
+  skillFilePath?: string;
 }
 
 export interface SkillScriptRunRequest {

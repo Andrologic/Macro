@@ -262,6 +262,54 @@ describe('useSkillsStore', () => {
     expect(preparation.warnings[0]).toContain('ambiguous');
   });
 
+  it('uses effective skills by name while allowing shadowed skills by exact id', async () => {
+    const projectSkill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
+    const globalSkill = buildSkill('global:agents:docs:bbb222', {
+      name: 'docs',
+      shadowedBySkillId: projectSkill.id,
+    });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [projectSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [globalSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore, services } = await loadSkillsStore([projectSkill, globalSkill]);
+
+    await useSkillsStore.getState().loadSettings();
+
+    expect(useSkillsStore.getState().getEnabledSkills()).toEqual([projectSkill]);
+    expect(useSkillsStore.getState().findEnabledSkillByName('docs')).toEqual(projectSkill);
+    expect(useSkillsStore.getState().findEnabledSkillByName(globalSkill.id)).toEqual(globalSkill);
+    expect(useSkillsStore.getState().resolveEnabledSkillMentions('Use $docs')).toEqual([projectSkill]);
+
+    const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: 'Use the selected docs skill.',
+      contextRefs: [
+        {
+          id: globalSkill.id,
+          kind: 'skill',
+          title: globalSkill.name,
+          skillFilePath: globalSkill.skillFilePath,
+          source: globalSkill.source,
+        },
+      ],
+      toolsAvailable: true,
+    });
+
+    expect(services.getSkill).toHaveBeenCalledWith({
+      skillId: globalSkill.id,
+      projectRoots: [PROJECT_ROOT],
+    });
+    expect(preparation.explicitSkillIds).toEqual([globalSkill.id]);
+    expect(preparation.systemInstructionBlocks[0]).toContain(`Shadowed by: ${projectSkill.id}`);
+  });
+
   it('resolves enabled skill mentions from dollar and bracket syntax without duplicates', async () => {
     const skill = buildSkill('global:agents:test-skill:aaa111', { name: 'test-skill' });
     localStorage.setItem(

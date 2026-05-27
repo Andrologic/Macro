@@ -301,7 +301,7 @@
     "deleteConversationCount": "{{count}}대화가 삭제됩니다.",
     "deletingConversation": "삭제 중...",
     "deletingConversations": "삭제 중...",
-    "typeMessage": "메시지를 입력하세요...",
+    "typeMessage": "메시지를 입력하거나 /로 컨텍스트 추가...",
     "send": "보내다",
     "stop": "멈추다",
     "saveRegenerate": "저장 및 재생성",

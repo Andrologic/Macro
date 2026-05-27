@@ -5,8 +5,10 @@ import type {
   AppMode,
   ChatMessage,
   Conversation,
+  ContextReference,
   ProjectGroup,
   SkillManifest,
+  WorkspaceFileReference,
 } from '../types';
 import {
   ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
@@ -835,6 +837,17 @@ const fetchWebPageMock = mock(async (_url: string) => ({
   snippet: 'Fetched snippet.',
   content: 'Fetched full page content.',
 }));
+const fsReadFileWithOptionsMock = mock(async (_params: {
+  path: string;
+  allowOutsideWorkspace?: boolean;
+  workspacePath?: string | null;
+}) => ({
+  content: 'Workspace file body from disk.',
+  language: 'typescript',
+  is_binary: false,
+  size: 30,
+  encoding: 'utf-8',
+}));
 let streamingWebSearchConfig = {
   enableWebSearch: false,
   enableWebFetch: false,
@@ -1627,7 +1640,7 @@ const registerUseChatStoreMocks = async () => {
 	      path: resourcePath,
 	      content: 'resource content',
 	    }),
-	    skillsRunScript: async ({ skillId, scriptPath }: { skillId: string; scriptPath: string }) => ({
+    skillsRunScript: async ({ skillId, scriptPath }: { skillId: string; scriptPath: string }) => ({
 	      skillId,
 	      scriptPath,
 	      stdout: 'script result',
@@ -1636,6 +1649,7 @@ const registerUseChatStoreMocks = async () => {
 	      timedOut: false,
 	      truncated: false,
 	    }),
+    fsReadFileWithOptions: fsReadFileWithOptionsMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     updateConversationDetails: updateConversationDetailsMock,
@@ -2154,11 +2168,13 @@ const installSkillActivationMock = (
       }));
     }
     return [
+      `<skill_content name="${skill?.name ?? skillId}" id="${skillId}">`,
       `# Skill: ${skill?.name ?? skillId}`,
       '',
       '## Instructions',
       '# Instructions',
       'Use loaded skill body.',
+      '</skill_content>',
     ].join('\n');
   });
   useSkillsStore.setState({ activateSkill });
@@ -2320,6 +2336,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     sendChatNonStreamingMock.mockClear();
     webSearchMock.mockClear();
     fetchWebPageMock.mockClear();
+    fsReadFileWithOptionsMock.mockClear();
     streamingWebSearchConfig = {
       enableWebSearch: false,
       enableWebFetch: false,
@@ -6035,6 +6052,118 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(result)).toContain('full attached file body');
   });
 
+  it('persists slash-tagged file refs and reads their workspace content lazily', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = 'group-1';
+    appState.selectedProjectId = 'project-1';
+    const fileRef: WorkspaceFileReference = {
+      id: 'file:project-1:src/App.tsx',
+      path: 'src/App.tsx',
+      relativePath: 'src/App.tsx',
+      projectId: 'project-1',
+      projectName: 'Web',
+      language: 'typescript',
+      sizeBytes: 120,
+      modified: '2026-03-19T00:00:00.000Z',
+      isFocused: true,
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: 'group-1',
+          project_id: 'project-1',
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [{
+        id: fileRef.id,
+        kind: 'file',
+        title: fileRef.path,
+        data: fileRef,
+      } satisfies ContextReference],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Regarde [file: src/App.tsx] avant de repondre.',
+    });
+
+    const userMessage = useChatStore
+      .getState()
+      .messages.find((message: ChatMessage) => message.role === 'user');
+    expect(userMessage?.context_refs).toEqual([
+      expect.objectContaining({
+        kind: 'file',
+        title: 'src/App.tsx',
+        path: 'src/App.tsx',
+        relativePath: 'src/App.tsx',
+        projectId: 'project-1',
+        projectName: 'Web',
+      }),
+    ]);
+
+    const lightweightCitation = citationRecords.find(
+      (citation) =>
+        citation.type === 'file' &&
+        citation.scope === 'context' &&
+        citation.path === 'src/App.tsx',
+    );
+    expect(lightweightCitation).toBeDefined();
+    expect(lightweightCitation?.content).toBeUndefined();
+    expect(lightweightCitation?.snippet).toBeUndefined();
+
+    const streamOptions = getLatestStreamOptions<{
+      messages: Array<{ role: string; content: unknown }>;
+      fileToolContext?: Array<{ path?: string; content?: string; snippet?: string }>;
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    }>();
+    expect(JSON.stringify(streamOptions.messages)).toContain(
+      'Content: not preloaded. Use read_file with this exact path before analyzing file contents.',
+    );
+    expect(streamOptions.fileToolContext).toContainEqual(
+      expect.objectContaining({
+        path: 'src/App.tsx',
+        content: undefined,
+        snippet: undefined,
+      }),
+    );
+
+    const result = await streamOptions.onToolCall?.(
+      'read_file',
+      { file: 'src/App.tsx' },
+      'call-read-file-ref',
+    );
+
+    const readArgs = fsReadFileWithOptionsMock.mock.calls[0]?.[0];
+    expect(readArgs).toEqual(expect.objectContaining({
+      path: 'src/App.tsx',
+      allowOutsideWorkspace: false,
+    }));
+    expect(readArgs?.workspacePath).toContain('/repos/web');
+    expect(String(result)).toContain('FILE: src/App.tsx');
+    expect(String(result)).toContain('SOURCE: WORKSPACE');
+    expect(String(result)).toContain('Workspace file body from disk.');
+  });
+
   it('preloads explicit skill mentions and keeps the compact enabled skill catalog', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
@@ -6108,7 +6237,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const serializedMessages = JSON.stringify(streamOptions.messages);
     expect(streamOptions.allowedToolIds).toContain('skill_activate');
     expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
-    expect(streamOptions.allowedToolIds).toContain('skill_run_script');
+    expect(streamOptions.allowedToolIds).not.toContain('skill_run_script');
     expect(serializedMessages).toContain('Available Macro skills');
     expect(serializedMessages).toContain('id=project:project-1:agents:docs:aaa111');
     expect(serializedMessages).toContain('<skill_content name=\\"docs\\"');
@@ -6147,7 +6276,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
       },
     });
     installSkillActivationMock(useSkillsStore);

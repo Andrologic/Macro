@@ -3,7 +3,10 @@
 
 use crate::core::error::{io_error_to_backend_error, BackendError};
 use crate::core::tool_policy::is_macro_scoped_path;
-use crate::fs::dto::{DirEntryDto, FileContentDto, FileStatsDto, WriteResultDto};
+use crate::fs::dto::{
+    DirEntryDto, FileContentDto, FileStatsDto, WorkspaceFileSearchResultDto,
+    WorkspaceFileSearchRootDto, WriteResultDto,
+};
 use crate::fs::{
     get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
 };
@@ -17,6 +20,8 @@ use std::os::windows::fs::MetadataExt;
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_SEARCH_RESULTS: usize = 100;
+const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 
 // Default ignored directories/patterns
 static DEFAULT_IGNORED: [&str; 12] = [
@@ -440,6 +445,183 @@ fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
 
     // Check default ignored patterns
     DEFAULT_IGNORED.contains(&file_name)
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+fn workspace_file_match_score(query: &str, relative_path: &str, name: &str) -> i32 {
+    if query.is_empty() {
+        return 0;
+    }
+
+    let normalized_path = normalize_search_text(relative_path);
+    let normalized_name = normalize_search_text(name);
+    if normalized_path == query || normalized_name == query {
+        return 100;
+    }
+    if normalized_name.starts_with(query) {
+        return 75;
+    }
+    if normalized_path.starts_with(query) {
+        return 65;
+    }
+    if normalized_path
+        .split('/')
+        .any(|segment| segment.starts_with(query))
+    {
+        return 50;
+    }
+    if normalized_path.contains(query) || normalized_name.contains(query) {
+        return 30;
+    }
+    0
+}
+
+fn to_slash_path(value: &Path) -> String {
+    value.to_string_lossy().replace('\\', "/")
+}
+
+fn search_workspace_files_blocking(
+    roots: Vec<WorkspaceFileSearchRootDto>,
+    query: String,
+    limit: Option<u32>,
+    include_hidden: Option<bool>,
+    virtual_root_enabled: Option<bool>,
+) -> Result<Vec<WorkspaceFileSearchResultDto>, BackendError> {
+    let normalized_query = normalize_search_text(&query);
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let result_limit = limit
+        .map(|value| value as usize)
+        .unwrap_or(30)
+        .clamp(1, MAX_FILE_SEARCH_RESULTS);
+    let should_include_hidden = include_hidden.unwrap_or(false);
+    let use_virtual_root = virtual_root_enabled.unwrap_or(false);
+    let mut candidates: Vec<(i32, WorkspaceFileSearchResultDto)> = Vec::new();
+
+    for root in roots {
+        let workspace = PathBuf::from(root.workspace_path.trim());
+        if workspace.as_os_str().is_empty() || !workspace.is_dir() {
+            continue;
+        }
+
+        let mut walkdir = walkdir::WalkDir::new(&workspace).into_iter();
+        while let Some(entry_result) = walkdir.next() {
+            let entry = entry_result.map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to read directory entry: {}", error),
+            })?;
+            let entry_path = entry.path();
+            let relative_path_buf = match entry_path.strip_prefix(&workspace) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+
+            if !relative_path_buf.as_os_str().is_empty()
+                && should_ignore_path(relative_path_buf, should_include_hidden)
+            {
+                if entry.file_type().is_dir() {
+                    walkdir.skip_current_dir();
+                }
+                continue;
+            }
+
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let relative_path = to_slash_path(relative_path_buf);
+            let name = entry_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_string();
+            let score = workspace_file_match_score(&normalized_query, &relative_path, &name);
+            if score <= 0 {
+                continue;
+            }
+
+            let metadata = entry.metadata().map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to read file metadata: {}", error),
+            })?;
+            let modified = metadata
+                .modified()
+                .ok()
+                .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339());
+            let virtual_path = if use_virtual_root {
+                root.mount_name
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|mount| format!("{}/{}", mount.trim().trim_matches('/'), relative_path))
+                    .unwrap_or_else(|| relative_path.clone())
+            } else {
+                relative_path.clone()
+            };
+            let id_project = root
+                .project_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("workspace");
+
+            candidates.push((
+                score,
+                WorkspaceFileSearchResultDto {
+                    id: format!("file:{}:{}", id_project, virtual_path),
+                    path: virtual_path,
+                    relative_path,
+                    project_id: root.project_id.clone(),
+                    project_name: root.project_name.clone(),
+                    language: get_file_language(entry_path),
+                    size_bytes: Some(metadata.len()),
+                    modified,
+                    is_focused: root.is_focused,
+                },
+            ));
+
+            if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
+                break;
+            }
+        }
+
+        if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
+            break;
+        }
+    }
+
+    candidates.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
+    });
+    candidates.truncate(result_limit);
+    Ok(candidates.into_iter().map(|(_, result)| result).collect())
+}
+
+#[tauri::command]
+pub async fn fs_search_files(
+    roots: Vec<WorkspaceFileSearchRootDto>,
+    query: String,
+    limit: Option<u32>,
+    include_hidden: Option<bool>,
+    virtual_root_enabled: Option<bool>,
+) -> Result<Vec<WorkspaceFileSearchResultDto>, BackendError> {
+    tokio::task::spawn_blocking(move || {
+        search_workspace_files_blocking(
+            roots,
+            query,
+            limit,
+            include_hidden,
+            virtual_root_enabled,
+        )
+    })
+    .await
+    .map_err(to_join_error)?
 }
 
 /// Create a DirEntryDto from a file system entry
@@ -1040,6 +1222,68 @@ mod tests {
 
     fn setup_empty_workspace() -> TempDir {
         TempDir::new().expect("Failed to create temp directory")
+    }
+
+    #[test]
+    fn test_search_workspace_files_respects_ignores_limit_and_virtual_paths() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path();
+        fs::create_dir_all(workspace_path.join("src/components"))
+            .expect("create source dirs");
+        fs::create_dir_all(workspace_path.join("node_modules/pkg"))
+            .expect("create ignored dir");
+        fs::write(workspace_path.join("src/App.tsx"), "export const App = () => null;")
+            .expect("write app");
+        fs::write(
+            workspace_path.join("src/components/Button.tsx"),
+            "export const Button = () => null;",
+        )
+        .expect("write button");
+        fs::write(workspace_path.join("node_modules/pkg/index.ts"), "ignored")
+            .expect("write ignored");
+        fs::write(workspace_path.join(".env"), "SECRET=value").expect("write hidden");
+
+        let root = WorkspaceFileSearchRootDto {
+            project_id: Some("project-1".to_string()),
+            project_name: Some("Web".to_string()),
+            workspace_path: workspace_path.to_string_lossy().to_string(),
+            mount_name: Some("web".to_string()),
+            is_focused: true,
+        };
+
+        let results = search_workspace_files_blocking(
+            vec![root.clone()],
+            "src".to_string(),
+            Some(10),
+            Some(false),
+            Some(true),
+        )
+        .expect("search results");
+        let paths: Vec<String> = results.iter().map(|result| result.path.clone()).collect();
+        assert!(paths.contains(&"web/src/App.tsx".to_string()));
+        assert!(paths.contains(&"web/src/components/Button.tsx".to_string()));
+        assert!(!paths.iter().any(|path| path.contains("node_modules")));
+        assert!(results.iter().all(|result| result.is_focused));
+
+        let hidden_results = search_workspace_files_blocking(
+            vec![root.clone()],
+            "env".to_string(),
+            Some(10),
+            Some(false),
+            Some(true),
+        )
+        .expect("hidden search results");
+        assert!(hidden_results.is_empty());
+
+        let limited_results = search_workspace_files_blocking(
+            vec![root],
+            "tsx".to_string(),
+            Some(1),
+            Some(false),
+            Some(true),
+        )
+        .expect("limited search results");
+        assert_eq!(limited_results.len(), 1);
     }
 
     fn init_git_repo(path: &Path) -> Repository {

@@ -12,6 +12,9 @@ import type {
   ProjectDto,
   DebugResetProjectReportDto,
   ProvidersDto,
+  SkillDetailDto,
+  SkillListDto,
+  SkillResourceReadDto,
   TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
@@ -20,6 +23,7 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  SkillScriptRunResult,
 } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import {
@@ -35,6 +39,7 @@ import {
   remoteRequest,
   remoteUnsupported,
 } from './remoteHttp';
+import { REMOTE_UNSUPPORTED_IN_REMOTE_MODE } from '../serviceRuntime';
 
 export { resolveRemoteConfig } from './remoteHttp';
 
@@ -226,19 +231,93 @@ export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
 export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
   remoteUnsupported('mcpCallTool');
 
-export const listSkills: ServiceProvider['listSkills'] = async () => ({ skills: [] });
+const isRemoteUnsupportedStatus = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const details = (error as { details?: unknown }).details;
+  if (!details || typeof details !== 'object') return false;
+  const status = (details as { status?: unknown }).status;
+  return status === 404 || status === 405 || status === 501;
+};
 
-export const getSkill: ServiceProvider['getSkill'] = async () =>
-  remoteUnsupported('getSkill');
+const remoteSkillsUnsupported = (feature: string): never => {
+  throw {
+    code: REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+    message: `The current remote runtime does not support Macro skills (${feature}).`,
+    details: { feature },
+  };
+};
+
+const remoteSkillRequest = async <T>(
+  feature: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> => {
+  try {
+    return await remoteRequest<T>(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (isRemoteUnsupportedStatus(error)) {
+      return remoteSkillsUnsupported(feature);
+    }
+    throw error;
+  }
+};
+
+export const listSkills: ServiceProvider['listSkills'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillListDto>(
+    'listSkills',
+    `${getWorkspaceBasePath(config)}/skills/list`,
+    { projectRoots: data?.projectRoots ?? [] },
+  );
+};
+
+export const getSkill: ServiceProvider['getSkill'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillDetailDto>(
+    'getSkill',
+    `${getWorkspaceBasePath(config)}/skills/get`,
+    {
+      skillId: data.skillId,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
+};
 
 export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async () =>
   remoteUnsupported('installSkillFromLocalPath');
 
-export const readSkillResource: ServiceProvider['readSkillResource'] = async () =>
-  remoteUnsupported('readSkillResource');
+export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillResourceReadDto>(
+    'readSkillResource',
+    `${getWorkspaceBasePath(config)}/skills/read-resource`,
+    {
+      skillId: data.skillId,
+      resourcePath: data.resourcePath,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
+};
 
-export const runSkillScript: ServiceProvider['runSkillScript'] = async () =>
-  remoteUnsupported('runSkillScript');
+export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillScriptRunResult>(
+    'runSkillScript',
+    `${getWorkspaceBasePath(config)}/skills/run-script`,
+    {
+      skillId: data.skillId,
+      scriptPath: data.scriptPath,
+      args: data.args ?? [],
+      timeoutMs: data.timeoutMs ?? null,
+      allowWorkspace: data.allowWorkspace === true,
+      workspacePath: data.workspacePath ?? null,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
+};
 
 export const provider: ServiceProvider = {
   getAppBootstrap,

@@ -60,7 +60,7 @@ describe('serviceRuntime', () => {
       taskMutation: false,
       implementExecution: false,
       taskProjectCommands: false,
-      skills: false,
+      skills: true,
     });
   });
 

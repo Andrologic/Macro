@@ -231,6 +231,8 @@ describe('streamingChat tool rendering helpers', () => {
       allowedTools: new Set(['skill_activate', 'skill_read_resource', 'skill_run_script']),
       enableWebSearch: false,
       enableWebFetch: false,
+      skillToolIds: ['global:agents:docs:aaa111'],
+      runnableSkillToolIds: ['global:agents:docs:aaa111'],
     });
 
     const serializedTools = JSON.stringify(tools);

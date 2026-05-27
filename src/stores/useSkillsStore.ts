@@ -99,8 +99,10 @@ const migrateLegacySkillSettings = (
   let changed = false;
   for (const [legacyId, settings] of Object.entries(settingsBySkillId)) {
     const matches = skillsByLegacyId.get(legacyId) ?? [];
-    if (matches.length !== 1) continue;
-    const [skill] = matches;
+    const effectiveMatches = matches.filter((skill) => !skill.shadowedBySkillId);
+    const migrationMatches = effectiveMatches.length === 1 ? effectiveMatches : matches;
+    if (migrationMatches.length !== 1) continue;
+    const [skill] = migrationMatches;
     if (!skill || skill.id === legacyId) continue;
     if (!next[skill.id]) {
       next[skill.id] = settings;
@@ -129,9 +131,88 @@ const getProjectRootsFromAppState = (): SkillProjectRoot[] => {
 };
 
 const formatSkillResources = (skill: SkillManifest): string => {
-  const resources = skill.resources.map((resource) => `- ${resource.path} (${resource.kind})`);
-  const scripts = skill.scripts.map((script) => `- ${script.path} (script)`);
-  return [...resources, ...scripts].join('\n') || 'No bundled resources discovered.';
+  const resources = skill.resources.map((resource) =>
+    `- ${resource.path} (${resource.kind}, ${resource.sizeBytes} bytes)`
+  );
+  return resources.join('\n') || '- None discovered.';
+};
+
+const formatSkillScripts = (skill: SkillManifest): string => {
+  const scripts = skill.scripts.map((script) =>
+    `- ${script.path} (${script.sizeBytes} bytes)`
+  );
+  return scripts.join('\n') || '- None discovered.';
+};
+
+const escapeSkillAttribute = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const formatSkillSource = (skill: SkillManifest): string =>
+  `${skill.source.kind}/${skill.source.namespace ?? 'agents'}`;
+
+const isSkillLoadable = (skill: SkillManifest): boolean => skill.isValid;
+
+const isSkillEffective = (skill: SkillManifest): boolean => !skill.shadowedBySkillId;
+
+const formatSkillActivationBlock = (
+  skill: SkillManifest,
+  body: string,
+  alreadyLoaded: boolean,
+): string => {
+  const location = skill.location ?? {
+    kind: 'local' as const,
+    uri: skill.rootPath,
+  };
+  const attributes = [
+    `name="${escapeSkillAttribute(skill.name)}"`,
+    `id="${escapeSkillAttribute(skill.id)}"`,
+    `source="${escapeSkillAttribute(formatSkillSource(skill))}"`,
+    `location_kind="${escapeSkillAttribute(location.kind)}"`,
+    `location_uri="${escapeSkillAttribute(location.uri)}"`,
+    skill.contentHash ? `content_hash="${escapeSkillAttribute(skill.contentHash)}"` : '',
+    alreadyLoaded ? 'already_loaded="true"' : '',
+  ].filter(Boolean).join(' ');
+
+  const headerLines = [
+    `# Skill: ${skill.name}`,
+    '',
+    skill.description,
+    '',
+    `Source: ${formatSkillSource(skill)}`,
+    `Location: ${location.kind}:${location.uri}`,
+    skill.compatibility ? `Compatibility: ${skill.compatibility}` : '',
+    skill.license ? `License: ${skill.license}` : '',
+    skill.specCompliant === false
+      ? 'Spec compliance: warnings present; Macro loaded this skill leniently.'
+      : 'Spec compliance: compliant or not reported.',
+    skill.allowedTools
+      ? `Allowed tools requested by skill (advisory only): ${skill.allowedTools}`
+      : '',
+    skill.shadowedBySkillId
+      ? `Shadowed by: ${skill.shadowedBySkillId}. This exact id was selected explicitly.`
+      : '',
+  ].filter(Boolean);
+
+  return [
+    `<skill_content ${attributes}>`,
+    ...headerLines,
+    '',
+    '## Instructions',
+    body.trim() || '(No body instructions.)',
+    '',
+    '## Bundled Resources',
+    formatSkillResources(skill),
+    '',
+    '## Bundled Scripts',
+    formatSkillScripts(skill),
+    '',
+    'Resources, assets, and scripts are listed only. They are not loaded by activation. Use skill_read_resource for listed resources/assets and skill_run_script only when explicitly useful and allowed by Macro policy.',
+    '</skill_content>',
+  ].join('\n');
 };
 
 const formatScriptResult = (result: SkillScriptRunResult): string => [
@@ -176,6 +257,8 @@ interface SkillsStore {
   getSkillSettings: (skillId: string) => SkillSettings;
   getSkillById: (skillId: string) => SkillManifest | null;
   getEnabledSkills: () => SkillManifest[];
+  getEnabledLoadableSkills: (options?: { includeShadowed?: boolean }) => SkillManifest[];
+  getRunnableSkillIds: () => string[];
   findEnabledSkillByName: (name: string) => SkillManifest | null;
   resolveEnabledSkillMentions: (content: string) => SkillManifest[];
   prepareSkillsForTurn: (params: {
@@ -283,15 +366,30 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
 
   getSkillById: (skillId) => get().skills.find((skill) => skill.id === skillId) ?? null,
 
-  getEnabledSkills: () => get().skills.filter(
-    (skill) => skill.isValid && get().getSkillSettings(skill.id).enabled
-  ),
+  getEnabledLoadableSkills: (options) => get().skills.filter((skill) => {
+    if (!isSkillLoadable(skill)) return false;
+    if (!get().getSkillSettings(skill.id).enabled) return false;
+    return options?.includeShadowed === true || isSkillEffective(skill);
+  }),
+
+  getEnabledSkills: () => get().getEnabledLoadableSkills(),
+
+  getRunnableSkillIds: () => get().getEnabledLoadableSkills({ includeShadowed: true })
+    .filter((skill) => {
+      const settings = get().getSkillSettings(skill.id);
+      return settings.trusted && settings.scriptsEnabled && skill.scripts.length > 0;
+    })
+    .map((skill) => skill.id),
 
   findEnabledSkillByName: (name) => {
     const normalized = name.trim().replace(/^\$/, '').toLowerCase();
     if (!normalized) return null;
+    const exactIdMatch = get()
+      .getEnabledLoadableSkills({ includeShadowed: true })
+      .find((skill) => skill.id.toLowerCase() === normalized);
+    if (exactIdMatch) return exactIdMatch;
     const matches = get().getEnabledSkills().filter((skill) =>
-      skill.name.toLowerCase() === normalized || skill.id.toLowerCase() === normalized
+      skill.name.toLowerCase() === normalized
     );
     return matches.length === 1 ? matches[0] ?? null : null;
   },
@@ -305,7 +403,8 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
 
   prepareSkillsForTurn: async ({ conversationId, content, contextRefs = [], toolsAvailable }) => {
     const state = get();
-    const enabledSkills = state.getEnabledSkills();
+    const enabledSkills = state.getEnabledLoadableSkills({ includeShadowed: true });
+    const effectiveEnabledSkills = state.getEnabledSkills();
     const enabledSkillsById = new Map(enabledSkills.map((skill) => [skill.id, skill]));
     const allSkillsById = new Map(state.skills.map((skill) => [skill.id, skill]));
     const selectedSkills: SkillManifest[] = [];
@@ -342,7 +441,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     }
 
     const enabledByNormalizedName = new Map<string, SkillManifest[]>();
-    for (const skill of enabledSkills) {
+    for (const skill of effectiveEnabledSkills) {
       const key = skill.name.toLowerCase();
       enabledByNormalizedName.set(key, [...(enabledByNormalizedName.get(key) ?? []), skill]);
     }
@@ -364,15 +463,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     for (const skill of selectedSkills) {
       try {
         const block = await state.activateSkill(skill.id, conversationId);
-        systemInstructionBlocks.push(
-          [
-            `<skill_content name="${skill.name}" id="${skill.id}">`,
-            block,
-            `Path: ${skill.skillFilePath}`,
-            `Source: ${skill.source.kind}/${skill.source.namespace ?? 'agents'}`,
-            '</skill_content>',
-          ].join('\n'),
-        );
+        systemInstructionBlocks.push(block);
         const activation = get().activationsByConversationId[conversationId]
           ?.find((item) => item.skillId === skill.id);
         if (activation) {
@@ -397,6 +488,18 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     if (!settings.enabled) {
       return `Skill ${skillId} is disabled. Enable it in Settings > Skills before using it.`;
     }
+    const cachedSkill = get().getSkillById(skillId);
+    const cachedActivation = conversationId
+      ? get().activationsByConversationId[conversationId]?.find((item) =>
+        item.skillId === skillId &&
+        cachedSkill?.contentHash &&
+        item.contentHash === cachedSkill.contentHash &&
+        item.body
+      )
+      : null;
+    if (cachedSkill && cachedActivation) {
+      return formatSkillActivationBlock(cachedSkill, cachedActivation.body, true);
+    }
     const response = await services.getSkill({
       skillId,
       projectRoots: getProjectRootsFromAppState(),
@@ -408,6 +511,8 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
       skillId,
       activatedAt: new Date().toISOString(),
       body: response.body,
+      contentHash: response.skill.contentHash,
+      skillFilePath: response.skill.skillFilePath,
     };
     if (conversationId) {
       set((state) => ({
@@ -422,17 +527,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         },
       }));
     }
-    return [
-      `# Skill: ${response.skill.name}`,
-      '',
-      response.skill.description,
-      '',
-      '## Instructions',
-      response.body.trim(),
-      '',
-      '## Bundled Resources',
-      formatSkillResources(response.skill),
-    ].join('\n');
+    return formatSkillActivationBlock(response.skill, response.body, false);
   },
 
   readSkillResource: async (skillId, resourcePath) => {

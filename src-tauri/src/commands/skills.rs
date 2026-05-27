@@ -1,6 +1,8 @@
 use crate::commands::{command_error, CommandResult};
 use crate::core::process::background_tokio_command;
 use serde::{Deserialize, Serialize};
+use serde_yaml::{Mapping, Value};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -10,12 +12,26 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 const SKILL_FILE: &str = "SKILL.md";
+const LOWERCASE_SKILL_FILE: &str = "skill.md";
 const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
+const MAX_DISCOVERY_DIRS: usize = 2_000;
+const MAX_SKILL_NAME_LENGTH: usize = 64;
+const MAX_DESCRIPTION_LENGTH: usize = 1024;
+const MAX_COMPATIBILITY_LENGTH: usize = 500;
+
+const FRONTMATTER_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "license",
+    "compatibility",
+    "metadata",
+    "allowed-tools",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,15 +62,39 @@ pub struct SkillResourceDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillLocationDto {
+    pub kind: String,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDiagnosticDto {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillManifestDto {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub license: Option<String>,
+    pub compatibility: Option<String>,
+    pub allowed_tools: Option<String>,
+    pub metadata: BTreeMap<String, String>,
     pub root_path: String,
     pub skill_file_path: String,
+    pub location: SkillLocationDto,
     pub source: SkillSourceDto,
     pub resources: Vec<SkillResourceDto>,
     pub scripts: Vec<SkillResourceDto>,
+    pub diagnostics: Vec<SkillDiagnosticDto>,
+    pub spec_compliant: bool,
+    pub shadowed_by_skill_id: Option<String>,
+    pub content_hash: String,
     pub validation_errors: Vec<String>,
     pub is_valid: bool,
 }
@@ -92,24 +132,42 @@ pub struct SkillScriptRunResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct SkillFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
-}
-
 #[derive(Debug)]
 struct ParsedSkillFile {
     name: String,
     description: String,
+    license: Option<String>,
+    compatibility: Option<String>,
+    allowed_tools: Option<String>,
+    metadata: BTreeMap<String, String>,
     body: String,
-    validation_errors: Vec<String>,
+    diagnostics: Vec<SkillDiagnosticDto>,
+    spec_compliant: bool,
+    is_valid: bool,
+    content_hash: String,
 }
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
+}
+
+fn skill_diagnostic(severity: &str, code: &str, message: impl Into<String>) -> SkillDiagnosticDto {
+    SkillDiagnosticDto {
+        severity: severity.to_string(),
+        code: code.to_string(),
+        message: message.into(),
+    }
+}
+
+fn stable_string_hash(value: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
+    }
+    format!("{:016x}", hash)
 }
 
 fn normalize_skill_name(value: &str, fallback: &str) -> String {
@@ -138,12 +196,7 @@ fn normalize_skill_name(value: &str, fallback: &str) -> String {
 fn stable_path_hash(path: &Path) -> String {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let normalized = canonical.to_string_lossy().replace('\\', "/");
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in normalized.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
-    }
-    format!("{:016x}", hash)
+    stable_string_hash(&normalized)
 }
 
 fn has_hidden_path_component(path: &Path) -> bool {
@@ -186,31 +239,306 @@ fn path_is_inside(parent: &Path, child: &Path) -> bool {
     child.starts_with(parent)
 }
 
+fn path_has_ignored_discovery_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(value) => {
+            let name = value.to_string_lossy();
+            name == ".git" || name == "node_modules"
+        }
+        _ => false,
+    })
+}
+
+fn find_skill_file(root: &Path) -> Option<(PathBuf, bool)> {
+    let upper = root.join(SKILL_FILE);
+    if fs::symlink_metadata(&upper)
+        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Some((upper, false));
+    }
+
+    let lower = root.join(LOWERCASE_SKILL_FILE);
+    if fs::symlink_metadata(&lower)
+        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Some((lower, true));
+    }
+
+    None
+}
+
+fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
+    mapping.get(&Value::String(key.to_string()))
+}
+
+fn yaml_value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => String::new(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches("---")
+            .trim()
+            .to_string(),
+    }
+}
+
+fn required_string_field(
+    mapping: &Mapping,
+    key: &str,
+    diagnostics: &mut Vec<SkillDiagnosticDto>,
+) -> Option<String> {
+    match mapping_get(mapping, key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        Some(Value::String(_)) | None => {
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "missing_required_field",
+                format!("SKILL.md frontmatter must include non-empty {}.", key),
+            ));
+            None
+        }
+        Some(_) => {
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "invalid_required_field",
+                format!("SKILL.md frontmatter field '{}' must be a string.", key),
+            ));
+            None
+        }
+    }
+}
+
+fn optional_string_field(
+    mapping: &Mapping,
+    key: &str,
+    diagnostics: &mut Vec<SkillDiagnosticDto>,
+) -> Option<String> {
+    match mapping_get(mapping, key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        Some(Value::String(_)) | None => None,
+        Some(_) => {
+            diagnostics.push(skill_diagnostic(
+                "warning",
+                "invalid_optional_field",
+                format!("SKILL.md frontmatter field '{}' should be a string.", key),
+            ));
+            None
+        }
+    }
+}
+
+fn parse_metadata_field(
+    mapping: &Mapping,
+    diagnostics: &mut Vec<SkillDiagnosticDto>,
+) -> BTreeMap<String, String> {
+    let Some(value) = mapping_get(mapping, "metadata") else {
+        return BTreeMap::new();
+    };
+
+    let Value::Mapping(metadata) = value else {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_metadata",
+            "SKILL.md frontmatter field 'metadata' should be a mapping.",
+        ));
+        return BTreeMap::new();
+    };
+
+    let mut result = BTreeMap::new();
+    for (key, value) in metadata {
+        let key = yaml_value_to_string(key).trim().to_string();
+        if key.is_empty() {
+            diagnostics.push(skill_diagnostic(
+                "warning",
+                "invalid_metadata_key",
+                "SKILL.md metadata contains an empty key.",
+            ));
+            continue;
+        }
+        result.insert(key, yaml_value_to_string(value));
+    }
+    result
+}
+
+fn value_looks_quoted(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with('"')
+        || trimmed.starts_with('\'')
+        || trimmed.starts_with('|')
+        || trimmed.starts_with('>')
+}
+
+fn repair_unquoted_colon_values(frontmatter: &str) -> Option<String> {
+    let mut changed = false;
+    let mut repaired = Vec::new();
+
+    for line in frontmatter.lines() {
+        let trimmed = line.trim_start();
+        let is_top_level = line.len() == trimmed.len();
+        let Some((key, value)) = trimmed.split_once(':') else {
+            repaired.push(line.to_string());
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim_start();
+        let can_repair = is_top_level
+            && FRONTMATTER_FIELDS.contains(&key)
+            && !value.is_empty()
+            && value.contains(": ")
+            && !value_looks_quoted(value);
+        if can_repair {
+            repaired.push(format!("{}: |-", key));
+            repaired.push(format!("  {}", value));
+            changed = true;
+        } else {
+            repaired.push(line.to_string());
+        }
+    }
+
+    changed.then(|| repaired.join("\n"))
+}
+
+fn parse_frontmatter_mapping(
+    frontmatter: &str,
+    diagnostics: &mut Vec<SkillDiagnosticDto>,
+) -> Option<Mapping> {
+    match serde_yaml::from_str::<Mapping>(frontmatter) {
+        Ok(mapping) => Some(mapping),
+        Err(first_error) => {
+            if let Some(repaired) = repair_unquoted_colon_values(frontmatter) {
+                if let Ok(mapping) = serde_yaml::from_str::<Mapping>(&repaired) {
+                    diagnostics.push(skill_diagnostic(
+                        "warning",
+                        "frontmatter_repaired",
+                        "SKILL.md frontmatter used an unquoted colon value; Macro repaired it for compatibility.",
+                    ));
+                    return Some(mapping);
+                }
+            }
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "invalid_frontmatter",
+                format!("Invalid SKILL.md frontmatter: {}", first_error),
+            ));
+            None
+        }
+    }
+}
+
+fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<SkillDiagnosticDto>) {
+    if name.len() > MAX_SKILL_NAME_LENGTH {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_name",
+            format!(
+                "Skill name '{}' exceeds the {} character limit.",
+                name, MAX_SKILL_NAME_LENGTH
+            ),
+        ));
+    }
+    if name != name.to_ascii_lowercase() {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_name",
+            format!("Skill name '{}' must be lowercase.", name),
+        ));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_name",
+            "Skill name cannot start or end with a hyphen.",
+        ));
+    }
+    if name.contains("--") {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_name",
+            "Skill name cannot contain consecutive hyphens.",
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "invalid_name",
+            format!(
+                "Skill name '{}' contains invalid characters. Only lowercase ASCII letters, digits, and hyphens are allowed.",
+                name
+            ),
+        ));
+    }
+    let dir_name = skill_dir
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    if !dir_name.is_empty() && dir_name != name {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "directory_name_mismatch",
+            format!(
+                "Directory name '{}' should match skill name '{}'.",
+                dir_name, name
+            ),
+        ));
+    }
+}
+
 fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
-    let mut validation_errors = Vec::new();
+    let used_lowercase_file = skill_file
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(|name| name == LOWERCASE_SKILL_FILE)
+        .unwrap_or(false);
+    let fallback_name = skill_file
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(OsStr::to_str)
+        .unwrap_or("skill")
+        .to_string();
+    let mut diagnostics = Vec::new();
     let raw = match fs::read_to_string(skill_file) {
         Ok(value) => value,
         Err(error) => {
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "skill_file_read_failed",
+                format!("Failed to read SKILL.md: {}", error),
+            ));
             return ParsedSkillFile {
-                name: skill_file
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(OsStr::to_str)
-                    .unwrap_or("skill")
-                    .to_string(),
+                name: fallback_name,
                 description: String::new(),
+                license: None,
+                compatibility: None,
+                allowed_tools: None,
+                metadata: BTreeMap::new(),
                 body: String::new(),
-                validation_errors: vec![format!("Failed to read SKILL.md: {}", error)],
-            }
+                diagnostics,
+                spec_compliant: false,
+                is_valid: false,
+                content_hash: String::new(),
+            };
         }
     };
 
     let mut name = String::new();
     let mut description = String::new();
-    let mut body = raw.clone();
+    let mut license = None;
+    let mut compatibility = None;
+    let mut allowed_tools = None;
+    let mut metadata = BTreeMap::new();
+    let normalized = raw.replace("\r\n", "\n");
+    let mut body = normalized.clone();
 
-    if raw.starts_with("---\n") || raw.starts_with("---\r\n") {
-        let normalized = raw.replace("\r\n", "\n");
+    if normalized.starts_with("---\n") {
         let frontmatter_range = normalized[4..]
             .find("\n---\n")
             .map(|end_index| (4 + end_index, 4 + end_index + "\n---\n".len()))
@@ -222,55 +550,130 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
         if let Some((frontmatter_end, body_start)) = frontmatter_range {
             let frontmatter = &normalized[4..frontmatter_end];
             body = normalized[body_start..].to_string();
-            match serde_yaml::from_str::<SkillFrontmatter>(frontmatter) {
-                Ok(parsed) => {
-                    name = parsed.name.unwrap_or_default().trim().to_string();
-                    description = parsed.description.unwrap_or_default().trim().to_string();
-                }
-                Err(error) => {
-                    validation_errors.push(format!("Invalid SKILL.md frontmatter: {}", error));
-                }
+            if let Some(mapping) = parse_frontmatter_mapping(frontmatter, &mut diagnostics) {
+                name = required_string_field(&mapping, "name", &mut diagnostics)
+                    .unwrap_or_else(|| fallback_name.clone());
+                description = required_string_field(&mapping, "description", &mut diagnostics)
+                    .unwrap_or_default();
+                license = optional_string_field(&mapping, "license", &mut diagnostics);
+                compatibility = optional_string_field(&mapping, "compatibility", &mut diagnostics);
+                allowed_tools = optional_string_field(&mapping, "allowed-tools", &mut diagnostics);
+                metadata = parse_metadata_field(&mapping, &mut diagnostics);
             }
         } else {
-            validation_errors.push("SKILL.md frontmatter is not closed.".to_string());
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "frontmatter_not_closed",
+                "SKILL.md frontmatter is not closed.",
+            ));
         }
     } else {
-        validation_errors.push("SKILL.md must start with YAML frontmatter.".to_string());
+        diagnostics.push(skill_diagnostic(
+            "error",
+            "frontmatter_missing",
+            "SKILL.md must start with YAML frontmatter.",
+        ));
     }
 
     if name.is_empty() {
-        validation_errors.push("SKILL.md frontmatter must include name.".to_string());
-        name = skill_file
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(OsStr::to_str)
-            .unwrap_or("skill")
-            .to_string();
+        diagnostics.push(skill_diagnostic(
+            "error",
+            "missing_required_field",
+            "SKILL.md frontmatter must include non-empty name.",
+        ));
+        name = fallback_name.clone();
     }
     if description.is_empty() {
-        validation_errors.push("SKILL.md frontmatter must include description.".to_string());
+        let already_reported = diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "missing_required_field"
+                && diagnostic.message.contains("description")
+        });
+        if !already_reported {
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "missing_required_field",
+                "SKILL.md frontmatter must include non-empty description.",
+            ));
+        }
     }
+
+    if used_lowercase_file {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "lowercase_skill_file",
+            "Found skill.md. Use SKILL.md for AgentSkills spec compliance.",
+        ));
+    }
+    validate_skill_name(
+        &name,
+        skill_file.parent().unwrap_or_else(|| Path::new("")),
+        &mut diagnostics,
+    );
+    if description.len() > MAX_DESCRIPTION_LENGTH {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "description_too_long",
+            format!(
+                "Skill description exceeds the {} character limit.",
+                MAX_DESCRIPTION_LENGTH
+            ),
+        ));
+    }
+    if compatibility
+        .as_ref()
+        .map(|value| value.len() > MAX_COMPATIBILITY_LENGTH)
+        .unwrap_or(false)
+    {
+        diagnostics.push(skill_diagnostic(
+            "warning",
+            "compatibility_too_long",
+            format!(
+                "Skill compatibility exceeds the {} character limit.",
+                MAX_COMPATIBILITY_LENGTH
+            ),
+        ));
+    }
+    let is_valid = diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.severity != "error");
+    let spec_compliant = diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.severity != "error" && diagnostic.severity != "warning");
 
     ParsedSkillFile {
         name,
         description,
+        license,
+        compatibility,
+        allowed_tools,
+        metadata,
         body,
-        validation_errors,
+        diagnostics,
+        spec_compliant,
+        is_valid,
+        content_hash: stable_string_hash(&raw),
     }
 }
 
-fn collect_resources(root: &Path, dirname: &str) -> (Vec<SkillResourceDto>, Vec<String>) {
+fn collect_resources(
+    root: &Path,
+    dirname: &str,
+) -> (Vec<SkillResourceDto>, Vec<SkillDiagnosticDto>) {
     let mut resources = Vec::new();
-    let mut errors = Vec::new();
+    let mut diagnostics = Vec::new();
     let base = root.join(dirname);
     if !base.exists() {
-        return (resources, errors);
+        return (resources, diagnostics);
     }
     let root_canonical = match fs::canonicalize(root) {
         Ok(path) => path,
         Err(error) => {
-            errors.push(format!("Failed to canonicalize skill root: {}", error));
-            return (resources, errors);
+            diagnostics.push(skill_diagnostic(
+                "error",
+                "skill_root_unreadable",
+                format!("Failed to canonicalize skill root: {}", error),
+            ));
+            return (resources, diagnostics);
         }
     };
 
@@ -279,7 +682,11 @@ fn collect_resources(root: &Path, dirname: &str) -> (Vec<SkillResourceDto>, Vec<
         let entries = match fs::read_dir(&current) {
             Ok(entries) => entries,
             Err(error) => {
-                errors.push(format!("Failed to read {}: {}", current.display(), error));
+                diagnostics.push(skill_diagnostic(
+                    "warning",
+                    "resource_scan_failed",
+                    format!("Failed to read {}: {}", current.display(), error),
+                ));
                 continue;
             }
         };
@@ -296,7 +703,11 @@ fn collect_resources(root: &Path, dirname: &str) -> (Vec<SkillResourceDto>, Vec<
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    errors.push(format!("Failed to inspect {}: {}", path.display(), error));
+                    diagnostics.push(skill_diagnostic(
+                        "warning",
+                        "resource_scan_failed",
+                        format!("Failed to inspect {}: {}", path.display(), error),
+                    ));
                     continue;
                 }
             };
@@ -304,17 +715,22 @@ fn collect_resources(root: &Path, dirname: &str) -> (Vec<SkillResourceDto>, Vec<
                 match fs::canonicalize(&path) {
                     Ok(target) if path_is_inside(&root_canonical, &target) => {}
                     Ok(_) => {
-                        errors.push(format!(
-                            "Skipped symlink outside skill root: {}",
-                            relative.display()
+                        diagnostics.push(skill_diagnostic(
+                            "warning",
+                            "resource_symlink_outside_root",
+                            format!("Skipped symlink outside skill root: {}", relative.display()),
                         ));
                         continue;
                     }
                     Err(error) => {
-                        errors.push(format!(
-                            "Skipped unreadable symlink {}: {}",
-                            relative.display(),
-                            error
+                        diagnostics.push(skill_diagnostic(
+                            "warning",
+                            "resource_symlink_unreadable",
+                            format!(
+                                "Skipped unreadable symlink {}: {}",
+                                relative.display(),
+                                error
+                            ),
                         ));
                         continue;
                     }
@@ -338,11 +754,11 @@ fn collect_resources(root: &Path, dirname: &str) -> (Vec<SkillResourceDto>, Vec<
     }
 
     resources.sort_by(|a, b| a.path.cmp(&b.path));
-    (resources, errors)
+    (resources, diagnostics)
 }
 
 fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
-    let skill_file = root.join(SKILL_FILE);
+    let (skill_file, _) = find_skill_file(root).unwrap_or_else(|| (root.join(SKILL_FILE), false));
     let parsed = parse_skill_file(&skill_file);
     let normalized_name = normalize_skill_name(
         &parsed.name,
@@ -363,26 +779,47 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         ),
     };
 
-    let mut validation_errors = parsed.validation_errors;
+    let mut diagnostics = parsed.diagnostics;
     let (mut references, reference_errors) = collect_resources(root, "references");
     let (mut assets, asset_errors) = collect_resources(root, "assets");
     let (scripts, script_errors) = collect_resources(root, "scripts");
-    validation_errors.extend(reference_errors);
-    validation_errors.extend(asset_errors);
-    validation_errors.extend(script_errors);
+    diagnostics.extend(reference_errors);
+    diagnostics.extend(asset_errors);
+    diagnostics.extend(script_errors);
     references.append(&mut assets);
+    let validation_errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == "error")
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect::<Vec<_>>();
+    let is_valid = parsed.is_valid
+        && diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != "error");
 
     SkillManifestDto {
         id,
         name: parsed.name,
         description: parsed.description,
+        license: parsed.license,
+        compatibility: parsed.compatibility,
+        allowed_tools: parsed.allowed_tools,
+        metadata: parsed.metadata,
         root_path: root.to_string_lossy().to_string(),
         skill_file_path: skill_file.to_string_lossy().to_string(),
+        location: SkillLocationDto {
+            kind: "local".to_string(),
+            uri: root.to_string_lossy().to_string(),
+        },
         source,
         resources: references,
         scripts,
-        is_valid: validation_errors.is_empty(),
+        diagnostics,
+        spec_compliant: parsed.spec_compliant,
+        shadowed_by_skill_id: None,
+        content_hash: parsed.content_hash,
         validation_errors,
+        is_valid,
     }
 }
 
@@ -395,13 +832,14 @@ fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
     }
 
     let mut roots = Vec::new();
+    let mut visited_dirs = 0_usize;
     let mut stack = vec![(base.to_path_buf(), 0_usize)];
     while let Some((current, depth)) = stack.pop() {
-        let skill_file = current.join(SKILL_FILE);
-        if fs::symlink_metadata(&skill_file)
-            .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-            .unwrap_or(false)
-        {
+        visited_dirs += 1;
+        if visited_dirs > MAX_DISCOVERY_DIRS {
+            break;
+        }
+        if find_skill_file(&current).is_some() {
             roots.push(current.clone());
         }
         if depth >= MAX_DISCOVERY_DEPTH {
@@ -417,6 +855,9 @@ fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
                 continue;
             };
             if has_hidden_path_component(relative) {
+                continue;
+            }
+            if path_has_ignored_discovery_component(relative) {
                 continue;
             }
             let Ok(metadata) = fs::symlink_metadata(&path) else {
@@ -480,10 +921,102 @@ fn global_skill_search_roots(home: &Path) -> Vec<SkillSearchRoot> {
             path: home.join(".config").join("opencode").join("skill"),
         },
         SkillSearchRoot {
+            namespace: "opencode",
+            path: home.join(".opencode").join("skills"),
+        },
+        SkillSearchRoot {
+            namespace: "opencode",
+            path: home.join(".opencode").join("skill"),
+        },
+        SkillSearchRoot {
             namespace: "claude",
             path: home.join(".claude").join("skills"),
         },
     ]
+}
+
+fn namespace_precedence(namespace: &str) -> u8 {
+    match namespace {
+        "agents" => 0,
+        "codex" => 1,
+        "opencode" => 2,
+        "claude" => 3,
+        _ => 4,
+    }
+}
+
+fn source_precedence(kind: &str) -> u8 {
+    match kind {
+        "project" => 0,
+        "global" => 1,
+        _ => 2,
+    }
+}
+
+fn skill_collision_key(skill: &SkillManifestDto) -> String {
+    skill.name.trim().to_ascii_lowercase()
+}
+
+fn skill_collision_rank(skill: &SkillManifestDto) -> (u8, u8, String, String) {
+    (
+        source_precedence(&skill.source.kind),
+        namespace_precedence(&skill.source.namespace),
+        skill.root_path.clone(),
+        skill.id.clone(),
+    )
+}
+
+fn resolve_skill_collisions(skills: &mut [SkillManifestDto]) {
+    let mut skills_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, skill) in skills.iter().enumerate() {
+        let key = skill_collision_key(skill);
+        if key.is_empty() {
+            continue;
+        }
+        skills_by_name.entry(key).or_default().push(index);
+    }
+
+    for indexes in skills_by_name.values() {
+        if indexes.len() <= 1 {
+            continue;
+        }
+
+        let winner_index = indexes
+            .iter()
+            .copied()
+            .filter(|index| skills[*index].is_valid)
+            .min_by_key(|index| skill_collision_rank(&skills[*index]))
+            .or_else(|| {
+                indexes
+                    .iter()
+                    .copied()
+                    .min_by_key(|index| skill_collision_rank(&skills[*index]))
+            });
+
+        let Some(winner_index) = winner_index else {
+            continue;
+        };
+        let winner_id = skills[winner_index].id.clone();
+        let winner_label = format!(
+            "{}/{}",
+            skills[winner_index].source.kind, skills[winner_index].source.namespace
+        );
+        for index in indexes {
+            if *index == winner_index {
+                continue;
+            }
+            let skill = &mut skills[*index];
+            skill.shadowed_by_skill_id = Some(winner_id.clone());
+            skill.diagnostics.push(skill_diagnostic(
+                "warning",
+                "shadowed_skill",
+                format!(
+                    "Another skill named '{}' wins by precedence ({}). Select this skill by exact id to use it.",
+                    skill.name, winner_label
+                ),
+            ));
+        }
+    }
 }
 
 fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDto> {
@@ -526,6 +1059,7 @@ fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDt
         }
     }
 
+    resolve_skill_collisions(&mut skills);
     skills.sort_by(|a, b| {
         let source_order = match (a.source.kind.as_str(), b.source.kind.as_str()) {
             ("project", "global") => std::cmp::Ordering::Less,
@@ -533,7 +1067,12 @@ fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDt
             _ => std::cmp::Ordering::Equal,
         };
         source_order
+            .then_with(|| {
+                namespace_precedence(&a.source.namespace)
+                    .cmp(&namespace_precedence(&b.source.namespace))
+            })
             .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.root_path.cmp(&b.root_path))
             .then_with(|| a.id.cmp(&b.id))
     });
     skills
@@ -712,25 +1251,32 @@ pub async fn skills_install_from_local_path(
     source_path: String,
 ) -> CommandResult<SkillManifestDto> {
     let source = PathBuf::from(source_path.trim());
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|error| command_error(format!("Failed to inspect selected folder: {}", error)))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(command_error("Selected path must be a real skill folder."));
+    }
     if !source.join(SKILL_FILE).is_file() {
         return Err(command_error("Selected folder does not contain SKILL.md."));
     }
     let parsed = parse_skill_file(&source.join(SKILL_FILE));
-    if !parsed.validation_errors.is_empty() {
-        return Err(command_error(parsed.validation_errors.join(" ")));
+    if !parsed.is_valid || !parsed.spec_compliant {
+        let details = parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(command_error(format!(
+            "Selected skill is not AgentSkills spec-compliant. {}",
+            details
+        )));
     }
 
     let home =
         home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
     let destination_base = home.join(AGENTS_SKILLS_DIR);
-    let skill_dir_name = normalize_skill_name(
-        &parsed.name,
-        source
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or("skill"),
-    );
-    let destination = destination_base.join(skill_dir_name);
+    let destination = destination_base.join(&parsed.name);
     if destination.exists() {
         return Err(command_error(format!(
             "A skill already exists at {}.",
@@ -879,14 +1425,16 @@ mod tests {
         let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
         assert_eq!(parsed.name, "example");
         assert_eq!(parsed.description, "Does useful work");
-        assert!(parsed.validation_errors.is_empty());
+        assert!(parsed.diagnostics.is_empty());
+        assert!(parsed.spec_compliant);
+        assert!(parsed.is_valid);
         assert!(parsed.body.contains("# Use me"));
     }
 
     #[test]
     fn parses_frontmatter_closed_at_eof() {
         let dir = tempdir().expect("tempdir");
-        let skill_dir = dir.path().join("example");
+        let skill_dir = dir.path().join("eof");
         fs::create_dir_all(&skill_dir).expect("mkdir");
         fs::write(
             skill_dir.join(SKILL_FILE),
@@ -897,7 +1445,7 @@ mod tests {
         let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
         assert_eq!(parsed.name, "eof");
         assert_eq!(parsed.description, "Closed at EOF");
-        assert!(parsed.validation_errors.is_empty());
+        assert!(parsed.diagnostics.is_empty());
         assert!(parsed.body.is_empty());
     }
 
@@ -914,13 +1462,13 @@ mod tests {
 
         let invalid = parse_skill_file(&invalid_dir.join(SKILL_FILE));
         assert!(invalid
-            .validation_errors
+            .diagnostics
             .iter()
-            .any(|error| error.contains("Invalid SKILL.md frontmatter")));
+            .any(|diagnostic| diagnostic.code == "invalid_frontmatter"));
         assert!(invalid
-            .validation_errors
+            .diagnostics
             .iter()
-            .any(|error| error.contains("must include name")));
+            .any(|diagnostic| diagnostic.message.contains("non-empty name")));
 
         let missing_dir = dir.path().join("missing");
         fs::create_dir_all(&missing_dir).expect("mkdir missing");
@@ -929,9 +1477,98 @@ mod tests {
 
         let missing = parse_skill_file(&missing_dir.join(SKILL_FILE));
         assert!(missing
-            .validation_errors
+            .diagnostics
             .iter()
-            .any(|error| error.contains("must include description")));
+            .any(|diagnostic| diagnostic.message.contains("non-empty description")));
+        assert!(!missing.is_valid);
+    }
+
+    #[test]
+    fn parses_optional_agentskills_fields_and_metadata() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("example");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: example\ndescription: \"Does: useful work\"\nlicense: MIT\ncompatibility: codex cloud\nallowed-tools: bash, web\nmetadata:\n  provider: macro\n  version: 1\n---\n\nBody\n",
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
+        assert_eq!(parsed.license.as_deref(), Some("MIT"));
+        assert_eq!(parsed.compatibility.as_deref(), Some("codex cloud"));
+        assert_eq!(parsed.allowed_tools.as_deref(), Some("bash, web"));
+        assert_eq!(
+            parsed.metadata.get("provider").map(String::as_str),
+            Some("macro")
+        );
+        assert_eq!(
+            parsed.metadata.get("version").map(String::as_str),
+            Some("1")
+        );
+        assert!(parsed.spec_compliant);
+    }
+
+    #[test]
+    fn accepts_lowercase_skill_file_with_warning() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("lowercase");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(LOWERCASE_SKILL_FILE),
+            "---\nname: lowercase\ndescription: Compatibility filename\n---\n",
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(LOWERCASE_SKILL_FILE));
+        assert!(parsed.is_valid);
+        assert!(!parsed.spec_compliant);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "lowercase_skill_file"));
+        assert!(discover_skill_roots(dir.path()).contains(&skill_dir));
+    }
+
+    #[test]
+    fn leniently_repairs_unquoted_colon_values() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("repair");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: repair\ndescription: Use this when input has: a colon\n---\n",
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
+        assert!(parsed.is_valid);
+        assert!(!parsed.spec_compliant);
+        assert_eq!(parsed.description, "Use this when input has: a colon");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "frontmatter_repaired"));
+    }
+
+    #[test]
+    fn invalid_names_are_loadable_but_not_spec_compliant() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("Bad_Name");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: Bad_Name\ndescription: Invalid name but readable\n---\n",
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
+        assert!(parsed.is_valid);
+        assert!(!parsed.spec_compliant);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_name"));
     }
 
     #[test]
@@ -971,6 +1608,40 @@ mod tests {
                 .to_string_lossy()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn resolves_collisions_with_deterministic_source_precedence() {
+        let project = tempdir().expect("project");
+        write_skill(&project.path().join(AGENTS_SKILLS_DIR).join("docs"), "docs");
+        write_skill(
+            &project.path().join(".codex").join("skills").join("docs"),
+            "docs",
+        );
+
+        let skills = discover_skills(&[SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }]);
+        let agents = skills
+            .iter()
+            .find(|skill| skill.name == "docs" && skill.source.namespace == "agents")
+            .expect("agents docs");
+        let codex = skills
+            .iter()
+            .find(|skill| skill.name == "docs" && skill.source.namespace == "codex")
+            .expect("codex docs");
+
+        assert!(agents.shadowed_by_skill_id.is_none());
+        assert_eq!(
+            codex.shadowed_by_skill_id.as_deref(),
+            Some(agents.id.as_str())
+        );
+        assert!(codex
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "shadowed_skill"));
     }
 
     #[test]
@@ -1049,6 +1720,14 @@ mod tests {
         assert!(paths.contains(&(
             "opencode",
             "/tmp/macro-home/.config/opencode/skill".to_string()
+        )));
+        assert!(paths.contains(&(
+            "opencode",
+            "/tmp/macro-home/.opencode/skills".to_string()
+        )));
+        assert!(paths.contains(&(
+            "opencode",
+            "/tmp/macro-home/.opencode/skill".to_string()
         )));
         assert!(paths.contains(&("claude", "/tmp/macro-home/.claude/skills".to_string())));
     }

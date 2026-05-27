@@ -301,7 +301,7 @@
     "deleteConversationCount": "{{count}}会話は削除されます。",
     "deletingConversation": "削除中...",
     "deletingConversations": "削除中...",
-    "typeMessage": "メッセージを入力してください...",
+    "typeMessage": "メッセージを入力、または / でコンテキストを追加...",
     "send": "送信",
     "stop": "停止",
     "saveRegenerate": "保存と再生成",

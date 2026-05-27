@@ -789,21 +789,30 @@ Elles servent a orienter le comportement de l'IA dans Architect, Implement et Ch
 
 Une skill locale est un dossier contenant :
 
-- `SKILL.md` obligatoire
-- frontmatter YAML valide avec `name` et `description`
+- `SKILL.md` prioritaire (`skill.md` est accepte en compatibilite avec diagnostic)
+- frontmatter YAML AgentSkills avec `name` et `description`
+- champs optionnels `license`, `compatibility`, `allowed-tools` et `metadata`
 - dossiers optionnels `references/`, `assets/` et `scripts/`
 
-La ligne 0.1 supporte uniquement :
+Macro decouvre les sources projet et utilisateur suivantes :
 
 - les skills projet dans `.agents/skills`
 - les skills globales utilisateur dans `~/.agents/skills`
+- les variantes compatibles Codex dans `.codex/skills` et `~/.codex/skills`
+- les variantes compatibles OpenCode dans `.opencode/skills`, `.opencode/skill`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills` et `~/.opencode/skill`
+- les variantes compatibles Claude dans `.claude/skills` et `~/.claude/skills`
 - l'import local par copie vers `~/.agents/skills/<skill-name>`
 
 Elle ne supporte pas encore :
 
 - l'installation directe depuis GitHub
 - une marketplace
-- le scan natif de `~/.codex/skills` ou `~/.claude/skills`
+
+La validation est lenient pour l'usage mais explicite dans l'UI :
+
+- `isValid` signifie que Macro peut charger la skill
+- `specCompliant` signifie que la skill respecte strictement les contraintes AgentSkills
+- les diagnostics distinguent erreurs bloquantes et warnings de compatibilite
 
 ### 18.3 Activation et contexte
 
@@ -817,13 +826,15 @@ Macro doit charger les skills progressivement :
 - contenu complet de `SKILL.md` seulement sur activation
 - ressources et scripts seulement via les outils dedies
 
-En cas de collision de nom, une skill projet visible est prioritaire sur une skill globale. Les surfaces UI doivent afficher la source pour permettre une selection explicite.
+En cas de collision de nom, Macro choisit une skill effective de facon deterministe : projet avant global, puis `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. Le catalogue agent et `$skill-name` ne voient que cette skill effective. Les skills shadowed restent visibles dans les reglages et selectionnables explicitement par id/source.
 
 ### 18.4 Securite
 
 Une skill peut etre activee sans etre trusted.
 
 Les scripts restent indisponibles tant que la skill n'est pas trusted et que l'option scripts n'est pas activee pour cette skill.
+
+`allowed-tools` est une information declarative de la skill. Elle ne contourne jamais les modes Macro, la politique d'approbation, le niveau de risque ou les reglages utilisateur.
 
 Toute execution de script doit passer par la politique d'approbation Macro des outils a risque, capturer la sortie, appliquer un timeout et eviter l'injection de secrets par defaut.
 
