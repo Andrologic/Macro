@@ -16,6 +16,7 @@ import {
   type ElementNode,
   COMMAND_PRIORITY_HIGH,
   KEY_ENTER_COMMAND,
+  KEY_TAB_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ARROW_DOWN_COMMAND,
   FORMAT_TEXT_COMMAND,
@@ -188,6 +189,21 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         COMMAND_PRIORITY_HIGH
       );
     }, [editor, onSend]);
+
+    // Tab inserts an actual tab in the prompt. Slash menu completion overrides this.
+    useEffect(() => {
+      return editor.registerCommand(
+        KEY_TAB_COMMAND,
+        (event: KeyboardEvent) => {
+          event.preventDefault();
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection)) return false;
+          selection.insertText('\t');
+          return true;
+        },
+        COMMAND_PRIORITY_HIGH
+      );
+    }, [editor]);
 
     // Block formatting shortcuts (Ctrl+B/I/U)
     useEffect(() => {

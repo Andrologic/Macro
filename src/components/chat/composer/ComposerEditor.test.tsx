@@ -434,6 +434,39 @@ describe('ComposerEditor context references', () => {
     expect(await openSlashMenu(editorRef, 'foo/bar')).toBeNull();
   });
 
+  it('inserts a literal tab in the composer when slash context is closed', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('hello ');
+      await Promise.resolve();
+    });
+
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(editorRef.current?.getTextContent()).toBe('hello \t');
+  });
+
   it('shows skills and active-plan needs in the slash context menu', async () => {
     const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
     const activeNeed = buildNeed('need-1', { title: 'Auth flow', planId: 'plan-1' });
@@ -676,6 +709,41 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(editorRef.current?.getTextContent().trim()).toBe('[skill: beta]');
+  });
+
+  it('selects the active slash context option with Tab', async () => {
+    const alphaSkill = buildSkill('global:agents:alpha:aaa', { name: 'alpha' });
+    skills = [alphaSkill];
+    settingsBySkillId = {
+      [alphaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: alpha]');
   });
 
   it('shows disabled slash context skills without selecting them and opens settings', async () => {
