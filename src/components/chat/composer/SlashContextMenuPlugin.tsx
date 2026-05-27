@@ -10,6 +10,7 @@ import {
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_ESCAPE_COMMAND,
+  KEY_TAB_COMMAND,
 } from 'lexical';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -546,6 +547,24 @@ export const SlashContextMenuPlugin: React.FC = () => {
       KEY_ENTER_COMMAND,
       (event: KeyboardEvent | null) => {
         event?.preventDefault();
+        const item = menuItems[activeIndex];
+        if (item && !item.disabled) {
+          insertItem(item);
+        }
+        return true;
+      },
+      COMMAND_PRIORITY_CRITICAL,
+    );
+  }, [activeIndex, editor, insertItem, menuItems, trigger]);
+
+  useEffect(() => {
+    if (!trigger) return undefined;
+
+    return editor.registerCommand(
+      KEY_TAB_COMMAND,
+      (event: KeyboardEvent) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         const item = menuItems[activeIndex];
         if (item && !item.disabled) {
           insertItem(item);
