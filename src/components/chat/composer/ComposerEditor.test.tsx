@@ -317,6 +317,69 @@ describe('ComposerEditor context references', () => {
     expect(editorRef.current?.getTextContent()).toBe('[skill: test-skill] utilise ce skill');
   });
 
+  it('keeps arrow-key navigation as a text range around context chips', async () => {
+    const lexical = await import('lexical');
+    const { MentionNode, $createMentionNode } = await import(
+      `./MentionNode.tsx?mention-navigation-test=${Date.now()}`
+    );
+    const editor = lexical.createEditor({
+      namespace: `MentionNavigationTest-${Date.now()}`,
+      nodes: [MentionNode],
+      onError: (error) => {
+        throw error;
+      },
+    });
+
+    const updateEditor = (callback: () => void) =>
+      new Promise<void>((resolve) => {
+        editor.update(callback, { onUpdate: () => resolve() });
+      });
+    const readSelectionState = () =>
+      editor.getEditorState().read(() => {
+        const selection = lexical.$getSelection();
+        return {
+          isNodeSelection: lexical.$isNodeSelection(selection),
+          isRangeSelection: lexical.$isRangeSelection(selection),
+        };
+      });
+
+    await updateEditor(() => {
+      const root = lexical.$getRoot();
+      root.clear();
+      const paragraph = lexical.$createParagraphNode();
+      const before = lexical.$createTextNode('A');
+      const mention = $createMentionNode('skill', 'test-skill', 'test-skill');
+      const after = lexical.$createTextNode('B');
+      paragraph.append(before, mention, after);
+      root.append(paragraph);
+      after.select(0, 0);
+    });
+
+    await updateEditor(() => {
+      const selection = lexical.$getSelection();
+      if (lexical.$isRangeSelection(selection)) {
+        selection.modify('move', true, 'character');
+      }
+    });
+
+    expect(readSelectionState()).toEqual({
+      isNodeSelection: false,
+      isRangeSelection: true,
+    });
+
+    await updateEditor(() => {
+      const selection = lexical.$getSelection();
+      if (lexical.$isRangeSelection(selection)) {
+        selection.modify('move', false, 'character');
+      }
+    });
+
+    expect(readSelectionState()).toEqual({
+      isNodeSelection: false,
+      isRangeSelection: true,
+    });
+  });
+
   it('renders composer skill chips with the shared inline alignment', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 

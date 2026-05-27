@@ -152,7 +152,9 @@ export class MentionNode extends DecoratorNode<ReactNode> {
   }
 
   isKeyboardSelectable(): boolean {
-    return true;
+    // Keep arrow-key movement as a caret navigation around the inline chip.
+    // A keyboard-selectable DecoratorNode becomes a NodeSelection, which hides the caret.
+    return false;
   }
 
   // ---- React decoration ----

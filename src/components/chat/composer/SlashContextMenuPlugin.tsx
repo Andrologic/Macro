@@ -488,16 +488,19 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const insertItem = useCallback((item: SlashContextMenuItem) => {
     if (!trigger || item.disabled) return;
     const referenceTitle = item.referenceTitle ?? item.title;
+    let didInsertMention = false;
 
     editor.update(() => {
       const node = $getNodeByKey(trigger.nodeKey);
-      const selection = $getSelection();
-      if (!$isTextNode(node) || !$isRangeSelection(selection)) return;
+      if (!$isTextNode(node)) return;
 
       const mentionNode = $createMentionNode(item.refKind, item.id, referenceTitle);
-      selection.setTextNodeRange(node, trigger.startOffset, node, trigger.endOffset);
+      const selection = node.select(trigger.startOffset, trigger.endOffset);
       selection.insertNodes([mentionNode, $createTextNode(' ')]);
+      didInsertMention = true;
     });
+
+    if (!didInsertMention) return;
 
     useChatStore.getState().addComposerContextRef({
       id: item.id,
