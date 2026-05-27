@@ -27,6 +27,7 @@ export interface ServiceRuntimeCapabilities {
   implementExecution: boolean;
   taskProjectCommands: boolean;
   skills: boolean;
+  skillScripts: boolean;
 }
 
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE = 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE';
@@ -54,6 +55,7 @@ const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   implementExecution: true,
   taskProjectCommands: true,
   skills: true,
+  skillScripts: true,
 };
 
 const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
@@ -75,6 +77,34 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   implementExecution: false,
   taskProjectCommands: false,
   skills: true,
+  skillScripts: false,
+};
+
+let remoteRuntimeCapabilityOverrides: Partial<ServiceRuntimeCapabilities> = {};
+
+const normalizeCapabilityOverrides = (
+  capabilities?: Record<string, unknown> | null
+): Partial<ServiceRuntimeCapabilities> => {
+  if (!capabilities) {
+    return {};
+  }
+  return (Object.keys(REMOTE_MINIMAL_RUNTIME_CAPABILITIES) as Array<keyof ServiceRuntimeCapabilities>)
+    .reduce<Partial<ServiceRuntimeCapabilities>>((acc, key) => {
+      if (typeof capabilities[key] === 'boolean') {
+        acc[key] = capabilities[key];
+      }
+      return acc;
+    }, {});
+};
+
+export const setRemoteRuntimeCapabilityOverrides = (
+  capabilities?: Record<string, unknown> | null
+): void => {
+  remoteRuntimeCapabilityOverrides = normalizeCapabilityOverrides(capabilities);
+};
+
+export const clearRemoteRuntimeCapabilityOverrides = (): void => {
+  remoteRuntimeCapabilityOverrides = {};
 };
 
 const hasTauriIpcInvoke = (): boolean => {
@@ -152,13 +182,21 @@ export const resolveServiceRuntimeCapabilities = (
 ): ServiceRuntimeCapabilities => {
   const resolvedRuntime = runtime ?? resolveServiceRuntime();
   return resolvedRuntime.effectiveTransport === 'remote'
-    ? REMOTE_MINIMAL_RUNTIME_CAPABILITIES
+    ? {
+        ...REMOTE_MINIMAL_RUNTIME_CAPABILITIES,
+        ...remoteRuntimeCapabilityOverrides,
+      }
     : DESKTOP_RUNTIME_CAPABILITIES;
 };
 
-export const getServiceRuntimeCapabilities = (): ServiceRuntimeCapabilities => {
+export const getServiceRuntimeCapabilities = (options?: {
+  env?: Record<string, string | undefined>;
+  tauriAvailable?: boolean;
+}): ServiceRuntimeCapabilities => {
   try {
-    return resolveServiceRuntimeCapabilities();
+    return resolveServiceRuntimeCapabilities(
+      options ? resolveServiceRuntime(options) : undefined
+    );
   } catch (error) {
     if (error instanceof Error && error.message === DESKTOP_IPC_UNAVAILABLE_MESSAGE) {
       return REMOTE_MINIMAL_RUNTIME_CAPABILITIES;

@@ -4,8 +4,12 @@ import {
   getGitTreeForProject,
   getMCPServerSettings,
   getToolSettings,
+  getSkill,
   listCommits,
+  listSkills,
   listTasks,
+  readSkillResource,
+  runSkillScript,
   resolveRemoteConfig,
   updateMCPServerSettings,
   updateToolSettings,
@@ -247,6 +251,84 @@ describe('remote provider', () => {
     expect(JSON.parse(localStorageMock.getItem('macro_mcp_server_settings') || '{}').example).toMatchObject({
       id: 'example',
       config: { enabled: true },
+    });
+  });
+
+  it('calls remote skill lifecycle endpoints with workspace scope', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_API_PREFIX', '/api/v1');
+    setEnv('VITE_REMOTE_WORKSPACE_ID', 'ws_main');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      const path = String(url);
+      if (path.endsWith('/skills/list')) {
+        return jsonResponse({ skills: [] });
+      }
+      if (path.endsWith('/skills/get')) {
+        return jsonResponse({
+          skill: {
+            id: 'remote:docs',
+            name: 'docs',
+            description: 'Remote docs',
+            location: { kind: 'remote', uri: 'registry://docs' },
+            source: { kind: 'global', namespace: 'agents', rootPath: 'registry://user' },
+            resources: [],
+            scripts: [],
+            validationErrors: [],
+            isValid: true,
+          },
+          body: 'Follow remote docs.',
+        });
+      }
+      if (path.endsWith('/skills/read-resource')) {
+        return jsonResponse({ skillId: 'remote:docs', path: 'references/a.md', content: 'A' });
+      }
+      return jsonResponse({
+        skillId: 'remote:docs',
+        scriptPath: 'scripts/check.sh',
+        stdout: 'ok',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        truncated: false,
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(listSkills({ projectRoots: [] })).resolves.toEqual({ skills: [] });
+    await expect(getSkill({ skillId: 'remote:docs' })).resolves.toMatchObject({
+      body: 'Follow remote docs.',
+    });
+    await expect(
+      readSkillResource({ skillId: 'remote:docs', resourcePath: 'references/a.md' }),
+    ).resolves.toMatchObject({ content: 'A' });
+    await expect(
+      runSkillScript({ skillId: 'remote:docs', scriptPath: 'scripts/check.sh' }),
+    ).resolves.toMatchObject({ stdout: 'ok' });
+
+    expect(fetchCalls.map((call) => call.url)).toEqual([
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/skills/list',
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/skills/get',
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/skills/read-resource',
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/skills/run-script',
+    ]);
+    expect(JSON.parse(String(fetchCalls[1].init?.body))).toMatchObject({
+      skillId: 'remote:docs',
+      projectRoots: [],
+    });
+  });
+
+  it('maps unsupported remote skill endpoints to precise feature errors', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({ error: 'unsupported' }, 501);
+    }) as unknown as typeof fetch;
+
+    await expect(listSkills()).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      message: 'The current remote runtime does not support Macro skills (listSkills).',
     });
   });
 });

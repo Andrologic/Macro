@@ -276,7 +276,22 @@
       "aiConflictAssistantStartFailed": "Der KI-Assistent konnte nicht gestartet werden",
       "nextAction": "Nächste Aktion: {{action}}.",
       "macroConflictTitle": "@macro-Synchronisierungskonflikt",
-      "macroConflictDescription": "Beheben Sie die gemeldeten Metadatenblocker und wiederholen Sie dann explizit denselben @macro-Synchronisierungsschritt."
+      "macroConflictDescription": "Beheben Sie die gemeldeten Metadatenblocker und wiederholen Sie dann explizit denselben @macro-Synchronisierungsschritt.",
+      "remoteUrlRequired": "Gib mindestens eine Origin-URL ein oder brich ab, um alle Repositorys lokal zu behalten.",
+      "pushMacroBranch": "@macro pushen",
+      "ignoreMissingUpstream": "Fehlenden Upstream ignorieren",
+      "missingOriginPromptTitle": "Remote-Origin fehlt",
+      "missingUpstreamPromptTitle": "@macro hat noch keinen Remote-Branch",
+      "missingOriginPromptDescription": "Füge Origins für Repositorys hinzu, die du jetzt veröffentlichen möchtest. Lasse ein Feld leer, um dieses Repository für diesen Push lokal zu behalten.",
+      "missingUpstreamPromptDescription": "Wähle, ob dieser Push den @macro-Metadaten-Branch veröffentlichen oder lokal behalten soll.",
+      "missingOriginPromptSummary": "Einige Repositorys sind pushbereit, andere benötigen noch eine Origin.",
+      "remoteNeededCodeAndMetadata": "Code + @macro",
+      "remoteNeededMetadata": "@macro",
+      "remoteNeededCode": "Code",
+      "remoteUrlOptional": "Leer lassen, um dieses Repository bei diesem Push zu überspringen.",
+      "pushAvailableRepositories": "Verfügbare Repositorys pushen",
+      "askNextTime": "Nächstes Mal fragen",
+      "doNotAskAgain": "Nicht erneut fragen"
     },
     "scope": {
       "allProjects": "All projects"
@@ -486,7 +501,13 @@
     "agentCodeReplayFileDeleted": "gelöscht",
     "agentCodeReplayFileModified": "geändert",
     "agentCodeReplayExternalFileChanged": "geändert",
-    "agentCodeReplayExternalWarning": "Nur Dateien, die von Macros Bearbeitungswerkzeugen verfolgt werden, werden wiederhergestellt, einschließlich vom Agent erstellter unversionierter Dateien."
+    "agentCodeReplayExternalWarning": "Nur Dateien, die von Macros Bearbeitungswerkzeugen verfolgt werden, werden wiederhergestellt, einschließlich vom Agent erstellter unversionierter Dateien.",
+    "compactionProgressDescription": "Macro komprimiert früheren Kontext, bevor es fortfährt.",
+    "agentCodeReplayCompactionWarning": "Kompaktions-Checkpoints bleiben erhalten, aber die Wiederholung kann neuere Codeänderungen entfernen.",
+    "messageEditingInComposer": "Nachricht im Composer bearbeiten",
+    "agentTypePlanTitle": "Plan: schreibgeschützte Untersuchung",
+    "agentTypeBuildTitle": "Build: Änderungen anwenden",
+    "editMessagePlaceholder": "Nachricht bearbeiten..."
   },
   "skills": {
     "importDialogTitle": "Skill-Ordner auswählen",
@@ -522,8 +543,22 @@
       "invalid": "Ungültiger Skill.",
       "disabled": "Deaktiviert.",
       "providerUnsupported": "Das ausgewählte Modell unterstützt kein natives Tool Calling.",
-      "strictScripts": "Der strikte Risikomodus blockiert Skill-Scripts."
-    }
+      "strictScripts": "Der strikte Risikomodus blockiert Skill-Scripts.",
+      "shadowed": "Von einer höher priorisierten Skill überdeckt. Wähle diese genaue Quelle aus, um sie zu verwenden."
+    },
+    "source": {
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "claude": "Claude",
+      "agents": "Agents"
+    },
+    "specWarning": "Spec-Warnung",
+    "shadowed": "Überdeckt",
+    "compatibility": "Kompatibilität",
+    "allowedTools": "Erlaubte Tools",
+    "license": "Lizenz",
+    "metadataCount": "{{count}} Metadaten",
+    "moreDiagnostics": "+{{count}} weitere Diagnosen"
   },
   "settings": {
     "title": "Einstellungen",
@@ -1414,7 +1449,11 @@
     "metadataModelSettings": "Metadata model settings",
     "metadataModelSettingsHelp": "Change the model used for generated metadata and commit messages.",
     "commitMessageManualTitle": "Commit-Nachrichten schreiben",
-    "commitMessageManualDescription": "Schreibe für jedes Repository eine Conventional-Commit-Nachricht und committe dann."
+    "commitMessageManualDescription": "Schreibe für jedes Repository eine Conventional-Commit-Nachricht und committe dann.",
+    "diffModalCrashedTitle": "Dieser Diff konnte nicht offen gehalten werden",
+    "diffModalCrashedDescription": "Das Änderungen-Panel läuft weiter. Versuche den Diff-Viewer erneut oder schließe diese Datei.",
+    "diffRenderFailedTitle": "Diff konnte nicht gerendert werden",
+    "diffRenderFailedDescription": "Das Änderungen-Panel blieb geöffnet. Schließe diese Datei und versuche es erneut, oder prüfe die Datei direkt."
   },
   "architect": {
     "needs": "Identifizierte Bedürfnisse",
@@ -1624,7 +1663,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
-    "applyStrategyPreview": "Apply regeneration"
+    "applyStrategyPreview": "Apply regeneration",
+    "selectPlanToStart": "Wähle oder erstelle einen Plan, um mit der Architektur zu beginnen."
   },
   "git": {
     "gitTree": "Git-Baum",
@@ -1822,6 +1862,25 @@
       "configured": "Konfiguriert",
       "apiKeyRequired": "API-Schlüssel zum Aktivieren der Websuche erforderlich",
       "enableTooltipNeedKey": "Fügen Sie in den Websucheinstellungen einen API-Schlüssel hinzu, um dieses Tool zu aktivieren."
+    },
+    "mcp": {
+      "editServer": "MCP-Server bearbeiten",
+      "addServer": "MCP-Server hinzufügen",
+      "stdioOnly": "Nur stdio-Server. Sensible Umgebungswerte werden sicher gespeichert und hier maskiert.",
+      "namePlaceholder": "Servername",
+      "commandPlaceholder": "Befehl, z. B. npx",
+      "argsPlaceholder": "Argumente, z. B. -y @modelcontextprotocol/server-filesystem .",
+      "envPlaceholder": "ENV_NAME=Wert",
+      "enableServer": "Server aktivieren",
+      "toolCount": "{{count}} Tools",
+      "discoveredAt": "Entdeckt {{time}}",
+      "refreshTools": "Tools aktualisieren",
+      "validationFailed": "Name und Befehl sind erforderlich.",
+      "serverUpdated": "MCP-Server aktualisiert.",
+      "serverAdded": "MCP-Server hinzugefügt.",
+      "toolsRefreshed": "MCP-Tools aktualisiert.",
+      "refreshFailed": "MCP-Tools konnten nicht aktualisiert werden.",
+      "serverDeleted": "MCP-Server gelöscht."
     }
   },
   "account": {
@@ -1934,7 +1993,11 @@
     "commitPromptLabel": "Prompt zur Commit-Generierung",
     "commitPromptDescription": "Dieser Prompt steuert die intelligente Commit-Generierung. Macro validiert weiterhin die finale Nachricht und entfernt Scopes vor dem Commit.",
     "reasoningEffort": "Reasoning",
-    "defaultReasoning": "Standard"
+    "defaultReasoning": "Standard",
+    "learnedContextLimit": "Gelernter Grenzwert",
+    "resetLearnedContextLimit": "Gelernten Kontextgrenzwert zurücksetzen",
+    "learnedContextLimitReset": "Gelernter Kontextgrenzwert zurückgesetzt",
+    "learnedContextLimitResetFailed": "Gelernter Kontextgrenzwert konnte nicht zurückgesetzt werden"
   },
   "shortcuts": {
     "categories": {
@@ -2117,5 +2180,10 @@
     "chatConversationsDeleted": "{{count}} conversations deleted",
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
+  },
+  "composer": {
+    "searchingFiles": "Dateien werden gesucht...",
+    "noMatchingSlashContext": "Kein passender Kontext.",
+    "noSlashContext": "Kein Kontext verfügbar."
   }
 }

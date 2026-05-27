@@ -1,6 +1,5 @@
 use crate::commands::{command_error, CommandResult};
 use crate::core::process::background_tokio_command;
-use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
@@ -9,7 +8,14 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::time::timeout;
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
+
+mod cache;
+mod types;
+
+use cache::load_skill_catalog;
+pub use types::*;
 
 const SKILL_FILE: &str = "SKILL.md";
 const LOWERCASE_SKILL_FILE: &str = "skill.md";
@@ -32,105 +38,6 @@ const FRONTMATTER_FIELDS: &[&str] = &[
     "metadata",
     "allowed-tools",
 ];
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillProjectRootDto {
-    pub project_id: String,
-    pub project_name: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillSourceDto {
-    pub kind: String,
-    pub namespace: String,
-    pub project_id: Option<String>,
-    pub project_name: Option<String>,
-    pub root_path: String,
-    pub skill_root_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillResourceDto {
-    pub path: String,
-    pub kind: String,
-    pub size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillLocationDto {
-    pub kind: String,
-    pub uri: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillDiagnosticDto {
-    pub severity: String,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillManifestDto {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub license: Option<String>,
-    pub compatibility: Option<String>,
-    pub allowed_tools: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-    pub root_path: String,
-    pub skill_file_path: String,
-    pub location: SkillLocationDto,
-    pub source: SkillSourceDto,
-    pub resources: Vec<SkillResourceDto>,
-    pub scripts: Vec<SkillResourceDto>,
-    pub diagnostics: Vec<SkillDiagnosticDto>,
-    pub spec_compliant: bool,
-    pub shadowed_by_skill_id: Option<String>,
-    pub content_hash: String,
-    pub validation_errors: Vec<String>,
-    pub is_valid: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillListResponse {
-    pub skills: Vec<SkillManifestDto>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillDetailResponse {
-    pub skill: SkillManifestDto,
-    pub body: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillResourceReadResponse {
-    pub skill_id: String,
-    pub path: String,
-    pub content: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillScriptRunResponse {
-    pub skill_id: String,
-    pub script_path: String,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: Option<i32>,
-    pub timed_out: bool,
-    pub truncated: bool,
-}
 
 #[derive(Debug)]
 struct ParsedSkillFile {
@@ -288,6 +195,35 @@ fn yaml_value_to_string(value: &Value) -> String {
     }
 }
 
+fn normalize_nfkc(value: &str) -> String {
+    value.nfkc().collect::<String>()
+}
+
+fn validate_frontmatter_fields(mapping: &Mapping, diagnostics: &mut Vec<SkillDiagnosticDto>) {
+    for key in mapping.keys() {
+        let key_string = yaml_value_to_string(key).trim().to_string();
+        if key_string.is_empty() {
+            diagnostics.push(skill_diagnostic(
+                "warning",
+                "unexpected_frontmatter_field",
+                "SKILL.md frontmatter contains an empty or non-string field name.",
+            ));
+            continue;
+        }
+        if !FRONTMATTER_FIELDS.contains(&key_string.as_str()) {
+            diagnostics.push(skill_diagnostic(
+                "warning",
+                "unexpected_frontmatter_field",
+                format!(
+                    "Unexpected field in SKILL.md frontmatter: {}. Only {} are defined by AgentSkills.",
+                    key_string,
+                    FRONTMATTER_FIELDS.join(", ")
+                ),
+            ));
+        }
+    }
+}
+
 fn required_string_field(
     mapping: &Mapping,
     key: &str,
@@ -432,7 +368,8 @@ fn parse_frontmatter_mapping(
 }
 
 fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<SkillDiagnosticDto>) {
-    if name.len() > MAX_SKILL_NAME_LENGTH {
+    let normalized_name = normalize_nfkc(name.trim());
+    if normalized_name.chars().count() > MAX_SKILL_NAME_LENGTH {
         diagnostics.push(skill_diagnostic(
             "warning",
             "invalid_name",
@@ -442,36 +379,36 @@ fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<Skill
             ),
         ));
     }
-    if name != name.to_ascii_lowercase() {
+    if normalized_name != normalized_name.to_lowercase() {
         diagnostics.push(skill_diagnostic(
             "warning",
             "invalid_name",
             format!("Skill name '{}' must be lowercase.", name),
         ));
     }
-    if name.starts_with('-') || name.ends_with('-') {
+    if normalized_name.starts_with('-') || normalized_name.ends_with('-') {
         diagnostics.push(skill_diagnostic(
             "warning",
             "invalid_name",
             "Skill name cannot start or end with a hyphen.",
         ));
     }
-    if name.contains("--") {
+    if normalized_name.contains("--") {
         diagnostics.push(skill_diagnostic(
             "warning",
             "invalid_name",
             "Skill name cannot contain consecutive hyphens.",
         ));
     }
-    if !name
+    if !normalized_name
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        .all(|c| c.is_alphanumeric() || c == '-')
     {
         diagnostics.push(skill_diagnostic(
             "warning",
             "invalid_name",
             format!(
-                "Skill name '{}' contains invalid characters. Only lowercase ASCII letters, digits, and hyphens are allowed.",
+                "Skill name '{}' contains invalid characters. Only lowercase Unicode letters, digits, and hyphens are allowed.",
                 name
             ),
         ));
@@ -480,7 +417,8 @@ fn validate_skill_name(name: &str, skill_dir: &Path, diagnostics: &mut Vec<Skill
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or_default();
-    if !dir_name.is_empty() && dir_name != name {
+    let normalized_dir_name = normalize_nfkc(dir_name);
+    if !normalized_dir_name.is_empty() && normalized_dir_name != normalized_name {
         diagnostics.push(skill_diagnostic(
             "warning",
             "directory_name_mismatch",
@@ -551,6 +489,7 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
             let frontmatter = &normalized[4..frontmatter_end];
             body = normalized[body_start..].to_string();
             if let Some(mapping) = parse_frontmatter_mapping(frontmatter, &mut diagnostics) {
+                validate_frontmatter_fields(&mapping, &mut diagnostics);
                 name = required_string_field(&mapping, "name", &mut diagnostics)
                     .unwrap_or_else(|| fallback_name.clone());
                 description = required_string_field(&mapping, "description", &mut diagnostics)
@@ -954,7 +893,7 @@ fn source_precedence(kind: &str) -> u8 {
 }
 
 fn skill_collision_key(skill: &SkillManifestDto) -> String {
-    skill.name.trim().to_ascii_lowercase()
+    normalize_nfkc(skill.name.trim()).to_lowercase()
 }
 
 fn skill_collision_rank(skill: &SkillManifestDto) -> (u8, u8, String, String) {
@@ -1082,9 +1021,10 @@ fn resolve_skill(
     skill_id: &str,
     project_roots: &[SkillProjectRootDto],
 ) -> CommandResult<SkillManifestDto> {
-    discover_skills(project_roots)
-        .into_iter()
-        .find(|skill| skill.id == skill_id)
+    load_skill_catalog(project_roots, false)
+        .skills_by_id
+        .get(skill_id)
+        .cloned()
         .ok_or_else(|| command_error(format!("Skill not found: {}", skill_id)))
 }
 
@@ -1203,7 +1143,7 @@ pub async fn skills_list(
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillListResponse> {
     Ok(SkillListResponse {
-        skills: discover_skills(&project_roots),
+        skills: load_skill_catalog(&project_roots, true).skills,
     })
 }
 
@@ -1510,6 +1450,90 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_frontmatter_fields_are_lenient_warnings() {
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("example");
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: example\ndescription: Has extra metadata\nunknown_field: value\n---\n\nBody\n",
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
+        assert!(parsed.is_valid);
+        assert!(!parsed.spec_compliant);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unexpected_frontmatter_field"));
+    }
+
+    #[test]
+    fn accepts_unicode_lowercase_skill_names_like_skills_ref() {
+        let dir = tempdir().expect("tempdir");
+        let chinese_dir = dir.path().join("技能");
+        fs::create_dir_all(&chinese_dir).expect("mkdir chinese");
+        fs::write(
+            chinese_dir.join(SKILL_FILE),
+            "---\nname: 技能\ndescription: Unicode skill name\n---\n",
+        )
+        .expect("write chinese");
+
+        let chinese = parse_skill_file(&chinese_dir.join(SKILL_FILE));
+        assert!(chinese.is_valid);
+        assert!(chinese.spec_compliant);
+
+        let russian_dir = dir.path().join("мой-навык");
+        fs::create_dir_all(&russian_dir).expect("mkdir russian");
+        fs::write(
+            russian_dir.join(SKILL_FILE),
+            "---\nname: мой-навык\ndescription: Unicode skill name\n---\n",
+        )
+        .expect("write russian");
+
+        let russian = parse_skill_file(&russian_dir.join(SKILL_FILE));
+        assert!(russian.is_valid);
+        assert!(russian.spec_compliant);
+    }
+
+    #[test]
+    fn validates_unicode_lowercase_and_nfkc_directory_match() {
+        let dir = tempdir().expect("tempdir");
+        let composed = "café";
+        let decomposed = "cafe\u{0301}";
+        let skill_dir = dir.path().join(composed);
+        fs::create_dir_all(&skill_dir).expect("mkdir");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            format!(
+                "---\nname: {}\ndescription: Normalized name\n---\n",
+                decomposed
+            ),
+        )
+        .expect("write");
+
+        let parsed = parse_skill_file(&skill_dir.join(SKILL_FILE));
+        assert!(parsed.is_valid);
+        assert!(parsed.spec_compliant);
+
+        let uppercase_dir = dir.path().join("НАВЫК");
+        fs::create_dir_all(&uppercase_dir).expect("mkdir uppercase");
+        fs::write(
+            uppercase_dir.join(SKILL_FILE),
+            "---\nname: НАВЫК\ndescription: Uppercase Unicode name\n---\n",
+        )
+        .expect("write uppercase");
+        let uppercase = parse_skill_file(&uppercase_dir.join(SKILL_FILE));
+        assert!(uppercase.is_valid);
+        assert!(!uppercase.spec_compliant);
+        assert!(uppercase
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("lowercase")));
+    }
+
+    #[test]
     fn accepts_lowercase_skill_file_with_warning() {
         let dir = tempdir().expect("tempdir");
         let skill_dir = dir.path().join("lowercase");
@@ -1645,6 +1669,41 @@ mod tests {
     }
 
     #[test]
+    fn resolves_collisions_after_unicode_nfkc_normalization() {
+        let project = tempdir().expect("project");
+        let composed = "café";
+        let decomposed = "cafe\u{0301}";
+        write_skill(
+            &project.path().join(AGENTS_SKILLS_DIR).join(composed),
+            decomposed,
+        );
+        write_skill(
+            &project.path().join(".codex").join("skills").join(composed),
+            composed,
+        );
+
+        let skills = discover_skills(&[SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }]);
+        let agents = skills
+            .iter()
+            .find(|skill| skill.source.namespace == "agents")
+            .expect("agents skill");
+        let codex = skills
+            .iter()
+            .find(|skill| skill.source.namespace == "codex")
+            .expect("codex skill");
+
+        assert!(agents.shadowed_by_skill_id.is_none());
+        assert_eq!(
+            codex.shadowed_by_skill_id.as_deref(),
+            Some(agents.id.as_str())
+        );
+    }
+
+    #[test]
     fn discovers_codex_opencode_claude_and_agents_project_skill_sources() {
         let project = tempdir().expect("project");
         let sources = [
@@ -1721,14 +1780,8 @@ mod tests {
             "opencode",
             "/tmp/macro-home/.config/opencode/skill".to_string()
         )));
-        assert!(paths.contains(&(
-            "opencode",
-            "/tmp/macro-home/.opencode/skills".to_string()
-        )));
-        assert!(paths.contains(&(
-            "opencode",
-            "/tmp/macro-home/.opencode/skill".to_string()
-        )));
+        assert!(paths.contains(&("opencode", "/tmp/macro-home/.opencode/skills".to_string())));
+        assert!(paths.contains(&("opencode", "/tmp/macro-home/.opencode/skill".to_string())));
         assert!(paths.contains(&("claude", "/tmp/macro-home/.claude/skills".to_string())));
     }
 
@@ -1871,6 +1924,122 @@ mod tests {
         .expect("script");
         assert_eq!(script.exit_code, Some(0));
         assert_eq!(script.stdout.trim(), "script ok");
+    }
+
+    #[tokio::test]
+    async fn cached_catalog_invalidates_when_skill_file_changes() {
+        let project = tempdir().expect("project");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("docs");
+        write_skill(&skill_dir, "docs");
+        let project_roots = vec![SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+
+        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let skill_id = listed
+            .skills
+            .iter()
+            .find(|skill| skill.name == "docs")
+            .expect("docs")
+            .id
+            .clone();
+
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: docs\ndescription: Updated docs skill\n---\n\nUpdated body\n",
+        )
+        .expect("rewrite skill");
+
+        let detail = skills_get(skill_id, project_roots).await.expect("detail");
+        assert_eq!(detail.skill.description, "Updated docs skill");
+        assert!(detail.body.contains("Updated body"));
+    }
+
+    #[tokio::test]
+    async fn cached_catalog_invalidates_when_skill_disappears() {
+        let project = tempdir().expect("project");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("docs");
+        write_skill(&skill_dir, "docs");
+        let project_roots = vec![SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+
+        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let skill_id = listed.skills[0].id.clone();
+        std::thread::sleep(Duration::from_millis(10));
+        fs::remove_dir_all(&skill_dir).expect("remove skill");
+
+        let result = skills_get(skill_id, project_roots).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn cached_catalog_invalidates_when_resource_directory_changes() {
+        let project = tempdir().expect("project");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("docs");
+        write_skill(&skill_dir, "docs");
+        let project_roots = vec![SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+
+        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let skill_id = listed.skills[0].id.clone();
+        std::thread::sleep(Duration::from_millis(10));
+        fs::create_dir_all(skill_dir.join("references")).expect("mkdir references");
+        fs::write(skill_dir.join("references/new.md"), "new resource").expect("write resource");
+
+        let detail = skills_get(skill_id, project_roots).await.expect("detail");
+        assert!(detail
+            .skill
+            .resources
+            .iter()
+            .any(|resource| resource.path == "references/new.md"));
+    }
+
+    #[tokio::test]
+    async fn skills_list_refreshes_catalog_for_added_skills() {
+        let project = tempdir().expect("project");
+        write_skill(&project.path().join(AGENTS_SKILLS_DIR).join("one"), "one");
+        let project_roots = vec![SkillProjectRootDto {
+            project_id: "p1".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+
+        let first = skills_list(project_roots.clone())
+            .await
+            .expect("first list");
+        assert!(first.skills.iter().any(|skill| {
+            skill.source.kind == "project"
+                && skill.source.project_id.as_deref() == Some("p1")
+                && skill.name == "one"
+        }));
+        assert!(!first.skills.iter().any(|skill| {
+            skill.source.kind == "project"
+                && skill.source.project_id.as_deref() == Some("p1")
+                && skill.name == "two"
+        }));
+        std::thread::sleep(Duration::from_millis(10));
+        write_skill(&project.path().join(AGENTS_SKILLS_DIR).join("two"), "two");
+
+        let second = skills_list(project_roots).await.expect("second list");
+        assert!(second.skills.iter().any(|skill| {
+            skill.source.kind == "project"
+                && skill.source.project_id.as_deref() == Some("p1")
+                && skill.name == "one"
+        }));
+        assert!(second.skills.iter().any(|skill| {
+            skill.source.kind == "project"
+                && skill.source.project_id.as_deref() == Some("p1")
+                && skill.name == "two"
+        }));
     }
 
     #[tokio::test]

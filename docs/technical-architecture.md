@@ -631,6 +631,8 @@ Les sources supportees en 0.1 sont :
 
 La decouverte ignore les dossiers caches internes, `.git`, `node_modules`, les racines symlinkees et applique des limites de profondeur et de volume. La validation separe `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
 
+Le validateur suit la logique `skills-ref` pour les noms : comparaison apres normalisation Unicode NFKC, lettres/chiffres Unicode acceptes avec tirets, et lowercase Unicode. Les ecarts d'usage courants (uppercase, underscores, tirets en debut/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` genere le diagnostic `unexpected_frontmatter_field`.
+
 Les collisions sont resolues de facon deterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposee au catalogue agent et a la resolution `$skill-name`. Les skills shadowed restent listees dans Settings et peuvent etre chargees par selection explicite/id exact.
 
 ### 14.3 Chargement progressif
@@ -664,9 +666,11 @@ Le backend bloque les chemins hors skill, les traversals, les fichiers caches no
 
 ### 14.5 Transport remote
 
-Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI, mais ajoute une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local.
+Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local. La deduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
 
-Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime distant courant ne supporte pas les skills. L'execution de scripts remote n'est possible que si le provider expose explicitement l'endpoint correspondant et reste soumise aux reglages trusted/scripts et a la politique Macro.
+Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le prefixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolerant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime courant ne supporte pas la capacite precise.
+
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des reglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par defaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
 
 La surface complete reste supportee par le desktop local via Tauri IPC.
 
@@ -736,8 +740,14 @@ Cette API couvre au minimum :
 - `GET /api/v1/workspaces/{workspace_id}/tasks`
 - `GET /api/v1/projects/{project_id}/git/tree`
 - `GET /api/v1/projects/{project_id}/git/commits`
+- `POST /api/v1/workspaces/{workspace_id}/skills/list`
+- `POST /api/v1/workspaces/{workspace_id}/skills/get`
+- `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
+- `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
 Cette surface remote est volontairement minimale en 0.1 et ne remplace pas encore toutes les commandes IPC desktop.
+
+Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
 ### 16.3 Authentification
 

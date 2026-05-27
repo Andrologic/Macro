@@ -274,7 +274,9 @@ export interface PersistedContextReference {
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  skillFilePath?: string;
+  skillFilePath?: string | null;
+  contentHash?: string;
+  location?: SkillLocation;
   source?: SkillSource;
   path?: string;
   relativePath?: string;
@@ -415,8 +417,8 @@ export interface SkillManifest {
   compatibility?: string | null;
   allowedTools?: string | null;
   metadata?: Record<string, string>;
-  rootPath: string;
-  skillFilePath: string;
+  rootPath?: string | null;
+  skillFilePath?: string | null;
   location?: SkillLocation;
   source: SkillSource;
   resources: SkillResource[];
@@ -440,7 +442,8 @@ export interface SkillActivation {
   activatedAt: string;
   body: string;
   contentHash?: string;
-  skillFilePath?: string;
+  locationUri?: string;
+  skillFilePath?: string | null;
 }
 
 export interface SkillScriptRunRequest {

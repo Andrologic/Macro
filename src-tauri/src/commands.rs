@@ -6,7 +6,7 @@ pub mod fs;
 pub mod git;
 #[path = "commands/mcp/mod.rs"]
 pub mod mcp;
-#[path = "commands/skills.rs"]
+#[path = "commands/skills/mod.rs"]
 pub mod skills;
 #[path = "commands/terminal.rs"]
 pub mod terminal;

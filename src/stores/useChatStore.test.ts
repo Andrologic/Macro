@@ -6246,6 +6246,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('keeps locked skill tools available even when hidden from chat toolbox settings', async () => {
+    tauriAvailable = true;
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;

@@ -275,7 +275,22 @@
       "aiConflictAssistantStartFailed": "Impossible de lancer l'assistant IA",
       "nextAction": "Action suivante : {{action}}.",
       "macroConflictTitle": "Conflit de sync @macro",
-      "macroConflictDescription": "Résolvez les blocages de métadonnées signalés, puis relancez explicitement la même étape de sync @macro."
+      "macroConflictDescription": "Résolvez les blocages de métadonnées signalés, puis relancez explicitement la même étape de sync @macro.",
+      "remoteUrlRequired": "Saisissez au moins une URL d’origine, ou annulez pour garder tous les dépôts locaux.",
+      "pushMacroBranch": "Pousser @macro",
+      "ignoreMissingUpstream": "Ignorer l’upstream manquant",
+      "missingOriginPromptTitle": "L’origine distante est absente",
+      "missingUpstreamPromptTitle": "@macro n’a pas encore de branche distante",
+      "missingOriginPromptDescription": "Ajoutez des origines pour les dépôts à publier maintenant. Laissez un champ vide pour garder ce dépôt local pour ce push.",
+      "missingUpstreamPromptDescription": "Choisissez si ce push doit publier la branche de métadonnées @macro ou la garder locale.",
+      "missingOriginPromptSummary": "Certains dépôts sont prêts à être poussés, et d’autres ont encore besoin d’une origine.",
+      "remoteNeededCodeAndMetadata": "code + @macro",
+      "remoteNeededMetadata": "@macro",
+      "remoteNeededCode": "code",
+      "remoteUrlOptional": "Laissez vide pour ignorer ce dépôt pendant ce push.",
+      "pushAvailableRepositories": "Pousser les dépôts disponibles",
+      "askNextTime": "Demander la prochaine fois",
+      "doNotAskAgain": "Ne plus demander"
     },
     "scope": {
       "allProjects": "Tout le projet"
@@ -485,7 +500,13 @@
     "agentCodeReplayFileDeleted": "supprimé",
     "agentCodeReplayFileModified": "modifié",
     "agentCodeReplayExternalFileChanged": "changé",
-    "agentCodeReplayExternalWarning": "Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés, y compris les fichiers non suivis créés par l’agent."
+    "agentCodeReplayExternalWarning": "Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés, y compris les fichiers non suivis créés par l’agent.",
+    "compactionProgressDescription": "Macro compresse le contexte précédent avant de continuer.",
+    "agentCodeReplayCompactionWarning": "Les points de compaction seront conservés, mais la relance peut supprimer des modifications de code plus récentes.",
+    "messageEditingInComposer": "Modification du message dans le composeur",
+    "agentTypePlanTitle": "Plan : investigation en lecture seule",
+    "agentTypeBuildTitle": "Build : appliquer des changements",
+    "editMessagePlaceholder": "Modifiez votre message..."
   },
   "skills": {
     "importDialogTitle": "Sélectionner un dossier de skill",
@@ -521,8 +542,22 @@
       "invalid": "Skill invalide.",
       "disabled": "Désactivée.",
       "providerUnsupported": "Le modèle sélectionné ne prend pas en charge le tool calling natif.",
-      "strictScripts": "Le mode de risque strict bloque les scripts de skills."
-    }
+      "strictScripts": "Le mode de risque strict bloque les scripts de skills.",
+      "shadowed": "Masquée par une skill plus prioritaire. Sélectionnez cette source exacte pour l’utiliser."
+    },
+    "source": {
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "claude": "Claude",
+      "agents": "Agents"
+    },
+    "specWarning": "Avertissement spec",
+    "shadowed": "Masquée",
+    "compatibility": "Compatibilité",
+    "allowedTools": "Outils autorisés",
+    "license": "Licence",
+    "metadataCount": "{{count}} métadonnées",
+    "moreDiagnostics": "+{{count}} diagnostics supplémentaires"
   },
   "settings": {
     "title": "Paramètres",
@@ -1413,7 +1448,11 @@
     "metadataModelSettings": "Paramètres du modèle de métadonnées",
     "metadataModelSettingsHelp": "Changer le modèle utilisé pour les métadonnées générées et les messages de commit.",
     "commitMessageManualTitle": "Écrire les messages de commit",
-    "commitMessageManualDescription": "Écris un message Conventional Commit pour chaque dépôt, puis commit."
+    "commitMessageManualDescription": "Écris un message Conventional Commit pour chaque dépôt, puis commit.",
+    "diffModalCrashedTitle": "Impossible de garder ce diff ouvert",
+    "diffModalCrashedDescription": "Le panneau des changements continue de fonctionner. Réessayez le visualiseur de diff ou fermez ce fichier.",
+    "diffRenderFailedTitle": "Impossible d’afficher ce diff",
+    "diffRenderFailedDescription": "Le panneau des changements est resté ouvert. Fermez ce fichier et réessayez, ou inspectez directement le fichier."
   },
   "architect": {
     "needs": "Besoins identifiés",
@@ -1623,7 +1662,8 @@
     "strategyPreviewNew": "Nouvelles tâches",
     "strategyPreviewRemoved": "Suppressions en attente",
     "strategyPreviewConflicts": "Conflits",
-    "applyStrategyPreview": "Appliquer la régénération"
+    "applyStrategyPreview": "Appliquer la régénération",
+    "selectPlanToStart": "Sélectionnez ou créez un plan pour démarrer l’architecture."
   },
   "git": {
     "gitTree": "Arbre Git",
@@ -1821,6 +1861,25 @@
       "configured": "Configuré",
       "apiKeyRequired": "Clé API requise pour activer la recherche sur le Web",
       "enableTooltipNeedKey": "Ajoutez une clé API dans les paramètres de recherche Web pour activer cet outil."
+    },
+    "mcp": {
+      "editServer": "Modifier le serveur MCP",
+      "addServer": "Ajouter un serveur MCP",
+      "stdioOnly": "Serveurs stdio uniquement. Les valeurs sensibles d’environnement sont stockées de façon sécurisée et masquées ici.",
+      "namePlaceholder": "Nom du serveur",
+      "commandPlaceholder": "Commande, ex. npx",
+      "argsPlaceholder": "Arguments, ex. -y @modelcontextprotocol/server-filesystem .",
+      "envPlaceholder": "NOM_ENV=valeur",
+      "enableServer": "Activer le serveur",
+      "toolCount": "{{count}} outils",
+      "discoveredAt": "Découvert {{time}}",
+      "refreshTools": "Actualiser les outils",
+      "validationFailed": "Le nom et la commande sont requis.",
+      "serverUpdated": "Serveur MCP mis à jour.",
+      "serverAdded": "Serveur MCP ajouté.",
+      "toolsRefreshed": "Outils MCP actualisés.",
+      "refreshFailed": "Impossible d’actualiser les outils MCP.",
+      "serverDeleted": "Serveur MCP supprimé."
     }
   },
   "account": {
@@ -1933,7 +1992,11 @@
     "commitPromptLabel": "Prompt de génération des commits",
     "commitPromptDescription": "Ce prompt guide la génération intelligente des commits. Macro valide toujours le message final et retire les scopes avant de commit.",
     "reasoningEffort": "Raisonnement",
-    "defaultReasoning": "Par défaut"
+    "defaultReasoning": "Par défaut",
+    "learnedContextLimit": "Limite apprise",
+    "resetLearnedContextLimit": "Réinitialiser la limite de contexte apprise",
+    "learnedContextLimitReset": "Limite de contexte apprise réinitialisée",
+    "learnedContextLimitResetFailed": "Impossible de réinitialiser la limite de contexte apprise"
   },
   "shortcuts": {
     "categories": {
@@ -2116,5 +2179,10 @@
     "chatConversationsDeleted": "{{count}} conversations deleted",
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
+  },
+  "composer": {
+    "searchingFiles": "Recherche de fichiers...",
+    "noMatchingSlashContext": "Aucun contexte correspondant.",
+    "noSlashContext": "Aucun contexte disponible."
   }
 }

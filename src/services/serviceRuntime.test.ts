@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import {
+  clearRemoteRuntimeCapabilityOverrides,
   DESKTOP_IPC_UNAVAILABLE_MESSAGE,
   resolveServiceRuntime,
   resolveServiceRuntimeCapabilities,
+  setRemoteRuntimeCapabilityOverrides,
 } from './serviceRuntime';
 
 describe('serviceRuntime', () => {
   afterEach(() => {
     removeTauriRuntimeMock();
+    clearRemoteRuntimeCapabilityOverrides();
   });
 
   it('rejects browser desktop without falling back to mock data', () => {
@@ -61,6 +64,7 @@ describe('serviceRuntime', () => {
       implementExecution: false,
       taskProjectCommands: false,
       skills: true,
+      skillScripts: false,
     });
   });
 
@@ -75,6 +79,25 @@ describe('serviceRuntime', () => {
     expect(runtime).toMatchObject({
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
+    });
+  });
+
+  it('applies remote-declared skill capabilities over the conservative default', () => {
+    const runtime = resolveServiceRuntime({
+      env: {
+        VITE_BACKEND_TRANSPORT: 'remote',
+      },
+      tauriAvailable: false,
+    });
+
+    setRemoteRuntimeCapabilityOverrides({
+      skills: false,
+      skillScripts: true,
+    });
+
+    expect(resolveServiceRuntimeCapabilities(runtime)).toMatchObject({
+      skills: false,
+      skillScripts: true,
     });
   });
 });

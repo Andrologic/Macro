@@ -813,6 +813,9 @@ La validation est lenient pour l'usage mais explicite dans l'UI :
 - `isValid` signifie que Macro peut charger la skill
 - `specCompliant` signifie que la skill respecte strictement les contraintes AgentSkills
 - les diagnostics distinguent erreurs bloquantes et warnings de compatibilite
+- les noms de skills sont compares apres normalisation Unicode NFKC
+- les lettres et chiffres Unicode minuscules sont acceptes; uppercase, underscores, tirets en debut/fin, doubles tirets et mismatch avec le dossier restent des warnings lenient
+- tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` produit un warning `unexpected_frontmatter_field`
 
 ### 18.3 Activation et contexte
 
@@ -828,6 +831,8 @@ Macro doit charger les skills progressivement :
 
 En cas de collision de nom, Macro choisit une skill effective de facon deterministe : projet avant global, puis `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. Le catalogue agent et `$skill-name` ne voient que cette skill effective. Les skills shadowed restent visibles dans les reglages et selectionnables explicitement par id/source.
 
+Les manifests sont transport-neutres. Les chemins locaux (`rootPath`, `skillFilePath`) restent presents pour les skills locales mais sont optionnels; `location.kind`, `location.uri` et `contentHash` sont les identifiants preferes pour les skills remote ou bundled.
+
 ### 18.4 Securite
 
 Une skill peut etre activee sans etre trusted.
@@ -839,6 +844,19 @@ Les scripts restent indisponibles tant que la skill n'est pas trusted et que l'o
 Toute execution de script doit passer par la politique d'approbation Macro des outils a risque, capturer la sortie, appliquer un timeout et eviter l'injection de secrets par defaut.
 
 Les chemins hors dossier skill, traversals, fichiers caches non autorises et symlinks sortants doivent etre refuses.
+
+### 18.5 Remote et cloud
+
+Un runtime remote peut exposer les skills sans filesystem local lisible par le frontend. Le contrat provider utilise les operations :
+
+- `POST /skills/list`
+- `POST /skills/get`
+- `POST /skills/read-resource`
+- `POST /skills/run-script`
+
+Les payloads publics cote frontend utilisent le camelCase. Les kernels distants doivent pouvoir repondre `unsupported`; 404, 405 et 501 sont presentes a l'utilisateur comme une capacite indisponible precise.
+
+La capacite `skills` controle `skill_activate` et `skill_read_resource`. La capacite separee `skillScripts` controle `skill_run_script`; elle est false par defaut en remote et doit etre declaree explicitement avant qu'un script cloud soit propose au modele.
 
 ---
 

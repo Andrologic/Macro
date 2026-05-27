@@ -1,6 +1,7 @@
 import type { ServiceProvider } from './contracts/serviceProvider';
 import {
   getServiceRuntime,
+  setRemoteRuntimeCapabilityOverrides as applyRemoteRuntimeCapabilityOverrides,
   type ServiceProviderName,
 } from './serviceRuntime';
 
@@ -13,6 +14,8 @@ export {
   isRemoteServiceRuntime,
   resolveServiceRuntime,
   resolveServiceRuntimeCapabilities,
+  clearRemoteRuntimeCapabilityOverrides,
+  setRemoteRuntimeCapabilityOverrides,
 } from './serviceRuntime';
 export type {
   DataProvider,
@@ -62,7 +65,13 @@ const callProviderMethod = async <MethodName extends keyof ServiceProvider>(
 };
 
 export const services = {
-  getAppBootstrap: () => callProviderMethod('getAppBootstrap'),
+  getAppBootstrap: async () => {
+    const bootstrap = await callProviderMethod('getAppBootstrap');
+    applyRemoteRuntimeCapabilityOverrides(
+      bootstrap.runtimeCapabilities ?? bootstrap.capabilities ?? null
+    );
+    return bootstrap;
+  },
   listConversations: () => callProviderMethod('listConversations'),
   listMessages: (conversationId?: string) => callProviderMethod('listMessages', conversationId),
   listTasks: () => callProviderMethod('listTasks'),

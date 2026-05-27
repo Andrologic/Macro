@@ -276,7 +276,22 @@
       "aiConflictAssistantStartFailed": "AI 도우미를 시작하지 못했습니다.",
       "nextAction": "다음 작업:{{action}}.",
       "macroConflictTitle": "@매크로 동기화 충돌",
-      "macroConflictDescription": "보고된 메타데이터 차단 문제를 해결한 후 동일한 @macro 동기화 단계를 명시적으로 다시 시도하세요."
+      "macroConflictDescription": "보고된 메타데이터 차단 문제를 해결한 후 동일한 @macro 동기화 단계를 명시적으로 다시 시도하세요.",
+      "remoteUrlRequired": "origin URL을 하나 이상 입력하거나 취소하여 모든 저장소를 로컬로 유지하세요.",
+      "pushMacroBranch": "@macro 푸시",
+      "ignoreMissingUpstream": "누락된 upstream 무시",
+      "missingOriginPromptTitle": "원격 origin이 없습니다",
+      "missingUpstreamPromptTitle": "@macro에 아직 원격 브랜치가 없습니다",
+      "missingOriginPromptDescription": "지금 게시할 저장소에 origin을 추가하세요. 이 push에서 저장소를 로컬로 유지하려면 필드를 비워 두세요.",
+      "missingUpstreamPromptDescription": "이 push에서 @macro 메타데이터 브랜치를 게시할지, 로컬로 유지할지 선택하세요.",
+      "missingOriginPromptSummary": "일부 저장소는 푸시할 준비가 되었고, 일부는 아직 origin이 필요합니다.",
+      "remoteNeededCodeAndMetadata": "코드 + @macro",
+      "remoteNeededMetadata": "@macro",
+      "remoteNeededCode": "코드",
+      "remoteUrlOptional": "이 push에서 이 저장소를 건너뛰려면 비워 두세요.",
+      "pushAvailableRepositories": "사용 가능한 저장소 푸시",
+      "askNextTime": "다음에 묻기",
+      "doNotAskAgain": "다시 묻지 않기"
     },
     "scope": {
       "allProjects": "All projects"
@@ -486,7 +501,13 @@
     "agentCodeReplayFileDeleted": "삭제됨",
     "agentCodeReplayFileModified": "수정됨",
     "agentCodeReplayExternalFileChanged": "변경됨",
-    "agentCodeReplayExternalWarning": "Macro 편집 도구가 추적한 파일만 복원합니다. 에이전트가 만든 미추적 파일도 포함됩니다."
+    "agentCodeReplayExternalWarning": "Macro 편집 도구가 추적한 파일만 복원합니다. 에이전트가 만든 미추적 파일도 포함됩니다.",
+    "compactionProgressDescription": "Macro가 계속하기 전에 이전 컨텍스트를 압축하고 있습니다.",
+    "agentCodeReplayCompactionWarning": "압축 체크포인트는 유지되지만, 다시 실행하면 더 최근의 코드 편집이 제거될 수 있습니다.",
+    "messageEditingInComposer": "컴포저에서 메시지 편집 중",
+    "agentTypePlanTitle": "Plan: 읽기 전용 조사",
+    "agentTypeBuildTitle": "Build: 변경 적용",
+    "editMessagePlaceholder": "메시지 편집..."
   },
   "skills": {
     "importDialogTitle": "Skill 폴더 선택",
@@ -522,8 +543,22 @@
       "invalid": "유효하지 않은 skill입니다.",
       "disabled": "비활성화됨.",
       "providerUnsupported": "선택한 모델이 네이티브 tool calling을 지원하지 않습니다.",
-      "strictScripts": "Strict 위험 모드에서는 skill scripts가 차단됩니다."
-    }
+      "strictScripts": "Strict 위험 모드에서는 skill scripts가 차단됩니다.",
+      "shadowed": "우선순위가 더 높은 skill에 가려졌습니다. 사용하려면 이 정확한 소스를 선택하세요."
+    },
+    "source": {
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "claude": "Claude",
+      "agents": "Agents"
+    },
+    "specWarning": "스펙 경고",
+    "shadowed": "가려짐",
+    "compatibility": "호환성",
+    "allowedTools": "허용된 도구",
+    "license": "라이선스",
+    "metadataCount": "메타데이터 {{count}}개",
+    "moreDiagnostics": "추가 진단 {{count}}개"
   },
   "settings": {
     "title": "설정",
@@ -1414,7 +1449,11 @@
     "metadataModelSettings": "Metadata model settings",
     "metadataModelSettingsHelp": "Change the model used for generated metadata and commit messages.",
     "commitMessageManualTitle": "커밋 메시지 작성",
-    "commitMessageManualDescription": "각 저장소에 Conventional Commit 메시지를 작성한 뒤 커밋합니다."
+    "commitMessageManualDescription": "각 저장소에 Conventional Commit 메시지를 작성한 뒤 커밋합니다.",
+    "diffModalCrashedTitle": "이 diff를 계속 열어 둘 수 없습니다",
+    "diffModalCrashedDescription": "변경 패널은 계속 실행 중입니다. diff 뷰어를 다시 시도하거나 이 파일을 닫으세요.",
+    "diffRenderFailedTitle": "이 diff를 렌더링할 수 없습니다",
+    "diffRenderFailedDescription": "변경 패널은 열린 상태로 유지되었습니다. 이 파일을 닫고 다시 시도하거나 파일을 직접 확인하세요."
   },
   "architect": {
     "needs": "확인된 요구사항",
@@ -1624,7 +1663,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
-    "applyStrategyPreview": "Apply regeneration"
+    "applyStrategyPreview": "Apply regeneration",
+    "selectPlanToStart": "설계를 시작하려면 플랜을 선택하거나 만드세요."
   },
   "git": {
     "gitTree": "Git 트리",
@@ -1822,6 +1862,25 @@
       "configured": "구성됨",
       "apiKeyRequired": "웹 검색을 활성화하려면 API 키가 필요합니다.",
       "enableTooltipNeedKey": "이 도구를 활성화하려면 웹 검색 설정에 API 키를 추가하세요."
+    },
+    "mcp": {
+      "editServer": "MCP 서버 편집",
+      "addServer": "MCP 서버 추가",
+      "stdioOnly": "stdio 서버만 지원합니다. 민감한 환경 값은 안전하게 저장되고 여기서는 마스킹됩니다.",
+      "namePlaceholder": "서버 이름",
+      "commandPlaceholder": "명령, 예: npx",
+      "argsPlaceholder": "인수, 예: -y @modelcontextprotocol/server-filesystem .",
+      "envPlaceholder": "ENV_NAME=값",
+      "enableServer": "서버 활성화",
+      "toolCount": "도구 {{count}}개",
+      "discoveredAt": "{{time}} 발견",
+      "refreshTools": "도구 새로 고침",
+      "validationFailed": "이름과 명령은 필수입니다.",
+      "serverUpdated": "MCP 서버가 업데이트되었습니다.",
+      "serverAdded": "MCP 서버가 추가되었습니다.",
+      "toolsRefreshed": "MCP 도구가 새로 고쳐졌습니다.",
+      "refreshFailed": "MCP 도구를 새로 고치지 못했습니다.",
+      "serverDeleted": "MCP 서버가 삭제되었습니다."
     }
   },
   "account": {
@@ -1934,7 +1993,11 @@
     "commitPromptLabel": "커밋 생성 프롬프트",
     "commitPromptDescription": "이 프롬프트는 스마트 커밋 생성을 안내합니다. Macro는 최종 메시지를 계속 검증하고 커밋 전에 scope를 제거합니다.",
     "reasoningEffort": "추론",
-    "defaultReasoning": "기본값"
+    "defaultReasoning": "기본값",
+    "learnedContextLimit": "학습된 제한",
+    "resetLearnedContextLimit": "학습된 컨텍스트 제한 재설정",
+    "learnedContextLimitReset": "학습된 컨텍스트 제한이 재설정되었습니다",
+    "learnedContextLimitResetFailed": "학습된 컨텍스트 제한을 재설정하지 못했습니다"
   },
   "shortcuts": {
     "categories": {
@@ -2117,5 +2180,10 @@
     "chatConversationsDeleted": "{{count}} conversations deleted",
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
+  },
+  "composer": {
+    "searchingFiles": "파일 검색 중...",
+    "noMatchingSlashContext": "일치하는 컨텍스트가 없습니다.",
+    "noSlashContext": "사용 가능한 컨텍스트가 없습니다."
   }
 }
