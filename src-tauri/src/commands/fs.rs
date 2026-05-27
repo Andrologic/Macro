@@ -448,10 +448,7 @@ fn should_ignore_path(path: &Path, include_hidden: bool) -> bool {
 }
 
 fn normalize_search_text(value: &str) -> String {
-    value
-        .trim()
-        .replace('\\', "/")
-        .to_lowercase()
+    value.trim().replace('\\', "/").to_lowercase()
 }
 
 fn workspace_file_match_score(query: &str, relative_path: &str, name: &str) -> i32 {
@@ -612,13 +609,7 @@ pub async fn fs_search_files(
     virtual_root_enabled: Option<bool>,
 ) -> Result<Vec<WorkspaceFileSearchResultDto>, BackendError> {
     tokio::task::spawn_blocking(move || {
-        search_workspace_files_blocking(
-            roots,
-            query,
-            limit,
-            include_hidden,
-            virtual_root_enabled,
-        )
+        search_workspace_files_blocking(roots, query, limit, include_hidden, virtual_root_enabled)
     })
     .await
     .map_err(to_join_error)?
@@ -1228,12 +1219,13 @@ mod tests {
     fn test_search_workspace_files_respects_ignores_limit_and_virtual_paths() {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path();
-        fs::create_dir_all(workspace_path.join("src/components"))
-            .expect("create source dirs");
-        fs::create_dir_all(workspace_path.join("node_modules/pkg"))
-            .expect("create ignored dir");
-        fs::write(workspace_path.join("src/App.tsx"), "export const App = () => null;")
-            .expect("write app");
+        fs::create_dir_all(workspace_path.join("src/components")).expect("create source dirs");
+        fs::create_dir_all(workspace_path.join("node_modules/pkg")).expect("create ignored dir");
+        fs::write(
+            workspace_path.join("src/App.tsx"),
+            "export const App = () => null;",
+        )
+        .expect("write app");
         fs::write(
             workspace_path.join("src/components/Button.tsx"),
             "export const Button = () => null;",

@@ -276,7 +276,22 @@
       "aiConflictAssistantStartFailed": "AIアシスタントの起動に失敗しました",
       "nextAction": "次のアクション:{{action}}。",
       "macroConflictTitle": "@マクロ同期の競合",
-      "macroConflictDescription": "報告されたメタデータ ブロッカーを解決し、同じ @macro 同期ステップを明示的に再試行します。"
+      "macroConflictDescription": "報告されたメタデータ ブロッカーを解決し、同じ @macro 同期ステップを明示的に再試行します。",
+      "remoteUrlRequired": "少なくとも 1 つの origin URL を入力するか、キャンセルしてすべてのリポジトリをローカルのままにしてください。",
+      "pushMacroBranch": "@macro をプッシュ",
+      "ignoreMissingUpstream": "不足している upstream を無視",
+      "missingOriginPromptTitle": "リモート origin がありません",
+      "missingUpstreamPromptTitle": "@macro にはまだリモートブランチがありません",
+      "missingOriginPromptDescription": "今公開したいリポジトリに origin を追加してください。空欄のままにすると、この push ではそのリポジトリをローカルに保持します。",
+      "missingUpstreamPromptDescription": "この push で @macro メタデータブランチを公開するか、ローカルに保持するかを選択してください。",
+      "missingOriginPromptSummary": "一部のリポジトリは push 可能で、ほかはまだ origin が必要です。",
+      "remoteNeededCodeAndMetadata": "コード + @macro",
+      "remoteNeededMetadata": "@macro",
+      "remoteNeededCode": "コード",
+      "remoteUrlOptional": "この push でこのリポジトリをスキップするには空欄にします。",
+      "pushAvailableRepositories": "利用可能なリポジトリをプッシュ",
+      "askNextTime": "次回確認",
+      "doNotAskAgain": "今後確認しない"
     },
     "scope": {
       "allProjects": "All projects"
@@ -486,7 +501,13 @@
     "agentCodeReplayFileDeleted": "削除",
     "agentCodeReplayFileModified": "変更",
     "agentCodeReplayExternalFileChanged": "変更あり",
-    "agentCodeReplayExternalWarning": "Macro の編集ツールが追跡したファイルのみ復元します。エージェントが作成した未追跡ファイルも含みます。"
+    "agentCodeReplayExternalWarning": "Macro の編集ツールが追跡したファイルのみ復元します。エージェントが作成した未追跡ファイルも含みます。",
+    "compactionProgressDescription": "Macro は続行前に以前のコンテキストを圧縮しています。",
+    "agentCodeReplayCompactionWarning": "圧縮チェックポイントは保持されますが、再実行により新しいコード編集が削除される場合があります。",
+    "messageEditingInComposer": "コンポーザーでメッセージを編集中",
+    "agentTypePlanTitle": "Plan: 読み取り専用の調査",
+    "agentTypeBuildTitle": "Build: 変更を適用",
+    "editMessagePlaceholder": "メッセージを編集..."
   },
   "skills": {
     "importDialogTitle": "Skill フォルダーを選択",
@@ -522,8 +543,22 @@
       "invalid": "無効な skill です。",
       "disabled": "無効です。",
       "providerUnsupported": "選択中のモデルはネイティブ tool calling に対応していません。",
-      "strictScripts": "Strict リスクモードでは skill scripts がブロックされます。"
-    }
+      "strictScripts": "Strict リスクモードでは skill scripts がブロックされます。",
+      "shadowed": "優先度の高い skill に隠されています。使用するにはこの正確なソースを選択してください。"
+    },
+    "source": {
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "claude": "Claude",
+      "agents": "Agents"
+    },
+    "specWarning": "仕様警告",
+    "shadowed": "隠れている",
+    "compatibility": "互換性",
+    "allowedTools": "許可ツール",
+    "license": "ライセンス",
+    "metadataCount": "{{count}} 件のメタデータ",
+    "moreDiagnostics": "+{{count}} 件の追加診断"
   },
   "settings": {
     "title": "設定",
@@ -1414,7 +1449,11 @@
     "metadataModelSettings": "Metadata model settings",
     "metadataModelSettingsHelp": "Change the model used for generated metadata and commit messages.",
     "commitMessageManualTitle": "コミットメッセージを書く",
-    "commitMessageManualDescription": "各リポジトリに Conventional Commit メッセージを書いてからコミットします。"
+    "commitMessageManualDescription": "各リポジトリに Conventional Commit メッセージを書いてからコミットします。",
+    "diffModalCrashedTitle": "この diff を開いたままにできませんでした",
+    "diffModalCrashedDescription": "変更パネルはまだ実行中です。diff ビューアを再試行するか、このファイルを閉じてください。",
+    "diffRenderFailedTitle": "この diff を表示できませんでした",
+    "diffRenderFailedDescription": "変更パネルは開いたままです。このファイルを閉じて再試行するか、ファイルを直接確認してください。"
   },
   "architect": {
     "needs": "特定されたニーズ",
@@ -1624,7 +1663,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
-    "applyStrategyPreview": "Apply regeneration"
+    "applyStrategyPreview": "Apply regeneration",
+    "selectPlanToStart": "設計を始めるにはプランを選択または作成してください。"
   },
   "git": {
     "gitTree": "Git ツリー",
@@ -1822,6 +1862,25 @@
       "configured": "設定済み",
       "apiKeyRequired": "Web検索を有効にするために必要なAPIキー",
       "enableTooltipNeedKey": "このツールを有効にするには、Web 検索設定に API キーを追加します。"
+    },
+    "mcp": {
+      "editServer": "MCP サーバーを編集",
+      "addServer": "MCP サーバーを追加",
+      "stdioOnly": "stdio サーバーのみ対応します。機密の環境変数値は安全に保存され、ここではマスクされます。",
+      "namePlaceholder": "サーバー名",
+      "commandPlaceholder": "コマンド（例: npx）",
+      "argsPlaceholder": "引数（例: -y @modelcontextprotocol/server-filesystem .）",
+      "envPlaceholder": "ENV_NAME=値",
+      "enableServer": "サーバーを有効化",
+      "toolCount": "{{count}} 個のツール",
+      "discoveredAt": "{{time}} に検出",
+      "refreshTools": "ツールを更新",
+      "validationFailed": "名前とコマンドは必須です。",
+      "serverUpdated": "MCP サーバーを更新しました。",
+      "serverAdded": "MCP サーバーを追加しました。",
+      "toolsRefreshed": "MCP ツールを更新しました。",
+      "refreshFailed": "MCP ツールを更新できませんでした。",
+      "serverDeleted": "MCP サーバーを削除しました。"
     }
   },
   "account": {
@@ -1934,7 +1993,11 @@
     "commitPromptLabel": "コミット生成プロンプト",
     "commitPromptDescription": "このプロンプトはスマートコミット生成を制御します。Macro は最終メッセージを引き続き検証し、コミット前にスコープを削除します。",
     "reasoningEffort": "推論",
-    "defaultReasoning": "デフォルト"
+    "defaultReasoning": "デフォルト",
+    "learnedContextLimit": "学習済み制限",
+    "resetLearnedContextLimit": "学習済みコンテキスト制限をリセット",
+    "learnedContextLimitReset": "学習済みコンテキスト制限をリセットしました",
+    "learnedContextLimitResetFailed": "学習済みコンテキスト制限をリセットできませんでした"
   },
   "shortcuts": {
     "categories": {
@@ -2117,5 +2180,10 @@
     "chatConversationsDeleted": "{{count}} conversations deleted",
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
+  },
+  "composer": {
+    "searchingFiles": "ファイルを検索中...",
+    "noMatchingSlashContext": "一致するコンテキストはありません。",
+    "noSlashContext": "利用できるコンテキストはありません。"
   }
 }

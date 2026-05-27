@@ -49,6 +49,15 @@ import {
   type ToolCallResolution,
 } from "../services/streamingChat";
 import {
+  buildExplicitSkillsInstruction,
+  buildSkillCatalogInstruction,
+  buildSkillReferenceLines,
+  collectExplicitSkillsForPrompt,
+  filterSkillToolsForAvailability,
+  getSkillToolIdsForRequest,
+  handleSkillToolCall,
+} from "../services/skills/chatIntegration";
+import {
   runAssistantStream,
   type ChatStreamTokenControls,
 } from "../services/chatStreamOrchestrator";
@@ -5119,63 +5128,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return readConversationFileContext(conversationId, args);
     }
 
-    if (normalizedToolName === "skill_activate") {
-      const skillId =
-        typeof args.skill_id === "string"
-          ? args.skill_id.trim()
-          : typeof args.skillId === "string"
-            ? args.skillId.trim()
-            : "";
-      if (!skillId) return "Missing skill_id for skill_activate.";
-      return useSkillsStore.getState().activateSkill(skillId, conversationId);
-    }
-
-    if (normalizedToolName === "skill_read_resource") {
-      const skillId =
-        typeof args.skill_id === "string"
-          ? args.skill_id.trim()
-          : typeof args.skillId === "string"
-            ? args.skillId.trim()
-            : "";
-      const resourcePath = typeof args.path === "string" ? args.path.trim() : "";
-      if (!skillId || !resourcePath) {
-        return "Missing skill_id or path for skill_read_resource.";
-      }
-      return useSkillsStore.getState().readSkillResource(skillId, resourcePath);
-    }
-
-    if (normalizedToolName === "skill_run_script") {
-      const skillId =
-        typeof args.skill_id === "string"
-          ? args.skill_id.trim()
-          : typeof args.skillId === "string"
-            ? args.skillId.trim()
-            : "";
-      const scriptPath =
-        typeof args.script_path === "string"
-          ? args.script_path.trim()
-          : typeof args.scriptPath === "string"
-            ? args.scriptPath.trim()
-            : "";
-      if (!skillId || !scriptPath) {
-        return "Missing skill_id or script_path for skill_run_script.";
-      }
-      const scriptArgs = Array.isArray(args.args)
-        ? args.args.filter((item): item is string => typeof item === "string")
-        : [];
-      return useSkillsStore.getState().runSkillScript({
-        skillId,
-        scriptPath,
-        args: scriptArgs,
-        timeoutMs:
-          typeof args.timeout_ms === "number"
-            ? args.timeout_ms
-            : typeof args.timeoutMs === "number"
-              ? args.timeoutMs
-              : null,
-        allowWorkspace:
-          args.allow_workspace === true || args.allowWorkspace === true,
-      });
+    const skillToolResult = await handleSkillToolCall(
+      normalizedToolName,
+      args,
+      conversationId,
+    );
+    if (skillToolResult !== undefined) {
+      return skillToolResult;
     }
 
     if (isMCPToolId(normalizedToolName)) {
@@ -5485,8 +5444,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const skill =
         ref.kind === "skill" &&
         ref.data &&
-        typeof ref.data === "object" &&
-        "skillFilePath" in ref.data
+        typeof ref.data === "object"
           ? (ref.data as SkillManifest)
           : null;
       const file =
@@ -5504,6 +5462,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...(skill
           ? {
               skillFilePath: skill.skillFilePath,
+              contentHash: skill.contentHash,
+              location: skill.location,
               source: skill.source,
             }
           : {}),
@@ -5654,17 +5614,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               const lines: string[] = [`[${ref.kind}: ${ref.title}]`];
               if (ref.subtitle) lines.push(`Category: ${ref.subtitle}`);
               if (ref.kind === "skill") {
-                lines.push(`Skill ID: ${ref.id}`);
-                if (explicitSkillIdSet.has(ref.id)) {
-                  lines.push("Activation: Macro has already loaded this explicit skill for this turn.");
-                } else {
-                  lines.push("Activation: call skill_activate with this id before applying the skill.");
-                }
-                if ("source" in ref && ref.source?.kind === "project") {
-                  lines.push(`Source project: ${ref.source.projectName ?? ref.source.projectId ?? "unknown"}`);
-                } else if ("data" in ref && "source" in ref.data && ref.data.source.kind === "project") {
-                  lines.push(`Source project: ${ref.data.source.projectName ?? ref.data.source.projectId ?? "unknown"}`);
-                }
+                return (buildSkillReferenceLines(ref, explicitSkillIdSet) ?? lines).join("\n");
               }
               if (ref.kind === "file") {
                 const path =
@@ -5827,52 +5777,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (allowedToolIds.includes("skill_activate")) {
       const skillsState = useSkillsStore.getState();
-      const enabledSkills = skillsState.getEnabledSkills();
-      if (enabledSkills.length > 0) {
-        const catalog = enabledSkills
-          .slice(0, 30)
-          .map((skill) => {
-            const source =
-              skill.source.kind === "project"
-                ? `project:${skill.source.projectName || skill.source.projectId || "unknown"}`
-                : "global";
-            const resources = skill.resources.length > 0
-              ? ` resources=${skill.resources.map((resource) => resource.path).slice(0, 5).join(",")}`
-              : "";
-            const scripts = skill.scripts.length > 0
-              ? ` scripts=${skill.scripts.map((script) => script.path).slice(0, 5).join(",")}`
-              : "";
-            const compatibility = skill.compatibility
-              ? ` compatibility=${skill.compatibility}`
-              : "";
-            const allowedTools = skill.allowedTools
-              ? ` allowed-tools(advisory)=${skill.allowedTools}`
-              : "";
-            const compliance = skill.specCompliant === false
-              ? " spec=warnings"
-              : "";
-            return `- id=${skill.id}; name=${skill.name}; source=${source}; description=${skill.description}${compatibility}${allowedTools}${compliance}${resources}${scripts}`;
-          })
-          .join("\n");
-        systemInstructions.push(
-          `Available Macro skills are listed below. This catalog only includes the effective non-shadowed skill for each name. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary, trusted, enabled, and after explaining why. allowed-tools metadata is advisory and never overrides Macro tool policy.\n${catalog}`,
+      const catalogInstruction = buildSkillCatalogInstruction(skillsState.getEnabledSkills());
+      if (catalogInstruction) {
+        systemInstructions.push(catalogInstruction);
+        const explicitInstruction = buildExplicitSkillsInstruction(
+          collectExplicitSkillsForPrompt(
+            lastUserMessage?.role === "user" ? lastUserMessage.content : null,
+            lastUserMessage?.context_refs ?? get().composerContextRefs,
+          ),
         );
-        const mentionedSkills =
-          lastUserMessage?.role === "user"
-            ? skillsState.resolveEnabledSkillMentions(lastUserMessage.content)
-            : [];
-        const selectedSkillRefs = (lastUserMessage?.context_refs ?? get().composerContextRefs)
-          .filter((ref) => ref.kind === "skill");
-        const selectedSkills = selectedSkillRefs
-          .map((ref) => skillsState.getSkillById(ref.id))
-          .filter((skill): skill is SkillManifest => Boolean(skill));
-        const explicitSkills = Array.from(
-          new Map([...mentionedSkills, ...selectedSkills].map((skill) => [skill.id, skill])).values(),
-        );
-        if (explicitSkills.length > 0) {
-          systemInstructions.push(
-            `The user explicitly referenced these enabled skills: ${explicitSkills.map((skill) => `${skill.name} (${skill.id})`).join(", ")}. If a referenced skill is not already loaded above, activate it before answering.`,
-          );
+        if (explicitInstruction) {
+          systemInstructions.push(explicitInstruction);
         }
       }
     }
@@ -6692,23 +6607,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       return toolIds.filter((toolId) => !ARCHITECT_STRATEGY_MUTATION_TOOL_IDS.has(toolId));
     };
-    const filterSkillToolsForAvailability = (toolIds: string[]): string[] => {
-      const skillsState = useSkillsStore.getState();
-      const enabledLoadableSkills = skillsState.getEnabledLoadableSkills({
-        includeShadowed: true,
-      });
-      const hasEnabledLoadableSkill = enabledLoadableSkills.length > 0;
-      const hasRunnableSkill = skillsState.getRunnableSkillIds().length > 0;
-      return toolIds.filter((toolId) => {
-        if (toolId === "skill_activate" || toolId === "skill_read_resource") {
-          return hasEnabledLoadableSkill;
-        }
-        if (toolId === "skill_run_script") {
-          return hasEnabledLoadableSkill && hasRunnableSkill;
-        }
-        return true;
-      });
-    };
     const finalizeAllowedToolIds = (toolIds: string[]): string[] => {
       const uniqueToolIds = filterStrategyMutationToolsForActivePlan(
         Array.from(new Set(toolIds)),
@@ -6721,7 +6619,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         filteredToolIds,
         riskLevel,
       );
-      const availableToolIds = filterSkillToolsForAvailability(riskFilteredToolIds);
+      const availableToolIds = filterSkillToolsForAvailability(riskFilteredToolIds, {
+        tauriAvailable: chatPersistenceAdapters.isTauriAvailable(),
+      });
 
       if (
         internalAgentProfile === "task_reviewer" &&
@@ -7883,15 +7783,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .getState()
       .getEnabledMCPTools()
       .filter((tool) => allowedToolIds.includes(tool.id));
-    const skillsState = useSkillsStore.getState();
-    const skillToolIds = allowedToolIds.includes("skill_activate")
-      ? skillsState
-          .getEnabledLoadableSkills({ includeShadowed: true })
-          .map((skill) => skill.id)
-      : [];
-    const runnableSkillToolIds = allowedToolIds.includes("skill_run_script")
-      ? skillsState.getRunnableSkillIds()
-      : [];
+    const { skillToolIds, runnableSkillToolIds } =
+      getSkillToolIdsForRequest(allowedToolIds);
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,

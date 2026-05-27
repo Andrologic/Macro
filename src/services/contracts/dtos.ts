@@ -24,6 +24,8 @@ export interface AppBootstrapDto {
   projectGroups: ProjectGroup[];
   planNodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
+  runtimeCapabilities?: Record<string, boolean>;
+  capabilities?: Record<string, boolean>;
 }
 
 export interface ConversationsDto {

@@ -287,6 +287,16 @@ describe('useSkillsStore', () => {
     expect(useSkillsStore.getState().findEnabledSkillByName(globalSkill.id)).toEqual(globalSkill);
     expect(useSkillsStore.getState().resolveEnabledSkillMentions('Use $docs')).toEqual([projectSkill]);
 
+    useSkillsStore.getState().setSkillTrusted(projectSkill.id, true);
+    useSkillsStore.getState().setSkillScriptsEnabled(projectSkill.id, true);
+    useSkillsStore.getState().setSkillTrusted(globalSkill.id, true);
+    useSkillsStore.getState().setSkillScriptsEnabled(globalSkill.id, true);
+    expect(useSkillsStore.getState().getRunnableSkillIds()).toEqual([projectSkill.id]);
+    expect(useSkillsStore.getState().getRunnableSkillIds({ includeShadowed: true })).toEqual([
+      projectSkill.id,
+      globalSkill.id,
+    ]);
+
     const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
       conversationId: 'conversation-1',
       content: 'Use the selected docs skill.',
@@ -398,6 +408,77 @@ describe('useSkillsStore', () => {
     expect(preparation.systemInstructionBlocks[0]).toContain('<skill_content');
     expect(preparation.systemInstructionBlocks[0]).toContain('# Instructions');
     expect(preparation.toolsAvailable).toBe(false);
+  });
+
+  it('preloads remote manifests without local paths using content hash and location', async () => {
+    const skill = buildSkill('remote:registry:agents:remote-docs:abc123', {
+      name: 'remote-docs',
+      rootPath: null,
+      skillFilePath: null,
+      location: { kind: 'remote', uri: 'macro://registry/remote-docs' },
+      contentHash: 'hash-remote-docs',
+      source: {
+        kind: 'global',
+        namespace: 'agents',
+        projectId: null,
+        projectName: null,
+        rootPath: 'macro://registry',
+        skillRootPath: 'macro://registry/skills',
+      },
+    });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+
+    const preparation = await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: '[skill: remote-docs] use it',
+      contextRefs: [
+        {
+          id: skill.id,
+          kind: 'skill',
+          title: skill.name,
+          contentHash: skill.contentHash,
+          location: skill.location,
+          source: skill.source,
+        },
+      ],
+      toolsAvailable: false,
+    });
+
+    expect(services.getSkill).toHaveBeenCalledWith({
+      skillId: skill.id,
+      projectRoots: [PROJECT_ROOT],
+    });
+    expect(preparation.explicitSkillIds).toEqual([skill.id]);
+    expect(preparation.systemInstructionBlocks[0]).toContain('location_kind="remote"');
+    expect(preparation.systemInstructionBlocks[0]).toContain('content_hash="hash-remote-docs"');
+
+    await useSkillsStore.getState().prepareSkillsForTurn({
+      conversationId: 'conversation-1',
+      content: '[skill: remote-docs] use it again',
+      contextRefs: [
+        {
+          id: skill.id,
+          kind: 'skill',
+          title: skill.name,
+          contentHash: skill.contentHash,
+          location: skill.location,
+          source: skill.source,
+        },
+      ],
+      toolsAvailable: false,
+    });
+
+    expect(services.getSkill).toHaveBeenCalledTimes(1);
   });
 
   it('loads a non-ambiguous bracket mention even when native tools are unavailable', async () => {

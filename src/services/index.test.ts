@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { clearRemoteRuntimeCapabilityOverrides } from './serviceRuntime';
 
 type FetchCall = {
   url: string;
@@ -63,6 +64,7 @@ describe('services index', () => {
       setEnv(key, originalEnv[key]);
     });
     globalThis.fetch = originalFetch;
+    clearRemoteRuntimeCapabilityOverrides();
   });
 
   it('routes bootstrap through HTTP in remote mode', async () => {
@@ -91,5 +93,32 @@ describe('services index', () => {
       effectiveProvider: 'remote',
     });
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v2/workspace/bootstrap');
+  });
+
+  it('records remote-declared runtime capabilities from bootstrap', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        plan: null,
+        projectGroups: [],
+        planNodes: [],
+        predictedBranches: [],
+        runtimeCapabilities: {
+          skills: false,
+          skillScripts: true,
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const { getServiceRuntimeCapabilities, services } = await loadServicesModule();
+    await services.getAppBootstrap();
+
+    expect(getServiceRuntimeCapabilities()).toMatchObject({
+      skills: false,
+      skillScripts: true,
+    });
   });
 });

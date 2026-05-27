@@ -276,7 +276,22 @@
       "aiConflictAssistantStartFailed": "Failed to start AI assistant",
       "nextAction": "Next action: {{action}}.",
       "macroConflictTitle": "@macro sync conflict",
-      "macroConflictDescription": "Resolve the reported metadata blockers, then retry the same @macro sync step explicitly."
+      "macroConflictDescription": "Resolve the reported metadata blockers, then retry the same @macro sync step explicitly.",
+      "remoteUrlRequired": "Enter at least one origin URL, or cancel to keep every repository local.",
+      "pushMacroBranch": "Push @macro",
+      "ignoreMissingUpstream": "Ignore missing upstream",
+      "missingOriginPromptTitle": "Remote origin is missing",
+      "missingUpstreamPromptTitle": "@macro has no remote branch yet",
+      "missingOriginPromptDescription": "Add origins for repositories you want to publish now. Leave a field blank to keep that repository local for this push.",
+      "missingUpstreamPromptDescription": "Choose whether this push should publish the @macro metadata branch or keep it local.",
+      "missingOriginPromptSummary": "Some repositories are ready to push, and some still need an origin.",
+      "remoteNeededCodeAndMetadata": "code + @macro",
+      "remoteNeededMetadata": "@macro",
+      "remoteNeededCode": "code",
+      "remoteUrlOptional": "Leave blank to skip this repository for this push.",
+      "pushAvailableRepositories": "Push available repositories",
+      "askNextTime": "Ask next time",
+      "doNotAskAgain": "Don't ask again"
     },
     "scope": {
       "allProjects": "All projects"
@@ -486,7 +501,13 @@
     "agentCodeReplayFileDeleted": "deleted",
     "agentCodeReplayFileModified": "modified",
     "agentCodeReplayExternalFileChanged": "changed",
-    "agentCodeReplayExternalWarning": "Only files tracked by Macro editing tools are restored, including untracked files created by the agent."
+    "agentCodeReplayExternalWarning": "Only files tracked by Macro editing tools are restored, including untracked files created by the agent.",
+    "compactionProgressDescription": "Macro is compressing earlier context before continuing.",
+    "agentCodeReplayCompactionWarning": "Compaction checkpoints will be preserved, but the replay may remove newer code edits.",
+    "messageEditingInComposer": "Editing message in composer",
+    "agentTypePlanTitle": "Plan: read-only investigation",
+    "agentTypeBuildTitle": "Build: apply changes",
+    "editMessagePlaceholder": "Edit your message..."
   },
   "skills": {
     "importDialogTitle": "Select a skill folder",
@@ -522,8 +543,22 @@
       "invalid": "Invalid skill.",
       "disabled": "Disabled.",
       "providerUnsupported": "Selected model does not support native tool calling.",
-      "strictScripts": "Strict risk mode blocks skill scripts."
-    }
+      "strictScripts": "Strict risk mode blocks skill scripts.",
+      "shadowed": "Shadowed by a higher-priority skill. Select this exact source to use it."
+    },
+    "source": {
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "claude": "Claude",
+      "agents": "Agents"
+    },
+    "specWarning": "Spec warning",
+    "shadowed": "Shadowed",
+    "compatibility": "Compatibility",
+    "allowedTools": "Allowed tools",
+    "license": "License",
+    "metadataCount": "{{count}} metadata",
+    "moreDiagnostics": "+{{count}} more diagnostics"
   },
   "settings": {
     "title": "Settings",
@@ -1414,7 +1449,11 @@
     "metadataModelSettings": "Metadata model settings",
     "metadataModelSettingsHelp": "Change the model used for generated metadata and commit messages.",
     "commitMessageManualTitle": "Write commit messages",
-    "commitMessageManualDescription": "Write a Conventional Commit message for each repository, then commit."
+    "commitMessageManualDescription": "Write a Conventional Commit message for each repository, then commit.",
+    "diffModalCrashedTitle": "Could not keep this diff open",
+    "diffModalCrashedDescription": "The changes panel is still running. Retry the diff viewer or close this file.",
+    "diffRenderFailedTitle": "Could not render this diff",
+    "diffRenderFailedDescription": "The changes panel stayed open. Close this file and retry, or inspect the file directly."
   },
   "architect": {
     "needs": "Identified Needs",
@@ -1624,7 +1663,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
-    "applyStrategyPreview": "Apply regeneration"
+    "applyStrategyPreview": "Apply regeneration",
+    "selectPlanToStart": "Select or create a plan to start architecting."
   },
   "git": {
     "gitTree": "Git Tree",
@@ -1822,6 +1862,25 @@
       "configured": "Configured",
       "apiKeyRequired": "API key required to enable Web Search",
       "enableTooltipNeedKey": "Add an API key in Web Search settings to enable this tool."
+    },
+    "mcp": {
+      "editServer": "Edit MCP server",
+      "addServer": "Add MCP server",
+      "stdioOnly": "Stdio servers only. Sensitive env values are stored securely and masked here.",
+      "namePlaceholder": "Server name",
+      "commandPlaceholder": "Command, e.g. npx",
+      "argsPlaceholder": "Args, e.g. -y @modelcontextprotocol/server-filesystem .",
+      "envPlaceholder": "ENV_NAME=value",
+      "enableServer": "Enable server",
+      "toolCount": "{{count}} tools",
+      "discoveredAt": "Discovered {{time}}",
+      "refreshTools": "Refresh tools",
+      "validationFailed": "Name and command are required.",
+      "serverUpdated": "MCP server updated.",
+      "serverAdded": "MCP server added.",
+      "toolsRefreshed": "MCP tools refreshed.",
+      "refreshFailed": "Failed to refresh MCP tools.",
+      "serverDeleted": "MCP server deleted."
     }
   },
   "account": {
@@ -1934,7 +1993,11 @@
     "commitPromptLabel": "Commit generation prompt",
     "commitPromptDescription": "This prompt guides smart commit generation. Macro still validates the final message and removes scopes before committing.",
     "reasoningEffort": "Reasoning",
-    "defaultReasoning": "Default"
+    "defaultReasoning": "Default",
+    "learnedContextLimit": "Learned limit",
+    "resetLearnedContextLimit": "Reset learned context limit",
+    "learnedContextLimitReset": "Learned context limit reset",
+    "learnedContextLimitResetFailed": "Failed to reset learned context limit"
   },
   "shortcuts": {
     "categories": {
@@ -2117,5 +2180,10 @@
     "chatConversationsDeleted": "{{count}} conversations deleted",
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
+  },
+  "composer": {
+    "searchingFiles": "Searching files...",
+    "noMatchingSlashContext": "No matching context.",
+    "noSlashContext": "No context available."
   }
 }
