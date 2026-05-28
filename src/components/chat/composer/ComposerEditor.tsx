@@ -12,8 +12,11 @@ import {
   $createTextNode,
   $createLineBreakNode,
   $getSelection,
+  $isElementNode,
   $isRangeSelection,
   type ElementNode,
+  type LexicalNode,
+  type PointType,
   COMMAND_PRIORITY_HIGH,
   KEY_ENTER_COMMAND,
   KEY_TAB_COMMAND,
@@ -122,6 +125,66 @@ const setEditorPlainText = (
 
   root.append(paragraph);
   paragraph.selectEnd();
+};
+
+const getAbsoluteTextOffsetForPoint = (point: PointType): number | null => {
+  const root = $getRoot();
+  let offset = 0;
+
+  const visit = (node: LexicalNode): boolean => {
+    if (node.getKey() === point.key) {
+      if (point.type === 'text') {
+        offset += Math.min(point.offset, node.getTextContentSize());
+        return true;
+      }
+
+      if ($isElementNode(node)) {
+        const children = node.getChildren();
+        const childLimit = Math.max(0, Math.min(point.offset, children.length));
+        for (let index = 0; index < childLimit; index += 1) {
+          offset += children[index]?.getTextContentSize() ?? 0;
+        }
+        return true;
+      }
+
+      return false;
+    }
+
+    if ($isElementNode(node)) {
+      for (const child of node.getChildren()) {
+        const offsetBeforeChild = offset;
+        if (visit(child)) {
+          return true;
+        }
+        offset = offsetBeforeChild + child.getTextContentSize();
+      }
+      return false;
+    }
+
+    return false;
+  };
+
+  return visit(root) ? offset : null;
+};
+
+export const getCollapsedComposerSelectionTextPosition = (): {
+  offset: number;
+  total: number;
+} | null => {
+  const selection = $getSelection();
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+    return null;
+  }
+
+  const offset = getAbsoluteTextOffsetForPoint(selection.anchor);
+  if (offset === null) {
+    return null;
+  }
+
+  return {
+    offset,
+    total: $getRoot().getTextContentSize(),
+  };
 };
 
 // ------ Inner component that accesses the editor ------
@@ -257,17 +320,8 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       return editor.registerCommand(
         KEY_ARROW_UP_COMMAND,
         (event: KeyboardEvent) => {
-          const sel = $getSelection();
-          if (!$isRangeSelection(sel)) return false;
-          const anchor = sel.anchor;
-          // At the very start of the editor
-          const root = $getRoot();
-          const firstChild = root.getFirstChild();
-          if (
-            firstChild &&
-            anchor.key === firstChild.getKey() &&
-            anchor.offset === 0
-          ) {
+          const position = getCollapsedComposerSelectionTextPosition();
+          if (position?.offset === 0) {
             event.preventDefault();
             onPromptHistory('up');
             return true;
@@ -284,21 +338,11 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       return editor.registerCommand(
         KEY_ARROW_DOWN_COMMAND,
         (event: KeyboardEvent) => {
-          const sel = $getSelection();
-          if (!$isRangeSelection(sel)) return false;
-          const anchor = sel.anchor;
-          const root = $getRoot();
-          const lastChild = root.getLastChild();
-          if (lastChild) {
-            const textLen = lastChild.getTextContentSize();
-            if (
-              anchor.key === lastChild.getKey() &&
-              anchor.offset === textLen
-            ) {
-              event.preventDefault();
-              onPromptHistory('down');
-              return true;
-            }
+          const position = getCollapsedComposerSelectionTextPosition();
+          if (position && position.offset === position.total) {
+            event.preventDefault();
+            onPromptHistory('down');
+            return true;
           }
           return false;
         },

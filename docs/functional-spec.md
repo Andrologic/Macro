@@ -940,6 +940,30 @@ Macro doit exposer un controle utilisateur sur au moins les dimensions suivantes
 
 Le produit doit permettre a l'utilisateur de modeler le comportement de l'IA sans necessiter de modification de code.
 
+Tout raccourci clavier configurable dans les reglages doit correspondre a une
+action runtime cablee et a une regle de disponibilite explicite. Si un raccourci
+est visible dans les reglages, son effet attendu doit etre verifie par un test
+automatise couvrant le contexte nominal et les contextes ou il doit rester inactif.
+
+Matrice fonctionnelle des raccourcis configurables :
+
+| Raccourci | Effet attendu | Contexte |
+| --- | --- | --- |
+| Ouvrir les reglages | Ouvre les reglages generaux | Global |
+| Fermer les reglages | Ferme la modale de reglages | Reglages ouverts |
+| Nouvelle conversation | Cree une conversation Chat | Mode Chat |
+| Passer en Architect | Active le mode Architect | Hors reglages |
+| Passer en Implement | Active le mode Implement | Hors reglages |
+| Passer en Chat | Active le mode Chat | Hors reglages |
+| Basculer panneau gauche | Ouvre ou ferme le panneau gauche | Global |
+| Basculer panneau droit | Ouvre ou ferme le panneau droit | Global |
+| Fournisseur suivant | Selectionne le fournisseur IA suivant disponible | Global |
+| Modele suivant | Selectionne le modele IA suivant disponible | Global |
+| Stopper le streaming | Arrete la reponse assistant en cours | Reponse en cours |
+| Focus input Chat | Place le focus dans le compositeur Chat | Global |
+| Prompt precedent | Navigue dans l'historique de prompts vers le precedent | Compositeur focus et mode historique par raccourci |
+| Prompt suivant | Navigue dans l'historique de prompts vers le suivant | Compositeur focus et mode historique par raccourci |
+
 ---
 
 ## 22. Donnees, audit et trace historique

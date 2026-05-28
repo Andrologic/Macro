@@ -2007,6 +2007,13 @@
       "chat": "Chat",
       "ai": "KI"
     },
+    "contextHints": {
+      "settingsOpen": "Nur wenn Einstellungen geoeffnet sind",
+      "chatMode": "Nur Chat-Modus",
+      "outsideSettings": "In Einstellungen deaktiviert",
+      "streaming": "Nur waehrend einer Antwort",
+      "composerShortcutMode": "Composer-Fokus und Verlauf per Tastenkurzel"
+    },
     "searchPlaceholder": "Suchverknüpfungen...",
     "resetAll": "Alles zurücksetzen",
     "recordingHint": "Drücken Sie jetzt Ihre Tastenkombination ... (Esc zum Abbrechen)",

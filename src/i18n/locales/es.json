@@ -2007,6 +2007,13 @@
       "chat": "Chat",
       "ai": "IA"
     },
+    "contextHints": {
+      "settingsOpen": "Solo cuando la configuracion esta abierta",
+      "chatMode": "Solo modo Chat",
+      "outsideSettings": "Deshabilitado en configuracion",
+      "streaming": "Solo mientras responde",
+      "composerShortcutMode": "Compositor enfocado y modo de historial con atajos"
+    },
     "searchPlaceholder": "Buscar atajos...",
     "resetAll": "Restablecer todo",
     "recordingHint": "Presiona tu atajo ahora... (Esc para cancelar)",

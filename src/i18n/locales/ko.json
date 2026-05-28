@@ -2007,6 +2007,13 @@
       "chat": "Chat",
       "ai": "일체 포함"
     },
+    "contextHints": {
+      "settingsOpen": "설정이 열려 있을 때만",
+      "chatMode": "Chat 모드에서만",
+      "outsideSettings": "설정에서는 비활성화",
+      "streaming": "응답 중에만",
+      "composerShortcutMode": "Composer 포커스 및 단축키 히스토리 모드"
+    },
     "searchPlaceholder": "바로가기 검색...",
     "resetAll": "모두 재설정",
     "recordingHint": "지금 바로가기를 누르세요... (취소하려면 Esc를 누르세요)",
