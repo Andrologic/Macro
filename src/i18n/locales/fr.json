@@ -2006,6 +2006,13 @@
       "chat": "Chat",
       "ai": "IA"
     },
+    "contextHints": {
+      "settingsOpen": "Uniquement lorsque les reglages sont ouverts",
+      "chatMode": "Mode Chat uniquement",
+      "outsideSettings": "Desactive dans les reglages",
+      "streaming": "Uniquement pendant une reponse",
+      "composerShortcutMode": "Compositeur focus et mode historique par raccourci"
+    },
     "searchPlaceholder": "Rechercher des raccourcis...",
     "resetAll": "Tout réinitialiser",
     "recordingHint": "Appuyez sur votre raccourci maintenant... (Esc pour annuler)",

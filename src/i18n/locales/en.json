@@ -2007,6 +2007,13 @@
       "chat": "Chat",
       "ai": "AI"
     },
+    "contextHints": {
+      "settingsOpen": "Only when settings are open",
+      "chatMode": "Chat mode only",
+      "outsideSettings": "Disabled in settings",
+      "streaming": "Only while responding",
+      "composerShortcutMode": "Composer focus and shortcut history mode"
+    },
     "searchPlaceholder": "Search shortcuts...",
     "resetAll": "Reset all",
     "recordingHint": "Press your shortcut now... (Esc to cancel)",

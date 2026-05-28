@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { shortcutDefinitions, ShortcutCategory, ShortcutId } from '../../../shortcuts/catalog';
+import {
+  shortcutRuntimeDefinitions,
+  shortcutsCanConflict,
+  type ShortcutContextHint,
+} from '../../../shortcuts/runtime';
 import { eventToBinding, formatBindingForDisplay, normalizeBinding } from '../../../shortcuts/utils';
 import { useShortcutsStore } from '../../../stores/useShortcutsStore';
 import { Input } from '../../ui/Input';
@@ -99,6 +104,20 @@ export const ShortcutsView: React.FC = () => {
     [t]
   );
 
+  const contextHintLabels = useMemo<Record<ShortcutContextHint, string>>(
+    () => ({
+      settingsOpen: t('shortcuts.contextHints.settingsOpen', 'Only when settings are open'),
+      chatMode: t('shortcuts.contextHints.chatMode', 'Chat mode only'),
+      outsideSettings: t('shortcuts.contextHints.outsideSettings', 'Disabled in settings'),
+      streaming: t('shortcuts.contextHints.streaming', 'Only while responding'),
+      composerShortcutMode: t(
+        'shortcuts.contextHints.composerShortcutMode',
+        'Composer focus and shortcut history mode'
+      ),
+    }),
+    [t]
+  );
+
   const localizedShortcutDefinitions = useMemo(
     () =>
       shortcutDefinitions.map((shortcut) => ({
@@ -110,6 +129,15 @@ export const ShortcutsView: React.FC = () => {
         ),
       })),
     [t]
+  );
+
+  const shortcutLabelsById = useMemo(
+    () =>
+      localizedShortcutDefinitions.reduce<Record<ShortcutId, string>>((acc, shortcut) => {
+        acc[shortcut.id] = shortcut.label;
+        return acc;
+      }, {} as Record<ShortcutId, string>),
+    [localizedShortcutDefinitions]
   );
 
   useEffect(() => {
@@ -147,7 +175,12 @@ export const ShortcutsView: React.FC = () => {
       }
       const normalized = normalizeBinding(current);
       const conflicts = shortcutDefinitions
-        .filter((other) => other.id !== definition.id && bindings[other.id] && normalizeBinding(bindings[other.id] || '') === normalized)
+        .filter((other) =>
+          other.id !== definition.id &&
+          bindings[other.id] &&
+          normalizeBinding(bindings[other.id] || '') === normalized &&
+          shortcutsCanConflict(definition.id, other.id)
+        )
         .map((other) => other.id);
       map[definition.id] = conflicts;
     });
@@ -215,7 +248,9 @@ export const ShortcutsView: React.FC = () => {
                 {grouped[category].map((shortcut) => {
                   const binding = bindings[shortcut.id];
                   const conflicts = conflictMap[shortcut.id] || [];
+                  const conflictLabels = conflicts.map((id) => shortcutLabelsById[id]);
                   const hasConflict = conflicts.length > 0;
+                  const contextHints = shortcutRuntimeDefinitions[shortcut.id].contextHints;
                   const isRecording = recordingId === shortcut.id;
                   const isPromptHistoryShortcut =
                     shortcut.id === 'chat.historyPrevious' || shortcut.id === 'chat.historyNext';
@@ -263,6 +298,18 @@ export const ShortcutsView: React.FC = () => {
                             <p className="text-xs text-muted-foreground">
                               {shortcut.description}
                             </p>
+                            {contextHints.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {contextHints.map((hint) => (
+                                  <span
+                                    key={hint}
+                                    className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground"
+                                  >
+                                    {contextHintLabels[hint]}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             {isPromptHistoryShortcutDisabled && (
                               <p className="text-xs text-muted-foreground mt-1">
                                 {t(
@@ -273,7 +320,7 @@ export const ShortcutsView: React.FC = () => {
                             )}
                             {hasConflict && (
                               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                                {t('shortcuts.conflictWith', 'Conflict with')}: {conflicts.join(', ')}
+                                {t('shortcuts.conflictWith', 'Conflict with')}: {conflictLabels.join(', ')}
                               </p>
                             )}
                           </div>

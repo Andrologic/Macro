@@ -2007,6 +2007,13 @@
       "chat": "Chat",
       "ai": "AI"
     },
+    "contextHints": {
+      "settingsOpen": "設定が開いている場合のみ",
+      "chatMode": "Chat モードのみ",
+      "outsideSettings": "設定中は無効",
+      "streaming": "応答中のみ",
+      "composerShortcutMode": "Composer フォーカスとショートカット履歴モード"
+    },
     "searchPlaceholder": "ショートカットを検索...",
     "resetAll": "すべてリセット",
     "recordingHint": "今すぐショートカットを押してください... (キャンセルするには Esc)",

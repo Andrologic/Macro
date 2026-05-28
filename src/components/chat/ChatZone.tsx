@@ -741,6 +741,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
+  const pendingPromptHistoryTextRef = useRef<string | null>(null);
   const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
   const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
   const currentMessages = useMemo(
@@ -947,6 +948,33 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       .map((message) => message.content.trim())
       .filter((content) => content.length > 0);
   }, [currentMessages]);
+
+  const resetPromptHistoryNavigation = useCallback(() => {
+    pendingPromptHistoryTextRef.current = null;
+    setPromptHistoryIndex(null);
+    setDraftBeforeHistory('');
+  }, []);
+
+  const findPromptHistoryIndexByText = useCallback((text: string): number | null => {
+    for (let index = promptHistory.length - 1; index >= 0; index -= 1) {
+      if (promptHistory[index] === text) {
+        return index;
+      }
+    }
+    return null;
+  }, [promptHistory]);
+
+  const applyPromptHistoryText = useCallback((text: string) => {
+    const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
+    if (currentText === text) {
+      pendingPromptHistoryTextRef.current = null;
+      setInputValue(text);
+      return;
+    }
+    pendingPromptHistoryTextRef.current = text;
+    setInputValue(text);
+    composerEditorRef.current?.setText(text);
+  }, [inputValue]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -1429,6 +1457,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       });
       composerEditorRef.current?.clear();
       setInputValue('');
+      resetPromptHistoryNavigation();
       return true;
     } catch (error) {
       if (conversationId) {
@@ -1450,6 +1479,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskRequiresKickoff,
     sendMessage,
     startTask,
+    resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
   ]);
 
@@ -1609,6 +1639,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         composerEditorRef.current?.clear();
         setComposerImages([]);
         setInputValue('');
+        resetPromptHistoryNavigation();
       }
     } catch {
       // Keep the draft intact. The visible error feedback comes from the chat store.
@@ -1768,18 +1799,28 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (promptHistory.length === 0) return;
 
     if (direction === 'up') {
-      if (promptHistoryIndex === null) {
-        setDraftBeforeHistory(composerEditorRef.current?.getTextContent() ?? '');
+      const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
+      const effectiveHistoryIndex =
+        promptHistoryIndex ?? findPromptHistoryIndexByText(currentText);
+
+      if (effectiveHistoryIndex === null) {
+        setDraftBeforeHistory(currentText);
         const lastIndex = promptHistory.length - 1;
         setPromptHistoryIndex(lastIndex);
-        composerEditorRef.current?.setText(promptHistory[lastIndex]);
+        applyPromptHistoryText(promptHistory[lastIndex]);
         return;
       }
 
-      if (promptHistoryIndex > 0) {
-        const nextIndex = promptHistoryIndex - 1;
+      if (promptHistoryIndex === null) {
+        setDraftBeforeHistory(currentText);
+      }
+
+      if (effectiveHistoryIndex > 0) {
+        const nextIndex = effectiveHistoryIndex - 1;
         setPromptHistoryIndex(nextIndex);
-        composerEditorRef.current?.setText(promptHistory[nextIndex]);
+        applyPromptHistoryText(promptHistory[nextIndex]);
+      } else if (promptHistoryIndex === null) {
+        setPromptHistoryIndex(effectiveHistoryIndex);
       }
       return;
     }
@@ -1789,18 +1830,24 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (promptHistoryIndex < promptHistory.length - 1) {
       const nextIndex = promptHistoryIndex + 1;
       setPromptHistoryIndex(nextIndex);
-      composerEditorRef.current?.setText(promptHistory[nextIndex]);
+      applyPromptHistoryText(promptHistory[nextIndex]);
       return;
     }
 
     setPromptHistoryIndex(null);
-    composerEditorRef.current?.setText(draftBeforeHistory);
-  }, [draftBeforeHistory, promptHistory, promptHistoryIndex]);
+    applyPromptHistoryText(draftBeforeHistory);
+  }, [
+    applyPromptHistoryText,
+    draftBeforeHistory,
+    findPromptHistoryIndexByText,
+    inputValue,
+    promptHistory,
+    promptHistoryIndex,
+  ]);
 
   useEffect(() => {
-    setPromptHistoryIndex(null);
-    setDraftBeforeHistory('');
-  }, [selectedConversationId]);
+    resetPromptHistoryNavigation();
+  }, [resetPromptHistoryNavigation, selectedConversationId]);
 
   useEffect(() => {
     const handlePromptHistoryEvent = (event: Event) => {
@@ -2331,9 +2378,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         clearConversationRuntimeError(selectedConversationId ?? '');
                         clearLastError();
                       }
+                      const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
+                      const isPromptHistoryText = pendingPromptHistoryText === text;
+                      if (pendingPromptHistoryText !== null) {
+                        pendingPromptHistoryTextRef.current = null;
+                      }
                       setInputValue(text);
-                      if (promptHistoryIndex !== null) {
-                        setPromptHistoryIndex(null);
+                      if (!isPromptHistoryText && promptHistoryIndex !== null) {
+                        resetPromptHistoryNavigation();
                       }
                     }}
                     onSend={handleSend}

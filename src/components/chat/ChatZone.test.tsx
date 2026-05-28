@@ -341,6 +341,7 @@ const markdownRendererContentMock = mock(
 const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
 let messageEditEditorValue = '';
+let composerEditorSetTextCalls: string[] = [];
 let latestComposerProps: Record<string, unknown> | null = null;
 
 let ChatZone!: typeof import('./ChatZone').default;
@@ -490,6 +491,7 @@ const loadChatZoneModule = async () => {
             messageEditEditorValue = value;
           } else {
             composerEditorValue = value;
+            composerEditorSetTextCalls.push(value);
           }
         },
         focus: () => undefined,
@@ -728,6 +730,7 @@ const resetState = () => {
   };
   composerEditorValue = '';
   messageEditEditorValue = '';
+  composerEditorSetTextCalls = [];
   latestComposerProps = null;
   scrollMagnetActiveValues.length = 0;
 };
@@ -810,6 +813,15 @@ describe('ChatZone', () => {
     });
   };
 
+  const dispatchPromptHistory = async (direction: 'up' | 'down') => {
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('macro:prompt-history', {
+        detail: { direction },
+      }));
+      await Promise.resolve();
+    });
+  };
+
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -873,6 +885,77 @@ describe('ChatZone', () => {
 
     expect(requireContainer().querySelector('[data-tour-id="skill-dropdown"]')).toBeNull();
     expect(requireContainer().querySelector('[data-tour-id="chat-control-row"]')).not.toBeNull();
+  });
+
+  it('navigates prompt history while preserving and restoring the current draft', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Old prompt' }),
+        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Old response' }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Latest prompt' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('Draft prompt');
+    await dispatchPromptHistory('up');
+    expect(getComposerEditor().value).toBe('Latest prompt');
+
+    await dispatchPromptHistory('up');
+    expect(getComposerEditor().value).toBe('Old prompt');
+
+    await dispatchPromptHistory('down');
+    expect(getComposerEditor().value).toBe('Latest prompt');
+
+    await dispatchPromptHistory('down');
+    expect(getComposerEditor().value).toBe('Draft prompt');
+  });
+
+  it('does not reapply the same history prompt when already at the oldest entry', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Only prompt' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('Only prompt');
+    composerEditorSetTextCalls = [];
+
+    await dispatchPromptHistory('up');
+
+    expect(getComposerEditor().value).toBe('Only prompt');
+    expect(composerEditorSetTextCalls).toEqual([]);
+  });
+
+  it('exits prompt history navigation after a real composer edit', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Old prompt' }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Latest prompt' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('Draft prompt');
+    await dispatchPromptHistory('up');
+    expect(getComposerEditor().value).toBe('Latest prompt');
+
+    await setComposerText('Manual edit');
+    await dispatchPromptHistory('down');
+    expect(getComposerEditor().value).toBe('Manual edit');
   });
 
   it('renders skill references in user messages as composer-style chips', async () => {

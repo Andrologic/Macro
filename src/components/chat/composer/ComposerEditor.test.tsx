@@ -239,6 +239,7 @@ describe('ComposerEditor context references', () => {
   let container: HTMLDivElement;
   let root: Root;
   let ComposerEditor: typeof import('./ComposerEditor').ComposerEditor;
+  let getCollapsedComposerSelectionTextPosition: typeof import('./ComposerEditor').getCollapsedComposerSelectionTextPosition;
 
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -261,7 +262,10 @@ describe('ComposerEditor context references', () => {
     fileSearchResults = [];
     installStoreMock();
 
-    ({ ComposerEditor } = await import(`./ComposerEditor.tsx?composer-editor-test=${Date.now()}`));
+    ({
+      ComposerEditor,
+      getCollapsedComposerSelectionTextPosition,
+    } = await import(`./ComposerEditor.tsx?composer-editor-test=${Date.now()}`));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -378,6 +382,101 @@ describe('ComposerEditor context references', () => {
       isNodeSelection: false,
       isRangeSelection: true,
     });
+  });
+
+  it('calculates absolute prompt-history positions across chips and line breaks', async () => {
+    const lexical = await import('lexical');
+    const { MentionNode, $createMentionNode } = await import(
+      `./MentionNode.tsx?mention-position-test=${Date.now()}`
+    );
+    const editor = lexical.createEditor({
+      namespace: `MentionPositionTest-${Date.now()}`,
+      nodes: [MentionNode],
+      onError: (error) => {
+        throw error;
+      },
+    });
+
+    const updateEditor = (callback: () => void) =>
+      new Promise<void>((resolve) => {
+        editor.update(callback, { onUpdate: () => resolve() });
+      });
+    const readPosition = () =>
+      editor.getEditorState().read(() => getCollapsedComposerSelectionTextPosition());
+
+    await updateEditor(() => {
+      const root = lexical.$getRoot();
+      root.clear();
+      const paragraph = lexical.$createParagraphNode();
+      const before = lexical.$createTextNode('A');
+      const mention = $createMentionNode('skill', 'test-skill', 'test-skill');
+      const lineBreak = lexical.$createLineBreakNode();
+      const after = lexical.$createTextNode('B');
+      paragraph.append(before, mention, lineBreak, after);
+      root.append(paragraph);
+      before.select(0, 0);
+    });
+
+    expect(readPosition()?.offset).toBe(0);
+
+    await updateEditor(() => {
+      const root = lexical.$getRoot();
+      const paragraph = root.getFirstChild();
+      const before = lexical.$isElementNode(paragraph) ? paragraph.getFirstChild() : null;
+      if (lexical.$isTextNode(before)) {
+        before.select(1, 1);
+      }
+    });
+
+    expect(readPosition()?.offset).toBe(1);
+
+    await updateEditor(() => {
+      const root = lexical.$getRoot();
+      root.selectEnd();
+    });
+
+    const endPosition = readPosition();
+    expect(endPosition).toBeTruthy();
+    expect(endPosition?.offset).toBe(endPosition?.total);
+  });
+
+  it('uses contextual arrows for prompt history only at text boundaries', async () => {
+    const onPromptHistory = mock(() => undefined);
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+          onPromptHistory={onPromptHistory}
+        />
+      );
+    });
+
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editorRef.current?.setText('');
+      await Promise.resolve();
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onPromptHistory).toHaveBeenCalledWith('up');
+
+    await act(async () => {
+      editorRef.current?.setText('hello\nworld');
+      await Promise.resolve();
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onPromptHistory).toHaveBeenCalledWith('down');
+    expect(onPromptHistory).toHaveBeenCalledTimes(2);
   });
 
   it('renders composer skill chips with the shared inline alignment', async () => {
@@ -740,6 +839,7 @@ describe('ComposerEditor context references', () => {
       [alphaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
       [betaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
     };
+    const onPromptHistory = mock(() => undefined);
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -750,6 +850,7 @@ describe('ComposerEditor context references', () => {
           placeholder="Message"
           onTextChange={() => undefined}
           onSend={() => undefined}
+          onPromptHistory={onPromptHistory}
         />
       );
     });
@@ -765,6 +866,7 @@ describe('ComposerEditor context references', () => {
     expect(
       document.body.querySelector('[data-slash-context-option="skill:beta"]')?.getAttribute('aria-selected')
     ).toBe('true');
+    expect(onPromptHistory).not.toHaveBeenCalled();
 
     await act(async () => {
       editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
