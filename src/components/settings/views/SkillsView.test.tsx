@@ -7,11 +7,11 @@ const loadSettingsMock = mock(async () => undefined);
 const refreshSkillsMock = mock(async () => undefined);
 const installSkillFromLocalPathMock = mock(async (_path: string) => undefined);
 let createdSkillTemplate: SkillManifest | null = null;
-const createSkillTemplateMock = mock(async () => createdSkillTemplate);
+const createSkillTemplateMock = mock(async (_data: unknown) => createdSkillTemplate);
+const openSkillLocationMock = mock(async (_skillId: string, _target: 'skillFile' | 'folder') => true);
 const setSkillEnabledMock = mock((_skillId: string, _enabled: boolean) => undefined);
 const setSkillScriptsEnabledMock = mock((_skillId: string, _enabled: boolean) => undefined);
 const openDialogMock = mock(async () => '/tmp/imported-skill');
-const openPathMock = mock(async (_path: string) => undefined);
 const notifySuccessMock = mock((_message: string) => undefined);
 const notifyErrorMock = mock((_message: string, _options?: unknown) => undefined);
 
@@ -21,6 +21,7 @@ let settingsBySkillId: Record<string, SkillSettings> = {};
 let lastError: string | null = null;
 let nativeToolsSupported = true;
 let runtimeSkillsSupported = true;
+let runtimeSkillCreationSupported = true;
 let toolRiskLevel: 'strict' | 'balanced' | 'yolo' = 'balanced';
 
 const defaultSettings: SkillSettings = {
@@ -85,6 +86,7 @@ const loadSkillsView = async () => {
     refreshSkills: refreshSkillsMock,
     installSkillFromLocalPath: installSkillFromLocalPathMock,
     createSkillTemplate: createSkillTemplateMock,
+    openSkillLocation: openSkillLocationMock,
     getSkillSettings: (skillId: string) => settingsBySkillId[skillId] ?? defaultSettings,
     setSkillEnabled: setSkillEnabledMock,
     setSkillScriptsEnabled: setSkillScriptsEnabledMock,
@@ -106,8 +108,33 @@ const loadSkillsView = async () => {
   };
   mock.module('../../../stores/useProviderStore', () => ({ useProviderStore }));
 
+  const appState = {
+    projectGroups: [
+      {
+        id: 'group-1',
+        name: 'Workspace',
+        isOpen: true,
+        projects: [
+          {
+            id: 'project-1',
+            name: 'Web',
+            path: '/repo/web',
+          },
+        ],
+      },
+    ],
+  };
+  const useAppStore = ((selector?: (state: typeof appState) => unknown) =>
+    selector ? selector(appState) : appState) as unknown as {
+    <T>(selector: (state: typeof appState) => T): T;
+  };
+  mock.module('../../../stores/useAppStore', () => ({ useAppStore }));
+
   mock.module('../../../services', () => ({
-    getServiceRuntimeCapabilities: () => ({ skills: runtimeSkillsSupported }),
+    getServiceRuntimeCapabilities: () => ({
+      skills: runtimeSkillsSupported,
+      skillCreation: runtimeSkillCreationSupported,
+    }),
   }));
 
   mock.module('../../../services/preferences', () => ({
@@ -117,10 +144,6 @@ const loadSkillsView = async () => {
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: openDialogMock,
-  }));
-
-  mock.module('@tauri-apps/plugin-opener', () => ({
-    openPath: openPathMock,
   }));
 
   mock.module('../../ui/Icon', () => ({
@@ -136,6 +159,19 @@ const loadSkillsView = async () => {
         {...props}
         onChange={onChange}
         onInput={(event) => onChange?.(event as unknown as React.ChangeEvent<HTMLInputElement>)}
+      />
+    ),
+  }));
+
+  mock.module('../../ui/Textarea', () => ({
+    Textarea: ({
+      onChange,
+      ...props
+    }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
+      <textarea
+        {...props}
+        onChange={onChange}
+        onInput={(event) => onChange?.(event as unknown as React.ChangeEvent<HTMLTextAreaElement>)}
       />
     ),
   }));
@@ -188,10 +224,10 @@ describe('SkillsView', () => {
     refreshSkillsMock.mockClear();
     installSkillFromLocalPathMock.mockClear();
     createSkillTemplateMock.mockClear();
+    openSkillLocationMock.mockClear();
     setSkillEnabledMock.mockClear();
     setSkillScriptsEnabledMock.mockClear();
     openDialogMock.mockClear();
-    openPathMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     skills = [];
@@ -200,6 +236,7 @@ describe('SkillsView', () => {
     lastError = null;
     nativeToolsSupported = true;
     runtimeSkillsSupported = true;
+    runtimeSkillCreationSupported = true;
     toolRiskLevel = 'balanced';
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -453,7 +490,7 @@ describe('SkillsView', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
-    expect(openPathMock).toHaveBeenCalledWith(skill.rootPath);
+    expect(openSkillLocationMock).toHaveBeenCalledWith(skill.id, 'folder');
 
     await act(async () => {
       buttons.find((button) => button.textContent?.includes('Copy path'))
@@ -475,8 +512,47 @@ describe('SkillsView', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
-    expect(createSkillTemplateMock).toHaveBeenCalled();
-    expect(openPathMock).toHaveBeenCalledWith('/Users/test/.agents/skills/new-skill');
+    expect(container?.textContent).toContain('Create skill');
+
+    const nameInput = Array.from(container?.querySelectorAll('input') ?? []).find(
+      (input) => (input as HTMLInputElement).value === 'new-skill',
+    ) as HTMLInputElement | undefined;
+    const descriptionInput = container?.querySelector('textarea') as HTMLTextAreaElement | null;
+    const locationSelect = container?.querySelector('select') as HTMLSelectElement | null;
+    expect(nameInput).toBeTruthy();
+    expect(descriptionInput).toBeTruthy();
+    expect(locationSelect).toBeTruthy();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+        nameInput,
+        'project-helper',
+      );
+      nameInput!.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        descriptionInput,
+        'Use when project work needs focused guidance.',
+      );
+      descriptionInput!.dispatchEvent(new Event('input', { bubbles: true }));
+      locationSelect!.value = 'project:project-1';
+      locationSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const dialogButtons = Array.from(container?.querySelectorAll('button') ?? []);
+    await act(async () => {
+      dialogButtons.find((button) => button.textContent?.includes('Create'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(createSkillTemplateMock).toHaveBeenCalledWith({
+      name: 'project-helper',
+      description: 'Use when project work needs focused guidance.',
+      destinationKind: 'project',
+      projectId: 'project-1',
+    });
+    expect(openSkillLocationMock).toHaveBeenCalledWith(createdSkillTemplate!.id, 'skillFile');
   });
 
   it('keeps script permission independent from the global skill switch', async () => {

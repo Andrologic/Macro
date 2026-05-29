@@ -28,9 +28,11 @@ import type {
   ProjectGitSetupCommitResult,
   ProjectGroup,
   SkillManifest,
+  SkillLocationOpenRequest,
   SkillProjectRoot,
   SkillScriptRunRequest,
   SkillScriptRunResult,
+  SkillTemplateCreateRequest,
   SkillTemplateCreateResult,
 } from '../../types';
 
@@ -165,7 +167,8 @@ export interface ServiceProvider {
     projectRoots?: SkillProjectRoot[];
   }) => Promise<SkillDetailDto>;
   installSkillFromLocalPath: (data: { sourcePath: string }) => Promise<SkillManifest>;
-  createSkillTemplate: () => Promise<SkillTemplateCreateResult>;
+  createSkillTemplate: (data: SkillTemplateCreateRequest) => Promise<SkillTemplateCreateResult>;
+  openSkillLocation: (data: SkillLocationOpenRequest) => Promise<void>;
   readSkillResource: (data: {
     skillId: string;
     resourcePath: string;

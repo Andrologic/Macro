@@ -501,6 +501,20 @@ export interface SkillTemplateCreateResult {
   skillFilePath: string;
 }
 
+export interface SkillTemplateCreateRequest {
+  name: string;
+  description: string;
+  destinationKind: 'global' | 'project';
+  projectId?: string | null;
+  projectRoots?: SkillProjectRoot[];
+}
+
+export interface SkillLocationOpenRequest {
+  skillId: string;
+  target: 'skillFile' | 'folder';
+  projectRoots?: SkillProjectRoot[];
+}
+
 export interface ProjectDependency {
   id: string;
   type: 'runtime' | 'development' | 'peer';

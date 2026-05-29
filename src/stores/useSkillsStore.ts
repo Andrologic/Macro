@@ -26,10 +26,12 @@ import type {
   PersistedContextReference,
   SkillActivation,
   SkillManifest,
+  SkillLocationOpenRequest,
   SkillPermissionSnapshot,
   SkillProjectRoot,
   SkillScriptRunRequest,
   SkillSettings,
+  SkillTemplateCreateRequest,
 } from '../types';
 
 export interface SkillTurnPreparation {
@@ -111,7 +113,13 @@ interface SkillsStore {
   loadSettings: () => Promise<void>;
   refreshSkills: () => Promise<void>;
   installSkillFromLocalPath: (sourcePath: string) => Promise<void>;
-  createSkillTemplate: () => Promise<SkillManifest | null>;
+  createSkillTemplate: (
+    data: Omit<SkillTemplateCreateRequest, 'projectRoots'>,
+  ) => Promise<SkillManifest | null>;
+  openSkillLocation: (
+    skillId: string,
+    target: SkillLocationOpenRequest['target'],
+  ) => Promise<boolean>;
   setSkillEnabled: (skillId: string, enabled: boolean) => void;
   setSkillScriptsEnabled: (skillId: string, scriptsEnabled: boolean) => void;
   getSkillSettings: (skillId: string) => SkillSettings;
@@ -201,21 +209,54 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     }
   },
 
-  createSkillTemplate: async () => {
+  createSkillTemplate: async (data) => {
     set({ saving: true, lastError: null });
     try {
-      const created = await services.createSkillTemplate();
+      const created = await services.createSkillTemplate({
+        ...data,
+        projectRoots: getProjectRootsFromAppState(),
+      });
+      const createdSettings = {
+        ...get().settingsBySkillId,
+        [created.skill.id]: { enabled: true, scriptsEnabled: false },
+      };
+      writeStoredSkillSettings(createdSettings);
+      set({
+        skills: Array.from(
+          new Map([...get().skills, created.skill].map((skill) => [skill.id, skill])).values(),
+        ),
+        settingsBySkillId: createdSettings,
+      });
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
-      const migratedSettings = migrateLegacySkillSettings(get().settingsBySkillId, response.skills);
+      const nextSettings = {
+        ...migrateLegacySkillSettings(createdSettings, response.skills),
+        [created.skill.id]: { enabled: true, scriptsEnabled: false },
+      };
+      writeStoredSkillSettings(nextSettings);
       set({
         skills: response.skills,
-        settingsBySkillId: migratedSettings,
+        settingsBySkillId: nextSettings,
         saving: false,
       });
       return created.skill;
     } catch (error) {
       set({ saving: false, lastError: toServiceError(error).message });
       return null;
+    }
+  },
+
+  openSkillLocation: async (skillId, target) => {
+    set({ lastError: null });
+    try {
+      await services.openSkillLocation({
+        skillId,
+        target,
+        projectRoots: getProjectRootsFromAppState(),
+      });
+      return true;
+    } catch (error) {
+      set({ lastError: toServiceError(error).message });
+      return false;
     }
   },
 

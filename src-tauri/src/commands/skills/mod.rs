@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
 use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -98,6 +100,45 @@ fn normalize_skill_name(value: &str, fallback: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn yaml_double_quote(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!("\"{}\"", escaped)
+}
+
+fn normalize_created_skill_name(value: &str) -> CommandResult<String> {
+    let name = normalize_skill_name(value, "");
+    if name.is_empty() {
+        return Err(command_error("Skill name is required."));
+    }
+    if name.chars().count() > MAX_SKILL_NAME_LENGTH {
+        return Err(command_error(format!(
+            "Skill name must be {} characters or fewer.",
+            MAX_SKILL_NAME_LENGTH
+        )));
+    }
+    Ok(name)
+}
+
+fn normalize_created_skill_description(value: &str) -> CommandResult<String> {
+    let description = value.trim();
+    if description.is_empty() {
+        return Err(command_error("Skill description is required."));
+    }
+    if description.chars().count() > MAX_DESCRIPTION_LENGTH {
+        return Err(command_error(format!(
+            "Skill description must be {} characters or fewer.",
+            MAX_DESCRIPTION_LENGTH
+        )));
+    }
+    if description.contains('\n') || description.contains('\r') {
+        return Err(command_error("Skill description must fit on one line."));
+    }
+    Ok(description.to_string())
 }
 
 fn stable_path_hash(path: &Path) -> String {
@@ -1237,11 +1278,87 @@ pub async fn skills_install_from_local_path(
     ))
 }
 
+fn resolve_template_destination(
+    request: &SkillTemplateCreateRequest,
+) -> CommandResult<(PathBuf, SkillSourceDto)> {
+    match request.destination_kind.trim() {
+        "global" => {
+            let home = home_dir()
+                .ok_or_else(|| command_error("Could not resolve the user home directory."))?;
+            let destination_base = home.join(AGENTS_SKILLS_DIR);
+            Ok((
+                destination_base.clone(),
+                SkillSourceDto {
+                    kind: "global".to_string(),
+                    namespace: "agents".to_string(),
+                    project_id: None,
+                    project_name: None,
+                    root_path: destination_base.to_string_lossy().to_string(),
+                    skill_root_path: destination_base.to_string_lossy().to_string(),
+                },
+            ))
+        }
+        "project" => {
+            let project_id = request
+                .project_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| command_error("Project destination is required."))?;
+            let project_root = request
+                .project_roots
+                .iter()
+                .find(|root| root.project_id == project_id)
+                .ok_or_else(|| command_error("Project destination is not available."))?;
+            let project_path = PathBuf::from(project_root.path.trim());
+            if project_path.as_os_str().is_empty() {
+                return Err(command_error("Project path is missing."));
+            }
+            let project_canonical = fs::canonicalize(&project_path).map_err(|error| {
+                command_error(format!(
+                    "Project path is not available for skill creation: {}",
+                    error
+                ))
+            })?;
+            let destination_base = project_canonical.join(AGENTS_SKILLS_DIR);
+            Ok((
+                destination_base.clone(),
+                SkillSourceDto {
+                    kind: "project".to_string(),
+                    namespace: "agents".to_string(),
+                    project_id: Some(project_root.project_id.clone()),
+                    project_name: Some(project_root.project_name.clone()),
+                    root_path: destination_base.to_string_lossy().to_string(),
+                    skill_root_path: destination_base.to_string_lossy().to_string(),
+                },
+            ))
+        }
+        other => Err(command_error(format!(
+            "Unsupported skill destination: {}",
+            other
+        ))),
+    }
+}
+
 #[tauri::command]
-pub async fn skills_create_template() -> CommandResult<SkillTemplateCreateResponse> {
-    let home =
-        home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
-    let destination_base = home.join(AGENTS_SKILLS_DIR);
+pub async fn skills_create_template(
+    name: String,
+    description: String,
+    destination_kind: String,
+    project_id: Option<String>,
+    project_roots: Vec<SkillProjectRootDto>,
+) -> CommandResult<SkillTemplateCreateResponse> {
+    let request = SkillTemplateCreateRequest {
+        name,
+        description,
+        destination_kind,
+        project_id,
+        project_roots,
+    };
+    let name = normalize_created_skill_name(&request.name)?;
+    let description = normalize_created_skill_description(&request.description)?;
+    let (destination_base, source) = resolve_template_destination(&request)?;
+
     fs::create_dir_all(&destination_base).map_err(|error| {
         command_error(format!(
             "Failed to create skills folder {}: {}",
@@ -1249,33 +1366,36 @@ pub async fn skills_create_template() -> CommandResult<SkillTemplateCreateRespon
             error
         ))
     })?;
-
-    let mut name = "new-skill".to_string();
-    let mut destination = destination_base.join(&name);
-    let mut suffix = 2;
-    while destination.exists() {
-        name = format!("new-skill-{}", suffix);
-        destination = destination_base.join(&name);
-        suffix += 1;
+    let destination_base = fs::canonicalize(&destination_base).map_err(|error| {
+        command_error(format!(
+            "Failed to resolve skills folder {}: {}",
+            destination_base.display(),
+            error
+        ))
+    })?;
+    let destination = destination_base.join(&name);
+    if destination.exists() {
+        return Err(command_error(format!(
+            "A skill already exists at {}.",
+            destination.display()
+        )));
     }
 
-    fs::create_dir_all(&destination).map_err(|error| {
+    fs::create_dir(&destination).map_err(|error| {
         command_error(format!(
             "Failed to create skill folder {}: {}",
             destination.display(),
             error
         ))
     })?;
-    fs::create_dir_all(destination.join("references")).map_err(|error| {
-        command_error(format!("Failed to create references folder: {}", error))
-    })?;
-    fs::create_dir_all(destination.join("scripts"))
-        .map_err(|error| command_error(format!("Failed to create scripts folder: {}", error)))?;
 
     let skill_file_path = destination.join(SKILL_FILE);
     let template = format!(
-        "---\nname: {}\ndescription: Describe when Macro should use this skill.\n---\n\n# {}\n\nUse this skill to give Macro focused, reusable instructions.\n\n## Instructions\n\n- Replace this text with precise guidance.\n- Keep resources in `references/` and optional scripts in `scripts/`.\n",
-        name, name
+        "---\nname: {}\ndescription: {}\n---\n\n# {}\n\nUse this skill when {}.\n\n## Instructions\n\n- Add concise, specific guidance for Macro here.\n",
+        name,
+        yaml_double_quote(&description),
+        name,
+        description.trim_end_matches('.')
     );
     fs::write(&skill_file_path, template).map_err(|error| {
         command_error(format!(
@@ -1285,22 +1405,38 @@ pub async fn skills_create_template() -> CommandResult<SkillTemplateCreateRespon
         ))
     })?;
 
-    let skill = build_manifest(
-        &destination,
-        SkillSourceDto {
-            kind: "global".to_string(),
-            namespace: "agents".to_string(),
-            project_id: None,
-            project_name: None,
-            root_path: destination_base.to_string_lossy().to_string(),
-            skill_root_path: destination_base.to_string_lossy().to_string(),
-        },
-    );
+    let skill = build_manifest(&destination, source);
     Ok(SkillTemplateCreateResponse {
         skill,
         folder_path: destination.to_string_lossy().to_string(),
         skill_file_path: skill_file_path.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+pub async fn skills_open_location(
+    app: AppHandle,
+    skill_id: String,
+    target: String,
+    project_roots: Vec<SkillProjectRootDto>,
+) -> CommandResult<()> {
+    let skill = resolve_skill(&skill_id, &project_roots)?;
+    let skill_root = fs::canonicalize(&skill.root_path).map_err(|error| {
+        command_error(format!("Skill folder is not available: {}", error))
+    })?;
+    let target_path = match target.trim() {
+        "skillFile" => PathBuf::from(&skill.skill_file_path),
+        "folder" => PathBuf::from(&skill.root_path),
+        other => return Err(command_error(format!("Unsupported skill open target: {}", other))),
+    };
+    let target_canonical = fs::canonicalize(&target_path)
+        .map_err(|error| command_error(format!("Skill location is not available: {}", error)))?;
+    if !path_is_inside(&skill_root, &target_canonical) {
+        return Err(command_error("Skill location is outside the skill folder."));
+    }
+    app.opener()
+        .open_path(target_canonical.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|error| command_error(format!("Could not open skill location: {}", error)))
 }
 
 #[tauri::command]
@@ -1923,6 +2059,73 @@ mod tests {
             },
         );
         assert!(resolve_resource_path(&skill, "references/outside.md", &["references"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn creates_project_skill_template_with_only_skill_file() {
+        let dir = tempdir().expect("tempdir");
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(&project_root).expect("mkdir project");
+
+        let created = skills_create_template(
+            "Project Helper".to_string(),
+            "Use when project work needs focused guidance.".to_string(),
+            "project".to_string(),
+            Some("project-1".to_string()),
+            vec![SkillProjectRootDto {
+                project_id: "project-1".to_string(),
+                project_name: "Web".to_string(),
+                path: project_root.to_string_lossy().to_string(),
+            }],
+        )
+        .await
+        .expect("create template");
+
+        let skill_dir = project_root.join(AGENTS_SKILLS_DIR).join("project-helper");
+        assert_eq!(created.skill.name, "project-helper");
+        assert!(skill_dir.join(SKILL_FILE).is_file());
+        assert!(!skill_dir.join("references").exists());
+        assert!(!skill_dir.join("scripts").exists());
+        assert!(fs::read_to_string(skill_dir.join(SKILL_FILE))
+            .expect("read template")
+            .contains("description: \"Use when project work needs focused guidance.\""));
+        assert_eq!(created.skill.source.kind, "project");
+        assert_eq!(created.skill.source.namespace, "agents");
+    }
+
+    #[tokio::test]
+    async fn refuses_invalid_template_destination_and_name() {
+        let dir = tempdir().expect("tempdir");
+        let project_root = dir.path().join("project");
+        fs::create_dir_all(&project_root).expect("mkdir project");
+
+        let invalid_name = skills_create_template(
+            "../".to_string(),
+            "Use when needed.".to_string(),
+            "project".to_string(),
+            Some("project-1".to_string()),
+            vec![SkillProjectRootDto {
+                project_id: "project-1".to_string(),
+                project_name: "Web".to_string(),
+                path: project_root.to_string_lossy().to_string(),
+            }],
+        )
+        .await;
+        assert!(invalid_name.is_err());
+
+        let unavailable_project = skills_create_template(
+            "helper".to_string(),
+            "Use when needed.".to_string(),
+            "project".to_string(),
+            Some("missing".to_string()),
+            vec![SkillProjectRootDto {
+                project_id: "project-1".to_string(),
+                project_name: "Web".to_string(),
+                path: project_root.to_string_lossy().to_string(),
+            }],
+        )
+        .await;
+        assert!(unavailable_project.is_err());
     }
 
     #[tokio::test]

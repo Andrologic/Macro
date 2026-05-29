@@ -152,8 +152,10 @@ export const services = {
     callProviderMethod('getSkill', data),
   installSkillFromLocalPath: (data: Parameters<ServiceProvider['installSkillFromLocalPath']>[0]) =>
     callProviderMethod('installSkillFromLocalPath', data),
-  createSkillTemplate: () =>
-    callProviderMethod('createSkillTemplate'),
+  createSkillTemplate: (data: Parameters<ServiceProvider['createSkillTemplate']>[0]) =>
+    callProviderMethod('createSkillTemplate', data),
+  openSkillLocation: (data: Parameters<ServiceProvider['openSkillLocation']>[0]) =>
+    callProviderMethod('openSkillLocation', data),
   readSkillResource: (data: Parameters<ServiceProvider['readSkillResource']>[0]) =>
     callProviderMethod('readSkillResource', data),
   runSkillScript: (data: Parameters<ServiceProvider['runSkillScript']>[0]) =>

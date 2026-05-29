@@ -1,19 +1,31 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { openPath } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useProviderStore } from '../../../stores/useProviderStore';
+import { useAppStore } from '../../../stores/useAppStore';
 import { getServiceRuntimeCapabilities } from '../../../services';
 import { loadPreference, PREF_KEYS } from '../../../services/preferences';
 import { DEFAULT_TOOL_RISK_LEVEL } from '../../../services/toolSecurityPolicy';
 import { normalizeSkillLookupName } from '../../../services/skills/identity';
-import type { SkillManifest, SkillSettings, ToolRiskLevel } from '../../../types';
+import type { Project, SkillManifest, SkillSettings, ToolRiskLevel } from '../../../types';
 import { SkillCard } from './SkillCard';
 import { Icon } from '../../ui/Icon';
 import { Input } from '../../ui/Input';
+import { Textarea } from '../../ui/Textarea';
 import { notify } from '../../ui/toastService';
 import { cn } from '../../../utils/cn';
+
+type SkillCreateLocation = {
+  id: string;
+  destinationKind: 'global' | 'project';
+  label: string;
+  description: string;
+  projectId?: string;
+};
+
+const DEFAULT_SKILL_NAME = 'new-skill';
+const DEFAULT_SKILL_DESCRIPTION = 'Use when Macro needs focused, reusable guidance.';
 
 export const SkillsView: React.FC = () => {
   const { t } = useTranslation();
@@ -26,10 +38,12 @@ export const SkillsView: React.FC = () => {
     refreshSkills,
     installSkillFromLocalPath,
     createSkillTemplate,
+    openSkillLocation,
     getSkillSettings,
     setSkillEnabled,
     setSkillScriptsEnabled,
   } = useSkillsStore();
+  const projectGroups = useAppStore((state) => state.projectGroups);
   const nativeToolsSupported = useProviderStore((state) =>
     state.selectedSupportsNativeToolCalling()
   );
@@ -38,6 +52,34 @@ export const SkillsView: React.FC = () => {
   const [expandedSkillIds, setExpandedSkillIds] = useState<Set<string>>(() => new Set());
   const [toolRiskLevel, setToolRiskLevel] =
     useState<ToolRiskLevel>(DEFAULT_TOOL_RISK_LEVEL);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createName, setCreateName] = useState(DEFAULT_SKILL_NAME);
+  const [createDescription, setCreateDescription] = useState(DEFAULT_SKILL_DESCRIPTION);
+  const [createLocationId, setCreateLocationId] = useState('global');
+
+  const projectsWithPaths = useMemo<Project[]>(
+    () => projectGroups
+      .flatMap((group) => group.projects)
+      .filter((project) => project.path.trim().length > 0),
+    [projectGroups],
+  );
+
+  const createLocations = useMemo<SkillCreateLocation[]>(() => [
+    {
+      id: 'global',
+      destinationKind: 'global',
+      label: t('skills.createGlobalLocation', 'Global skills'),
+      description: '~/.agents/skills',
+    },
+    ...projectsWithPaths.map((project) => ({
+      id: `project:${project.id}`,
+      destinationKind: 'project' as const,
+      projectId: project.id,
+      label: project.name,
+      description: `${project.path}/.agents/skills`,
+    })),
+  ], [projectsWithPaths, t]);
+  const skillCreationSupported = runtimeCapabilities.skills && runtimeCapabilities.skillCreation !== false;
 
   useEffect(() => {
     void loadSettings();
@@ -109,8 +151,25 @@ export const SkillsView: React.FC = () => {
     }
   };
 
+  const resetCreateDialog = () => {
+    setCreateName(DEFAULT_SKILL_NAME);
+    setCreateDescription(DEFAULT_SKILL_DESCRIPTION);
+    setCreateLocationId('global');
+  };
+
   const handleCreateSkill = async () => {
-    const skill = await createSkillTemplate();
+    const selectedLocation =
+      createLocations.find((location) => location.id === createLocationId) ?? null;
+    if (!selectedLocation) {
+      notify.error(t('skills.createLocationRequired', 'Choose where to create the skill.'));
+      return;
+    }
+    const skill = await createSkillTemplate({
+      name: createName,
+      description: createDescription,
+      destinationKind: selectedLocation.destinationKind,
+      projectId: selectedLocation.projectId ?? null,
+    });
     const error = useSkillsStore.getState().lastError;
     if (!skill || error) {
       notify.error(t('skills.createFailed', 'Could not create skill'), {
@@ -119,16 +178,32 @@ export const SkillsView: React.FC = () => {
       return;
     }
     notify.success(t('skills.created', 'Skill template created'));
-    await handleOpenFolder(skill.rootPath ?? skill.source.rootPath);
+    setCreateDialogOpen(false);
+    resetCreateDialog();
+    const opened = await openSkillLocation(skill.id, 'skillFile');
+    const openError = useSkillsStore.getState().lastError;
+    if (!opened) {
+      notify.error(t('skills.openSkillFileFailed', 'Could not open SKILL.md'), {
+        description: openError ?? skill.skillFilePath ?? undefined,
+      });
+    }
   };
 
-  const handleOpenFolder = async (path: string) => {
-    try {
-      await openPath(path);
-    } catch (error) {
-      notify.error(t('skills.openFolderFailed', 'Could not open folder'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+  const handleOpenSkillLocation = async (
+    skill: SkillManifest,
+    target: 'skillFile' | 'folder',
+  ) => {
+    const opened = await openSkillLocation(skill.id, target);
+    if (!opened) {
+      const error = useSkillsStore.getState().lastError;
+      notify.error(
+        target === 'skillFile'
+          ? t('skills.openSkillFileFailed', 'Could not open SKILL.md')
+          : t('skills.openFolderFailed', 'Could not open folder'),
+        {
+          description: error ?? (target === 'skillFile' ? skill.skillFilePath : skill.rootPath) ?? undefined,
+        },
+      );
     }
   };
 
@@ -237,11 +312,16 @@ export const SkillsView: React.FC = () => {
             {t('common.refresh', 'Refresh')}
           </button>
           <button
-            onClick={() => void handleCreateSkill()}
+            onClick={() => setCreateDialogOpen(true)}
             className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-            disabled={saving}
+            disabled={saving || !skillCreationSupported}
+            title={
+              skillCreationSupported
+                ? undefined
+                : t('skills.createUnavailable', 'Local skill creation is only available in desktop mode.')
+            }
           >
-            <Icon name={saving ? 'loader' : 'plus'} size={14} className={cn(saving && 'animate-spin')} />
+            <Icon name="plus" size={14} />
             {t('skills.newSkill', 'New skill')}
           </button>
           <button
@@ -281,7 +361,7 @@ export const SkillsView: React.FC = () => {
               onToggleExpanded={() => toggleSkillDetails(skill.id)}
               onEnabledChange={(enabled) => setSkillEnabled(skill.id, enabled)}
               onScriptsEnabledChange={(enabled) => setSkillScriptsEnabled(skill.id, enabled)}
-              onOpenFolder={() => void handleOpenFolder(skill.rootPath ?? skill.source.rootPath)}
+              onOpenFolder={() => void handleOpenSkillLocation(skill, 'folder')}
               onCopySkillPath={() => void handleCopySkillPath(skill.skillFilePath ?? skill.id)}
               onRefreshSkill={() => void refreshSkills()}
             />
@@ -298,6 +378,99 @@ export const SkillsView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {createDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  {t('skills.createTitle', 'Create skill')}
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('skills.createHint', 'Macro will create a minimal SKILL.md in a supported skills folder.')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateDialogOpen(false);
+                  resetCreateDialog();
+                }}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title={t('common.cancel', 'Cancel')}
+              >
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground">
+                  {t('skills.createNameLabel', 'Name')}
+                </span>
+                <Input
+                  value={createName}
+                  onChange={(event) => setCreateName(event.target.value)}
+                  placeholder={DEFAULT_SKILL_NAME}
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground">
+                  {t('skills.createDescriptionLabel', 'Description')}
+                </span>
+                <Textarea
+                  value={createDescription}
+                  onChange={(event) => setCreateDescription(event.target.value)}
+                  rows={3}
+                  className="resize-none"
+                  placeholder={DEFAULT_SKILL_DESCRIPTION}
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground">
+                  {t('skills.createLocationLabel', 'Location')}
+                </span>
+                <select
+                  value={createLocationId}
+                  onChange={(event) => setCreateLocationId(event.target.value)}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {createLocations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.label} - {location.description}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateDialogOpen(false);
+                  resetCreateDialog();
+                }}
+                className="inline-flex h-9 items-center justify-center rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCreateSkill()}
+                className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                disabled={saving}
+              >
+                <Icon name={saving ? 'loader' : 'plus'} size={14} className={cn(saving && 'animate-spin')} />
+                {t('skills.createAction', 'Create')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
