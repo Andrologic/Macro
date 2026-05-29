@@ -228,6 +228,7 @@ import {
   isContextFootprintOverUsableBudget,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
+  type ManualCompactionSkipReason,
   type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
@@ -284,6 +285,9 @@ import {
   type ConversationContextDiagnostics,
   type ConversationContextDiagnosticsProviderContext,
   type ConversationContextDiagnosticsRefreshMode,
+  type ManualCompactionCompletedResult,
+  type ManualCompactionResult,
+  type ManualCompactionSkippedResult,
 } from "./chat/chatContextDiagnostics";
 import {
   assistantTurnRequiresUserReply,
@@ -330,6 +334,10 @@ export type {
   ConversationContextDiagnosticsRefreshMode,
   ConversationContextDiagnosticsSource,
   ConversationContextDiagnosticsStatus,
+  ManualCompactionCompletedResult,
+  ManualCompactionResult,
+  ManualCompactionSkippedResult,
+  ManualCompactionSkipReason,
 } from "./chat/chatContextDiagnostics";
 export type { MessageImageAttachment } from "./chat/chatLocalSessionState";
 
@@ -1140,7 +1148,7 @@ interface ChatStore {
   getConversationMessages: (conversationId: string) => ChatMessage[];
   ensureMessagesLoaded: (conversationId: string) => Promise<void>;
   getConversationRuntime: (conversationId: string) => ConversationRuntimeState;
-  compactConversationNow: (conversationId: string) => Promise<void>;
+  compactConversationNow: (conversationId: string) => Promise<ManualCompactionResult>;
   refreshConversationContextDiagnostics: (
     conversationId: string,
     options?: {
@@ -3431,7 +3439,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const {
     setConversationCompactionStatus,
     publishPersistedCompactionStatusIfIdle,
-    setConversationCompactionActivityStarted,
     completeLatestSessionCompactionEvent,
     clearLatestRunningSessionCompactionEvent,
     markConversationCompactionStarted,
@@ -4076,6 +4083,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const { result } = orchestration;
+    if (result.manualSkip) {
+      clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
+      setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
+      await recordConversationCompactionEvent({
+        conversationId: params.conversationId,
+        trigger: getCompactionEventTrigger(params.mode),
+        providerId: params.providerId,
+        modelId: params.modelId,
+        modelContextWindowTokens: result.footprintBefore.modelContextWindowTokens,
+        tokensBefore: result.footprintBefore.totalEstimatedTokens,
+        tokensAfter: result.footprintAfter.totalEstimatedTokens,
+        status: "skipped",
+        reason: result.manualSkip.reason,
+        metadata: buildCompactionDecisionAuditMetadata({
+          providerId: params.providerId,
+          providerType: params.providerConfig.providerType,
+          modelId: params.modelId,
+          trigger: getCompactionEventTrigger(params.mode),
+          status: "skipped",
+          footprintBefore: result.footprintBefore,
+          footprintAfter: result.footprintAfter,
+          footprintFields,
+          budgetPolicy,
+          reason: result.manualSkip.reason,
+          result: "manual_compaction_skipped",
+        }),
+      });
+      return result;
+    }
     if (orchestration.shouldPersistCompaction) {
       if (result.compactionState) {
         completeLatestSessionCompactionEvent(
@@ -8390,9 +8426,57 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const compactConversationNow = async (conversationId: string): Promise<void> => {
+  const buildSkippedManualCompactionResult = (
+    result: MaybeCompactConversationResult,
+    reason: ManualCompactionSkipReason,
+  ): ManualCompactionSkippedResult => ({
+    outcome: "skipped",
+    updatedAt: new Date().toISOString(),
+    reason,
+    footprintBefore: result.footprintBefore,
+    userTurnCount: result.manualSkip?.userTurnCount ?? 0,
+    retainedTurnCount: result.manualSkip?.retainedTurnCount ?? 2,
+  });
+
+  const buildCompletedManualCompactionResult = (
+    result: MaybeCompactConversationResult,
+  ): ManualCompactionCompletedResult => {
+    const compactionState = result.compactionState;
+    if (!compactionState) {
+      return {
+        outcome: "compacted",
+        updatedAt: new Date().toISOString(),
+        footprintBefore: result.footprintBefore,
+        footprintAfter: result.footprintAfter,
+        tokensSaved: Math.max(
+          0,
+          result.footprintBefore.totalEstimatedTokens -
+            result.footprintAfter.totalEstimatedTokens,
+        ),
+        upToMessageId: "",
+        summarySource: undefined,
+      };
+    }
+    return {
+      outcome: "compacted",
+      updatedAt: compactionState.updatedAt,
+      footprintBefore: result.footprintBefore,
+      footprintAfter: result.footprintAfter,
+      tokensSaved: Math.max(
+        0,
+        result.footprintBefore.totalEstimatedTokens -
+          result.footprintAfter.totalEstimatedTokens,
+      ),
+      upToMessageId: compactionState.upToMessageId,
+      summarySource: compactionState.summarySource,
+    };
+  };
+
+  const compactConversationNow = async (
+    conversationId: string,
+  ): Promise<ManualCompactionResult> => {
     if (!conversationId) {
-      return;
+      throw buildSendError("Select a conversation before compacting.");
     }
     if (conversationCompactionInProgress.has(conversationId)) {
       throw buildSendError(
@@ -8402,11 +8486,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionInProgress.add(conversationId);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[conversationId] ?? null;
-    setConversationCompactionActivityStarted(
-      conversationId,
-      "manual",
-      previousCompactionStatus,
-    );
 
     try {
       await ensureMessagesLoadedForConversation(conversationId);
@@ -8478,16 +8557,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
           preparedRequest.orderedMessages.at(-1)?.id ?? null,
       });
 
-      if (!result.compactionState) {
-        setConversationCompactionStatus(conversationId, {
-          ...previousCompactionStatus,
-          phase: result.footprintAfter.isHardStop ? "too_large" : "compacted",
-          updatedAt: new Date().toISOString(),
-          reason: result.footprintAfter.reason,
-          kind: "manual",
-          footprintAfter: result.footprintAfter,
-        });
+      if (result.manualSkip) {
+        return buildSkippedManualCompactionResult(
+          result,
+          result.manualSkip.reason,
+        );
       }
+
+      if (!result.compactionState) {
+        return buildSkippedManualCompactionResult(result, "not_enough_history");
+      }
+
+      return buildCompletedManualCompactionResult(result);
     } catch (error) {
       const normalized = toServiceError(error);
       if (isProviderContextOverflowError(error)) {

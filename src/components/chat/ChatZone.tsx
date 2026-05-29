@@ -3,7 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import type { MessageImageAttachment } from '../../stores/useChatStore';
+import type {
+  ManualCompactionResult,
+  ManualCompactionSkipReason,
+  MessageImageAttachment,
+} from '../../stores/useChatStore';
 import { useSkillsStore } from '../../stores/useSkillsStore';
 import type {
   ChatMessage,
@@ -73,6 +77,8 @@ import {
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { AgentCodeReplayConfirmModal } from './AgentCodeReplayConfirmModal';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
+import { notify } from '../ui/toastService';
+import { toServiceError } from '../../services/contracts/errors';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -104,6 +110,31 @@ export const shouldShowContextControls = ({
   }
 
   return true;
+};
+
+type ManualCompactionPhase = 'idle' | 'analyzing';
+
+const formatManualCompactionTokens = (value: number): string => {
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded >= 1000) return `${Math.round(rounded / 1000).toLocaleString()}k`;
+  return rounded.toLocaleString();
+};
+
+const getManualCompactionSkipDescription = (
+  reason: ManualCompactionSkipReason,
+  result: Extract<ManualCompactionResult, { outcome: 'skipped' }>,
+): string => {
+  switch (reason) {
+    case 'not_enough_history':
+      return `Macro garde les ${result.retainedTurnCount} derniers tours utilisateur; cette conversation n'a pas encore assez d'historique ancien à remplacer.`;
+    case 'already_current':
+      return 'Le checkpoint existant couvre déjà les anciens tours utiles pour ce contexte.';
+    case 'not_beneficial':
+      return "Le résumé estimé n'aurait pas réduit le payload envoyé au provider.";
+    case 'below_threshold':
+    default:
+      return "Le contexte est encore très léger; créer un résumé maintenant ajouterait surtout du bruit.";
+  }
 };
 
 const LazyPlanSelector = lazy(async () => {
@@ -925,7 +956,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
-  const [isManualCompacting, setIsManualCompacting] = useState(false);
+  const [manualCompactionPhase, setManualCompactionPhase] =
+    useState<ManualCompactionPhase>('idle');
+  const [manualCompactionFeedback, setManualCompactionFeedback] =
+    useState<ManualCompactionResult | null>(null);
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -961,10 +995,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeCompactionPhase = activeCompactionStatus?.phase ?? null;
   const isRuntimeCompacting =
     isChatTranscriptCompactionProgressPhase(activeCompactionPhase);
-  const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isContextStreaming || isPreparingSend;
+  const isManualCompacting = manualCompactionPhase !== 'idle';
+  const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
   const isContextOverflowRecovering =
     selectedConversationRuntime.phase === 'overflow_recovery';
   const runtimeAssistantMessageId =
@@ -972,10 +1007,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeTranscriptCompactionPhase =
     isRuntimeCompacting
       ? activeCompactionPhase
-      : isManualCompacting
-        ? 'compacting'
-        : null;
+      : null;
   const activeTranscriptProgressPhase = activeTranscriptCompactionPhase;
+  const manualCompactionActivityLabel =
+    manualCompactionPhase === 'analyzing' && !isRuntimeCompacting
+      ? t('chat.manualCompaction.analyzing', 'Analyse du contexte...')
+      : undefined;
   const shouldShowContextIndicator =
     Boolean(selectedConversationId) &&
     (shouldShowContextControlsForActiveContext ||
@@ -1061,6 +1098,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     wasContextStreamingRef.current = isContextStreaming;
   }, [isContextStreaming]);
 
+  useEffect(() => {
+    setManualCompactionFeedback(null);
+    setManualCompactionPhase('idle');
+  }, [selectedConversationId]);
+
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1072,16 +1114,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!selectedConversationId || isManualCompacting || isBusySending) {
       return;
     }
-    setIsManualCompacting(true);
+    setManualCompactionPhase('analyzing');
+    setManualCompactionFeedback(null);
     try {
-      await compactConversationNow(selectedConversationId);
-      await refreshConversationContextDiagnostics(selectedConversationId, {
-        mode: 'full',
-      });
+      const result = await compactConversationNow(selectedConversationId);
+      setManualCompactionFeedback(result);
+
+      if (result.outcome === 'compacted') {
+        notify.success(t('chat.manualCompaction.successTitle', 'Contexte compacté'), {
+          description: t(
+            'chat.manualCompaction.successDescription',
+            '{{tokens}} tokens économisés. Le prochain message utilisera le checkpoint compacté.',
+            { tokens: formatManualCompactionTokens(result.tokensSaved) },
+          ),
+        });
+        await refreshConversationContextDiagnostics(selectedConversationId, {
+          mode: 'full',
+        });
+      } else {
+        notify.info(t('chat.manualCompaction.skippedTitle', 'Compactage ignoré'), {
+          description: getManualCompactionSkipDescription(result.reason, result),
+        });
+      }
     } catch (error) {
       console.warn('Manual context compaction failed:', error);
+      notify.error(t('chat.manualCompaction.errorTitle', 'Compactage impossible'), {
+        description: toServiceError(error).message,
+      });
     } finally {
-      setIsManualCompacting(false);
+      setManualCompactionPhase('idle');
     }
   }, [
     compactConversationNow,
@@ -1089,6 +1150,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isManualCompacting,
     refreshConversationContextDiagnostics,
     selectedConversationId,
+    t,
   ]);
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
@@ -2164,7 +2226,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 diagnostics={contextDiagnostics}
                 compactionStatus={activeCompactionStatus}
                 isCompacting={isActiveContextCompacting}
+                activityLabel={manualCompactionActivityLabel}
                 canCompactNow={!isBusySending && !isManualCompacting}
+                manualCompactionFeedback={manualCompactionFeedback}
                 onRefresh={() => {
                   void runContextDiagnosticsRefresh();
                 }}

@@ -3,6 +3,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import type {
   ConversationCompactionStatus,
   ConversationContextDiagnostics,
+  ManualCompactionResult,
 } from '../../stores/useChatStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
@@ -12,7 +13,9 @@ interface ContextWindowIndicatorProps {
   diagnostics?: ConversationContextDiagnostics;
   compactionStatus?: ConversationCompactionStatus;
   isCompacting?: boolean;
+  activityLabel?: string;
   canCompactNow?: boolean;
+  manualCompactionFeedback?: ManualCompactionResult | null;
   onRefresh?: () => void;
   onCompactNow?: () => void;
 }
@@ -31,6 +34,36 @@ const formatCompactTokens = (value?: number): string => {
   const absolute = Math.abs(value);
   if (absolute >= 1000) return `${sign}${Math.round(absolute / 1000).toLocaleString()}k`;
   return Math.round(value).toLocaleString();
+};
+
+const getManualCompactionFeedbackLabel = (
+  feedback?: ManualCompactionResult | null,
+): string | null => {
+  if (!feedback) return null;
+  if (feedback.outcome === 'compacted') return 'Checkpoint créé';
+  if (feedback.reason === 'not_enough_history') return 'Rien à compacter';
+  if (feedback.reason === 'already_current') return 'Checkpoint à jour';
+  return 'Compactage ignoré';
+};
+
+const getManualCompactionFeedbackDetail = (
+  feedback?: ManualCompactionResult | null,
+): string | null => {
+  if (!feedback) return null;
+  if (feedback.outcome === 'compacted') {
+    return `${formatCompactTokens(feedback.tokensSaved)} tokens économisés`;
+  }
+  switch (feedback.reason) {
+    case 'not_enough_history':
+      return `${feedback.userTurnCount} tours utilisateur, ${feedback.retainedTurnCount} conservés`;
+    case 'already_current':
+      return 'Le checkpoint existant couvre déjà la frontière actuelle';
+    case 'not_beneficial':
+      return "Le résumé n'aurait pas réduit le payload";
+    case 'below_threshold':
+    default:
+      return 'Le contexte est sous le seuil de compactage utile';
+  }
 };
 
 const getContextLimitLabel = (
@@ -198,7 +231,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   diagnostics,
   compactionStatus,
   isCompacting = false,
+  activityLabel,
   canCompactNow = true,
+  manualCompactionFeedback,
   onRefresh,
   onCompactNow,
 }) => {
@@ -330,7 +365,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     canCompactNow &&
     !isCompacting &&
     effectiveDiagnostics?.status !== 'error';
-  const statusLabel = isCompacting ? 'Compactage en cours' : tone.label;
+  const statusLabel = activityLabel ?? (isCompacting ? 'Compactage en cours' : tone.label);
+  const manualFeedbackLabel = getManualCompactionFeedbackLabel(manualCompactionFeedback);
+  const manualFeedbackDetail = getManualCompactionFeedbackDetail(manualCompactionFeedback);
 
   return (
     <div ref={containerRef} className="relative">
@@ -416,7 +453,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             <span
               className="absolute inset-0 flex items-center justify-center"
               role="status"
-              aria-label="Compactage en cours"
+              aria-label={statusLabel}
               data-testid="context-window-compacting-spinner"
             >
               <span className="flex h-3 w-3 items-center justify-center rounded-full bg-background/85">
@@ -483,6 +520,19 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           ) : null}
 
           <section className="mt-3 space-y-2">
+            {manualFeedbackLabel ? (
+              <div className="rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Dernier résultat</span>
+                  <span className="font-medium">{manualFeedbackLabel}</span>
+                </div>
+                {manualFeedbackDetail ? (
+                  <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                    {manualFeedbackDetail}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {effectiveDiagnostics?.footprintBefore && effectiveDiagnostics?.footprintAfter ? (
               <div className="flex items-center justify-between rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
                 <span className="text-muted-foreground">Compaction</span>
@@ -520,7 +570,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 title={
                   !canCompact
                     ? isCompacting
-                      ? 'Compactage en cours...'
+                      ? statusLabel
                       : effectiveDiagnostics?.status === 'error'
                         ? 'Diagnostics en erreur'
                         : 'Action non disponible'
@@ -529,7 +579,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 text-xs text-primary transition-colors hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isCompacting ? <SpinnerIcon size={13} /> : <Icon name="archive" size={13} />}
-                {effectiveDiagnostics?.phase === 'too_large'
+                {isCompacting && activityLabel
+                  ? activityLabel
+                  : effectiveDiagnostics?.phase === 'too_large'
                   ? 'Compacter plus agressivement'
                   : 'Compacter maintenant'}
               </button>

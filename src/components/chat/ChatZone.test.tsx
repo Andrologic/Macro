@@ -351,13 +351,27 @@ let composerEditorValue = '';
 let messageEditEditorValue = '';
 let composerEditorSetTextCalls: string[] = [];
 let latestComposerProps: Record<string, unknown> | null = null;
+let notifyInfoMock: ReturnType<typeof mock>;
+let notifySuccessMock: ReturnType<typeof mock>;
+let notifyWarningMock: ReturnType<typeof mock>;
+let notifyErrorMock: ReturnType<typeof mock>;
+let notifyActionRequiredMock: ReturnType<typeof mock>;
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
 
+const resetNotifyMocks = () => {
+  notifyInfoMock = mock(() => undefined);
+  notifySuccessMock = mock(() => undefined);
+  notifyWarningMock = mock(() => undefined);
+  notifyErrorMock = mock(() => undefined);
+  notifyActionRequiredMock = mock(() => undefined);
+};
+
 const loadChatZoneModule = async () => {
   importCounter += 1;
   mock.restore();
+  resetNotifyMocks();
 
   installReactI18nextMock(translationMock);
 
@@ -432,6 +446,16 @@ const loadChatZoneModule = async () => {
     Icon: ({ name, className }: { name: string; className?: string }) => (
       <span data-icon={name} className={className} />
     ),
+  }));
+
+  mock.module('../ui/toastService', () => ({
+    notify: {
+      info: notifyInfoMock,
+      success: notifySuccessMock,
+      warning: notifyWarningMock,
+      error: notifyErrorMock,
+      actionRequired: notifyActionRequiredMock,
+    },
   }));
 
   mock.module('../ai/ProviderDropdown', () => ({
@@ -624,6 +648,37 @@ const buildCompactionFootprint = (
   ...overrides,
 });
 
+const buildManualCompactionCompletedResult = (
+  overrides: Record<string, unknown> = {},
+) => ({
+  outcome: 'compacted' as const,
+  updatedAt: '2026-05-10T08:30:00.000Z',
+  footprintBefore: {
+    totalEstimatedTokens: 12_000,
+  },
+  footprintAfter: {
+    totalEstimatedTokens: 4_000,
+  },
+  tokensSaved: 8_000,
+  upToMessageId: 'msg-assistant-1',
+  summarySource: 'model',
+  ...overrides,
+});
+
+const buildManualCompactionSkippedResult = (
+  overrides: Record<string, unknown> = {},
+) => ({
+  outcome: 'skipped' as const,
+  updatedAt: '2026-05-10T08:30:00.000Z',
+  reason: 'below_threshold' as const,
+  footprintBefore: {
+    totalEstimatedTokens: 800,
+  },
+  userTurnCount: 3,
+  retainedTurnCount: 2,
+  ...overrides,
+});
+
 const buildProjectGroups = () => [
   {
     id: 'group-1',
@@ -699,7 +754,7 @@ const resetState = () => {
     restoreAgentCodeForReplay: mock(async () => undefined),
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),
-    compactConversationNow: mock(async () => undefined),
+    compactConversationNow: mock(async () => buildManualCompactionSkippedResult()),
     refreshConversationContextDiagnostics: mock(async () => undefined),
     architectPlanNamingRecovery: null,
     setArchitectPlanNamingRecoveryStage: mock(() => undefined),
@@ -2435,6 +2490,15 @@ describe('ChatZone', () => {
       compactConversationNow: mock(
         () => {
           useChatStore.setState((state) => ({
+            conversationCompactionStatusById: {
+              ...state.conversationCompactionStatusById,
+              'conv-1': {
+                phase: 'compacting',
+                upToMessageId: 'msg-assistant-1',
+                updatedAt: '2026-05-10T08:30:00.000Z',
+                summaryText: 'Previous compacted summary.',
+              },
+            },
             sessionCompactionEventsByConversationId: {
               ...state.sessionCompactionEventsByConversationId,
               'conv-1': [
@@ -2446,8 +2510,8 @@ describe('ChatZone', () => {
               ],
             },
           }));
-          return new Promise<void>((resolve) => {
-            resolveCompaction = resolve;
+          return new Promise<ReturnType<typeof buildManualCompactionCompletedResult>>((resolve) => {
+            resolveCompaction = () => resolve(buildManualCompactionCompletedResult());
           });
         },
       ),
@@ -2497,6 +2561,67 @@ describe('ChatZone', () => {
     expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledWith('conv-1', {
       mode: 'full',
     });
+    expect(notifySuccessMock).toHaveBeenCalledWith(
+      'Contexte compacté',
+      expect.objectContaining({
+        description: expect.stringContaining('tokens économisés'),
+      }),
+    );
+  });
+
+  it('shows skip feedback without rendering transcript progress for a quick manual compaction skip', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse courte',
+        }),
+      ],
+      compactConversationNow: mock(async () =>
+        buildManualCompactionSkippedResult({
+          reason: 'not_enough_history',
+          userTurnCount: 2,
+        })
+      ),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      requireContainer()
+        .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    const manualButton = Array.from(
+      requireContainer().querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.includes('Compacter maintenant'));
+    expect(manualButton).not.toBeNull();
+    chatState.refreshConversationContextDiagnostics.mockClear();
+
+    await act(async () => {
+      manualButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(chatState.compactConversationNow).toHaveBeenCalledWith('conv-1');
+    expect(notifyInfoMock).toHaveBeenCalledWith(
+      'Compactage ignoré',
+      expect.objectContaining({
+        description: expect.stringContaining("assez d'historique ancien"),
+      }),
+    );
+    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+    expect(
+      requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
+    ).toBeNull();
   });
 
   it('recovers the manual compaction button after a compaction failure', async () => {
@@ -2542,6 +2667,12 @@ describe('ChatZone', () => {
       });
 
       expect(chatState.compactConversationNow).toHaveBeenCalledWith('conv-1');
+      expect(notifyErrorMock).toHaveBeenCalledWith(
+        'Compactage impossible',
+        expect.objectContaining({
+          description: 'compaction failed',
+        }),
+      );
       expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
       expect(
         Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button')).find(

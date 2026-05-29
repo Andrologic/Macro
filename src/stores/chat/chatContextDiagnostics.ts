@@ -8,7 +8,11 @@ import type {
   ProviderTurnState,
 } from "../../types";
 import type { Citation } from "../useCitationsStore";
-import { buildContextCompactionDecisionAudit, type ContextCompactionDecision } from "../../services/contextCompaction";
+import {
+  buildContextCompactionDecisionAudit,
+  type ContextCompactionDecision,
+  type ManualCompactionSkipReason,
+} from "../../services/contextCompaction";
 import type { StreamMessage } from "../../services/streamingChat";
 import type { ConversationCompactionPhase } from "../../services/contextCompactionSession";
 
@@ -31,6 +35,31 @@ export interface ConversationContextDiagnosticsBreakdownItem {
   lines?: number;
   count?: number;
 }
+
+export type { ManualCompactionSkipReason };
+
+export interface ManualCompactionCompletedResult {
+  outcome: "compacted";
+  updatedAt: string;
+  footprintBefore: ContextFootprint;
+  footprintAfter: ContextFootprint;
+  tokensSaved: number;
+  upToMessageId: string;
+  summarySource?: CompactionSummarySource;
+}
+
+export interface ManualCompactionSkippedResult {
+  outcome: "skipped";
+  updatedAt: string;
+  reason: ManualCompactionSkipReason;
+  footprintBefore: ContextFootprint;
+  userTurnCount: number;
+  retainedTurnCount: number;
+}
+
+export type ManualCompactionResult =
+  | ManualCompactionCompletedResult
+  | ManualCompactionSkippedResult;
 
 export interface ConversationContextDiagnostics {
   status: ConversationContextDiagnosticsStatus;
