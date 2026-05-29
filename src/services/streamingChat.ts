@@ -862,6 +862,78 @@ export const estimateChatCompletionSerializedPayloadTokens = (params: {
   return Math.max(1, Math.ceil(JSON.stringify(serializedMessages).length / 4));
 };
 
+const streamContentToCopilotPromptText = (content: StreamMessageContent): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return content
+    .map((part) => {
+      if (part.type === 'text') {
+        return part.text || '';
+      }
+      if (part.type === 'image_url') {
+        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+      }
+      return '';
+    })
+    .filter((value) => value.trim().length > 0)
+    .join('\n');
+};
+
+const serializeCopilotConversationPrompt = (
+  messages: StreamMessage[]
+): { system: string; prompt: string } => {
+  const systemMessages = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => streamContentToCopilotPromptText(message.content).trim())
+    .filter(Boolean);
+
+  const transcript = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const label = message.role.toUpperCase();
+      const body = streamContentToCopilotPromptText(message.content).trim() || '(empty)';
+      const parts = [`[${label}]`, body];
+
+      if (message.tool_calls?.length) {
+        for (const toolCall of message.tool_calls) {
+          parts.push(
+            `[ASSISTANT_TOOL_REQUEST ${toolCall.id}] ${toolCall.function.name} ${toolCall.function.arguments}`
+          );
+        }
+      }
+
+      if (message.role === 'tool' && message.tool_call_id) {
+        parts[0] = `[TOOL_RESULT ${message.tool_call_id}]`;
+      }
+
+      return parts.join('\n');
+    })
+    .join('\n\n');
+
+  const prompt = [
+    'You are continuing an existing Macro conversation.',
+    'Use the transcript below as the authoritative conversation history.',
+    'Answer the latest user request only. If a workspace tool is needed, use it before answering.',
+    '<conversation>',
+    transcript || '[no prior messages]',
+    '</conversation>',
+  ].join('\n\n');
+
+  return {
+    system: systemMessages.join('\n\n').trim(),
+    prompt,
+  };
+};
+
+export const estimateCopilotSerializedPayloadTokens = (params: {
+  messages: StreamMessage[];
+}): number => {
+  const serialized = serializeCopilotConversationPrompt(params.messages);
+  return Math.max(1, Math.ceil(`${serialized.system}\n\n${serialized.prompt}`.length / 4));
+};
+
 const buildAssistantChatCompletionProviderItem = (params: {
   visibleContent: string;
   apiContent: string;
@@ -2207,6 +2279,7 @@ export const __testables = {
   collectAllowedTools,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
+  estimateCopilotSerializedPayloadTokens,
   extractVisibleTextFromProviderInputItems,
   finalizeDanglingToolCallsForChatCompletions,
   formatToolTraceDetail,
@@ -2225,6 +2298,7 @@ export const __testables = {
   normalizeToolCallResolution,
   resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
   resolveChatCompletionProviderProfile,
+  serializeCopilotConversationPrompt,
   shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
   shouldRequestProviderReasoning,

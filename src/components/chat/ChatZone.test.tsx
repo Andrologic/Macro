@@ -274,6 +274,7 @@ let providerState: ProviderState;
 let needsState: NeedsState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
+let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
 
 const getMockConversationRuntime = (
   state: MockChatState,
@@ -316,6 +317,9 @@ const useProviderStore = createStoreHook(() => providerState, (nextState) => {
 });
 const useNeedsStore = createStoreHook(() => needsState, (nextState) => {
   needsState = nextState;
+});
+const useSkillsStore = createStoreHook(() => skillsState, (nextState) => {
+  skillsState = nextState;
 });
 const useShortcutsStore = createStoreHook(() => shortcutsState, (nextState) => {
   shortcutsState = nextState;
@@ -365,11 +369,7 @@ const loadChatZoneModule = async () => {
   }));
 
   mock.module('../../stores/useSkillsStore', () => ({
-    useSkillsStore: {
-      getState: () => ({
-        refreshSkills: mock(async () => undefined),
-      }),
-    },
+    useSkillsStore,
   }));
 
   mock.module('../../stores/useNeedsStore', () => ({
@@ -729,6 +729,11 @@ const resetState = () => {
 
   needsState = {
     needs: [],
+  };
+
+  skillsState = {
+    getSkillById: mock(() => null),
+    refreshSkills: mock(async () => undefined),
   };
 
   shortcutsState = {
@@ -2373,6 +2378,7 @@ describe('ChatZone', () => {
       requireContainer().querySelectorAll<HTMLButtonElement>('button'),
     ).find((button) => button.textContent?.includes('Compacter maintenant'));
     expect(manualButton).not.toBeNull();
+    chatState.refreshConversationContextDiagnostics.mockClear();
 
     await act(async () => {
       manualButton?.click();
@@ -2393,6 +2399,63 @@ describe('ChatZone', () => {
       resolveCompaction?.();
       await Promise.resolve();
     });
+    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledWith('conv-1', {
+      mode: 'full',
+    });
+  });
+
+  it('recovers the manual compaction button after a compaction failure', async () => {
+    const originalWarn = console.warn;
+    console.warn = mock(() => undefined) as unknown as typeof console.warn;
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse avant échec de compactage',
+        }),
+      ],
+      compactConversationNow: mock(async () => {
+        throw new Error('compaction failed');
+      }),
+    };
+
+    try {
+      await act(async () => {
+        requireRoot().render(<ChatZone />);
+      });
+      await act(async () => undefined);
+
+      await act(async () => {
+        requireContainer()
+          .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
+          ?.click();
+        await Promise.resolve();
+      });
+
+      const manualButton = Array.from(
+        requireContainer().querySelectorAll<HTMLButtonElement>('button'),
+      ).find((button) => button.textContent?.includes('Compacter maintenant'));
+      expect(manualButton).not.toBeNull();
+      chatState.refreshConversationContextDiagnostics.mockClear();
+
+      await act(async () => {
+        manualButton?.click();
+        await Promise.resolve();
+      });
+
+      expect(chatState.compactConversationNow).toHaveBeenCalledWith('conv-1');
+      expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+      expect(
+        Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.textContent?.includes('Compacter maintenant'),
+        )?.disabled,
+      ).toBe(false);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it('shows the context indicator in Chat mode when a conversation is selected', async () => {

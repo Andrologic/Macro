@@ -12,6 +12,7 @@ import {
   $createTextNode,
   $createLineBreakNode,
   $getSelection,
+  $setSelection,
   $isElementNode,
   $isRangeSelection,
   type ElementNode,
@@ -59,6 +60,8 @@ const composerTheme = {
   root: 'composer-editor-root',
   paragraph: 'composer-editor-paragraph',
 };
+
+const SKIP_DOM_SELECTION_UPDATE_TAG = 'skip-dom-selection';
 
 const initializeComposerState = () => {
   const root = $getRoot();
@@ -109,7 +112,8 @@ const appendTextWithContextReferences = (
 const setEditorPlainText = (
   text: string,
   surface: MentionSurface,
-  syncContextRefs: boolean
+  syncContextRefs: boolean,
+  options: { selectEnd?: boolean } = {}
 ) => {
   const root = $getRoot();
   root.clear();
@@ -124,7 +128,9 @@ const setEditorPlainText = (
   });
 
   root.append(paragraph);
-  paragraph.selectEnd();
+  if (options.selectEnd ?? true) {
+    paragraph.selectEnd();
+  }
 };
 
 const getAbsoluteTextOffsetForPoint = (point: PointType): number | null => {
@@ -211,9 +217,13 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     // Imperative handle for ChatZone
     useImperativeHandle(ref, () => ({
       clear: () => {
-        editor.update(() => {
-          setEditorPlainText('', surface, syncContextRefs);
-        });
+        editor.update(
+          () => {
+            setEditorPlainText('', surface, syncContextRefs, { selectEnd: false });
+            $setSelection(null);
+          },
+          { tag: SKIP_DOM_SELECTION_UPDATE_TAG }
+        );
         textRef.current = '';
       },
       setText: (text: string) => {

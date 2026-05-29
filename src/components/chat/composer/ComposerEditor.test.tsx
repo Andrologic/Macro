@@ -479,6 +479,47 @@ describe('ComposerEditor context references', () => {
     expect(onPromptHistory).toHaveBeenCalledTimes(2);
   });
 
+  it('clears without leaving a collapsed selection at the empty composer start', async () => {
+    const onPromptHistory = mock(() => undefined);
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+          onPromptHistory={onPromptHistory}
+        />
+      );
+    });
+
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editorRef.current?.setText('hello');
+      await Promise.resolve();
+      editorRef.current?.clear();
+      await Promise.resolve();
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(editorRef.current?.getTextContent()).toBe('');
+    expect(onPromptHistory).not.toHaveBeenCalled();
+
+    await act(async () => {
+      editorRef.current?.setText('');
+      await Promise.resolve();
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onPromptHistory).toHaveBeenCalledWith('up');
+  });
+
   it('renders composer skill chips with the shared inline alignment', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 

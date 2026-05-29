@@ -967,10 +967,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setIsManualCompacting(true);
     try {
       await compactConversationNow(selectedConversationId);
+      await refreshConversationContextDiagnostics(selectedConversationId, {
+        mode: 'full',
+      });
+    } catch (error) {
+      console.warn('Manual context compaction failed:', error);
     } finally {
       setIsManualCompacting(false);
     }
-  }, [compactConversationNow, isBusySending, isManualCompacting, selectedConversationId]);
+  }, [
+    compactConversationNow,
+    isBusySending,
+    isManualCompacting,
+    refreshConversationContextDiagnostics,
+    selectedConversationId,
+  ]);
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
     for (const need of needs) {

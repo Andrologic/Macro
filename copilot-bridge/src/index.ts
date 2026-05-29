@@ -2403,6 +2403,7 @@ export const __testables = {
   handleCopilotSessionEvent,
   normalizeCopilotSendTimeoutMs,
   isFrontendRelayToolId,
+  serializeConversationPrompt,
 };
 
 if (process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT !== '1') {

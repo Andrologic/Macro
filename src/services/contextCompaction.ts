@@ -85,6 +85,7 @@ export interface EstimateConversationFootprintParams {
   contextLimitWarning?: string;
   previousModelContextWindowTokens?: number | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
+  countProviderInputItems?: boolean;
   mode?: CompactionMode;
   thresholds?: Partial<CompactionThresholds>;
   budgetPolicy?: ContextBudgetPolicy;
@@ -116,6 +117,7 @@ export interface MaybeCompactConversationParams {
   modelId?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
+  countProviderInputItems?: boolean;
   mode: ContextCompactionKind;
   budgetPolicy?: ContextBudgetPolicy;
   forceCompaction?: boolean;
@@ -316,10 +318,15 @@ const estimateTokensForProviderInputItems = (providerInputItems?: unknown[]): nu
   );
 };
 
-const estimateTokensForStreamMessage = (message: StreamMessage): number =>
+const estimateTokensForStreamMessage = (
+  message: StreamMessage,
+  options: { countProviderInputItems?: boolean } = {}
+): number =>
   Math.max(
     estimateTokensForStreamContent(message.content),
-    estimateTokensForProviderInputItems(message.provider_input_items)
+    options.countProviderInputItems === false
+      ? 0
+      : estimateTokensForProviderInputItems(message.provider_input_items)
   );
 
 const countImagePlaceholderTokens = (messages: StreamMessage[]): number =>
@@ -1405,6 +1412,7 @@ export const estimateConversationFootprint = (
       ? Math.trunc(params.previousModelContextWindowTokens)
       : undefined;
   const modelContextWindowShrank = Boolean(previousModelContextWindowTokens);
+  const countProviderInputItems = params.countProviderInputItems !== false;
   const systemTokens = estimateTokensForText(params.systemMessage);
   const toolSchemaTokens = estimateTokensForText(
     JSON.stringify(params.toolDefinitions || [])
@@ -1416,11 +1424,15 @@ export const estimateConversationFootprint = (
   );
   const providerInputTokens = params.preparedMessages.reduce(
     (total, message) =>
-      total + estimateTokensForProviderInputItems(message.provider_input_items),
+      total +
+      (countProviderInputItems
+        ? estimateTokensForProviderInputItems(message.provider_input_items)
+        : 0),
     0
   );
   const totalPreparedTokens = params.preparedMessages.reduce(
-    (total, message) => total + estimateTokensForStreamMessage(message),
+    (total, message) =>
+      total + estimateTokensForStreamMessage(message, { countProviderInputItems }),
     0
   );
   const hasCompactedState = params.preparedMessages.some(
@@ -1468,7 +1480,9 @@ export const estimateConversationFootprint = (
     .reverse()
     .find((message) => message.role === 'user');
   const latestUserContextTokens = latestPreparedUserMessage
-    ? estimateTokensForStreamMessage(latestPreparedUserMessage)
+    ? estimateTokensForStreamMessage(latestPreparedUserMessage, {
+        countProviderInputItems,
+      })
     : 0;
   let serializedPayloadTokens: number | undefined;
   try {
@@ -1576,6 +1590,7 @@ const buildCompactionState = async (params: {
   providerId?: string | null;
   modelId?: string | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
+  countProviderInputItems?: boolean;
   budgetPolicy?: ContextBudgetPolicy;
   currentCompactionState?: ConversationCompactionState | null;
   prunedToolContextMessageIds?: string[];
@@ -1707,6 +1722,7 @@ const buildCompactionState = async (params: {
       contextLimitConfidence: params.contextLimitConfidence,
       contextLimitWarning: params.contextLimitWarning,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      countProviderInputItems: params.countProviderInputItems,
       budgetPolicy: params.budgetPolicy,
       mode: params.compactionKind ?? 'blocking',
     }).totalEstimatedTokens,
@@ -1773,10 +1789,11 @@ export const maybeCompactConversation = async (
     isContextLimitAuthoritative: params.isContextLimitAuthoritative,
     contextLimitConfidence: params.contextLimitConfidence,
     contextLimitWarning: params.contextLimitWarning,
-    previousModelContextWindowTokens: params.previousModelContextWindowTokens,
-    estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
-    mode,
-    budgetPolicy: params.budgetPolicy,
+      previousModelContextWindowTokens: params.previousModelContextWindowTokens,
+      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      countProviderInputItems: params.countProviderInputItems,
+      mode,
+      budgetPolicy: params.budgetPolicy,
   });
 
   const footprintBefore = estimateFootprint(params.preparedMessages, params.mode);
@@ -1878,6 +1895,7 @@ export const maybeCompactConversation = async (
       providerId: params.providerId,
       modelId: params.modelId,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      countProviderInputItems: params.countProviderInputItems,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: params.forceCompaction ? null : activeState,
       prunedToolContextMessageIds: pruned.prunedMessageIds,
@@ -1945,6 +1963,7 @@ export const maybeCompactConversation = async (
       contextLimitConfidence: params.contextLimitConfidence,
       contextLimitWarning: params.contextLimitWarning,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      countProviderInputItems: params.countProviderInputItems,
       budgetPolicy: params.budgetPolicy,
       currentCompactionState: null,
       prunedToolContextMessageIds: pruned.prunedMessageIds,
