@@ -27,6 +27,7 @@ type MockMessage = {
   timestamp: string;
   task_id?: string | null;
   tool_traces?: unknown[];
+  context_refs?: unknown[];
   questionnaire_response_summary?: {
     assistantMessageId: string;
     source?: 'tool' | 'legacy_quick_replies';
@@ -906,12 +907,51 @@ describe('ChatZone', () => {
   });
 
   it('navigates prompt history while preserving and restoring the current draft', async () => {
+    const getContextRefSummaries = () =>
+      chatState.composerContextRefs.map((ref) => {
+        const contextRef = ref as { id: string; kind: string; title: string };
+        return {
+          id: contextRef.id,
+          kind: contextRef.kind,
+          title: contextRef.title,
+        };
+      });
+    const oldRef = {
+      kind: 'skill',
+      id: 'global:old-skill',
+      title: 'old-skill',
+      skillFilePath: '/skills/old-skill/SKILL.md',
+    };
+    const latestRef = {
+      kind: 'file',
+      id: 'file:/repo/latest.ts',
+      title: 'latest.ts',
+      path: '/repo/latest.ts',
+      relativePath: 'latest.ts',
+    };
+    const draftRef = {
+      kind: 'need',
+      id: 'need-draft',
+      title: 'Draft need',
+      data: {},
+    };
     chatState = {
       ...chatState,
+      composerContextRefs: [draftRef],
       messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Old prompt' }),
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'Old prompt',
+          context_refs: [oldRef],
+        }),
         buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Old response' }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Latest prompt' }),
+        buildMessage({
+          id: 'msg-user-2',
+          role: 'user',
+          content: 'Latest prompt',
+          context_refs: [latestRef],
+        }),
       ],
     };
 
@@ -922,15 +962,35 @@ describe('ChatZone', () => {
     await setComposerText('Draft prompt');
     await dispatchPromptHistory('up');
     expect(getComposerEditor().value).toBe('Latest prompt');
+    expect(getContextRefSummaries()).toEqual([{
+      id: latestRef.id,
+      kind: latestRef.kind,
+      title: latestRef.title,
+    }]);
 
     await dispatchPromptHistory('up');
     expect(getComposerEditor().value).toBe('Old prompt');
+    expect(getContextRefSummaries()).toEqual([{
+      id: oldRef.id,
+      kind: oldRef.kind,
+      title: oldRef.title,
+    }]);
 
     await dispatchPromptHistory('down');
     expect(getComposerEditor().value).toBe('Latest prompt');
+    expect(getContextRefSummaries()).toEqual([{
+      id: latestRef.id,
+      kind: latestRef.kind,
+      title: latestRef.title,
+    }]);
 
     await dispatchPromptHistory('down');
     expect(getComposerEditor().value).toBe('Draft prompt');
+    expect(getContextRefSummaries()).toEqual([{
+      id: draftRef.id,
+      kind: draftRef.kind,
+      title: draftRef.title,
+    }]);
   });
 
   it('does not reapply the same history prompt when already at the oldest entry', async () => {
@@ -955,11 +1015,31 @@ describe('ChatZone', () => {
   });
 
   it('exits prompt history navigation after a real composer edit', async () => {
+    const getContextRefSummaries = () =>
+      chatState.composerContextRefs.map((ref) => {
+        const contextRef = ref as { id: string; kind: string; title: string };
+        return {
+          id: contextRef.id,
+          kind: contextRef.kind,
+          title: contextRef.title,
+        };
+      });
+    const latestRef = {
+      kind: 'skill',
+      id: 'global:latest-skill',
+      title: 'latest-skill',
+      skillFilePath: '/skills/latest-skill/SKILL.md',
+    };
     chatState = {
       ...chatState,
       messages: [
         buildMessage({ id: 'msg-user-1', role: 'user', content: 'Old prompt' }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Latest prompt' }),
+        buildMessage({
+          id: 'msg-user-2',
+          role: 'user',
+          content: 'Latest prompt',
+          context_refs: [latestRef],
+        }),
       ],
     };
 
@@ -970,10 +1050,25 @@ describe('ChatZone', () => {
     await setComposerText('Draft prompt');
     await dispatchPromptHistory('up');
     expect(getComposerEditor().value).toBe('Latest prompt');
+    expect(getContextRefSummaries()).toEqual([{
+      id: latestRef.id,
+      kind: latestRef.kind,
+      title: latestRef.title,
+    }]);
 
     await setComposerText('Manual edit');
+    expect(getContextRefSummaries()).toEqual([{
+      id: latestRef.id,
+      kind: latestRef.kind,
+      title: latestRef.title,
+    }]);
     await dispatchPromptHistory('down');
     expect(getComposerEditor().value).toBe('Manual edit');
+    expect(getContextRefSummaries()).toEqual([{
+      id: latestRef.id,
+      kind: latestRef.kind,
+      title: latestRef.title,
+    }]);
   });
 
   it('renders skill references in user messages as composer-style chips', async () => {

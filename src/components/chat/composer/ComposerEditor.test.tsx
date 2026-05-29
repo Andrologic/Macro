@@ -520,6 +520,78 @@ describe('ComposerEditor context references', () => {
     expect(onPromptHistory).toHaveBeenCalledWith('up');
   });
 
+  it('emits one text change for imperative setText and clear calls', async () => {
+    const onTextChange = mock((_text: string) => undefined);
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={onTextChange}
+          onSend={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    onTextChange.mockClear();
+
+    await act(async () => {
+      editorRef.current?.setText('hello');
+      await Promise.resolve();
+    });
+
+    expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['hello']);
+
+    onTextChange.mockClear();
+
+    await act(async () => {
+      editorRef.current?.clear();
+      await Promise.resolve();
+    });
+
+    expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['']);
+  });
+
+  it('removes composer refs with hyphenated kinds and ids without leaving a chip', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    const renderComposer = () => (
+      <ComposerEditor
+        ref={editorRef}
+        editable
+        placeholder="Message"
+        onTextChange={() => undefined}
+        onSend={() => undefined}
+      />
+    );
+
+    composerContextRefs = [{
+      kind: 'plan-node',
+      id: 'plan-node-alpha-beta',
+      title: 'Plan node alpha',
+      data: {},
+    }];
+
+    await act(async () => {
+      root.render(renderComposer());
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-context-reference-kind="plan-node"]')).not.toBeNull();
+
+    composerContextRefs = [];
+    await act(async () => {
+      root.render(renderComposer());
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-context-reference-kind="plan-node"]')).toBeNull();
+    expect(editorRef.current?.getTextContent().trim()).toBe('');
+  });
+
   it('renders composer skill chips with the shared inline alignment', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 

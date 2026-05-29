@@ -94,21 +94,22 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
 
       lastInitialTextRef.current = initialText;
       fallbackTextRef.current = initialText;
-      onTextChange(initialText);
 
       if (loadedEditorRef.current) {
         loadedEditorRef.current.setText(initialText);
+        return;
       }
 
       if (fallbackTextareaRef.current) {
         fallbackTextareaRef.current.value = initialText;
       }
+
+      onTextChange(initialText);
     }, [initialText, onTextChange]);
 
     useImperativeHandle(ref, () => ({
       clear: () => {
         fallbackTextRef.current = '';
-        onTextChange('');
 
         if (loadedEditorRef.current) {
           loadedEditorRef.current.clear();
@@ -118,10 +119,10 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = '';
         }
+        onTextChange('');
       },
       setText: (text: string) => {
         fallbackTextRef.current = text;
-        onTextChange(text);
 
         if (loadedEditorRef.current) {
           loadedEditorRef.current.setText(text);
@@ -131,6 +132,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = text;
         }
+        onTextChange(text);
       },
       getTextContent: () => {
         if (loadedEditorRef.current) {
