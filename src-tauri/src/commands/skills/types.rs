@@ -82,6 +82,14 @@ pub struct SkillDetailResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillTemplateCreateResponse {
+    pub skill: SkillManifestDto,
+    pub folder_path: String,
+    pub skill_file_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillResourceReadResponse {
     pub skill_id: String,
     pub path: String,

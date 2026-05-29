@@ -1,4 +1,9 @@
-import type { ContextReference, PersistedContextReference, SkillManifest } from '../../types';
+import type {
+  ContextReference,
+  PersistedContextReference,
+  SkillManifest,
+  SkillPermissionSnapshot,
+} from '../../types';
 import { getServiceRuntimeCapabilities } from '../serviceRuntime';
 import { useSkillsStore } from '../../stores/useSkillsStore';
 
@@ -18,14 +23,40 @@ const readStringArg = (
       : '';
 };
 
+const snapshotSkillPermission = (
+  snapshot: SkillPermissionSnapshot | null | undefined,
+  skillId: string,
+) => snapshot?.skills[skillId] ?? null;
+
+const isSkillEnabledInSnapshot = (
+  snapshot: SkillPermissionSnapshot | null | undefined,
+  skillId: string,
+): boolean => !snapshot || snapshotSkillPermission(snapshot, skillId)?.enabled === true;
+
+const isSkillScriptRunnableInSnapshot = (
+  snapshot: SkillPermissionSnapshot | null | undefined,
+  skillId: string,
+): boolean => {
+  if (!snapshot) return true;
+  const permission = snapshotSkillPermission(snapshot, skillId);
+  return permission?.enabled === true &&
+    permission.scriptsEnabled === true &&
+    permission.hasScripts === true;
+};
+
 export const handleSkillToolCall = async (
   normalizedToolName: string,
   args: SkillToolArgs,
   conversationId: string,
+  permissionSnapshot: SkillPermissionSnapshot | null =
+    useSkillsStore.getState().getSkillPermissionSnapshot(conversationId),
 ): Promise<string | undefined> => {
   if (normalizedToolName === 'skill_activate') {
     const skillId = readStringArg(args, 'skill_id', 'skillId');
     if (!skillId) return 'Missing skill_id for skill_activate.';
+    if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
+      return `Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`;
+    }
     return useSkillsStore.getState().activateSkill(skillId, conversationId);
   }
 
@@ -35,6 +66,9 @@ export const handleSkillToolCall = async (
     if (!skillId || !resourcePath) {
       return 'Missing skill_id or path for skill_read_resource.';
     }
+    if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
+      return `Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`;
+    }
     return useSkillsStore.getState().readSkillResource(skillId, resourcePath);
   }
 
@@ -43,6 +77,9 @@ export const handleSkillToolCall = async (
     const scriptPath = readStringArg(args, 'script_path', 'scriptPath');
     if (!skillId || !scriptPath) {
       return 'Missing skill_id or script_path for skill_run_script.';
+    }
+    if (!isSkillScriptRunnableInSnapshot(permissionSnapshot, skillId)) {
+      return 'Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.';
     }
     const scriptArgs = Array.isArray(args.args)
       ? args.args.filter((item): item is string => typeof item === 'string')
@@ -59,7 +96,7 @@ export const handleSkillToolCall = async (
             : null,
       allowWorkspace:
         args.allow_workspace === true || args.allowWorkspace === true,
-    });
+    }, permissionSnapshot);
   }
 
   return undefined;
@@ -142,7 +179,7 @@ export const buildSkillCatalogInstruction = (enabledSkills: SkillManifest[]): st
       return `- id=${skill.id}; name=${skill.name}; source=${source}; description=${skill.description}${compatibility}${allowedTools}${compliance}${resources}${scripts}`;
     })
     .join('\n');
-  return `Available Macro skills are listed below. This catalog only includes the effective non-shadowed skill for each name. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary, trusted, enabled, and after explaining why. allowed-tools metadata is advisory and never overrides Macro tool policy.\n${catalog}`;
+  return `Available Macro skills are listed below. This catalog only includes the effective non-shadowed skill for each name. Do not assume a skill's full instructions are loaded from this catalog alone. When a task matches a skill or the user names one with $skill-name, call skill_activate with the exact id before following that skill. Use skill_read_resource only for listed resource files/assets after activation. Use skill_run_script only for listed scripts when necessary, enabled for that skill, and after explaining why. allowed-tools metadata is advisory and never overrides Macro tool policy.\n${catalog}`;
 };
 
 export const collectExplicitSkillsForPrompt = (
@@ -169,14 +206,15 @@ export const buildExplicitSkillsInstruction = (skills: SkillManifest[]): string 
 
 export const getSkillToolIdsForRequest = (
   allowedToolIds: string[],
+  permissionSnapshot?: SkillPermissionSnapshot | null,
 ): { skillToolIds: string[]; runnableSkillToolIds: string[] } => {
   const skillsState = useSkillsStore.getState();
   return {
     skillToolIds: allowedToolIds.includes('skill_activate')
-      ? skillsState.getEnabledLoadableSkills().map((skill) => skill.id)
+      ? skillsState.getEnabledLoadableSkills({ permissionSnapshot }).map((skill) => skill.id)
       : [],
     runnableSkillToolIds: allowedToolIds.includes('skill_run_script')
-      ? skillsState.getRunnableSkillIds()
+      ? skillsState.getRunnableSkillIds({ permissionSnapshot })
       : [],
   };
 };

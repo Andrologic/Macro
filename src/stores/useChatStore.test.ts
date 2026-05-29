@@ -6194,7 +6194,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        [skill.id]: { enabled: true, scriptsEnabled: false },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -6232,6 +6232,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const streamOptions = getLatestStreamOptions<{
       allowedToolIds: string[];
+      skillToolIds: string[];
+      runnableSkillToolIds: string[];
       messages: Array<{ role: string; content: unknown }>;
     }>();
     const serializedMessages = JSON.stringify(streamOptions.messages);
@@ -6277,7 +6279,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+        [skill.id]: { enabled: true, scriptsEnabled: true },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -6315,6 +6317,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const streamOptions = getLatestStreamOptions<{
       allowedToolIds: string[];
+      skillToolIds: string[];
+      runnableSkillToolIds: string[];
       messages: Array<{ role: string; content: unknown }>;
     }>();
     const serializedMessages = JSON.stringify(streamOptions.messages);
@@ -6322,6 +6326,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('skill_activate');
     expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
     expect(streamOptions.allowedToolIds).toContain('skill_run_script');
+    expect(streamOptions.skillToolIds).toEqual([skill.id]);
+    expect(streamOptions.runnableSkillToolIds).toEqual([skill.id]);
     expect(serializedMessages).toContain('Available Macro skills');
     expect(serializedMessages).toContain('id=global:agents:test-skill:aaa111');
     expect(serializedMessages).toContain('<skill_content name=\\"test-skill\\"');
@@ -6341,7 +6347,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        [skill.id]: { enabled: true, scriptsEnabled: false },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -6384,6 +6390,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const streamOptions = getLatestStreamOptions<{
       allowedToolIds: string[];
+      skillToolIds: string[];
+      runnableSkillToolIds: string[];
       messages: Array<{ role: string; content: unknown }>;
     }>();
     const serializedMessages = JSON.stringify(streamOptions.messages);
@@ -6409,7 +6417,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+        [skill.id]: { enabled: true, scriptsEnabled: true },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -6447,6 +6455,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const streamOptions = getLatestStreamOptions<{
       allowedToolIds: string[];
+      skillToolIds: string[];
+      runnableSkillToolIds: string[];
       messages: Array<{ role: string; content: unknown }>;
     }>();
     const serializedMessages = JSON.stringify(streamOptions.messages);
@@ -6454,6 +6464,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).toContain('skill_activate');
     expect(streamOptions.allowedToolIds).toContain('skill_read_resource');
     expect(streamOptions.allowedToolIds).not.toContain('skill_run_script');
+    expect(streamOptions.skillToolIds).toEqual([skill.id]);
+    expect(streamOptions.runnableSkillToolIds).toEqual([]);
     expect(serializedMessages).toContain('Available Macro skills');
   });
 
@@ -6466,10 +6478,26 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const { useChatStore } = await loadChatStore();
     const { useSkillsStore } = await import('./useSkillsStore');
-    const activateSkill = mock(async () => 'activated docs');
-    const readSkillResource = mock(async () => 'resource content');
-    const runSkillScript = mock(async () => 'script result');
+    const skill = createSkillManifest({
+      id: 'project:project-1:docs',
+      name: 'docs',
+      source: {
+        kind: 'project',
+        namespace: 'agents',
+        projectId: 'project-1',
+        projectName: 'Web',
+        rootPath: '/repos/web',
+        skillRootPath: '/repos/web/.agents/skills',
+      },
+    });
+    const activateSkill = mock(async (_skillId: string, _conversationId?: string) => 'activated docs');
+    const readSkillResource = mock(async (_skillId: string, _path: string) => 'resource content');
+    const runSkillScript = mock(async (_request: unknown, _snapshot?: unknown) => 'script result');
     useSkillsStore.setState({
+      skills: [skill],
+      settingsBySkillId: {
+        [skill.id]: { enabled: true, scriptsEnabled: true },
+      },
       activateSkill,
       readSkillResource,
       runSkillScript,
@@ -6545,12 +6573,22 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'project:project-1:docs',
       'references/style.md',
     );
-    expect(runSkillScript).toHaveBeenCalledWith({
+    expect(runSkillScript.mock.calls[0]?.[0]).toEqual({
       skillId: 'project:project-1:docs',
       scriptPath: 'scripts/check.sh',
       args: ['--check'],
       timeoutMs: 1_000,
       allowWorkspace: true,
+    });
+    expect(runSkillScript.mock.calls[0]?.[1]).toMatchObject({
+      conversationId: 'chat-conv',
+      skills: {
+        [skill.id]: {
+          enabled: true,
+          scriptsEnabled: true,
+          hasScripts: true,
+        },
+      },
     });
   });
 

@@ -31,6 +31,7 @@ import type {
   SkillProjectRoot,
   SkillScriptRunRequest,
   SkillScriptRunResult,
+  SkillTemplateCreateResult,
 } from '../../types';
 
 export interface ServiceProvider {
@@ -164,6 +165,7 @@ export interface ServiceProvider {
     projectRoots?: SkillProjectRoot[];
   }) => Promise<SkillDetailDto>;
   installSkillFromLocalPath: (data: { sourcePath: string }) => Promise<SkillManifest>;
+  createSkillTemplate: () => Promise<SkillTemplateCreateResult>;
   readSkillResource: (data: {
     skillId: string;
     resourcePath: string;

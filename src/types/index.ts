@@ -433,8 +433,21 @@ export interface SkillManifest {
 
 export interface SkillSettings {
   enabled: boolean;
-  trusted: boolean;
   scriptsEnabled: boolean;
+}
+
+export interface SkillPermissionSnapshotEntry {
+  skillId: string;
+  enabled: boolean;
+  scriptsEnabled: boolean;
+  hasScripts: boolean;
+}
+
+export interface SkillPermissionSnapshot {
+  conversationId: string;
+  turnId: string;
+  capturedAt: string;
+  skills: Record<string, SkillPermissionSnapshotEntry>;
 }
 
 export interface SkillActivation {
@@ -444,6 +457,24 @@ export interface SkillActivation {
   contentHash?: string;
   locationUri?: string;
   skillFilePath?: string | null;
+}
+
+export type SkillTurnFeedbackStatus = 'loaded' | 'blocked' | 'ignored';
+
+export type SkillTurnFeedbackAction = 'open_settings' | 'refresh';
+
+export interface SkillTurnFeedbackItem {
+  skillId?: string;
+  title: string;
+  status: SkillTurnFeedbackStatus;
+  reason?: string;
+  action?: SkillTurnFeedbackAction;
+}
+
+export interface SkillTurnFeedback {
+  messageId: string;
+  loaded: SkillTurnFeedbackItem[];
+  warnings: SkillTurnFeedbackItem[];
 }
 
 export interface SkillScriptRunRequest {
@@ -462,6 +493,12 @@ export interface SkillScriptRunResult {
   exitCode?: number | null;
   timedOut: boolean;
   truncated: boolean;
+}
+
+export interface SkillTemplateCreateResult {
+  skill: SkillManifest;
+  folderPath: string;
+  skillFilePath: string;
 }
 
 export interface ProjectDependency {
@@ -622,6 +659,7 @@ export interface PendingToolApproval {
   isDestructive?: boolean;
   summary: string;
   detail?: string;
+  args?: Record<string, unknown>;
   rememberKey: string;
 }
 

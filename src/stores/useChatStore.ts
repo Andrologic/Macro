@@ -26,6 +26,9 @@ import {
   ProjectGroup,
   ReasoningEffort,
   SkillManifest,
+  SkillPermissionSnapshot,
+  SkillTurnFeedback,
+  SkillTurnFeedbackItem,
   ToolRiskLevel,
   ToolTrace,
   WorkspaceFileReference,
@@ -52,7 +55,6 @@ import {
   buildExplicitSkillsInstruction,
   buildSkillCatalogInstruction,
   buildSkillReferenceLines,
-  collectExplicitSkillsForPrompt,
   filterSkillToolsForAvailability,
   getSkillToolIdsForRequest,
   handleSkillToolCall,
@@ -69,7 +71,7 @@ import {
   webSearch,
 } from "../services/webSearch";
 import { useToolsStore } from "./useToolsStore";
-import { useSkillsStore } from "./useSkillsStore";
+import { useSkillsStore, type SkillTurnPreparation } from "./useSkillsStore";
 import { useAppStore } from "./useAppStore";
 import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import {
@@ -1035,6 +1037,7 @@ interface ChatStore {
     string,
     ConversationApprovalGrant[]
   >;
+  skillTurnFeedbackByMessageId: Record<string, SkillTurnFeedback | undefined>;
   architectPlanNamingRecovery: ArchitectPlanNamingRecoveryState | null;
   addMessage: (message: ChatMessage) => void;
   clearLastError: () => void;
@@ -4979,6 +4982,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         isDestructive: securityEvaluation.normalizedCall.isDestructive,
         summary: securityEvaluation.normalizedCall.summary,
         detail: securityEvaluation.normalizedCall.detail,
+        args,
         rememberKey: securityEvaluation.normalizedCall.rememberKey,
       };
 
@@ -5480,6 +5484,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return persisted.length > 0 ? persisted : undefined;
   };
 
+  const getSkillFeedbackAction = (warning: string): SkillTurnFeedbackItem["action"] | undefined => {
+    const normalized = warning.toLocaleLowerCase();
+    if (normalized.includes("settings")) return "open_settings";
+    if (normalized.includes("refresh")) return "refresh";
+    return undefined;
+  };
+
+  const buildSkillTurnFeedback = (
+    messageId: string | null | undefined,
+    preparation: Pick<SkillTurnPreparation, "activatedSkills" | "warnings">,
+  ): SkillTurnFeedback | null => {
+    if (!messageId) return null;
+    const skillsState = useSkillsStore.getState();
+    const loaded = preparation.activatedSkills.map<SkillTurnFeedbackItem>((activation) => {
+      const skill = skillsState.getSkillById(activation.skillId);
+      return {
+        skillId: activation.skillId,
+        title: skill?.name ?? activation.skillId,
+        status: "loaded",
+      };
+    });
+    const warnings = preparation.warnings.map<SkillTurnFeedbackItem>((warning) => ({
+      title: "Skill context",
+      status: warning.toLocaleLowerCase().includes("no longer available") ? "ignored" : "blocked",
+      reason: warning,
+      action: getSkillFeedbackAction(warning),
+    }));
+    if (loaded.length === 0 && warnings.length === 0) return null;
+    return { messageId, loaded, warnings };
+  };
+
   const cloneStreamContextDiagnosticsBaseline = (
     baseline: StreamContextDiagnosticsBaseline,
   ): StreamContextDiagnosticsBaseline => ({
@@ -5533,6 +5568,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     modeAtSend?: AppMode,
     agentTypeAtSend?: AgentType | null,
     messageWithImagesId?: string,
+    skillPermissionSnapshot?: SkillPermissionSnapshot | null,
   ) => {
     const appState = useAppStore.getState();
     const executionContext = resolveConversationExecutionContext(conversationId);
@@ -5569,6 +5605,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             content: lastUserMessage.content,
             contextRefs: lastUserMessage.context_refs ?? get().composerContextRefs,
             toolsAvailable: allowedToolIds.includes("skill_activate"),
+            permissionSnapshot: skillPermissionSnapshot ?? null,
           })
         : {
             activatedSkills: [],
@@ -5576,7 +5613,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             explicitSkillIds: [],
             warnings: [],
             toolsAvailable: allowedToolIds.includes("skill_activate"),
+            permissionSnapshot: skillPermissionSnapshot ?? null,
           };
+    const skillTurnFeedback = buildSkillTurnFeedback(
+      lastUserMessage?.id,
+      skillPreparation,
+    );
     const explicitSkillIdSet = new Set(skillPreparation.explicitSkillIds);
     const messageImagesByMessageId = get().messageImagesByMessageId;
 
@@ -5777,14 +5819,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (allowedToolIds.includes("skill_activate")) {
       const skillsState = useSkillsStore.getState();
-      const catalogInstruction = buildSkillCatalogInstruction(skillsState.getEnabledSkills());
+      const catalogInstruction = buildSkillCatalogInstruction(
+        skillsState.getEnabledLoadableSkills({ permissionSnapshot: skillPermissionSnapshot ?? null }),
+      );
       if (catalogInstruction) {
         systemInstructions.push(catalogInstruction);
         const explicitInstruction = buildExplicitSkillsInstruction(
-          collectExplicitSkillsForPrompt(
-            lastUserMessage?.role === "user" ? lastUserMessage.content : null,
-            lastUserMessage?.context_refs ?? get().composerContextRefs,
-          ),
+          skillPreparation.explicitSkillIds
+            .map((skillId) => skillsState.getSkillById(skillId))
+            .filter((skill): skill is SkillManifest => Boolean(skill)),
         );
         if (explicitInstruction) {
           systemInstructions.push(explicitInstruction);
@@ -5960,6 +6003,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       providerInputItemsByMessageId,
       citations,
       executionContext,
+      skillPermissionSnapshot: skillPreparation.permissionSnapshot,
+      skillTurnFeedback,
     };
   };
 
@@ -6403,6 +6448,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "questionnaireDraftsByConversationId"
     | "pendingToolApprovalByConversationId"
     | "conversationApprovalGrantsByConversationId"
+    | "skillTurnFeedbackByMessageId"
     | "conversationRuntimeById"
     | "selectedConversationId"
     | "selectedConversationIdsByMode"
@@ -6426,6 +6472,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         state.pendingToolApprovalByConversationId,
       conversationApprovalGrantsByConversationId:
         state.conversationApprovalGrantsByConversationId,
+      skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
       conversationRuntimeById: state.conversationRuntimeById,
       selectedConversationId: state.selectedConversationId,
       selectedConversationIdsByMode: state.selectedConversationIdsByMode,
@@ -6466,6 +6513,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const nextConversationApprovalGrants = Object.fromEntries(
       Object.entries(state.conversationApprovalGrantsByConversationId).filter(
         ([conversationId]) => !idsToRemove.has(conversationId),
+      ),
+    );
+    const nextSkillTurnFeedback = Object.fromEntries(
+      Object.entries(state.skillTurnFeedbackByMessageId).filter(([messageId]) =>
+        remainingMessageIds.has(messageId),
       ),
     );
     const nextMessageLoadStatusByConversationId = Object.fromEntries(
@@ -6531,6 +6583,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingToolApprovalByConversationId: nextPendingToolApprovals,
       conversationApprovalGrantsByConversationId:
         nextConversationApprovalGrants,
+      skillTurnFeedbackByMessageId: nextSkillTurnFeedback,
       conversationRuntimeById: nextConversationRuntimeById,
       ...buildLegacyStreamingFlags({
         conversationRuntimeById: nextConversationRuntimeById,
@@ -7564,6 +7617,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.agentTypeAtSend,
     );
     const showToolTraces = false;
+    const skillPermissionSnapshot = useSkillsStore
+      .getState()
+      .createSkillPermissionSnapshot(params.conversationId, params.replyToMessageId);
     const preparedRequest = await prepareMessagesForRequest(
       params.conversationId,
       allowedToolIds,
@@ -7571,7 +7627,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.modeAtSend,
       params.agentTypeAtSend,
       params.replyToMessageId,
+      skillPermissionSnapshot,
     );
+    set((state) => {
+      const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
+      if (preparedRequest.skillTurnFeedback) {
+        nextFeedback[preparedRequest.skillTurnFeedback.messageId] =
+          preparedRequest.skillTurnFeedback;
+      } else {
+        delete nextFeedback[params.replyToMessageId];
+      }
+      return { skillTurnFeedbackByMessageId: nextFeedback };
+    });
     const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
     const { footprintFields } = getSelectedModelContext(
       params.providerId,
@@ -7784,7 +7851,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .getEnabledMCPTools()
       .filter((tool) => allowedToolIds.includes(tool.id));
     const { skillToolIds, runnableSkillToolIds } =
-      getSkillToolIdsForRequest(allowedToolIds);
+      getSkillToolIdsForRequest(
+        allowedToolIds,
+        preparedRequest.skillPermissionSnapshot,
+      );
 
     await persistProviderInputItemsForMessage(
       params.replyToMessageId,
@@ -10925,6 +10995,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     questionnaireDraftsByConversationId: loadQuestionnaireDraftsFromStorage(),
     pendingToolApprovalByConversationId: {},
     conversationApprovalGrantsByConversationId: {},
+    skillTurnFeedbackByMessageId: {},
     architectPlanNamingRecovery: null,
     composerContextRefs: [],
 
@@ -12803,6 +12874,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         agentCodeCheckpointsByConversationId: {},
         contextDiagnosticsByConversationId: {},
         liveStreamContextEstimatesByConversationId: {},
+        skillTurnFeedbackByMessageId: {},
         isLoading: true,
         isStreaming: false,
         sendState: "idle",

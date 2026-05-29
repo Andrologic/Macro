@@ -1,7 +1,7 @@
 import type { SkillManifest, SkillSettings } from '../../types';
 
 const SKILL_SETTINGS_STORAGE_KEY = 'macro_skill_settings';
-const SKILL_SETTINGS_VERSION = 1;
+const SKILL_SETTINGS_VERSION = 2;
 
 type StoredSkillSettings = {
   version: number;
@@ -10,29 +10,63 @@ type StoredSkillSettings = {
 
 export const DEFAULT_SKILL_SETTINGS: SkillSettings = {
   enabled: false,
-  trusted: false,
   scriptsEnabled: false,
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
 export const normalizeSkillSettings = (value: unknown): SkillSettings => {
-  const candidate = value && typeof value === 'object' ? value as Partial<SkillSettings> : {};
-  const trusted = candidate.trusted === true;
+  const candidate = isRecord(value) ? value : {};
   return {
     enabled: candidate.enabled === true,
-    trusted,
-    scriptsEnabled: trusted && candidate.scriptsEnabled === true,
+    scriptsEnabled: candidate.scriptsEnabled === true,
   };
+};
+
+const hasCanonicalSkillSettingsShape = (value: unknown): value is SkillSettings => {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2 &&
+    keys.includes('enabled') &&
+    keys.includes('scriptsEnabled') &&
+    typeof value.enabled === 'boolean' &&
+    typeof value.scriptsEnabled === 'boolean';
+};
+
+const hasCanonicalStoredSettingsShape = (
+  parsed: unknown,
+  normalized: Record<string, SkillSettings>,
+): boolean => {
+  if (!isRecord(parsed) || parsed.version !== SKILL_SETTINGS_VERSION || !isRecord(parsed.skills)) {
+    return false;
+  }
+  const entries = Object.entries(parsed.skills);
+  if (entries.length !== Object.keys(normalized).length) {
+    return false;
+  }
+  return entries.every(([id, settings]) => {
+    const normalizedSettings = normalized[id];
+    return Boolean(normalizedSettings) &&
+      hasCanonicalSkillSettingsShape(settings) &&
+      settings.enabled === normalizedSettings.enabled &&
+      settings.scriptsEnabled === normalizedSettings.scriptsEnabled;
+  });
 };
 
 export const readStoredSkillSettings = (): Record<string, SkillSettings> => {
   try {
     const raw = localStorage.getItem(SKILL_SETTINGS_STORAGE_KEY);
     if (!raw || raw === 'undefined') return {};
-    const parsed = JSON.parse(raw) as Partial<StoredSkillSettings>;
-    const skills = parsed.skills && typeof parsed.skills === 'object' ? parsed.skills : {};
-    return Object.fromEntries(
+    const parsed = JSON.parse(raw) as unknown;
+    const skills = isRecord(parsed) && isRecord(parsed.skills) ? parsed.skills : {};
+    const normalized = Object.fromEntries(
       Object.entries(skills).map(([id, settings]) => [id, normalizeSkillSettings(settings)]),
     );
+    if (!hasCanonicalStoredSettingsShape(parsed, normalized)) {
+      writeStoredSkillSettings(normalized);
+    }
+    return normalized;
   } catch {
     return {};
   }

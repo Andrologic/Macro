@@ -62,20 +62,19 @@ describe('skills helpers', () => {
     expect(findEnabledSkillByName(shadowed.id, [effective, shadowed], [effective])).toBe(shadowed);
   });
 
-  it('returns runnable ids only for enabled trusted skills with scripts', () => {
+  it('returns runnable ids only for enabled skills with enabled scripts', () => {
     const runner = buildSkill('global:agents:runner:aaa', {
       name: 'runner',
       scripts: [{ path: 'scripts/run.sh', kind: 'script', sizeBytes: 12 }],
     });
     const plain = buildSkill('global:agents:plain:bbb', { name: 'plain' });
     const settings: Record<string, SkillSettings> = {
-      [runner.id]: { enabled: true, trusted: true, scriptsEnabled: true },
-      [plain.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+      [runner.id]: { enabled: true, scriptsEnabled: true },
+      [plain.id]: { enabled: true, scriptsEnabled: true },
     };
 
     expect(getRunnableSkillIds([runner, plain], (id) => settings[id] ?? {
       enabled: false,
-      trusted: false,
       scriptsEnabled: false,
     })).toEqual([runner.id]);
   });

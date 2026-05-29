@@ -595,6 +595,9 @@ export const getSkill: ServiceProvider['getSkill'] = async (data) =>
 export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async (data) =>
   tauriIpc.skillsInstallFromLocalPath(data);
 
+export const createSkillTemplate: ServiceProvider['createSkillTemplate'] = async () =>
+  tauriIpc.skillsCreateTemplate();
+
 export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) =>
   tauriIpc.skillsReadResource(data);
 
@@ -639,6 +642,7 @@ export const provider: ServiceProvider = {
   listSkills,
   getSkill,
   installSkillFromLocalPath,
+  createSkillTemplate,
   readSkillResource,
   runSkillScript,
 };

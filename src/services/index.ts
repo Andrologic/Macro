@@ -152,6 +152,8 @@ export const services = {
     callProviderMethod('getSkill', data),
   installSkillFromLocalPath: (data: Parameters<ServiceProvider['installSkillFromLocalPath']>[0]) =>
     callProviderMethod('installSkillFromLocalPath', data),
+  createSkillTemplate: () =>
+    callProviderMethod('createSkillTemplate'),
   readSkillResource: (data: Parameters<ServiceProvider['readSkillResource']>[0]) =>
     callProviderMethod('readSkillResource', data),
   runSkillScript: (data: Parameters<ServiceProvider['runSkillScript']>[0]) =>

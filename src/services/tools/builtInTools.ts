@@ -101,7 +101,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
     name: 'Run Skill Script',
     category: 'ai',
     status: 'enabled',
-    description: 'Run a trusted script bundled with an enabled Macro skill',
+    description: 'Run an enabled script bundled with an enabled Macro skill',
     icon: 'play',
     config: {
       enabled: true,

@@ -71,7 +71,7 @@ interface SlashContextUsageRecord {
 
 const SLASH_CONTEXT_USAGE_KEY = 'macro.slashContextUsage.v1';
 const MAX_SLASH_ITEMS = 8;
-const SLASH_MENU_WIDTH = 416;
+const SLASH_MENU_WIDTH = 448;
 
 const loadSlashContextUsage = (): Record<string, SlashContextUsageRecord> => {
   if (typeof window === 'undefined') return {};
@@ -393,7 +393,6 @@ export const SlashContextMenuPlugin: React.FC = () => {
           subtitle: formatSourceLabel(skill, t),
           icon: 'sparkles',
           iconClassName: 'text-fuchsia-400',
-          label: `${namespaceLabel} · ${scopeLabel}`,
           searchText: [
             skill.name,
             skill.description,
@@ -426,7 +425,6 @@ export const SlashContextMenuPlugin: React.FC = () => {
         tooltip: location,
         icon: 'file-text',
         iconClassName: 'text-blue-400',
-        label: location,
         searchText: [
           file.path,
           file.relativePath,
@@ -598,7 +596,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
     <div
       ref={menuRef}
       data-slash-context-menu="true"
-      className="fixed z-50 w-[26rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border/80 bg-card/95 p-1 text-sm shadow-xl backdrop-blur"
+      className="fixed z-50 w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border/80 bg-card/95 p-1 text-sm shadow-xl backdrop-blur"
       style={{
         left: Math.max(8, Math.min(trigger.rect.left, window.innerWidth - SLASH_MENU_WIDTH - 8)),
         top: trigger.rect.top - 8,
@@ -663,9 +661,11 @@ export const SlashContextMenuPlugin: React.FC = () => {
                     <span className="block truncate font-medium leading-5" title={item.title}>
                       {item.title}
                     </span>
-                    <span className="block truncate text-xs leading-4 opacity-80" title={tooltip}>
-                      {item.label}
-                    </span>
+                    {(item.subtitle || item.label) && (
+                      <span className="block truncate text-xs leading-4 opacity-80" title={tooltip}>
+                        {item.subtitle ?? item.label}
+                      </span>
+                    )}
                   </span>
                   <button
                     type="button"
@@ -706,9 +706,11 @@ export const SlashContextMenuPlugin: React.FC = () => {
                   <span className="block truncate font-medium leading-5" title={item.title}>
                     {item.title}
                   </span>
-                  <span className="block truncate text-xs leading-4 text-muted-foreground" title={tooltip}>
-                    {item.label ?? item.subtitle}
-                  </span>
+                  {(item.subtitle || item.label) && (
+                    <span className="block truncate text-xs leading-4 text-muted-foreground" title={tooltip}>
+                      {item.subtitle ?? item.label}
+                    </span>
+                  )}
                 </span>
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center">
                   {selected && <Icon name="check" size={14} className="shrink-0" />}

@@ -1238,6 +1238,72 @@ pub async fn skills_install_from_local_path(
 }
 
 #[tauri::command]
+pub async fn skills_create_template() -> CommandResult<SkillTemplateCreateResponse> {
+    let home =
+        home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
+    let destination_base = home.join(AGENTS_SKILLS_DIR);
+    fs::create_dir_all(&destination_base).map_err(|error| {
+        command_error(format!(
+            "Failed to create skills folder {}: {}",
+            destination_base.display(),
+            error
+        ))
+    })?;
+
+    let mut name = "new-skill".to_string();
+    let mut destination = destination_base.join(&name);
+    let mut suffix = 2;
+    while destination.exists() {
+        name = format!("new-skill-{}", suffix);
+        destination = destination_base.join(&name);
+        suffix += 1;
+    }
+
+    fs::create_dir_all(&destination).map_err(|error| {
+        command_error(format!(
+            "Failed to create skill folder {}: {}",
+            destination.display(),
+            error
+        ))
+    })?;
+    fs::create_dir_all(destination.join("references")).map_err(|error| {
+        command_error(format!("Failed to create references folder: {}", error))
+    })?;
+    fs::create_dir_all(destination.join("scripts"))
+        .map_err(|error| command_error(format!("Failed to create scripts folder: {}", error)))?;
+
+    let skill_file_path = destination.join(SKILL_FILE);
+    let template = format!(
+        "---\nname: {}\ndescription: Describe when Macro should use this skill.\n---\n\n# {}\n\nUse this skill to give Macro focused, reusable instructions.\n\n## Instructions\n\n- Replace this text with precise guidance.\n- Keep resources in `references/` and optional scripts in `scripts/`.\n",
+        name, name
+    );
+    fs::write(&skill_file_path, template).map_err(|error| {
+        command_error(format!(
+            "Failed to write skill template {}: {}",
+            skill_file_path.display(),
+            error
+        ))
+    })?;
+
+    let skill = build_manifest(
+        &destination,
+        SkillSourceDto {
+            kind: "global".to_string(),
+            namespace: "agents".to_string(),
+            project_id: None,
+            project_name: None,
+            root_path: destination_base.to_string_lossy().to_string(),
+            skill_root_path: destination_base.to_string_lossy().to_string(),
+        },
+    );
+    Ok(SkillTemplateCreateResponse {
+        skill,
+        folder_path: destination.to_string_lossy().to_string(),
+        skill_file_path: skill_file_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
 pub async fn skills_run_script(
     skill_id: String,
     script_path: String,
