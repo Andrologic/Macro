@@ -9,6 +9,17 @@ pub struct SkillProjectRootDto {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillTemplateCreateRequest {
+    pub name: String,
+    pub description: String,
+    pub destination_kind: String,
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_roots: Vec<SkillProjectRootDto>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSourceDto {

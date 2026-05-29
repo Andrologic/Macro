@@ -28,6 +28,7 @@ export interface ServiceRuntimeCapabilities {
   taskProjectCommands: boolean;
   skills: boolean;
   skillScripts: boolean;
+  skillCreation: boolean;
 }
 
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE = 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE';
@@ -56,6 +57,7 @@ const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskProjectCommands: true,
   skills: true,
   skillScripts: true,
+  skillCreation: true,
 };
 
 const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
@@ -78,6 +80,7 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskProjectCommands: false,
   skills: true,
   skillScripts: false,
+  skillCreation: false,
 };
 
 let remoteRuntimeCapabilityOverrides: Partial<ServiceRuntimeCapabilities> = {};

@@ -292,6 +292,9 @@ export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPa
 export const createSkillTemplate: ServiceProvider['createSkillTemplate'] = async () =>
   remoteUnsupported('createSkillTemplate');
 
+export const openSkillLocation: ServiceProvider['openSkillLocation'] = async () =>
+  remoteUnsupported('openSkillLocation');
+
 export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) => {
   const config = ensureRemoteConfig();
   return remoteSkillRequest<SkillResourceReadDto>(
@@ -361,6 +364,7 @@ export const provider: ServiceProvider = {
   getSkill,
   installSkillFromLocalPath,
   createSkillTemplate,
+  openSkillLocation,
   readSkillResource,
   runSkillScript,
 };

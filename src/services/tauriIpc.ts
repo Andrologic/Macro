@@ -25,8 +25,10 @@ import type {
   ProjectMount,
   ProviderTurnState,
   SkillManifest,
+  SkillLocationOpenRequest,
   SkillProjectRoot,
   SkillScriptRunResult,
+  SkillTemplateCreateRequest,
   SkillTemplateCreateResult,
   ToolTrace,
 } from "../types";
@@ -3060,8 +3062,26 @@ export async function skillsInstallFromLocalPath(params: {
   });
 }
 
-export async function skillsCreateTemplate(): Promise<SkillTemplateCreateResult> {
-  return invoke<SkillTemplateCreateResult>("skills_create_template");
+export async function skillsCreateTemplate(
+  params: SkillTemplateCreateRequest,
+): Promise<SkillTemplateCreateResult> {
+  return invoke<SkillTemplateCreateResult>("skills_create_template", {
+    name: params.name,
+    description: params.description,
+    destinationKind: params.destinationKind,
+    projectId: params.projectId ?? null,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsOpenLocation(
+  params: SkillLocationOpenRequest,
+): Promise<void> {
+  return invoke<void>("skills_open_location", {
+    skillId: params.skillId,
+    target: params.target,
+    projectRoots: params.projectRoots ?? [],
+  });
 }
 
 export async function skillsReadResource(params: {

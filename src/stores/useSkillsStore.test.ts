@@ -57,6 +57,12 @@ const loadSkillsStore = async (skills: SkillManifest[]) => {
       body: '# Instructions\nUse the project style.',
     })),
     installSkillFromLocalPath: mock(async () => skills[0]),
+    createSkillTemplate: mock(async () => ({
+      skill: skills[0],
+      folderPath: skills[0]?.rootPath ?? '/skills/new-skill',
+      skillFilePath: skills[0]?.skillFilePath ?? '/skills/new-skill/SKILL.md',
+    })),
+    openSkillLocation: mock(async () => undefined),
     readSkillResource: mock(async () => ({
       skillId: skills[0]?.id ?? 'global:missing',
       path: 'references/style.md',
@@ -167,6 +173,40 @@ describe('useSkillsStore', () => {
         [skill.id]: { enabled: true, scriptsEnabled: false },
       },
     });
+  });
+
+  it('creates skill templates with a destination and opens skill locations through the service', async () => {
+    const skill = buildSkill('project:project-1:agents:new-skill:aaa111', {
+      name: 'new-skill',
+    });
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+
+    const created = await useSkillsStore.getState().createSkillTemplate({
+      name: 'new-skill',
+      description: 'Use when Macro needs focused guidance.',
+      destinationKind: 'project',
+      projectId: PROJECT_ROOT.projectId,
+    });
+    const opened = await useSkillsStore.getState().openSkillLocation(skill.id, 'skillFile');
+
+    expect(created).toEqual(skill);
+    expect(services.createSkillTemplate).toHaveBeenCalledWith({
+      name: 'new-skill',
+      description: 'Use when Macro needs focused guidance.',
+      destinationKind: 'project',
+      projectId: PROJECT_ROOT.projectId,
+      projectRoots: [PROJECT_ROOT],
+    });
+    expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
+      enabled: true,
+      scriptsEnabled: false,
+    });
+    expect(services.openSkillLocation).toHaveBeenCalledWith({
+      skillId: skill.id,
+      target: 'skillFile',
+      projectRoots: [PROJECT_ROOT],
+    });
+    expect(opened).toBe(true);
   });
 
   it('activates instructions and reads resources only for enabled valid skills', async () => {
