@@ -39,8 +39,43 @@ const makePreparedMessages = (messages: ChatMessage[]): StreamMessage[] =>
     content:
       message.role === 'assistant' && message.hidden_context
         ? `${message.content}\n\n${message.hidden_context}`.trim()
-        : message.content,
+      : message.content,
   }));
+
+const contentToCopilotText = (content: StreamMessage['content']): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return content
+    .map((part) => {
+      if (part.type === 'text') return part.text || '';
+      if (part.type === 'image_url') {
+        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+      }
+      return '';
+    })
+    .filter((value) => value.trim().length > 0)
+    .join('\n');
+};
+
+const estimateCopilotPromptTokens = (messages: StreamMessage[]): number => {
+  const system = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => contentToCopilotText(message.content).trim())
+    .filter(Boolean)
+    .join('\n\n');
+  const transcript = messages
+    .filter((message) => message.role !== 'system')
+    .map(
+      (message) =>
+        `[${message.role.toUpperCase()}]\n${
+          contentToCopilotText(message.content).trim() || '(empty)'
+        }`,
+    )
+    .join('\n\n');
+  return Math.max(1, Math.ceil(`${system}\n\n${transcript}`.length / 4));
+};
 
 const toolDefinitions = [
   {
@@ -281,6 +316,87 @@ describe('buildCompactedMessagesForRequest', () => {
     );
     expect(JSON.stringify(compacted.messages)).not.toContain('native reasoning payload');
     expect(JSON.stringify(compacted.messages)).not.toContain('tool_calls');
+  });
+
+  it('does not treat Copilot provider input item pruning as model-context reduction', async () => {
+    const hugeReasoning = `Copilot ignores this native replay.\n${'native reasoning payload\n'.repeat(1500)}`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the old provider trace.'),
+      makeMessage('a1', 'assistant', `Older visible findings.\n${'old visible payload\n'.repeat(600)}`),
+      makeMessage('u2', 'user', 'Check the retained turn.'),
+      makeMessage('a2', 'assistant', 'Retained answer.'),
+      makeMessage('u3', 'user', 'Now answer.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        {
+          type: 'chat_completion_message',
+          role: 'assistant',
+          content: 'Older visible findings.',
+          visible_content: 'Older visible findings.',
+          reasoning_content: hugeReasoning,
+          reasoning_details: [{ trace: hugeReasoning }],
+        },
+      ],
+    };
+    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
+      estimateCopilotPromptTokens(messages);
+
+    const before = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 32_000,
+      mode: 'blocking',
+      estimateSerializedPayloadTokens,
+      countProviderInputItems: false,
+    });
+    const providerPruned = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const afterProviderPrune = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages: providerPruned.messages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 32_000,
+      mode: 'blocking',
+      estimateSerializedPayloadTokens,
+      countProviderInputItems: false,
+    });
+
+    expect(before.providerInputTokens).toBe(0);
+    expect(afterProviderPrune.serializedPayloadTokens).toBe(before.serializedPayloadTokens);
+    expect(afterProviderPrune.totalEstimatedTokens).toBe(before.totalEstimatedTokens);
+    expect(JSON.stringify(providerPruned.messages)).not.toContain('native reasoning payload');
+
+    const checkpointed = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 32_000,
+      mode: 'manual',
+      forceCompaction: true,
+      forcePrune: true,
+      estimateSerializedPayloadTokens,
+      countProviderInputItems: false,
+      generateSummary: async () => 'Current objective: continue from compacted Copilot context.',
+    });
+
+    expect(checkpointed.messages[1]?.role).toBe('system');
+    expect(String(checkpointed.messages[1]?.content)).toContain('[COMPACTED CONVERSATION STATE]');
+    expect(checkpointed.footprintAfter.serializedPayloadTokens ?? Number.POSITIVE_INFINITY)
+      .toBeLessThan(before.serializedPayloadTokens ?? 0);
+    expect(JSON.stringify(checkpointed.messages)).not.toContain('old visible payload');
   });
 
   it('does not double-count hidden tool context when provider input items carry the tool result', () => {

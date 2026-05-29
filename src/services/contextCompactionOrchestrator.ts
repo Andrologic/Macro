@@ -241,6 +241,7 @@ export const runContextCompactionOrchestration = async (params: {
   estimateSerializedPayloadTokens?: (
     messages: StreamMessage[],
   ) => number | null | undefined;
+  countProviderInputItems?: boolean;
   onCompactionStarted?: () => void;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
   syntheticBoundary?: boolean;
@@ -255,6 +256,7 @@ export const runContextCompactionOrchestration = async (params: {
     ...params.footprintFields,
     previousModelContextWindowTokens: params.previousModelContextWindowTokens,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+    countProviderInputItems: params.countProviderInputItems,
     mode: params.mode,
     budgetPolicy,
   });
@@ -307,6 +309,7 @@ export const runContextCompactionOrchestration = async (params: {
     modelId: params.modelId,
     currentCompactionState: params.currentCompactionState,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+    countProviderInputItems: params.countProviderInputItems,
     mode: params.mode,
     budgetPolicy,
     forceCompaction: shouldForceBuildCompaction,
@@ -349,6 +352,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
   estimateSerializedPayloadTokens?: (
     messages: StreamMessage[],
   ) => number | null | undefined;
+  countProviderInputItems?: boolean;
   generateSummary?: (input: SummaryGenerationInput) => Promise<string | null>;
 }): Promise<ToolBoundaryCompactionConsolidationResult> => {
   const pending = params.pending;
@@ -378,6 +382,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
       currentCompactionState: params.currentCompactionState ?? null,
       budgetPolicy: params.budgetPolicy,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+      countProviderInputItems: params.countProviderInputItems,
       forceCompaction: true,
       buildForceCompaction: true,
       forcePrune: true,

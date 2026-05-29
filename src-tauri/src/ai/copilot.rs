@@ -2132,7 +2132,9 @@ async fn stream_chat_inner(
         .await
         .map_err(|error| error.to_string())?;
     request.copilot_send_timeout_ms = Some(normalize_copilot_send_timeout_ms(
-        provider_settings.copilot_send_timeout_ms,
+        request
+            .copilot_send_timeout_ms
+            .or(provider_settings.copilot_send_timeout_ms),
     ));
 
     let runtime = ensure_copilot_runtime_for_send(&app_handle, &ai_state).await?;

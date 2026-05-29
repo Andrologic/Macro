@@ -1503,6 +1503,7 @@ const registerUseChatStoreMocks = async () => {
     streamChat: streamChatMock,
     cancelStream: mock(() => undefined),
     sendChatNonStreaming: sendChatNonStreamingMock,
+    estimateCopilotSerializedPayloadTokens: estimateChatCompletionSerializedPayloadTokensMock,
     estimateChatCompletionSerializedPayloadTokens: estimateChatCompletionSerializedPayloadTokensMock,
   }));
 
@@ -7717,6 +7718,147 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         kind: 'manual',
       }),
     ]);
+  });
+
+  it('compacts Copilot chat through a system checkpoint instead of provider input replay', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    providerState.providerConfigs = [
+      {
+        ...DEFAULT_PROVIDER_CONFIGS[0],
+        id: 'copilot-provider',
+        name: 'Copilot',
+        providerType: 'copilot',
+        isLocal: true,
+      },
+    ];
+    providerState.modelsByProvider = {
+      'copilot-provider': [
+        { id: 'copilot-model', name: 'Copilot Model', isEnabled: true },
+      ],
+    };
+    providerState.selectedProviderId = 'copilot-provider';
+    providerState.selectedModelId = 'copilot-model';
+    providerState.selectedReasoningEffort = null;
+    queueSendChatNonStreamingImplementation(async () =>
+      JSON.stringify({
+        currentObjective: 'Continue after compacting Copilot chat history.',
+        userInstructions: ['Keep the answer focused.'],
+        decisions: ['Older Copilot turns were moved into a compacted system checkpoint.'],
+        openQuestions: [],
+        activeFiles: [],
+        toolFacts: [],
+        remainingWork: ['Answer the newest user request.'],
+        summary: 'Copilot must receive compacted history through system text, not provider input items.',
+      })
+    );
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Remember the old Copilot context.',
+        timestamp: '2026-03-18T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: `Old Copilot visible payload.\n${'older visible detail\n'.repeat(160)}`,
+        timestamp: '2026-03-18T10:01:00.000Z',
+        provider_input_items: [
+          {
+            type: 'chat_completion_message',
+            role: 'assistant',
+            content: 'Old Copilot visible payload.',
+            reasoning_content: 'native reasoning payload\n'.repeat(600),
+          },
+        ],
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Retain the recent turn.',
+        timestamp: '2026-03-18T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Recent Copilot answer.',
+        timestamp: '2026-03-18T10:03:00.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Compact this manually.',
+        timestamp: '2026-03-18T10:04:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().compactConversationNow('chat-conv');
+
+    expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+    expect(sendChatNonStreamingMock.mock.calls[0]?.[0]).toMatchObject({
+      providerType: 'copilot',
+      copilotSendTimeoutMs: 60_000,
+    });
+    expect(dbUpsertConversationCompactionStateMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      kind: 'manual',
+      summarySource: 'model',
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Continue with the compacted Copilot context.',
+    });
+    await waitForStreamCallCount(1);
+
+    const streamOptions = getLatestStreamOptions<{
+      providerType: string;
+      messages: Array<Record<string, unknown>>;
+    }>();
+    const serializedRequest = JSON.stringify(streamOptions.messages);
+    expect(streamOptions.providerType).toBe('copilot');
+    expect(serializedRequest).toContain(COMPACTED_STATE_MARKER);
+    expect(serializedRequest).toContain('Continue after compacting Copilot chat history.');
+    expect(serializedRequest).toContain('Retain the recent turn.');
+    expect(serializedRequest).not.toContain('older visible detail');
+    expect(serializedRequest).not.toContain('native reasoning payload');
+    expect(serializedRequest).not.toContain('provider_input_items');
   });
 
   it('marks manual compaction as running while preserving the previous boundary', async () => {

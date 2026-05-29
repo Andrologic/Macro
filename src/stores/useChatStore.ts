@@ -44,6 +44,7 @@ import type { Citation, SourcePassageKind } from "./useCitationsStore";
 import {
   cancelStream,
   sendChatNonStreaming,
+  estimateCopilotSerializedPayloadTokens,
   estimateChatCompletionSerializedPayloadTokens,
   type LiveStreamContextSnapshot,
   type StreamCompletionResult,
@@ -337,6 +338,7 @@ const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
 const ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT = 3;
+const COPILOT_COMPACTION_SUMMARY_TIMEOUT_MS = 60_000;
 const metadataGenerationInFlight = new Set<string>();
 const conversationCompactionStateCache = new Map<
   string,
@@ -358,6 +360,48 @@ const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
 >();
+
+const shouldCountProviderInputItemsForContext = (
+  providerType?: string | null,
+): boolean => providerType !== "copilot";
+
+const normalizeMessagesForProviderContext = (
+  providerType: string | null | undefined,
+  messages: StreamMessage[],
+): StreamMessage[] => {
+  if (providerType !== "copilot") {
+    return messages;
+  }
+
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+  }));
+};
+
+const estimateSerializedPayloadTokensForProvider = (params: {
+  messages: StreamMessage[];
+  providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+  modelId: string;
+}): number => {
+  if (params.providerType === "copilot") {
+    return estimateCopilotSerializedPayloadTokens({
+      messages: normalizeMessagesForProviderContext("copilot", params.messages),
+    });
+  }
+
+  return estimateChatCompletionSerializedPayloadTokens({
+    messages: params.messages,
+    providerType: params.providerType ?? undefined,
+    providerId: params.providerId ?? undefined,
+    baseUrl: params.baseUrl ?? undefined,
+    modelId: params.modelId,
+  });
+};
 const agentCodeCheckpointLoadPromisesByConversationId = new Map<
   string,
   Promise<AgentCodeCheckpoint[]>
@@ -3770,7 +3814,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const lastAttempt = attempts[attempts.length - 1];
     for (const attempt of attempts) {
       const messages = prepareCompactionSummaryMessages(input, attempt);
-      const estimatedTokens = estimateChatCompletionSerializedPayloadTokens({
+      const estimatedTokens = estimateSerializedPayloadTokensForProvider({
         messages,
         providerType: providerConfig.providerType,
         providerId,
@@ -3790,6 +3834,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           modelId,
           reasoningEffort,
           messages,
+          copilotSendTimeoutMs:
+            providerConfig.providerType === "copilot"
+              ? COPILOT_COMPACTION_SUMMARY_TIMEOUT_MS
+              : null,
           onComplete: () => {},
           onError: () => {},
         });
@@ -3864,8 +3912,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.providerConfig.providerType,
     );
     const budgetPolicy = await loadContextBudgetPolicy();
+    const preparedMessagesForContext = normalizeMessagesForProviderContext(
+      params.providerConfig.providerType,
+      params.preparedMessages,
+    );
+    const countProviderInputItems = shouldCountProviderInputItemsForContext(
+      params.providerConfig.providerType,
+    );
     const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-      estimateChatCompletionSerializedPayloadTokens({
+      estimateSerializedPayloadTokensForProvider({
         messages,
         providerType: params.providerConfig.providerType,
         providerId: params.providerId,
@@ -3880,7 +3935,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         boundary: getCompactionBoundaryForMode(params.mode),
         mode: params.mode,
         systemMessage: params.systemMessage,
-        preparedMessages: params.preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         orderedMessages: params.orderedMessages,
         citations: params.citations,
         toolDefinitions,
@@ -3895,6 +3950,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         forceCompaction: params.forceCompaction,
         forcePrune: params.forcePrune,
         estimateSerializedPayloadTokens,
+        countProviderInputItems,
         onCompactionStarted: () => {
           markConversationCompactionStarted(
             params.conversationId,
@@ -4172,21 +4228,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
       const budgetPolicy = await loadContextBudgetPolicy();
+      const preparedMessagesForContext = normalizeMessagesForProviderContext(
+        nextProvider.providerType,
+        preparedRequest.preparedMessages,
+      );
       const footprint = estimateConversationFootprint({
         systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedRequest.preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         orderedMessages: preparedRequest.orderedMessages,
         citations: preparedRequest.citations,
         toolDefinitions,
         ...footprintFields,
         estimateSerializedPayloadTokens: (messages) =>
-          estimateChatCompletionSerializedPayloadTokens({
+          estimateSerializedPayloadTokensForProvider({
             messages,
             providerType: nextProvider.providerType,
             providerId: params.nextProviderId!,
             baseUrl: nextProvider.baseUrl,
             modelId: params.nextModelId!,
           }),
+        countProviderInputItems: shouldCountProviderInputItemsForContext(
+          nextProvider.providerType,
+        ),
         mode: "model_switch",
         budgetPolicy,
       });
@@ -6244,16 +6307,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-      estimateChatCompletionSerializedPayloadTokens({
+      estimateSerializedPayloadTokensForProvider({
         messages,
         providerType: payload.baseline.providerType,
         providerId: payload.baseline.providerId,
         baseUrl: payload.baseline.baseUrl,
         modelId: payload.baseline.modelId,
       });
+    const preparedMessagesForContext = normalizeMessagesForProviderContext(
+      payload.baseline.providerType,
+      payload.preparedMessages,
+    );
     const footprint = estimateConversationFootprint({
       systemMessage: payload.systemMessage,
-      preparedMessages: payload.preparedMessages,
+      preparedMessages: preparedMessagesForContext,
       orderedMessages: payload.orderedMessages,
       citations: payload.citations,
       toolDefinitions: payload.baseline.toolDefinitions,
@@ -6265,6 +6332,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       contextLimitConfidence: payload.baseline.contextLimitConfidence,
       contextLimitWarning: payload.baseline.contextLimitWarning,
       estimateSerializedPayloadTokens,
+      countProviderInputItems: shouldCountProviderInputItemsForContext(
+        payload.baseline.providerType,
+      ),
       mode: "blocking",
       budgetPolicy,
     });
@@ -6295,7 +6365,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : payload.baseline.compactionDecision ?? "send",
         footprintAfter: footprint,
         orderedMessages: payload.orderedMessages,
-        preparedMessages: payload.preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         citations: payload.citations,
       }),
     };
@@ -7646,8 +7716,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.providerConfig.providerType,
     );
     const budgetPolicy = await loadContextBudgetPolicy();
+    const preparedMessagesForContext = normalizeMessagesForProviderContext(
+      params.providerConfig.providerType,
+      preparedRequest.preparedMessages,
+    );
+    const countProviderInputItems = shouldCountProviderInputItemsForContext(
+      params.providerConfig.providerType,
+    );
     const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-      estimateChatCompletionSerializedPayloadTokens({
+      estimateSerializedPayloadTokensForProvider({
         messages,
         providerType: params.providerConfig.providerType,
         providerId: params.providerId,
@@ -7656,12 +7733,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     const initialFootprint = estimateConversationFootprint({
       systemMessage: preparedRequest.systemMessage,
-      preparedMessages: preparedRequest.preparedMessages,
+      preparedMessages: preparedMessagesForContext,
       orderedMessages: preparedRequest.orderedMessages,
       citations: preparedRequest.citations,
       toolDefinitions,
       ...footprintFields,
       estimateSerializedPayloadTokens,
+      countProviderInputItems,
       mode: params.compactionMode ?? "blocking",
       budgetPolicy,
     });
@@ -8520,13 +8598,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const budgetPolicy = await loadContextBudgetPolicy();
 
       const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateChatCompletionSerializedPayloadTokens({
+        estimateSerializedPayloadTokensForProvider({
           messages,
           providerType: providerContext.providerType,
           providerId: providerContext.providerId,
           baseUrl: providerContext.baseUrl,
           modelId: providerContext.modelId,
         });
+      const preparedMessagesForContext = normalizeMessagesForProviderContext(
+        providerContext.providerType,
+        preparedRequest.preparedMessages,
+      );
 
       if (isStale()) {
         return;
@@ -8538,13 +8620,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const result = await buildCompactedMessagesForRequest({
         systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedRequest.preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         orderedMessages: preparedRequest.orderedMessages,
         citations: preparedRequest.citations,
         toolDefinitions,
         ...footprintFields,
         currentCompactionState,
         estimateSerializedPayloadTokens,
+        countProviderInputItems: shouldCountProviderInputItemsForContext(
+          providerContext.providerType,
+        ),
         mode: "blocking",
         budgetPolicy,
         generateSummary: async () =>
@@ -9074,8 +9159,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const budgetPolicy = await loadContextBudgetPolicy();
       const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const preparedMessagesForContext = normalizeMessagesForProviderContext(
+        params.providerConfig.providerType,
+        preparedMessages,
+      );
+      const countProviderInputItems = shouldCountProviderInputItemsForContext(
+        params.providerConfig.providerType,
+      );
       const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateChatCompletionSerializedPayloadTokens({
+        estimateSerializedPayloadTokensForProvider({
           messages,
           providerType: params.providerConfig.providerType,
           providerId: params.selectedProviderId,
@@ -9084,12 +9176,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       const footprint = estimateConversationFootprint({
         systemMessage,
-        preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         orderedMessages,
         citations: contextDiagnosticsBaseline.citations,
         toolDefinitions,
         ...footprintFields,
         estimateSerializedPayloadTokens,
+        countProviderInputItems,
         mode: "safety_prestream",
         budgetPolicy,
       });
@@ -9108,7 +9201,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           boundary: "post_tool_batch",
           mode: "safety_prestream",
           systemMessage,
-          preparedMessages,
+          preparedMessages: preparedMessagesForContext,
           orderedMessages,
           citations: contextDiagnosticsBaseline.citations,
           toolDefinitions,
@@ -9117,6 +9210,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerType: params.providerConfig.providerType,
           modelId: params.selectedModelId,
           estimateSerializedPayloadTokens,
+          countProviderInputItems,
           budgetPolicy,
           latestBoundaryPayloadTokens: latestToolBatchTokens,
           buildForceCompaction: true,
@@ -9309,8 +9403,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.modeAtSend,
       );
       const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const preparedMessagesForContext = normalizeMessagesForProviderContext(
+        params.providerConfig.providerType,
+        preparedRequest.preparedMessages,
+      );
+      const countProviderInputItems = shouldCountProviderInputItemsForContext(
+        params.providerConfig.providerType,
+      );
       const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateChatCompletionSerializedPayloadTokens({
+        estimateSerializedPayloadTokensForProvider({
           messages,
           providerType: params.providerConfig.providerType,
           providerId: params.selectedProviderId,
@@ -9320,7 +9421,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const consolidation = await consolidateCompletedAssistantTurnCompaction({
         pending,
         systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedRequest.preparedMessages,
+        preparedMessages: preparedMessagesForContext,
         orderedMessages: preparedRequest.orderedMessages,
         citations: preparedRequest.citations,
         toolDefinitions,
@@ -9330,6 +9431,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.selectedModelId,
         budgetPolicy,
         estimateSerializedPayloadTokens,
+        countProviderInputItems,
         generateSummary: (input) =>
           generateCompactionSummary(
             params.providerConfig,
