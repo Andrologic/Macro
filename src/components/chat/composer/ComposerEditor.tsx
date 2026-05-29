@@ -61,7 +61,13 @@ const composerTheme = {
   paragraph: 'composer-editor-paragraph',
 };
 
-const SKIP_DOM_SELECTION_UPDATE_TAG = 'skip-dom-selection';
+// Keep these Lexical tag values local: importing update tag constants from
+// `lexical` creates a Bun test initialization cycle with @lexical/react.
+const LEXICAL_UPDATE_TAGS = {
+  historyMerge: 'history-merge',
+  skipDomSelection: 'skip-dom-selection',
+  skipSelectionFocus: 'skip-selection-focus',
+} as const;
 
 const initializeComposerState = () => {
   const root = $getRoot();
@@ -222,14 +228,17 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
             setEditorPlainText('', surface, syncContextRefs, { selectEnd: false });
             $setSelection(null);
           },
-          { tag: SKIP_DOM_SELECTION_UPDATE_TAG }
+          { tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge] }
         );
         textRef.current = '';
       },
       setText: (text: string) => {
-        editor.update(() => {
-          setEditorPlainText(text, surface, syncContextRefs);
-        });
+        editor.update(
+          () => {
+            setEditorPlainText(text, surface, syncContextRefs);
+          },
+          { tag: [LEXICAL_UPDATE_TAGS.skipSelectionFocus, LEXICAL_UPDATE_TAGS.historyMerge] }
+        );
         textRef.current = text;
       },
       getTextContent: () => textRef.current,
@@ -380,9 +389,13 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
               {placeholder}
             </div>
           }
-          ErrorBoundary={LexicalErrorBoundary}
+          ErrorBoundary={ComposerLexicalErrorBoundary}
         />
-        <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
+        <OnChangePlugin
+          onChange={handleChange}
+          ignoreSelectionChange
+          ignoreHistoryMergeTagChange={false}
+        />
         <HistoryPlugin />
         {syncContextRefs && <MentionPlugin />}
         {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
@@ -392,12 +405,30 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
 );
 InnerEditor.displayName = 'InnerEditor';
 
-// Simple error boundary
-function LexicalErrorBoundary({ children }: { children: React.ReactNode; onError?: (e: Error) => void }) {
-  return <>{children}</>;
-}
-
 // ------ Main exported component ------
+
+class ComposerLexicalErrorBoundary extends React.Component<
+  { children: React.ReactElement; onError: (error: Error) => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return null;
+    }
+
+    return this.props.children;
+  }
+}
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   (props, ref) => {

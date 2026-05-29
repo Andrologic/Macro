@@ -5,7 +5,17 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
 import { useSkillsStore } from '../../stores/useSkillsStore';
-import type { ChatMessage, ContextReference, Need, SkillTurnFeedback } from '../../types';
+import type {
+  ChatMessage,
+  ContextReference,
+  Need,
+  PersistedContextReference,
+  PlanNode,
+  PredictedBranch,
+  SkillManifest,
+  SkillTurnFeedback,
+  WorkspaceFileReference,
+} from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
@@ -235,6 +245,102 @@ interface ComposerEditSession {
   savedDraftImages: MessageImageAttachment[];
   savedDraftContextRefs: ContextReference[];
 }
+
+interface ComposerDraftSnapshot {
+  text: string;
+  contextRefs: ContextReference[];
+}
+
+type PromptHistoryEntry = ComposerDraftSnapshot;
+
+const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
+  text: '',
+  contextRefs: [],
+};
+
+const buildSnapshotContextRefData = (
+  ref: PersistedContextReference,
+): ContextReference['data'] => {
+  if (ref.kind === 'skill') {
+    return {
+      id: ref.id,
+      name: ref.title,
+      description: '',
+      rootPath: ref.source?.rootPath ?? ref.skillFilePath ?? ref.id,
+      skillFilePath: ref.skillFilePath ?? null,
+      location: ref.location,
+      source: ref.source ?? {
+        kind: 'global',
+        namespace: 'agents',
+        projectId: null,
+        projectName: null,
+        rootPath: ref.skillFilePath ?? ref.id,
+      },
+      resources: [],
+      scripts: [],
+      contentHash: ref.contentHash,
+      validationErrors: [],
+      isValid: true,
+    } satisfies SkillManifest;
+  }
+
+  if (ref.kind === 'file') {
+    return {
+      id: ref.id,
+      path: ref.path ?? ref.id,
+      relativePath: ref.relativePath ?? ref.title,
+      projectId: ref.projectId ?? null,
+      projectName: ref.projectName ?? null,
+    } satisfies WorkspaceFileReference;
+  }
+
+  if (ref.kind === 'need') {
+    return {
+      id: ref.id,
+      title: ref.title,
+      description: '',
+      category: 'other',
+      status: 'identified',
+      priority: 'medium',
+      tags: [],
+      createdAt: '',
+      updatedAt: '',
+    } satisfies Need;
+  }
+
+  if (ref.kind === 'plan-node') {
+    return {
+      id: ref.id,
+      title: ref.title,
+      type: 'task',
+      status: 'pending',
+      dependencies: [],
+    } satisfies PlanNode;
+  }
+
+  return {
+    id: ref.id,
+    name: ref.title,
+    color: '#8b8f98',
+    parentBranch: null,
+    projectId: ref.projectId ?? '',
+    taskIds: [],
+    status: 'pending',
+  } satisfies PredictedBranch;
+};
+
+const cloneContextRefs = (
+  refs: readonly (ContextReference | PersistedContextReference)[] | null | undefined
+): ContextReference[] =>
+  refs
+    ? refs.map((ref) => ({
+        id: ref.id,
+        kind: ref.kind,
+        title: ref.title,
+        subtitle: ref.subtitle,
+        data: 'data' in ref ? ref.data : buildSnapshotContextRefData(ref),
+      }))
+    : [];
 
 const resolveAssistantActivityAnchorId = (
   messages: ChatMessage[],
@@ -828,7 +934,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
-  const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
+    EMPTY_COMPOSER_DRAFT_SNAPSHOT
+  );
   const pendingPromptHistoryTextRef = useRef<string | null>(null);
   const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
   const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -1044,36 +1152,51 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const promptHistory = useMemo(() => {
     return currentMessages
       .filter((message) => message.role === 'user')
-      .map((message) => message.content.trim())
-      .filter((content) => content.length > 0);
+      .map<PromptHistoryEntry>((message) => ({
+        text: message.content.trim(),
+        contextRefs: cloneContextRefs(message.context_refs),
+      }))
+      .filter((entry) => entry.text.length > 0);
   }, [currentMessages]);
 
   const resetPromptHistoryNavigation = useCallback(() => {
     pendingPromptHistoryTextRef.current = null;
     setPromptHistoryIndex(null);
-    setDraftBeforeHistory('');
+    setDraftBeforeHistory(EMPTY_COMPOSER_DRAFT_SNAPSHOT);
   }, []);
 
   const findPromptHistoryIndexByText = useCallback((text: string): number | null => {
     for (let index = promptHistory.length - 1; index >= 0; index -= 1) {
-      if (promptHistory[index] === text) {
+      if (promptHistory[index]?.text === text) {
         return index;
       }
     }
     return null;
   }, [promptHistory]);
 
-  const applyPromptHistoryText = useCallback((text: string) => {
+  const getComposerDraftSnapshot = useCallback((text: string): ComposerDraftSnapshot => ({
+    text,
+    contextRefs: cloneContextRefs(composerContextRefs),
+  }), [composerContextRefs]);
+
+  const applyComposerDraftSnapshot = useCallback((snapshot: ComposerDraftSnapshot) => {
     const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
-    if (currentText === text) {
+    clearComposerContextRefs();
+    if (currentText === snapshot.text) {
       pendingPromptHistoryTextRef.current = null;
-      setInputValue(text);
+      setInputValue(snapshot.text);
+      snapshot.contextRefs.forEach((ref) => {
+        addComposerContextRef(ref);
+      });
       return;
     }
-    pendingPromptHistoryTextRef.current = text;
-    setInputValue(text);
-    composerEditorRef.current?.setText(text);
-  }, [inputValue]);
+    pendingPromptHistoryTextRef.current = snapshot.text;
+    setInputValue(snapshot.text);
+    composerEditorRef.current?.setText(snapshot.text);
+    snapshot.contextRefs.forEach((ref) => {
+      addComposerContextRef(ref);
+    });
+  }, [addComposerContextRef, clearComposerContextRefs, inputValue]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -1903,21 +2026,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         promptHistoryIndex ?? findPromptHistoryIndexByText(currentText);
 
       if (effectiveHistoryIndex === null) {
-        setDraftBeforeHistory(currentText);
+        setDraftBeforeHistory(getComposerDraftSnapshot(currentText));
         const lastIndex = promptHistory.length - 1;
         setPromptHistoryIndex(lastIndex);
-        applyPromptHistoryText(promptHistory[lastIndex]);
+        applyComposerDraftSnapshot(promptHistory[lastIndex]);
         return;
       }
 
       if (promptHistoryIndex === null) {
-        setDraftBeforeHistory(currentText);
+        setDraftBeforeHistory(getComposerDraftSnapshot(currentText));
       }
 
       if (effectiveHistoryIndex > 0) {
         const nextIndex = effectiveHistoryIndex - 1;
         setPromptHistoryIndex(nextIndex);
-        applyPromptHistoryText(promptHistory[nextIndex]);
+        applyComposerDraftSnapshot(promptHistory[nextIndex]);
       } else if (promptHistoryIndex === null) {
         setPromptHistoryIndex(effectiveHistoryIndex);
       }
@@ -1929,16 +2052,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (promptHistoryIndex < promptHistory.length - 1) {
       const nextIndex = promptHistoryIndex + 1;
       setPromptHistoryIndex(nextIndex);
-      applyPromptHistoryText(promptHistory[nextIndex]);
+      applyComposerDraftSnapshot(promptHistory[nextIndex]);
       return;
     }
 
     setPromptHistoryIndex(null);
-    applyPromptHistoryText(draftBeforeHistory);
+    applyComposerDraftSnapshot(draftBeforeHistory);
   }, [
-    applyPromptHistoryText,
+    applyComposerDraftSnapshot,
     draftBeforeHistory,
     findPromptHistoryIndexByText,
+    getComposerDraftSnapshot,
     inputValue,
     promptHistory,
     promptHistoryIndex,
