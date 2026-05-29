@@ -115,9 +115,11 @@ type MockChatState = {
         isDestructive?: boolean;
         summary: string;
         detail?: string;
+        args?: Record<string, unknown>;
         rememberKey: string;
     }
   >;
+  skillTurnFeedbackByMessageId: Record<string, unknown>;
   getPendingToolApproval: ReturnType<typeof mock>;
   approvePendingToolApprovalOnce: ReturnType<typeof mock>;
   approvePendingToolApprovalForConversation: ReturnType<typeof mock>;
@@ -177,6 +179,7 @@ type AppStoreState = {
   activePlanContext: { id: string; [key: string]: unknown } | null;
   planNodes: unknown[];
   predictedBranches: unknown[];
+  openSettings: ReturnType<typeof mock>;
 };
 
 type ProviderState = {
@@ -359,6 +362,14 @@ const loadChatZoneModule = async () => {
 
   mock.module('../../stores/useChatStore', () => ({
     useChatStore,
+  }));
+
+  mock.module('../../stores/useSkillsStore', () => ({
+    useSkillsStore: {
+      getState: () => ({
+        refreshSkills: mock(async () => undefined),
+      }),
+    },
   }));
 
   mock.module('../../stores/useNeedsStore', () => ({
@@ -640,6 +651,7 @@ const resetState = () => {
     activePlanContext: null,
     planNodes: [],
     predictedBranches: [],
+    openSettings: mock(() => undefined),
   };
 
   chatState = {
@@ -657,6 +669,7 @@ const resetState = () => {
       chatState.messages.filter((message) => message.conversation_id === conversationId),
     questionnaireDraftsByConversationId: {},
     pendingToolApprovalByConversationId: {},
+    skillTurnFeedbackByMessageId: {},
     getPendingToolApproval: mock((conversationId: string) =>
       chatState.pendingToolApprovalByConversationId[conversationId] ?? null
     ),
@@ -991,6 +1004,50 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('[skill: test-skill]');
     expect(requireContainer().textContent).toContain('utilise ce skill');
     expect(requireContainer().textContent).toContain('sur deux lignes');
+  });
+
+  it('renders compact skill turn feedback for loaded and blocked skills', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: '[skill: test-skill] utilise ce skill',
+        }),
+      ],
+      skillTurnFeedbackByMessageId: {
+        'msg-user-1': {
+          messageId: 'msg-user-1',
+          loaded: [{ title: 'test-skill', status: 'loaded' }],
+          warnings: [
+            {
+              title: 'Skill context',
+              status: 'blocked',
+              reason: 'Skill docs is disabled. Enable it in Settings > Skills before using it.',
+              action: 'open_settings',
+            },
+          ],
+        },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const feedback = requireContainer().querySelector('[data-testid="skill-turn-feedback"]');
+    expect(feedback?.textContent).toContain('test-skill loaded');
+    expect(feedback?.textContent).toContain('Skill docs is disabled');
+
+    await act(async () => {
+      feedback
+        ?.querySelector<HTMLButtonElement>('button[aria-label="Open Settings"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(appState.openSettings).toHaveBeenCalledWith('skills');
   });
 
   it('renders file references in user messages as compact chips', async () => {

@@ -125,7 +125,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [skill.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+          [skill.id]: { enabled: true, scriptsEnabled: true, extraLegacyFlag: false },
         },
       }),
     );
@@ -139,12 +139,17 @@ describe('useSkillsStore', () => {
     expect(useSkillsStore.getState().getEnabledSkills()).toEqual([skill]);
     expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
       enabled: true,
-      trusted: true,
       scriptsEnabled: true,
+    });
+    expect(JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}')).toEqual({
+      version: 2,
+      skills: {
+        [skill.id]: { enabled: true, scriptsEnabled: true },
+      },
     });
   });
 
-  it('imports local skills as enabled but untrusted global skills', async () => {
+  it('imports local skills as enabled with scripts disabled', async () => {
     const skill = buildSkill('global:agents:formatter:aaa111', { name: 'formatter' });
     const { useSkillsStore, services } = await loadSkillsStore([skill]);
 
@@ -155,12 +160,11 @@ describe('useSkillsStore', () => {
     });
     expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
       enabled: true,
-      trusted: false,
       scriptsEnabled: false,
     });
     expect(JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}')).toMatchObject({
       skills: {
-        [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        [skill.id]: { enabled: true, scriptsEnabled: false },
       },
     });
   });
@@ -197,7 +201,7 @@ describe('useSkillsStore', () => {
       .toMatchObject({ skillId: skill.id });
   });
 
-  it('blocks script execution until the skill is trusted and scripts are enabled', async () => {
+  it('blocks script execution until the skill is enabled and scripts are enabled', async () => {
     const skill = buildSkill('project:project-1:agents:runner:aaa111', { name: 'runner' });
     const { useSkillsStore, services } = await loadSkillsStore([skill]);
     await useSkillsStore.getState().loadSettings();
@@ -207,13 +211,19 @@ describe('useSkillsStore', () => {
       scriptPath: 'scripts/check.sh',
     })).toContain('disabled');
 
+    useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+    expect(await useSkillsStore.getState().runSkillScript({
+      skillId: skill.id,
+      scriptPath: 'scripts/check.sh',
+    })).toContain('disabled');
+
+    useSkillsStore.getState().setSkillScriptsEnabled(skill.id, false);
     useSkillsStore.getState().setSkillEnabled(skill.id, true);
     expect(await useSkillsStore.getState().runSkillScript({
       skillId: skill.id,
       scriptPath: 'scripts/check.sh',
-    })).toContain('script execution is disabled');
+    })).toContain('Scripts are disabled for this skill');
 
-    useSkillsStore.getState().setSkillTrusted(skill.id, true);
     useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
     const result = await useSkillsStore.getState().runSkillScript({
       skillId: skill.id,
@@ -233,6 +243,49 @@ describe('useSkillsStore', () => {
     });
   });
 
+  it('uses permission snapshots as a floor and live settings as a revocation veto', async () => {
+    const skill = buildSkill('project:project-1:agents:runner:aaa111', { name: 'runner' });
+    localStorage.setItem(
+      'macro_skill_settings',
+      JSON.stringify({
+        version: 1,
+        skills: {
+          [skill.id]: { enabled: true, scriptsEnabled: false },
+        },
+      }),
+    );
+    const { useSkillsStore, services } = await loadSkillsStore([skill]);
+    await useSkillsStore.getState().loadSettings();
+
+    const beforeGrant = useSkillsStore
+      .getState()
+      .createSkillPermissionSnapshot('conversation-1', 'turn-1');
+    useSkillsStore.getState().setSkillScriptsEnabled(skill.id, true);
+
+    expect(useSkillsStore.getState().getRunnableSkillIds()).toEqual([skill.id]);
+    expect(useSkillsStore.getState().getRunnableSkillIds({
+      permissionSnapshot: beforeGrant,
+    })).toEqual([]);
+    expect(await useSkillsStore.getState().runSkillScript({
+      skillId: skill.id,
+      scriptPath: 'scripts/check.sh',
+    }, beforeGrant)).toContain('when this turn started');
+
+    const afterGrant = useSkillsStore
+      .getState()
+      .createSkillPermissionSnapshot('conversation-1', 'turn-2');
+    expect(useSkillsStore.getState().getRunnableSkillIds({
+      permissionSnapshot: afterGrant,
+    })).toEqual([skill.id]);
+
+    useSkillsStore.getState().setSkillScriptsEnabled(skill.id, false);
+    expect(await useSkillsStore.getState().runSkillScript({
+      skillId: skill.id,
+      scriptPath: 'scripts/check.sh',
+    }, afterGrant)).toContain('Scripts are disabled for this skill');
+    expect(services.runSkillScript).not.toHaveBeenCalled();
+  });
+
   it('refuses ambiguous explicit name mentions', async () => {
     const projectSkill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });
     const globalSkill = buildSkill('global:agents:docs:bbb222', { name: 'docs' });
@@ -241,8 +294,8 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [projectSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
-          [globalSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [projectSkill.id]: { enabled: true, scriptsEnabled: false },
+          [globalSkill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );
@@ -273,8 +326,8 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [projectSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
-          [globalSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [projectSkill.id]: { enabled: true, scriptsEnabled: false },
+          [globalSkill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );
@@ -287,9 +340,7 @@ describe('useSkillsStore', () => {
     expect(useSkillsStore.getState().findEnabledSkillByName(globalSkill.id)).toEqual(globalSkill);
     expect(useSkillsStore.getState().resolveEnabledSkillMentions('Use $docs')).toEqual([projectSkill]);
 
-    useSkillsStore.getState().setSkillTrusted(projectSkill.id, true);
     useSkillsStore.getState().setSkillScriptsEnabled(projectSkill.id, true);
-    useSkillsStore.getState().setSkillTrusted(globalSkill.id, true);
     useSkillsStore.getState().setSkillScriptsEnabled(globalSkill.id, true);
     expect(useSkillsStore.getState().getRunnableSkillIds()).toEqual([projectSkill.id]);
     expect(useSkillsStore.getState().getRunnableSkillIds({ includeShadowed: true })).toEqual([
@@ -327,7 +378,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [skill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );
@@ -349,7 +400,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          'global:formatter': { enabled: true, trusted: true, scriptsEnabled: true },
+          'global:formatter': { enabled: true, scriptsEnabled: true },
         },
       }),
     );
@@ -359,14 +410,12 @@ describe('useSkillsStore', () => {
 
     expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
       enabled: true,
-      trusted: true,
       scriptsEnabled: true,
     });
     const stored = JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}');
     expect(stored.skills['global:formatter']).toBeUndefined();
     expect(stored.skills[skill.id]).toEqual({
       enabled: true,
-      trusted: true,
       scriptsEnabled: true,
     });
   });
@@ -378,7 +427,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [skill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );
@@ -431,7 +480,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [skill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );
@@ -488,7 +537,7 @@ describe('useSkillsStore', () => {
       JSON.stringify({
         version: 1,
         skills: {
-          [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+          [skill.id]: { enabled: true, scriptsEnabled: false },
         },
       }),
     );

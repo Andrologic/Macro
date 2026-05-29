@@ -26,6 +26,7 @@ import type {
   PersistedContextReference,
   SkillActivation,
   SkillManifest,
+  SkillPermissionSnapshot,
   SkillProjectRoot,
   SkillScriptRunRequest,
   SkillSettings,
@@ -37,6 +38,7 @@ export interface SkillTurnPreparation {
   explicitSkillIds: string[];
   warnings: string[];
   toolsAvailable: boolean;
+  permissionSnapshot: SkillPermissionSnapshot | null;
 }
 
 const getProjectRootsFromAppState = (): SkillProjectRoot[] => {
@@ -57,42 +59,97 @@ const isSkillContextRef = (
 ): ref is (ContextReference | PersistedContextReference) & { kind: 'skill' } =>
   ref.kind === 'skill';
 
+const createTurnId = (): string =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `skill-turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const buildSkillPermissionSnapshot = (
+  conversationId: string,
+  skills: SkillManifest[],
+  getSettings: (skillId: string) => SkillSettings,
+  turnId: string = createTurnId(),
+): SkillPermissionSnapshot => ({
+  conversationId,
+  turnId,
+  capturedAt: new Date().toISOString(),
+  skills: Object.fromEntries(
+    skills.map((skill) => {
+      const settings = getSettings(skill.id);
+      return [
+        skill.id,
+        {
+          skillId: skill.id,
+          enabled: settings.enabled,
+          scriptsEnabled: settings.scriptsEnabled,
+          hasScripts: skill.scripts.length > 0,
+        },
+      ];
+    }),
+  ),
+});
+
+const canRunSkillScriptFromSnapshot = (
+  snapshot: SkillPermissionSnapshot | null | undefined,
+  skillId: string,
+): boolean => {
+  if (!snapshot) return true;
+  const permission = snapshot.skills[skillId];
+  return permission?.enabled === true &&
+    permission.scriptsEnabled === true &&
+    permission.hasScripts === true;
+};
+
 interface SkillsStore {
   skills: SkillManifest[];
   settingsBySkillId: Record<string, SkillSettings>;
   activationsByConversationId: Record<string, SkillActivation[] | undefined>;
+  permissionSnapshotsByConversationId: Record<string, SkillPermissionSnapshot | undefined>;
   isLoading: boolean;
   saving: boolean;
   lastError: string | null;
   loadSettings: () => Promise<void>;
   refreshSkills: () => Promise<void>;
   installSkillFromLocalPath: (sourcePath: string) => Promise<void>;
-  updateSkillSettings: (skillId: string, settings: Partial<SkillSettings>) => void;
+  createSkillTemplate: () => Promise<SkillManifest | null>;
   setSkillEnabled: (skillId: string, enabled: boolean) => void;
-  setSkillTrusted: (skillId: string, trusted: boolean) => void;
   setSkillScriptsEnabled: (skillId: string, scriptsEnabled: boolean) => void;
   getSkillSettings: (skillId: string) => SkillSettings;
   getSkillById: (skillId: string) => SkillManifest | null;
   getEnabledSkills: () => SkillManifest[];
-  getEnabledLoadableSkills: (options?: { includeShadowed?: boolean }) => SkillManifest[];
-  getRunnableSkillIds: (options?: { includeShadowed?: boolean }) => string[];
+  getEnabledLoadableSkills: (options?: {
+    includeShadowed?: boolean;
+    permissionSnapshot?: SkillPermissionSnapshot | null;
+  }) => SkillManifest[];
+  getRunnableSkillIds: (options?: {
+    includeShadowed?: boolean;
+    permissionSnapshot?: SkillPermissionSnapshot | null;
+  }) => string[];
   findEnabledSkillByName: (name: string) => SkillManifest | null;
   resolveEnabledSkillMentions: (content: string) => SkillManifest[];
+  createSkillPermissionSnapshot: (conversationId: string, turnId?: string) => SkillPermissionSnapshot;
+  getSkillPermissionSnapshot: (conversationId: string) => SkillPermissionSnapshot | null;
+  clearSkillPermissionSnapshot: (conversationId: string) => void;
   prepareSkillsForTurn: (params: {
     conversationId: string;
     content: string;
     contextRefs?: Array<ContextReference | PersistedContextReference>;
     toolsAvailable: boolean;
+    permissionSnapshot?: SkillPermissionSnapshot | null;
   }) => Promise<SkillTurnPreparation>;
   activateSkill: (skillId: string, conversationId?: string) => Promise<string>;
   readSkillResource: (skillId: string, resourcePath: string) => Promise<string>;
-  runSkillScript: (request: SkillScriptRunRequest) => Promise<string>;
+  runSkillScript: (
+    request: SkillScriptRunRequest,
+    permissionSnapshot?: SkillPermissionSnapshot | null,
+  ) => Promise<string>;
 }
 
 export const useSkillsStore = create<SkillsStore>((set, get) => ({
   skills: [],
   settingsBySkillId: {},
   activationsByConversationId: {},
+  permissionSnapshotsByConversationId: {},
   isLoading: false,
   saving: false,
   lastError: null,
@@ -130,7 +187,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
       const installed = await services.installSkillFromLocalPath({ sourcePath });
       const nextSettings = {
         ...get().settingsBySkillId,
-        [installed.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+        [installed.id]: { enabled: true, scriptsEnabled: false },
       };
       writeStoredSkillSettings(nextSettings);
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
@@ -144,38 +201,51 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     }
   },
 
-  updateSkillSettings: (skillId, settings) => {
+  createSkillTemplate: async () => {
+    set({ saving: true, lastError: null });
+    try {
+      const created = await services.createSkillTemplate();
+      const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      const migratedSettings = migrateLegacySkillSettings(get().settingsBySkillId, response.skills);
+      set({
+        skills: response.skills,
+        settingsBySkillId: migratedSettings,
+        saving: false,
+      });
+      return created.skill;
+    } catch (error) {
+      set({ saving: false, lastError: toServiceError(error).message });
+      return null;
+    }
+  },
+
+  setSkillEnabled: (skillId, enabled) => {
     set((state) => {
       const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
-      const next = normalizeSkillSettings({
-        ...current,
-        ...settings,
-        scriptsEnabled: settings.trusted === false ? false : settings.scriptsEnabled ?? current.scriptsEnabled,
-      });
       const settingsBySkillId = {
         ...state.settingsBySkillId,
-        [skillId]: next,
+        [skillId]: normalizeSkillSettings({
+          ...current,
+          enabled,
+        }),
       };
       writeStoredSkillSettings(settingsBySkillId);
       return { settingsBySkillId };
     });
   },
 
-  setSkillEnabled: (skillId, enabled) => {
-    get().updateSkillSettings(skillId, { enabled });
-  },
-
-  setSkillTrusted: (skillId, trusted) => {
-    get().updateSkillSettings(skillId, {
-      trusted,
-      scriptsEnabled: trusted ? get().getSkillSettings(skillId).scriptsEnabled : false,
-    });
-  },
-
   setSkillScriptsEnabled: (skillId, scriptsEnabled) => {
-    const current = get().getSkillSettings(skillId);
-    get().updateSkillSettings(skillId, {
-      scriptsEnabled: current.trusted && scriptsEnabled,
+    set((state) => {
+      const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
+      const settingsBySkillId = {
+        ...state.settingsBySkillId,
+        [skillId]: normalizeSkillSettings({
+          ...current,
+          scriptsEnabled,
+        }),
+      };
+      writeStoredSkillSettings(settingsBySkillId);
+      return { settingsBySkillId };
     });
   },
 
@@ -206,10 +276,44 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     return Array.from(new Map(resolved.map((skill) => [skill.id, skill])).values());
   },
 
-  prepareSkillsForTurn: async ({ conversationId, content, contextRefs = [], toolsAvailable }) => {
+  createSkillPermissionSnapshot: (conversationId, turnId) => {
+    const snapshot = buildSkillPermissionSnapshot(
+      conversationId,
+      get().skills,
+      get().getSkillSettings,
+      turnId,
+    );
+    set((state) => ({
+      permissionSnapshotsByConversationId: {
+        ...state.permissionSnapshotsByConversationId,
+        [conversationId]: snapshot,
+      },
+    }));
+    return snapshot;
+  },
+
+  getSkillPermissionSnapshot: (conversationId) =>
+    get().permissionSnapshotsByConversationId[conversationId] ?? null,
+
+  clearSkillPermissionSnapshot: (conversationId) => {
+    set((state) => {
+      const next = { ...state.permissionSnapshotsByConversationId };
+      delete next[conversationId];
+      return { permissionSnapshotsByConversationId: next };
+    });
+  },
+
+  prepareSkillsForTurn: async ({
+    conversationId,
+    content,
+    contextRefs = [],
+    toolsAvailable,
+    permissionSnapshot = null,
+  }) => {
     const state = get();
-    const enabledSkills = state.getEnabledLoadableSkills({ includeShadowed: true });
-    const effectiveEnabledSkills = state.getEnabledSkills();
+    const availabilityOptions = { includeShadowed: true, permissionSnapshot };
+    const enabledSkills = state.getEnabledLoadableSkills(availabilityOptions);
+    const effectiveEnabledSkills = state.getEnabledLoadableSkills({ permissionSnapshot });
     const enabledSkillsById = new Map(enabledSkills.map((skill) => [skill.id, skill]));
     const allSkillsById = new Map(state.skills.map((skill) => [skill.id, skill]));
     const selectedSkills: SkillManifest[] = [];
@@ -235,7 +339,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         continue;
       }
       if (skillIdentityChanged(skill, expectedIdentity)) {
-        warnings.push(`Skill ${ref.title} changed location. Re-select it from the Skills menu.`);
+        warnings.push(`Skill ${ref.title} changed location. Re-select it from the slash menu.`);
         continue;
       }
       addSkill(skill);
@@ -254,9 +358,17 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         addSkill(matches[0]);
       } else if (matches.length > 1) {
         warnings.push(
-          `Skill "${mention}" is ambiguous. Select the exact skill from the Skills menu.`,
+          `Skill "${mention}" is ambiguous. Select the exact skill from the slash menu.`,
         );
       }
+    }
+
+    if (!toolsAvailable && selectedSkills.some((skill) =>
+      skill.resources.length > 0 || skill.scripts.length > 0
+    )) {
+      warnings.push(
+        'Skill instructions were loaded, but resources and scripts require a model/provider with native tool calling.',
+      );
     }
 
     const systemInstructionBlocks: string[] = [];
@@ -281,6 +393,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
       explicitSkillIds: selectedSkills.map((skill) => skill.id),
       warnings,
       toolsAvailable,
+      permissionSnapshot,
     };
   },
 
@@ -352,13 +465,16 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     return response.content;
   },
 
-  runSkillScript: async (request) => {
+  runSkillScript: async (request, permissionSnapshot = null) => {
+    if (!canRunSkillScriptFromSnapshot(permissionSnapshot, request.skillId)) {
+      return 'Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.';
+    }
     const settings = get().getSkillSettings(request.skillId);
     if (!settings.enabled) {
-      return `Skill ${request.skillId} is disabled.`;
+      return 'This skill is disabled. Enable this skill in Settings before running scripts.';
     }
-    if (!settings.trusted || !settings.scriptsEnabled) {
-      return `Skill script execution is disabled for ${request.skillId}. Trust the skill and enable scripts in Settings > Skills.`;
+    if (!settings.scriptsEnabled) {
+      return 'Scripts are disabled for this skill. Enable Scripts for this skill in Settings.';
     }
     const skill = get().getSkillById(request.skillId);
     if (skill && !skill.isValid) {

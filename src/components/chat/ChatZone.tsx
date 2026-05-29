@@ -4,7 +4,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import type { MessageImageAttachment } from '../../stores/useChatStore';
-import type { ChatMessage, ContextReference, Need } from '../../types';
+import { useSkillsStore } from '../../stores/useSkillsStore';
+import type { ChatMessage, ContextReference, Need, SkillTurnFeedback } from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
@@ -219,6 +220,7 @@ interface ChatMessageRowProps {
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   needsByTitle: Map<string, Need>;
+  skillTurnFeedback?: SkillTurnFeedback | null;
 }
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file):\s*([^\]]+)\]/gi;
@@ -311,6 +313,85 @@ const UserMessageContent: React.FC<{
   );
 };
 
+const SkillTurnFeedbackRow: React.FC<{
+  feedback?: SkillTurnFeedback | null;
+}> = ({ feedback }) => {
+  const { t } = useTranslation();
+  if (!feedback || (feedback.loaded.length === 0 && feedback.warnings.length === 0)) {
+    return null;
+  }
+
+  const loadedLabel =
+    feedback.loaded.length === 1
+      ? t('chat.skillFeedbackLoadedOne', '{{name}} loaded', {
+          name: feedback.loaded[0]?.title ?? t('settings.skills', 'Skills'),
+        })
+      : t('chat.skillFeedbackLoadedMany', '{{count}} skills loaded', {
+          count: feedback.loaded.length,
+        });
+  const primaryWarning = feedback.warnings[0];
+
+  const handleAction = (action: SkillTurnFeedback['warnings'][number]['action']) => {
+    if (action === 'open_settings') {
+      useAppStore.getState().openSettings('skills');
+      return;
+    }
+    if (action === 'refresh') {
+      void useSkillsStore.getState().refreshSkills();
+    }
+  };
+
+  return (
+    <div
+      data-testid="skill-turn-feedback"
+      className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] leading-none text-muted-foreground/80"
+    >
+      {feedback.loaded.length > 0 && (
+        <span
+          className="inline-flex h-5 min-w-0 items-center gap-1 rounded-md border border-border/60 bg-background/35 px-1.5"
+          title={feedback.loaded.map((item) => item.title).join(', ')}
+        >
+          <Icon name="sparkles" size={11} className="shrink-0 text-fuchsia-400" />
+          <span className="truncate">{loadedLabel}</span>
+        </span>
+      )}
+      {primaryWarning && (
+        <span
+          className="inline-flex h-5 min-w-0 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-1.5 text-amber-700 dark:text-amber-300"
+          title={feedback.warnings.map((item) => item.reason || item.title).join('\n')}
+        >
+          <Icon name="triangle-alert" size={11} className="shrink-0" />
+          <span className="truncate">
+            {primaryWarning.reason || t('chat.skillFeedbackBlocked', 'Skill context blocked')}
+          </span>
+          {primaryWarning.action && (
+            <button
+              type="button"
+              onClick={() => handleAction(primaryWarning.action)}
+              className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-current/80 transition-colors hover:bg-background/40 hover:text-current"
+              title={
+                primaryWarning.action === 'refresh'
+                  ? t('common.refresh', 'Refresh')
+                  : t('skills.openSettings', 'Open Settings')
+              }
+              aria-label={
+                primaryWarning.action === 'refresh'
+                  ? t('common.refresh', 'Refresh')
+                  : t('skills.openSettings', 'Open Settings')
+              }
+            >
+              <Icon
+                name={primaryWarning.action === 'refresh' ? 'refresh-cw' : 'settings'}
+                size={10}
+              />
+            </button>
+          )}
+        </span>
+      )}
+    </div>
+  );
+};
+
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
@@ -327,6 +408,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onEditStart,
   onRegenerate,
   needsByTitle,
+  skillTurnFeedback,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
@@ -420,6 +502,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   content={message.content}
                   needsByTitle={needsByTitle}
                 />
+              )}
+              {message.role === 'user' && !questionnaireResponseSummary && (
+                <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -522,7 +607,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.needsByTitle === next.needsByTitle
+    prev.needsByTitle === next.needsByTitle &&
+    prev.skillTurnFeedback === next.skillTurnFeedback
 );
 
 /**
@@ -635,6 +721,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName,
     composerContextRefs,
+    skillTurnFeedbackByMessageId,
     addComposerContextRef,
     clearComposerContextRefs,
     questionnaireDraftsByConversationId,
@@ -682,6 +769,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
+    skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
     addComposerContextRef: state.addComposerContextRef,
     clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
@@ -2060,6 +2148,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     needsByTitle={needsByMentionTitle}
+                    skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
                   />
                 );
               })}

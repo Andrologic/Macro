@@ -544,7 +544,7 @@ describe('ComposerEditor context references', () => {
     const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
     skills = [skill];
     settingsBySkillId = {
-      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [skill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -576,7 +576,7 @@ describe('ComposerEditor context references', () => {
     const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
     skills = [skill];
     settingsBySkillId = {
-      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [skill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -636,7 +636,7 @@ describe('ComposerEditor context references', () => {
     skills = [skill];
     needs = [activeNeed, otherPlanNeed];
     settingsBySkillId = {
-      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [skill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -668,7 +668,7 @@ describe('ComposerEditor context references', () => {
     skills = [skill];
     needs = [need];
     settingsBySkillId = {
-      [skill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [skill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -788,8 +788,8 @@ describe('ComposerEditor context references', () => {
     const otherSkill = buildSkill('global:agents:other-skill:bbb', { name: 'other-skill' });
     skills = [otherSkill, testSkill];
     settingsBySkillId = {
-      [testSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
-      [otherSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [testSkill.id]: { enabled: true, scriptsEnabled: false },
+      [otherSkill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -836,8 +836,8 @@ describe('ComposerEditor context references', () => {
     const betaSkill = buildSkill('global:agents:beta:bbb', { name: 'beta' });
     skills = [alphaSkill, betaSkill];
     settingsBySkillId = {
-      [alphaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
-      [betaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [alphaSkill.id]: { enabled: true, scriptsEnabled: false },
+      [betaSkill.id]: { enabled: true, scriptsEnabled: false },
     };
     const onPromptHistory = mock(() => undefined);
     const editorRef = React.createRef<ComposerEditorHandle>();
@@ -880,7 +880,7 @@ describe('ComposerEditor context references', () => {
     const alphaSkill = buildSkill('global:agents:alpha:aaa', { name: 'alpha' });
     skills = [alphaSkill];
     settingsBySkillId = {
-      [alphaSkill.id]: { enabled: true, trusted: false, scriptsEnabled: false },
+      [alphaSkill.id]: { enabled: true, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 
@@ -915,7 +915,7 @@ describe('ComposerEditor context references', () => {
     const disabledSkill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
     skills = [disabledSkill];
     settingsBySkillId = {
-      [disabledSkill.id]: { enabled: false, trusted: false, scriptsEnabled: false },
+      [disabledSkill.id]: { enabled: false, scriptsEnabled: false },
     };
     const editorRef = React.createRef<ComposerEditorHandle>();
 

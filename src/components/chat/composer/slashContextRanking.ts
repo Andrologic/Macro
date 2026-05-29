@@ -107,6 +107,14 @@ export const scoreSlashContextCandidate = (
   if (candidate.kind === 'skill' && candidate.skillEnabled) {
     score += 10;
   }
+  if (
+    candidate.kind === 'skill' &&
+    candidate.skillEnabled &&
+    candidate.lastUsedAt &&
+    (options.now ?? Date.now()) - candidate.lastUsedAt < 7 * 86_400_000
+  ) {
+    score += 4;
+  }
   if (candidate.disabled) {
     score -= 60;
   }

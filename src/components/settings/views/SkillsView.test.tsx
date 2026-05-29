@@ -6,10 +6,12 @@ import type { SkillManifest, SkillSettings } from '../../../types';
 const loadSettingsMock = mock(async () => undefined);
 const refreshSkillsMock = mock(async () => undefined);
 const installSkillFromLocalPathMock = mock(async (_path: string) => undefined);
+let createdSkillTemplate: SkillManifest | null = null;
+const createSkillTemplateMock = mock(async () => createdSkillTemplate);
 const setSkillEnabledMock = mock((_skillId: string, _enabled: boolean) => undefined);
-const setSkillTrustedMock = mock((_skillId: string, _trusted: boolean) => undefined);
 const setSkillScriptsEnabledMock = mock((_skillId: string, _enabled: boolean) => undefined);
 const openDialogMock = mock(async () => '/tmp/imported-skill');
+const openPathMock = mock(async (_path: string) => undefined);
 const notifySuccessMock = mock((_message: string) => undefined);
 const notifyErrorMock = mock((_message: string, _options?: unknown) => undefined);
 
@@ -23,7 +25,6 @@ let toolRiskLevel: 'strict' | 'balanced' | 'yolo' = 'balanced';
 
 const defaultSettings: SkillSettings = {
   enabled: false,
-  trusted: false,
   scriptsEnabled: false,
 };
 
@@ -83,9 +84,9 @@ const loadSkillsView = async () => {
     loadSettings: loadSettingsMock,
     refreshSkills: refreshSkillsMock,
     installSkillFromLocalPath: installSkillFromLocalPathMock,
+    createSkillTemplate: createSkillTemplateMock,
     getSkillSettings: (skillId: string) => settingsBySkillId[skillId] ?? defaultSettings,
     setSkillEnabled: setSkillEnabledMock,
-    setSkillTrusted: setSkillTrustedMock,
     setSkillScriptsEnabled: setSkillScriptsEnabledMock,
   };
   const useSkillsStore = (() => storeState) as unknown as {
@@ -116,6 +117,10 @@ const loadSkillsView = async () => {
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: openDialogMock,
+  }));
+
+  mock.module('@tauri-apps/plugin-opener', () => ({
+    openPath: openPathMock,
   }));
 
   mock.module('../../ui/Icon', () => ({
@@ -182,14 +187,16 @@ describe('SkillsView', () => {
     loadSettingsMock.mockClear();
     refreshSkillsMock.mockClear();
     installSkillFromLocalPathMock.mockClear();
+    createSkillTemplateMock.mockClear();
     setSkillEnabledMock.mockClear();
-    setSkillTrustedMock.mockClear();
     setSkillScriptsEnabledMock.mockClear();
     openDialogMock.mockClear();
+    openPathMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     skills = [];
     settingsBySkillId = {};
+    createdSkillTemplate = null;
     lastError = null;
     nativeToolsSupported = true;
     runtimeSkillsSupported = true;
@@ -210,7 +217,7 @@ describe('SkillsView', () => {
     mock.restore();
   });
 
-  it('renders skill cards with source badges, validation errors, and resource counts', async () => {
+  it('renders compact skill cards and reveals details from the settings button', async () => {
     skills = [
       buildSkill('project:project-1:docs', {
         name: 'docs',
@@ -238,10 +245,30 @@ describe('SkillsView', () => {
     expect(loadSettingsMock).toHaveBeenCalledTimes(1);
     expect(container?.textContent).toContain('Project documentation rules');
     expect(container?.textContent).toContain('Web');
-    expect(container?.textContent).toContain('2 resources');
-    expect(container?.textContent).toContain('1 scripts');
     expect(container?.textContent).toContain('Global');
     expect(container?.textContent).toContain('Invalid');
+    expect(container?.textContent).not.toContain('2 resources');
+    expect(container?.textContent).not.toContain('Missing required name.');
+
+    const detailButtons = Array.from(
+      container?.querySelectorAll('button[title="Details"]') ?? []
+    );
+    expect(detailButtons).toHaveLength(2);
+
+    await act(async () => {
+      detailButtons[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).toContain('2 resources');
+    expect(container?.textContent).toContain('1 scripts');
+    expect(container?.textContent).toContain('/skills/project-project-1-docs/SKILL.md');
+
+    await act(async () => {
+      detailButtons[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
     expect(container?.textContent).toContain('Missing required name.');
   });
 
@@ -260,7 +287,7 @@ describe('SkillsView', () => {
       }),
     ];
     settingsBySkillId = {
-      [enabledRunner.id]: { enabled: true, trusted: true, scriptsEnabled: true },
+      [enabledRunner.id]: { enabled: true, scriptsEnabled: true },
     };
 
     const { SkillsView } = await loadSkillsView();
@@ -273,6 +300,20 @@ describe('SkillsView', () => {
     expect(container?.textContent).toContain(
       'The selected provider or model does not support native tool calling.'
     );
+    expect(container?.textContent).toContain('Unavailable');
+    expect(container?.textContent).not.toContain('Disabled.');
+
+    const detailButtons = Array.from(
+      container?.querySelectorAll('button[title="Details"]') ?? []
+    );
+
+    await act(async () => {
+      detailButtons.forEach((button) =>
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      );
+      await Promise.resolve();
+    });
+
     expect(container?.textContent).toContain('Disabled.');
     expect(container?.textContent).toContain('Invalid skill.');
     expect(container?.textContent).toContain('Strict risk mode blocks skill scripts.');
@@ -323,7 +364,7 @@ describe('SkillsView', () => {
     const skill = buildSkill('project:project-1:runner', { name: 'runner' });
     skills = [skill];
     settingsBySkillId = {
-      [skill.id]: { enabled: false, trusted: true, scriptsEnabled: false },
+      [skill.id]: { enabled: false, scriptsEnabled: false },
     };
     const { SkillsView } = await loadSkillsView();
     await act(async () => {
@@ -334,17 +375,33 @@ describe('SkillsView', () => {
     const switches = Array.from(
       container?.querySelectorAll('input[type="checkbox"]') ?? [],
     ) as HTMLInputElement[];
-    expect(switches).toHaveLength(3);
+    expect(switches).toHaveLength(1);
 
     await act(async () => {
       switches[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      switches[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      switches[2].dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 
     expect(setSkillEnabledMock).toHaveBeenCalledWith(skill.id, true);
-    expect(setSkillTrustedMock).toHaveBeenCalledWith(skill.id, false);
+    expect(setSkillScriptsEnabledMock).not.toHaveBeenCalled();
+
+    const detailButton = container?.querySelector('button[title="Details"]');
+    expect(detailButton).toBeTruthy();
+    await act(async () => {
+      detailButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const expandedSwitches = Array.from(
+      container?.querySelectorAll('input[type="checkbox"]') ?? [],
+    ) as HTMLInputElement[];
+    expect(expandedSwitches).toHaveLength(2);
+
+    await act(async () => {
+      expandedSwitches[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
     expect(setSkillScriptsEnabledMock).toHaveBeenCalledWith(skill.id, true);
 
     const importButton = Array.from(container?.querySelectorAll('button') ?? []).find((button) =>
@@ -363,5 +420,122 @@ describe('SkillsView', () => {
     });
     expect(installSkillFromLocalPathMock).toHaveBeenCalledWith('/tmp/imported-skill');
     expect(notifySuccessMock).toHaveBeenCalledWith('Skill imported');
+  });
+
+  it('offers details actions and creates a local skill template', async () => {
+    const skill = buildSkill('global:agents:docs:aaa111', { name: 'docs' });
+    skills = [skill];
+    createdSkillTemplate = buildSkill('global:agents:new-skill:bbb222', {
+      name: 'new-skill',
+      rootPath: '/Users/test/.agents/skills/new-skill',
+    });
+    const writeTextMock = mock(async (_value: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextMock },
+    });
+
+    const { SkillsView } = await loadSkillsView();
+    await act(async () => {
+      root?.render(<SkillsView />);
+      await Promise.resolve();
+    });
+
+    const detailButton = container?.querySelector('button[title="Details"]');
+    await act(async () => {
+      detailButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const buttons = Array.from(container?.querySelectorAll('button') ?? []);
+    await act(async () => {
+      buttons.find((button) => button.textContent?.includes('Open folder'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(openPathMock).toHaveBeenCalledWith(skill.rootPath);
+
+    await act(async () => {
+      buttons.find((button) => button.textContent?.includes('Copy path'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(writeTextMock).toHaveBeenCalledWith(skill.skillFilePath);
+
+    await act(async () => {
+      buttons.find((button) =>
+        button.textContent === 'Refresh'
+      )?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(refreshSkillsMock).toHaveBeenCalled();
+
+    await act(async () => {
+      buttons.find((button) => button.textContent?.includes('New skill'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(createSkillTemplateMock).toHaveBeenCalled();
+    expect(openPathMock).toHaveBeenCalledWith('/Users/test/.agents/skills/new-skill');
+  });
+
+  it('keeps script permission independent from the global skill switch', async () => {
+    const skill = buildSkill('project:project-1:runner', { name: 'runner' });
+    skills = [skill];
+    settingsBySkillId = {
+      [skill.id]: { enabled: true, scriptsEnabled: true },
+    };
+    const { SkillsView } = await loadSkillsView();
+    await act(async () => {
+      root?.render(<SkillsView />);
+      await Promise.resolve();
+    });
+
+    const detailButton = container?.querySelector('button[title="Details"]');
+    await act(async () => {
+      detailButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const globalSwitch = container?.querySelector(
+      'input[type="checkbox"]'
+    ) as HTMLInputElement | null;
+    expect(globalSwitch).toBeTruthy();
+
+    await act(async () => {
+      globalSwitch!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(setSkillEnabledMock).toHaveBeenCalledWith(skill.id, false);
+    expect(setSkillScriptsEnabledMock).not.toHaveBeenCalled();
+
+    settingsBySkillId = {
+      [skill.id]: { enabled: false, scriptsEnabled: true },
+    };
+    await act(async () => {
+      root?.render(<SkillsView />);
+      await Promise.resolve();
+    });
+
+    const switchesWhileDisabled = Array.from(
+      container?.querySelectorAll('input[type="checkbox"]') ?? [],
+    ) as HTMLInputElement[];
+    expect(switchesWhileDisabled).toHaveLength(2);
+    expect(switchesWhileDisabled[1]?.checked).toBe(true);
+
+    await act(async () => {
+      switchesWhileDisabled[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(setSkillScriptsEnabledMock).toHaveBeenCalledWith(skill.id, false);
+
+    await act(async () => {
+      switchesWhileDisabled[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(setSkillEnabledMock).toHaveBeenCalledWith(skill.id, true);
   });
 });

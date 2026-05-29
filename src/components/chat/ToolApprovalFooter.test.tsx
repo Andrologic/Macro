@@ -16,13 +16,19 @@ const loadToolApprovalFooter = async () => {
     useTranslation: () => ({
       t: (
         _key: string,
-        fallbackOrOptions?: string | { defaultValue?: string },
-        maybeOptions?: { defaultValue?: string }
+        fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
+        maybeOptions?: { defaultValue?: string; [key: string]: unknown }
       ) => {
-        if (typeof fallbackOrOptions === 'string') {
-          return fallbackOrOptions;
-        }
-        return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
+        const template =
+          typeof fallbackOrOptions === 'string'
+            ? fallbackOrOptions
+            : maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
+        const options = typeof fallbackOrOptions === 'string' ? maybeOptions : fallbackOrOptions;
+        return Object.entries(options ?? {}).reduce(
+          (value, [key, replacement]) =>
+            value.replaceAll(`{{${key}}}`, String(replacement)),
+          template,
+        );
       },
     }),
   }));
@@ -53,6 +59,18 @@ const loadToolApprovalFooter = async () => {
     cn: (...values: Array<string | false | null | undefined>) =>
       values.filter(Boolean).join(' '),
   }));
+
+  const skillStoreState = {
+    getSkillById: (skillId: string) =>
+      skillId === 'global:test-skill'
+        ? { id: skillId, name: 'test-skill' }
+        : null,
+  };
+  const useSkillsStore = ((selector?: (state: typeof skillStoreState) => unknown) =>
+    selector ? selector(skillStoreState) : skillStoreState) as unknown as {
+    <T>(selector: (state: typeof skillStoreState) => T): T;
+  };
+  mock.module('../../stores/useSkillsStore', () => ({ useSkillsStore }));
 
   importCounter += 1;
   return import(`./ToolApprovalFooter.tsx?test=${importCounter}`);
@@ -186,5 +204,45 @@ describe('ToolApprovalFooter', () => {
     expect(container?.textContent).toContain('Modify');
     expect(container?.querySelector('[data-icon="lock"]')).not.toBeNull();
     expect(container?.querySelector('[data-icon="zap"]')).not.toBeNull();
+  });
+
+  it('shows skill script approval details', async () => {
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+
+    await act(async () => {
+      root?.render(
+        <ToolApprovalFooter
+          pendingApproval={{
+            conversationId: 'conv-1',
+            assistantMessageId: 'msg-1',
+            toolCallId: 'tool-1',
+            toolId: 'skill_run_script',
+            actionGroup: 'escape',
+            riskLevel: 'balanced',
+            isDestructive: true,
+            summary: 'Run a skill script',
+            detail: 'scripts/check.sh',
+            args: {
+              skill_id: 'global:test-skill',
+              script_path: 'scripts/check.sh',
+              args: ['--quick'],
+              timeout_ms: 120000,
+              allow_workspace: true,
+            },
+            rememberKey: 'tool:skill_run_script',
+          }}
+          onAllowOnce={() => undefined}
+          onAllowForConversation={() => undefined}
+          onDeny={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).toContain('Skill');
+    expect(container?.textContent).toContain('test-skill');
+    expect(container?.textContent).toContain('scripts/check.sh');
+    expect(container?.textContent).toContain('--quick');
+    expect(container?.textContent).toContain('120s timeout');
   });
 });

@@ -285,7 +285,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "skill_run_script",
-    "Run a script bundled with a trusted enabled Macro skill. This requires skill trust, scripts enabled, and may require user approval.",
+    "Run a script bundled with an enabled Macro skill. This requires script access enabled for that skill and may require user approval.",
     {
       type: "object",
       properties: {

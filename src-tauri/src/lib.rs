@@ -463,6 +463,7 @@ pub fn run() {
             commands::skills::skills_list,
             commands::skills::skills_get,
             commands::skills::skills_install_from_local_path,
+            commands::skills::skills_create_template,
             commands::skills::skills_read_resource,
             commands::skills::skills_run_script,
             commands::list_external_apps,

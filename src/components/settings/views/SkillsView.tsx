@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { openPath } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useProviderStore } from '../../../stores/useProviderStore';
@@ -24,9 +25,9 @@ export const SkillsView: React.FC = () => {
     loadSettings,
     refreshSkills,
     installSkillFromLocalPath,
+    createSkillTemplate,
     getSkillSettings,
     setSkillEnabled,
-    setSkillTrusted,
     setSkillScriptsEnabled,
   } = useSkillsStore();
   const nativeToolsSupported = useProviderStore((state) =>
@@ -34,6 +35,7 @@ export const SkillsView: React.FC = () => {
   );
   const runtimeCapabilities = useMemo(() => getServiceRuntimeCapabilities(), []);
   const [searchQuery, setSearchQuery] = useState('');
+  const [expandedSkillIds, setExpandedSkillIds] = useState<Set<string>>(() => new Set());
   const [toolRiskLevel, setToolRiskLevel] =
     useState<ToolRiskLevel>(DEFAULT_TOOL_RISK_LEVEL);
 
@@ -107,6 +109,52 @@ export const SkillsView: React.FC = () => {
     }
   };
 
+  const handleCreateSkill = async () => {
+    const skill = await createSkillTemplate();
+    const error = useSkillsStore.getState().lastError;
+    if (!skill || error) {
+      notify.error(t('skills.createFailed', 'Could not create skill'), {
+        description: error ?? undefined,
+      });
+      return;
+    }
+    notify.success(t('skills.created', 'Skill template created'));
+    await handleOpenFolder(skill.rootPath ?? skill.source.rootPath);
+  };
+
+  const handleOpenFolder = async (path: string) => {
+    try {
+      await openPath(path);
+    } catch (error) {
+      notify.error(t('skills.openFolderFailed', 'Could not open folder'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleCopySkillPath = async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+      notify.success(t('skills.pathCopied', 'SKILL.md path copied'));
+    } catch (error) {
+      notify.error(t('skills.copyPathFailed', 'Could not copy path'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const toggleSkillDetails = (skillId: string) => {
+    setExpandedSkillIds((current) => {
+      const next = new Set(current);
+      if (next.has(skillId)) {
+        next.delete(skillId);
+      } else {
+        next.add(skillId);
+      }
+      return next;
+    });
+  };
+
   const getSkillAvailabilityReasons = (
     skill: SkillManifest,
     settings: SkillSettings,
@@ -144,7 +192,7 @@ export const SkillsView: React.FC = () => {
       <div className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
         {t(
           'skills.modeHint',
-          'Skills add reusable agent instructions from Agents, Codex, OpenCode and Claude skill folders. Enable and trust only skills you have reviewed.'
+          'Enable reviewed skills here. Use the gear for scripts and technical details.'
         )}
       </div>
 
@@ -189,6 +237,14 @@ export const SkillsView: React.FC = () => {
             {t('common.refresh', 'Refresh')}
           </button>
           <button
+            onClick={() => void handleCreateSkill()}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+            disabled={saving}
+          >
+            <Icon name={saving ? 'loader' : 'plus'} size={14} className={cn(saving && 'animate-spin')} />
+            {t('skills.newSkill', 'New skill')}
+          </button>
+          <button
             onClick={() => void handleImport()}
             className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
             disabled={saving}
@@ -221,9 +277,13 @@ export const SkillsView: React.FC = () => {
               namespaceLabel={getNamespaceLabel(skill)}
               rootPath={skill.source.skillRootPath ?? skill.rootPath ?? skill.location?.uri ?? skill.id}
               skillPath={skill.skillFilePath ?? skill.location?.uri ?? skill.id}
+              expanded={expandedSkillIds.has(skill.id)}
+              onToggleExpanded={() => toggleSkillDetails(skill.id)}
               onEnabledChange={(enabled) => setSkillEnabled(skill.id, enabled)}
-              onTrustedChange={(trusted) => setSkillTrusted(skill.id, trusted)}
               onScriptsEnabledChange={(enabled) => setSkillScriptsEnabled(skill.id, enabled)}
+              onOpenFolder={() => void handleOpenFolder(skill.rootPath ?? skill.source.rootPath)}
+              onCopySkillPath={() => void handleCopySkillPath(skill.skillFilePath ?? skill.id)}
+              onRefreshSkill={() => void refreshSkills()}
             />
           );
         })}

@@ -27,6 +27,7 @@ import type {
   SkillManifest,
   SkillProjectRoot,
   SkillScriptRunResult,
+  SkillTemplateCreateResult,
   ToolTrace,
 } from "../types";
 import { parseToolTracesJson as parseSerializedToolTracesJson } from "./toolTraceState";
@@ -3057,6 +3058,10 @@ export async function skillsInstallFromLocalPath(params: {
   return invoke<SkillManifest>("skills_install_from_local_path", {
     sourcePath: params.sourcePath,
   });
+}
+
+export async function skillsCreateTemplate(): Promise<SkillTemplateCreateResult> {
+  return invoke<SkillTemplateCreateResult>("skills_create_template");
 }
 
 export async function skillsReadResource(params: {

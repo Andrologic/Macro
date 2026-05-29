@@ -18,8 +18,10 @@ import css from 'highlight.js/lib/languages/css';
 import markdown from 'highlight.js/lib/languages/markdown';
 import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
+import type { ContextRefKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { ContextReferenceChip } from './ContextReferenceChip';
 
 const MermaidRenderer = lazy(() => import('./MermaidRenderer'));
 
@@ -51,6 +53,9 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   psql: 'sql',
   mysql: 'sql',
 };
+
+const MARKDOWN_CONTEXT_MENTION_PATTERN =
+  /\[(need|skill|file|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 let blockKeySeed = 0;
 
@@ -253,6 +258,65 @@ const getTextFromChildren = (children: React.ReactNode): string => {
   return '';
 };
 
+const normalizeContextKind = (kind: string): ContextRefKind => {
+  const normalized = kind.toLowerCase();
+  if (
+    normalized === 'need' ||
+    normalized === 'file' ||
+    normalized === 'plan-node' ||
+    normalized === 'predicted-branch'
+  ) {
+    return normalized;
+  }
+  return 'skill';
+};
+
+const renderContextMentionsInText = (
+  text: string,
+  keyPrefix: string
+): React.ReactNode => {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const pattern = new RegExp(MARKDOWN_CONTEXT_MENTION_PATTERN);
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    const title = match[2]?.trim() ?? '';
+    if (title) {
+      parts.push(
+        <ContextReferenceChip
+          key={`${keyPrefix}-${match.index}-${match[1]}-${title}`}
+          kind={normalizeContextKind(match[1] ?? 'skill')}
+          title={title}
+          surface="message"
+        />
+      );
+    } else {
+      parts.push(match[0]);
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
+};
+
+const renderContextMentions = (children: React.ReactNode): React.ReactNode =>
+  React.Children.map(children, (child, index) => {
+    if (typeof child === 'string') {
+      return renderContextMentionsInText(child, `markdown-context-${index}`);
+    }
+    return child;
+  });
+
 const MermaidFallback: React.FC = () => (
   <div className="my-3 rounded-lg border border-border bg-card/40 p-4">
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -361,37 +425,43 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
         </a>
       );
     },
-    h1: ({ className: headingClassName, ...props }) => {
+    p: ({ className: paragraphClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h1 {...domProps} className={cn('text-xl font-bold mt-4 mb-2', headingClassName)} />;
+      return <p {...domProps} className={paragraphClassName}>{renderContextMentions(children)}</p>;
     },
-    h2: ({ className: headingClassName, ...props }) => {
+    h1: ({ className: headingClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h2 {...domProps} className={cn('text-lg font-semibold mt-4 mb-2', headingClassName)} />;
+      return <h1 {...domProps} className={cn('text-xl font-bold mt-4 mb-2', headingClassName)}>{renderContextMentions(children)}</h1>;
     },
-    h3: ({ className: headingClassName, ...props }) => {
+    h2: ({ className: headingClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h3 {...domProps} className={cn('text-base font-semibold mt-3 mb-2', headingClassName)} />;
+      return <h2 {...domProps} className={cn('text-lg font-semibold mt-4 mb-2', headingClassName)}>{renderContextMentions(children)}</h2>;
     },
-    h4: ({ className: headingClassName, ...props }) => {
+    h3: ({ className: headingClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h4 {...domProps} className={cn('text-sm font-semibold mt-3 mb-2', headingClassName)} />;
+      return <h3 {...domProps} className={cn('text-base font-semibold mt-3 mb-2', headingClassName)}>{renderContextMentions(children)}</h3>;
     },
-    h5: ({ className: headingClassName, ...props }) => {
+    h4: ({ className: headingClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h5 {...domProps} className={cn('text-sm font-medium mt-3 mb-2', headingClassName)} />;
+      return <h4 {...domProps} className={cn('text-sm font-semibold mt-3 mb-2', headingClassName)}>{renderContextMentions(children)}</h4>;
     },
-    h6: ({ className: headingClassName, ...props }) => {
+    h5: ({ className: headingClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <h6 {...domProps} className={cn('text-xs font-medium mt-3 mb-2', headingClassName)} />;
+      return <h5 {...domProps} className={cn('text-sm font-medium mt-3 mb-2', headingClassName)}>{renderContextMentions(children)}</h5>;
     },
-    blockquote: ({ className: blockquoteClassName, ...props }) => {
+    h6: ({ className: headingClassName, children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return <h6 {...domProps} className={cn('text-xs font-medium mt-3 mb-2', headingClassName)}>{renderContextMentions(children)}</h6>;
+    },
+    blockquote: ({ className: blockquoteClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
       return (
         <blockquote
           {...domProps}
           className={cn('border-l-2 border-primary/50 pl-3 my-2 text-muted-foreground italic', blockquoteClassName)}
-        />
+        >
+          {renderContextMentions(children)}
+        </blockquote>
       );
     },
     code: ({ className, children, ...props }) => {
@@ -445,9 +515,9 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       const domProps = omitMarkdownDomProps(props);
       return <ol {...domProps} className={cn('list-decimal list-inside my-2 space-y-1', listClassName)} />;
     },
-    li: ({ className: itemClassName, ...props }) => {
+    li: ({ className: itemClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <li {...domProps} className={cn('text-foreground', itemClassName)} />;
+      return <li {...domProps} className={cn('text-foreground', itemClassName)}>{renderContextMentions(children)}</li>;
     },
     table: ({ className: tableClassName, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
@@ -465,13 +535,25 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       const domProps = omitMarkdownDomProps(props);
       return <tr {...domProps} className={cn('divide-x divide-border', rowClassName)} />;
     },
-    th: ({ className: cellClassName, ...props }) => {
+    th: ({ className: cellClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <th {...domProps} className={cn('text-left font-semibold px-3 py-2', cellClassName)} />;
+      return <th {...domProps} className={cn('text-left font-semibold px-3 py-2', cellClassName)}>{renderContextMentions(children)}</th>;
     },
-    td: ({ className: cellClassName, ...props }) => {
+    td: ({ className: cellClassName, children, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
-      return <td {...domProps} className={cn('px-3 py-2 align-top', cellClassName)} />;
+      return <td {...domProps} className={cn('px-3 py-2 align-top', cellClassName)}>{renderContextMentions(children)}</td>;
+    },
+    strong: ({ children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return <strong {...domProps}>{renderContextMentions(children)}</strong>;
+    },
+    em: ({ children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return <em {...domProps}>{renderContextMentions(children)}</em>;
+    },
+    del: ({ children, ...props }) => {
+      const domProps = omitMarkdownDomProps(props);
+      return <del {...domProps}>{renderContextMentions(children)}</del>;
     },
     input: ({ type, className: inputClassName, ...props }) => {
       const domProps = omitMarkdownDomProps(props);
