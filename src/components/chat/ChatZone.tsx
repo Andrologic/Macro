@@ -113,6 +113,7 @@ export const shouldShowContextControls = ({
 };
 
 type ManualCompactionPhase = 'idle' | 'analyzing';
+const MANUAL_COMPACTION_RETAINED_USER_TURNS = 2;
 
 const formatManualCompactionTokens = (value: number): string => {
   const rounded = Math.max(0, Math.round(value));
@@ -1013,6 +1014,40 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     manualCompactionPhase === 'analyzing' && !isRuntimeCompacting
       ? t('chat.manualCompaction.analyzing', 'Analyse du contexte...')
       : undefined;
+  const manualCompactionDisabledReason = useMemo(() => {
+    const userTurnCount = currentMessages.reduce(
+      (count, message) => count + (message.role === 'user' ? 1 : 0),
+      0,
+    );
+
+    if (userTurnCount <= MANUAL_COMPACTION_RETAINED_USER_TURNS) {
+      return t(
+        'chat.manualCompaction.disabledNotEnoughHistory',
+        "Macro garde les {{count}} derniers tours utilisateur; ajoutez plus d'historique avant de compacter.",
+        { count: MANUAL_COMPACTION_RETAINED_USER_TURNS },
+      );
+    }
+
+    const footprint =
+      contextDiagnostics?.footprintAfter ?? contextDiagnostics?.footprintBefore;
+    const pressurePhase =
+      contextDiagnostics?.phase === 'too_large' ||
+      contextDiagnostics?.phase === 'needs_manual_compaction' ||
+      contextDiagnostics?.phase === 'blocked';
+
+    if (
+      contextDiagnostics?.status === 'ready' &&
+      footprint?.threshold === 'none' &&
+      !pressurePhase
+    ) {
+      return t(
+        'chat.manualCompaction.disabledBelowThreshold',
+        'Le contexte est trop léger pour un compactage utile.',
+      );
+    }
+
+    return null;
+  }, [contextDiagnostics, currentMessages, t]);
   const shouldShowContextIndicator =
     Boolean(selectedConversationId) &&
     (shouldShowContextControlsForActiveContext ||
@@ -2228,6 +2263,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 isCompacting={isActiveContextCompacting}
                 activityLabel={manualCompactionActivityLabel}
                 canCompactNow={!isBusySending && !isManualCompacting}
+                manualCompactionDisabledReason={manualCompactionDisabledReason}
                 manualCompactionFeedback={manualCompactionFeedback}
                 onRefresh={() => {
                   void runContextDiagnosticsRefresh();

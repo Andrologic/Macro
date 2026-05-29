@@ -15,6 +15,7 @@ interface ContextWindowIndicatorProps {
   isCompacting?: boolean;
   activityLabel?: string;
   canCompactNow?: boolean;
+  manualCompactionDisabledReason?: string | null;
   manualCompactionFeedback?: ManualCompactionResult | null;
   onRefresh?: () => void;
   onCompactNow?: () => void;
@@ -233,6 +234,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   isCompacting = false,
   activityLabel,
   canCompactNow = true,
+  manualCompactionDisabledReason,
   manualCompactionFeedback,
   onRefresh,
   onCompactNow,
@@ -360,14 +362,29 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             : ''
         }`
       : 'Aucun';
+  const statusLabel = activityLabel ?? (isCompacting ? 'Compactage en cours' : tone.label);
+  const compactUnavailableReason =
+    isCompacting
+      ? statusLabel
+      : effectiveDiagnostics?.status === 'error'
+        ? 'Diagnostics en erreur'
+        : manualCompactionDisabledReason ?? (!canCompactNow ? 'Action non disponible' : null);
   const canCompact =
     Boolean(onCompactNow) &&
     canCompactNow &&
     !isCompacting &&
-    effectiveDiagnostics?.status !== 'error';
-  const statusLabel = activityLabel ?? (isCompacting ? 'Compactage en cours' : tone.label);
+    effectiveDiagnostics?.status !== 'error' &&
+    !manualCompactionDisabledReason;
   const manualFeedbackLabel = getManualCompactionFeedbackLabel(manualCompactionFeedback);
   const manualFeedbackDetail = getManualCompactionFeedbackDetail(manualCompactionFeedback);
+  const compactButtonLabel =
+    isCompacting && activityLabel
+      ? activityLabel
+      : manualCompactionDisabledReason && !isCompacting
+        ? 'Rien à compacter'
+        : effectiveDiagnostics?.phase === 'too_large'
+          ? 'Compacter plus agressivement'
+          : 'Compacter maintenant';
 
   return (
     <div ref={containerRef} className="relative">
@@ -520,6 +537,17 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           ) : null}
 
           <section className="mt-3 space-y-2">
+            {manualCompactionDisabledReason && !isCompacting ? (
+              <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Action manuelle</span>
+                  <span className="font-medium">Rien à compacter</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                  {manualCompactionDisabledReason}
+                </p>
+              </div>
+            ) : null}
             {manualFeedbackLabel ? (
               <div className="rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
@@ -567,23 +595,16 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 type="button"
                 onClick={onCompactNow}
                 disabled={!canCompact}
-                title={
-                  !canCompact
-                    ? isCompacting
-                      ? statusLabel
-                      : effectiveDiagnostics?.status === 'error'
-                        ? 'Diagnostics en erreur'
-                        : 'Action non disponible'
-                    : undefined
-                }
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2 text-xs text-primary transition-colors hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
+                title={!canCompact ? compactUnavailableReason ?? undefined : undefined}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors disabled:cursor-not-allowed',
+                  canCompact
+                    ? 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15'
+                    : 'border-border/60 bg-muted/40 text-muted-foreground opacity-70',
+                )}
               >
                 {isCompacting ? <SpinnerIcon size={13} /> : <Icon name="archive" size={13} />}
-                {isCompacting && activityLabel
-                  ? activityLabel
-                  : effectiveDiagnostics?.phase === 'too_large'
-                  ? 'Compacter plus agressivement'
-                  : 'Compacter maintenant'}
+                {compactButtonLabel}
               </button>
             ) : null}
           </div>

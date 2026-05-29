@@ -585,8 +585,9 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).not.toContain('42 messages · 6 sources');
   });
 
-  it('keeps manual compaction available below the automatic threshold', async () => {
+  it('greys manual compaction below the automatic threshold', async () => {
     const onCompactNow = mock(() => undefined);
+    const disabledReason = 'Le contexte est trop léger pour un compactage utile.';
     await act(async () => {
       root?.render(
         <ContextWindowIndicator
@@ -606,6 +607,7 @@ describe('ContextWindowIndicator', () => {
               isHardStop: false,
             },
           })}
+          manualCompactionDisabledReason={disabledReason}
           onCompactNow={onCompactNow}
         />,
       );
@@ -620,16 +622,20 @@ describe('ContextWindowIndicator', () => {
     });
 
     const compactButton = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Compacter maintenant'),
+      (button) => button.textContent?.includes('Rien à compacter'),
     );
-    expect(compactButton?.disabled).toBe(false);
+    expect(compactButton).not.toBeNull();
+    expect(compactButton?.disabled).toBe(true);
+    expect(compactButton?.getAttribute('title')).toBe(disabledReason);
+    expect(document.body.textContent).toContain('Action manuelle');
+    expect(document.body.textContent).toContain(disabledReason);
 
     await act(async () => {
       compactButton?.click();
       await flushRender();
     });
 
-    expect(onCompactNow).toHaveBeenCalled();
+    expect(onCompactNow).not.toHaveBeenCalled();
   });
 
   it('shows the latest manual compaction feedback in the popover', async () => {
@@ -655,8 +661,9 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).toContain('24k tokens économisés');
   });
 
-  it('keeps the below-threshold action available while showing a skipped result', async () => {
+  it('keeps the below-threshold action greyed while showing a skipped result', async () => {
     const onCompactNow = mock(() => undefined);
+    const disabledReason = 'Le contexte est trop léger pour un compactage utile.';
     await act(async () => {
       root?.render(
         <ContextWindowIndicator
@@ -682,6 +689,7 @@ describe('ContextWindowIndicator', () => {
             userTurnCount: 3,
             retainedTurnCount: 2,
           } as Partial<ManualCompactionResult>)}
+          manualCompactionDisabledReason={disabledReason}
           onCompactNow={onCompactNow}
         />,
       );
@@ -697,10 +705,12 @@ describe('ContextWindowIndicator', () => {
 
     expect(document.body.textContent).toContain('Compactage ignoré');
     expect(document.body.textContent).toContain('sous le seuil');
+    expect(document.body.textContent).toContain(disabledReason);
     const compactButton = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Compacter maintenant'),
+      (button) => button.textContent?.includes('Rien à compacter'),
     );
-    expect(compactButton?.disabled).toBe(false);
+    expect(compactButton?.disabled).toBe(true);
+    expect(onCompactNow).not.toHaveBeenCalled();
   });
 
   it('can disable manual compaction while keeping the low-threshold action visible', async () => {
