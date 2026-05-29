@@ -2486,6 +2486,13 @@ describe('ChatZone', () => {
           role: 'assistant',
           content: 'Réponse avant compactage manuel',
         }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Deuxième demande' }),
+        buildMessage({
+          id: 'msg-assistant-2',
+          role: 'assistant',
+          content: 'Réponse intermédiaire',
+        }),
+        buildMessage({ id: 'msg-user-3', role: 'user', content: 'Troisième demande' }),
       ],
       compactConversationNow: mock(
         () => {
@@ -2569,7 +2576,7 @@ describe('ChatZone', () => {
     );
   });
 
-  it('shows skip feedback without rendering transcript progress for a quick manual compaction skip', async () => {
+  it('greys manual compaction without rendering transcript progress when history is too short', async () => {
     chatState = {
       ...chatState,
       messages: [
@@ -2602,8 +2609,12 @@ describe('ChatZone', () => {
 
     const manualButton = Array.from(
       requireContainer().querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('Compacter maintenant'));
+    ).find((button) => button.textContent?.includes('Rien à compacter'));
     expect(manualButton).not.toBeNull();
+    expect(manualButton?.disabled).toBe(true);
+    expect(manualButton?.getAttribute('title')).toContain("plus d'historique");
+    expect(requireContainer().textContent).toContain('Action manuelle');
+    expect(requireContainer().textContent).toContain("plus d'historique");
     chatState.refreshConversationContextDiagnostics.mockClear();
 
     await act(async () => {
@@ -2611,13 +2622,8 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(chatState.compactConversationNow).toHaveBeenCalledWith('conv-1');
-    expect(notifyInfoMock).toHaveBeenCalledWith(
-      'Compactage ignoré',
-      expect.objectContaining({
-        description: expect.stringContaining("assez d'historique ancien"),
-      }),
-    );
+    expect(chatState.compactConversationNow).not.toHaveBeenCalled();
+    expect(notifyInfoMock).not.toHaveBeenCalled();
     expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
     expect(
       requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
@@ -2636,6 +2642,13 @@ describe('ChatZone', () => {
           role: 'assistant',
           content: 'Réponse avant échec de compactage',
         }),
+        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Deuxième demande' }),
+        buildMessage({
+          id: 'msg-assistant-2',
+          role: 'assistant',
+          content: 'Réponse intermédiaire',
+        }),
+        buildMessage({ id: 'msg-user-3', role: 'user', content: 'Troisième demande' }),
       ],
       compactConversationNow: mock(async () => {
         throw new Error('compaction failed');
