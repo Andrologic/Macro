@@ -399,6 +399,110 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(JSON.stringify(checkpointed.messages)).not.toContain('old visible payload');
   });
 
+  it('skips manual compaction when there is not enough older history', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Start a tiny chat.'),
+      makeMessage('a1', 'assistant', 'Tiny answer.'),
+      makeMessage('u2', 'user', 'Second turn.'),
+    ];
+    let summaryCalls = 0;
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 128_000,
+      mode: 'manual',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => {
+        summaryCalls += 1;
+        return 'Should not be called.';
+      },
+    });
+
+    expect(result.manualSkip?.reason).toBe('not_enough_history');
+    expect(result.manualSkip?.userTurnCount).toBe(2);
+    expect(result.compactionState).toBeNull();
+    expect(summaryCalls).toBe(0);
+  });
+
+  it('skips manual compaction below the useful threshold instead of creating a noisy checkpoint', async () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Old tiny request.'),
+      makeMessage('a1', 'assistant', 'Old tiny answer.'),
+      makeMessage('u2', 'user', 'Recent request.'),
+      makeMessage('a2', 'assistant', 'Recent answer.'),
+      makeMessage('u3', 'user', 'Latest tiny request.'),
+    ];
+    let summaryCalls = 0;
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 128_000,
+      mode: 'manual',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => {
+        summaryCalls += 1;
+        return 'Should not be called.';
+      },
+    });
+
+    expect(result.manualSkip?.reason).toBe('below_threshold');
+    expect(result.compactionState).toBeNull();
+    expect(result.footprintBefore.threshold).toBe('none');
+    expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
+    expect(summaryCalls).toBe(0);
+  });
+
+  it('skips non-beneficial manual compaction when a checkpoint would increase payload', async () => {
+    const orderedMessages: ChatMessage[] = [];
+    for (let index = 1; index <= 12; index += 1) {
+      orderedMessages.push(makeMessage(`u${index}`, 'user', `Request ${index}.`));
+      orderedMessages.push(
+        makeMessage(`a${index}`, 'assistant', `Answer ${index}.`, {
+          hidden_context:
+            '<tool_context tool="read" detail="small.ts">\nsmall fact\n</tool_context>',
+        })
+      );
+    }
+    orderedMessages.push(makeMessage('u13', 'user', 'Latest request.'));
+    let summaryCalls = 0;
+
+    const result = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages: makePreparedMessages(orderedMessages),
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 20_000,
+      mode: 'manual',
+      forceCompaction: true,
+      forcePrune: true,
+      budgetPolicy: { reservedTokens: 0 },
+      generateSummary: async () => {
+        summaryCalls += 1;
+        return `Bloated summary. ${'extra context '.repeat(5000)}`;
+      },
+    });
+
+    expect(result.manualSkip?.reason).toBe('not_beneficial');
+    expect(result.compactionState).toBeNull();
+    expect(result.footprintBefore.threshold).not.toBe('none');
+    expect(result.footprintAfter.totalEstimatedTokens).toBeGreaterThanOrEqual(
+      result.footprintBefore.totalEstimatedTokens
+    );
+    expect(JSON.stringify(result.messages)).not.toContain('[COMPACTED CONVERSATION STATE]');
+    expect(summaryCalls).toBe(1);
+  });
+
   it('does not double-count hidden tool context when provider input items carry the tool result', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the runtime.'),
@@ -940,7 +1044,11 @@ describe('buildCompactedMessagesForRequest', () => {
   it('records fallback summaries explicitly when model summarization fails', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Remember that the migration must stay reversible.'),
-      makeMessage('a1', 'assistant', 'I will keep the migration reversible.'),
+      makeMessage(
+        'a1',
+        'assistant',
+        `I will keep the migration reversible.\n${'migration context detail\n'.repeat(5000)}`
+      ),
       makeMessage('u2', 'user', 'Capture the risky files before editing.'),
       makeMessage('a2', 'assistant', 'Risky files captured in tool facts.'),
       makeMessage('u3', 'user', 'Continue from the retained turn.'),
@@ -952,10 +1060,10 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations: [],
       toolDefinitions: [],
-      modelContextWindowTokens: 80,
+      modelContextWindowTokens: 8_000,
       mode: 'manual',
       forceCompaction: true,
-      budgetPolicy: { prune: false, reservedTokens: 0 },
+      budgetPolicy: { prune: false, reservedTokens: 1_200 },
       generateSummary: async () => null,
     });
 

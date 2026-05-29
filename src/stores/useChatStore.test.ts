@@ -247,6 +247,27 @@ const providerState = {
   }),
 };
 
+const setSelectedProviderModelContext = (
+  contextWindowTokens = 8_000,
+  outputLimitTokens = 1_200,
+) => {
+  providerState.modelsByProvider = {
+    ...providerState.modelsByProvider,
+    [providerState.selectedProviderId ?? 'provider-1']: [
+      {
+        id: providerState.selectedModelId ?? 'model-1',
+        name: 'Small context model',
+        isEnabled: true,
+        contextWindowTokens,
+        outputLimitTokens,
+      } as never,
+    ],
+  };
+};
+
+const buildManualCompactionLoad = (label: string): string =>
+  `${label}\n${'manual compaction retained project detail\n'.repeat(5_000)}`;
+
 const ALL_INTERNAL_TOOL_IDS = [
   'skill_activate',
   'skill_read_resource',
@@ -7613,6 +7634,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
+    setSelectedProviderModelContext();
     queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         currentObjective: 'Continue the database migration safely.',
@@ -7641,7 +7663,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'assistant' as const,
-        content: 'I will keep it reversible.',
+        content: buildManualCompactionLoad('I will keep it reversible.'),
         timestamp: '2026-04-14T10:01:00.000Z',
       },
       {
@@ -7720,6 +7742,183 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
   });
 
+  it('skips manual compaction for low-context chat without creating a checkpoint', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny old request.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Tiny old answer.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny recent request.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Tiny recent answer.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny latest request.',
+        timestamp: '2026-04-14T10:04:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    const result = await useChatStore.getState().compactConversationNow('chat-conv');
+
+    expect(result).toMatchObject({
+      outcome: 'skipped',
+      reason: 'below_threshold',
+      userTurnCount: 3,
+      retainedTurnCount: 2,
+    });
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toBeUndefined();
+  });
+
+  it('preserves an existing checkpoint status when manual compaction is skipped', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+
+    const { useChatStore } = await loadChatStore();
+    const messages = [
+      {
+        id: 'u1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny old request.',
+        timestamp: '2026-04-14T10:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Tiny old answer.',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny recent request.',
+        timestamp: '2026-04-14T10:02:00.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant' as const,
+        content: 'Tiny recent answer.',
+        timestamp: '2026-04-14T10:03:00.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user' as const,
+        content: 'Tiny latest request.',
+        timestamp: '2026-04-14T10:04:00.000Z',
+      },
+    ];
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv', ''),
+          message_count: messages.length,
+        },
+      ],
+      messages,
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+      conversationCompactionStatusById: {
+        'chat-conv': {
+          phase: 'compacted',
+          upToMessageId: 'a1',
+          summaryText: 'Previous compacted summary.',
+          updatedAt: '2026-04-14T09:00:00.000Z',
+          kind: 'manual',
+        },
+      },
+    });
+
+    const result = await useChatStore.getState().compactConversationNow('chat-conv');
+
+    expect(result).toMatchObject({
+      outcome: 'skipped',
+      reason: 'below_threshold',
+    });
+    expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+    expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
+    expect(
+      useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+    ).toMatchObject({
+      phase: 'compacted',
+      upToMessageId: 'a1',
+      summaryText: 'Previous compacted summary.',
+    });
+  });
+
   it('compacts Copilot chat through a system checkpoint instead of provider input replay', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -7736,7 +7935,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ];
     providerState.modelsByProvider = {
       'copilot-provider': [
-        { id: 'copilot-model', name: 'Copilot Model', isEnabled: true },
+        {
+          id: 'copilot-model',
+          name: 'Copilot Model',
+          isEnabled: true,
+          contextWindowTokens: 8_000,
+          outputLimitTokens: 1_200,
+        } as never,
       ],
     };
     providerState.selectedProviderId = 'copilot-provider';
@@ -7770,7 +7975,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'assistant' as const,
-        content: `Old Copilot visible payload.\n${'older visible detail\n'.repeat(160)}`,
+        content: `Old Copilot visible payload.\n${'older visible detail\n'.repeat(1_100)}`,
         timestamp: '2026-03-18T10:01:00.000Z',
         provider_input_items: [
           {
@@ -7833,6 +8038,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       copilotSendTimeoutMs: 60_000,
     });
     expect(dbUpsertConversationCompactionStateMock).toHaveBeenCalledTimes(1);
+    const persistedCopilotCheckpoint = ((dbUpsertConversationCompactionStateMock as unknown as {
+      mock: { calls: Array<Array<Record<string, unknown>>> };
+    }).mock.calls.at(-1)?.[0] ?? null);
+    expect(persistedCopilotCheckpoint).not.toBeNull();
     expect(
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
     ).toMatchObject({
@@ -7866,6 +8075,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
+    setSelectedProviderModelContext();
     const summaryDeferred = createDeferred<string>();
     queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
 
@@ -7884,7 +8094,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'assistant' as const,
-        content: 'I will keep it reversible.',
+        content: buildManualCompactionLoad('I will keep it reversible.'),
         timestamp: '2026-04-14T10:01:00.000Z',
       },
       {
@@ -7968,7 +8178,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
     ).toMatchObject({
-      phase: 'compacting',
+      phase: 'compacted',
       upToMessageId: 'a1',
       summaryText: 'Previous compacted summary.',
       kind: 'manual',
@@ -8056,6 +8266,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
+    setSelectedProviderModelContext();
     const summaryDeferred = createDeferred<string>();
     queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
     (dbGetConversationCompactionStateMock as unknown as {
@@ -8079,7 +8290,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'assistant' as const,
-        content: 'I will keep it reversible.',
+        content: buildManualCompactionLoad('I will keep it reversible.'),
         timestamp: '2026-04-14T10:01:00.000Z',
       },
       {
@@ -8130,10 +8341,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
-    ).toMatchObject({
-      phase: 'compacting',
-      kind: 'manual',
-    });
+    ).toBeUndefined();
 
     await flushAsyncWork();
 
@@ -8174,6 +8382,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
+    setSelectedProviderModelContext();
     const summaryDeferred = createDeferred<string>();
     queueSendChatNonStreamingImplementation(async () => summaryDeferred.promise);
     (dbGetConversationCompactionStateMock as unknown as {
@@ -8197,7 +8406,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'assistant' as const,
-        content: 'I will keep it reversible.',
+        content: buildManualCompactionLoad('I will keep it reversible.'),
         timestamp: '2026-04-14T10:01:00.000Z',
       },
       {
@@ -8254,8 +8463,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(
       useChatStore.getState().conversationCompactionStatusById['chat-conv'],
     ).toMatchObject({
-      phase: 'compacting',
-      kind: 'manual',
+      phase: 'compacted',
       summaryText: 'Previous persisted compacted summary.',
     });
 

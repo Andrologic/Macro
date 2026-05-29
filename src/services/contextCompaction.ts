@@ -99,6 +99,18 @@ export interface SummaryGenerationInput {
   interestingSourcePassages: Citation[];
 }
 
+export type ManualCompactionSkipReason =
+  | 'not_enough_history'
+  | 'below_threshold'
+  | 'not_beneficial'
+  | 'already_current';
+
+export interface ManualCompactionSkipDetails {
+  reason: ManualCompactionSkipReason;
+  userTurnCount: number;
+  retainedTurnCount: number;
+}
+
 export interface MaybeCompactConversationParams {
   systemMessage: string;
   preparedMessages: StreamMessage[];
@@ -134,6 +146,7 @@ export interface MaybeCompactConversationResult {
   usedExistingCompaction: boolean;
   degraded: boolean;
   decision: ContextCompactionDecision;
+  manualSkip?: ManualCompactionSkipDetails;
 }
 
 export interface ProviderCompactionAdapter {
@@ -887,6 +900,12 @@ const getRecentUserTurnStartIndex = (orderedMessages: ChatMessage[]): number => 
   if (userIndexes.length < 2) return 0;
   return userIndexes[userIndexes.length - 2] ?? 0;
 };
+
+const countUserTurns = (orderedMessages: ChatMessage[]): number =>
+  orderedMessages.reduce(
+    (count, message) => count + (message.role === 'user' ? 1 : 0),
+    0
+  );
 
 const buildPrunedToolContextPlaceholder = (params: {
   attrs: string;
@@ -1773,6 +1792,8 @@ export const maybeCompactConversation = async (
   params: MaybeCompactConversationParams
 ): Promise<MaybeCompactConversationResult> => {
   const activeTrigger = normalizeCompactionTrigger(params.mode);
+  const retainedManualUserTurns = 2;
+  const userTurnCount = countUserTurns(params.orderedMessages);
   const estimateFootprint = (
     preparedMessages: StreamMessage[],
     mode: CompactionMode
@@ -1835,6 +1856,53 @@ export const maybeCompactConversation = async (
   )
     ? params.currentCompactionState || null
     : null;
+
+  const skipManualCompaction = (
+    reason: ManualCompactionSkipReason,
+    after: ContextFootprint = footprintBefore,
+    outputMessages: StreamMessage[] = [
+      { role: 'system', content: params.systemMessage },
+      ...preparedMessages,
+    ]
+  ): MaybeCompactConversationResult => ({
+    compactionState: validCurrentState,
+    footprintBefore,
+    footprintAfter: after,
+    messages: outputMessages,
+    usedExistingCompaction: Boolean(validCurrentState),
+    degraded: false,
+    decision: after.isHardStop ? 'hard_stop' : 'send',
+    manualSkip: {
+      reason,
+      userTurnCount,
+      retainedTurnCount: retainedManualUserTurns,
+    },
+  });
+
+  if (params.mode === 'manual') {
+    if (userTurnCount <= retainedManualUserTurns) {
+      return skipManualCompaction('not_enough_history');
+    }
+    if (footprintBefore.threshold === 'none') {
+      const manualBoundaryIndex = getCompactionBoundaryIndex({
+        orderedMessages: params.orderedMessages,
+        preparedMessages,
+        retainedRecentTokenBudget,
+      });
+      const manualBoundaryMessageId =
+        manualBoundaryIndex >= 0
+          ? params.orderedMessages[manualBoundaryIndex]?.id
+          : null;
+      if (
+        validCurrentState &&
+        manualBoundaryMessageId &&
+        validCurrentState.upToMessageId === manualBoundaryMessageId
+      ) {
+        return skipManualCompaction('already_current');
+      }
+      return skipManualCompaction('below_threshold');
+    }
+  }
 
   let activeState = validCurrentState;
   let usedExistingCompaction = Boolean(validCurrentState);
@@ -1928,6 +1996,32 @@ export const maybeCompactConversation = async (
     } else {
       usedExistingCompaction = Boolean(activeState);
     }
+  }
+
+  if (
+    params.mode === 'manual' &&
+    notifiedCompactionStarted &&
+    activeState &&
+    !exceedsUsableContext(footprintBefore) &&
+    footprintAfter.totalEstimatedTokens >= footprintBefore.totalEstimatedTokens
+  ) {
+    return {
+      compactionState: null,
+      footprintBefore,
+      footprintAfter,
+      messages: [
+        { role: 'system', content: params.systemMessage },
+        ...params.preparedMessages,
+      ],
+      usedExistingCompaction: false,
+      degraded: false,
+      decision: 'send',
+      manualSkip: {
+        reason: 'not_beneficial',
+        userTurnCount,
+        retainedTurnCount: retainedManualUserTurns,
+      },
+    };
   }
 
   let degraded = false;

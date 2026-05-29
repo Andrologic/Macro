@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type {
   ConversationCompactionStatus,
   ConversationContextDiagnostics,
+  ManualCompactionResult,
 } from '../../stores/useChatStore';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
 
@@ -128,6 +129,19 @@ const buildCompactionStatus = (
   },
   ...overrides,
 });
+
+const buildManualFeedback = (
+  overrides: Partial<ManualCompactionResult> = {},
+): ManualCompactionResult => ({
+  outcome: 'compacted',
+  updatedAt: '2026-05-10T00:02:00.000Z',
+  footprintBefore: buildDiagnostics().footprintBefore!,
+  footprintAfter: buildDiagnostics().footprintAfter!,
+  tokensSaved: 24_000,
+  upToMessageId: 'a1',
+  summarySource: 'model',
+  ...overrides,
+} as ManualCompactionResult);
 
 describe('ContextWindowIndicator', () => {
   let container: HTMLDivElement | null = null;
@@ -279,6 +293,32 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.textContent).toContain('Compactage en cours');
+  });
+
+  it('shows the manual preflight label while analyzing context', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics()}
+          isCompacting
+          activityLabel="Analyse du contexte..."
+          onCompactNow={() => undefined}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Analyse du contexte...');
+    expect(
+      document.body.querySelector('[data-testid="context-window-compacting-spinner"]'),
+    ).not.toBeNull();
   });
 
   it('does not show a live measurement label in the popover', async () => {
@@ -590,6 +630,77 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(onCompactNow).toHaveBeenCalled();
+  });
+
+  it('shows the latest manual compaction feedback in the popover', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics()}
+          manualCompactionFeedback={buildManualFeedback()}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Dernier résultat');
+    expect(document.body.textContent).toContain('Checkpoint créé');
+    expect(document.body.textContent).toContain('24k tokens économisés');
+  });
+
+  it('keeps the below-threshold action available while showing a skipped result', async () => {
+    const onCompactNow = mock(() => undefined);
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            phase: 'idle',
+            ratio: 0.18,
+            usableRatio: 0.22,
+            footprintBefore: undefined,
+            footprintAfter: {
+              ...buildDiagnostics().footprintAfter!,
+              totalEstimatedTokens: 20_000,
+              serializedPayloadTokens: 18_000,
+              totalContextRatio: 0.18,
+              usableContextRatio: 0.22,
+              threshold: 'none',
+              reason: 'below_threshold',
+              isHardStop: false,
+            },
+          })}
+          manualCompactionFeedback={buildManualFeedback({
+            outcome: 'skipped',
+            reason: 'below_threshold',
+            userTurnCount: 3,
+            retainedTurnCount: 2,
+          } as Partial<ManualCompactionResult>)}
+          onCompactNow={onCompactNow}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Compactage ignoré');
+    expect(document.body.textContent).toContain('sous le seuil');
+    const compactButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Compacter maintenant'),
+    );
+    expect(compactButton?.disabled).toBe(false);
   });
 
   it('can disable manual compaction while keeping the low-threshold action visible', async () => {
