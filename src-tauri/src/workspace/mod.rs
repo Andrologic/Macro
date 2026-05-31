@@ -12,10 +12,11 @@ use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
 use metadata::{
-    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
-    ManualFeatureMergeWorkflowDto, PlanDto, ProjectAccessChangePreviewDto,
-    ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
+    CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
+    ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto, PlanDto,
+    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto,
+    ProjectAccessMigrationSummaryDto, ProjectDto, ProjectGitFlowDetectionDto,
+    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
     ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
     WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
@@ -90,6 +91,10 @@ enum GitSetupRollbackStep {
 
 fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
+}
+
+fn count_registry_projects(standalone_projects: &[ProjectDto], groups: &[ProjectGroupDto]) -> usize {
+    standalone_projects.len() + count_projects(groups)
 }
 
 fn short_oid(oid: Oid) -> String {
@@ -1038,7 +1043,7 @@ pub async fn update_project_git_flow_with_setup(
     } = input;
 
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = find_project_by_id(&state.project_groups, project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
     let project_path = project.path.clone();
@@ -1122,10 +1127,18 @@ pub async fn get_project_registry_diagnostics(
         sanitize_workspace_state(workspace_path, raw_state.clone());
 
     Ok(ProjectRegistryDiagnosticsDto {
+        raw_standalone_projects: raw_state.standalone_projects.clone(),
         raw_group_count: raw_state.project_groups.len(),
-        raw_project_count: count_projects(&raw_state.project_groups),
+        raw_project_count: count_registry_projects(
+            &raw_state.standalone_projects,
+            &raw_state.project_groups,
+        ),
+        sanitized_standalone_projects: sanitized_state.standalone_projects.clone(),
         sanitized_group_count: sanitized_state.project_groups.len(),
-        sanitized_project_count: count_projects(&sanitized_state.project_groups),
+        sanitized_project_count: count_registry_projects(
+            &sanitized_state.standalone_projects,
+            &sanitized_state.project_groups,
+        ),
         raw_project_groups: raw_state.project_groups,
         sanitized_project_groups: sanitized_state.project_groups,
         repair_report,
@@ -1139,6 +1152,7 @@ pub async fn get_bootstrap(
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     Ok(WorkspaceBootstrapDto {
         plan: state.current_plan,
+        standalone_projects: state.standalone_projects,
         project_groups: state.project_groups,
         plan_nodes: state.plan_nodes,
         predicted_branches: state.predicted_branches,
@@ -1158,7 +1172,7 @@ pub async fn list_tasks(
     metadata_root: &Path,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
-    let project_count = count_projects(&state.project_groups);
+    let project_count = count_registry_projects(&state.standalone_projects, &state.project_groups);
     let manual_feature_count = state.manual_features.len();
     let manual_tasks = state
         .manual_features
@@ -1275,11 +1289,7 @@ pub async fn get_metadata(
 ) -> Result<WorkspaceMetadataDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     let metadata_path = workspace_state_path(metadata_root);
-    let project_count = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
+    let project_count = count_registry_projects(&state.standalone_projects, &state.project_groups);
 
     Ok(WorkspaceMetadataDto {
         workspace_path: workspace_path.to_string_lossy().to_string(),
@@ -1301,8 +1311,8 @@ pub async fn create_manual_feature_draft(
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
-    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
+    let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
     let normalized_project_ids = sanitize_project_id_list(project_ids, &actionable_project_ids);
     let normalized_context_project_ids =
         sanitize_project_id_list(context_project_ids, &read_only_project_ids);
@@ -1395,6 +1405,7 @@ pub async fn finalize_manual_feature(
     feature_slug: &str,
 ) -> Result<ManualFeatureDto> {
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let standalone_projects = state.standalone_projects.clone();
     let project_groups = state.project_groups.clone();
     let normalized_task_id = task_id.trim();
     let feature_index = state
@@ -1465,6 +1476,7 @@ pub async fn finalize_manual_feature(
     let execution_targets = build_manual_feature_execution_targets(
         &feature.project_ids,
         &normalized_feature_slug,
+        &standalone_projects,
         &project_groups,
     );
     let branch_name = execution_targets
@@ -1944,6 +1956,80 @@ async fn ensure_project_directory(project_path: &Path, operation: &str) -> Resul
     Ok(())
 }
 
+fn normalize_new_repo_folder_name(folder_name: &str) -> Result<String> {
+    let trimmed = folder_name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "New project folder name must be a single folder name.".to_string(),
+        });
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn ensure_new_repo_parent_path(parent_path: &Path) -> Result<()> {
+    if !parent_path.exists() {
+        return Err(BackendError::FilesystemNotFound {
+            message: format!("Parent folder {} does not exist.", parent_path.display()),
+        });
+    }
+
+    if !parent_path.is_dir() {
+        return Err(BackendError::FilesystemIsFile {
+            message: format!("Parent path {} is not a directory.", parent_path.display()),
+        });
+    }
+
+    if Repository::discover(parent_path)
+        .or_else(|_| Repository::open(parent_path))
+        .is_ok()
+    {
+        return Err(BackendError::Validation(
+            "Choose a parent folder that is not inside an existing Git repository.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_new_repo_target_available(project_path: &Path) -> Result<()> {
+    if project_path.exists() {
+        return Err(BackendError::FilesystemAlreadyExists {
+            message: format!(
+                "New project folder {} already exists.",
+                project_path.display()
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+async fn rollback_created_new_repo<T>(
+    project_path: &Path,
+    original_error: BackendError,
+) -> Result<T> {
+    if !project_path.exists() {
+        return Err(original_error);
+    }
+
+    fs::remove_dir_all(project_path)
+        .await
+        .map_err(|rollback_error| BackendError::Internal {
+            message: format!(
+                "New project creation failed and rollback was not fully applied: {}; rollback error: {}",
+                original_error, rollback_error
+            ),
+        })?;
+
+    Err(original_error)
+}
+
 pub async fn create_project(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -1971,18 +2057,19 @@ pub async fn create_project(
         workspace_path,
         request.git_flow_settings.as_ref(),
     );
-    ensure_unique_project_name_in_group(
-        &state.project_groups,
+    ensure_unique_project_name_in_target(
+        &state,
         request.group_id.as_deref(),
+        request.group_name.as_deref(),
         &project.name,
     )?;
 
     let project_path = resolve_project_path(workspace_path, &project.path);
-    ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
     ensure_project_directory(&project_path, "create_project").await?;
 
-    insert_project_into_group(
-        &mut state.project_groups,
+    insert_project_into_registry(
+        &mut state,
         request.group_id.as_deref(),
         request.group_name.as_deref(),
         project.clone(),
@@ -1991,7 +2078,7 @@ pub async fn create_project(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "create_project").await?;
-    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+    let persisted_project = find_project_by_id_in_state(&sanitized_state, &project.id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
@@ -1999,10 +2086,86 @@ pub async fn create_project(
         operation = "create_project",
         project_id = %project.id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(persisted_project)
+}
+
+pub async fn create_new_project_repo(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
+    let parent_path = resolve_project_path(workspace_path, &request.parent_path);
+    let project_path = absolutize_path(&parent_path.join(folder_name));
+    let project_path_string = project_path.to_string_lossy().to_string();
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    ensure_valid_project_group_target(
+        &state.project_groups,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_name_in_target(
+        &state,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
+    ensure_new_repo_parent_path(&parent_path)?;
+    ensure_new_repo_target_available(&project_path)?;
+
+    fs::create_dir_all(&project_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to create repository directory {}: {}",
+                project_path.display(),
+                error
+            ),
+        })?;
+
+    let setup_result: Result<()> = (|| {
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let repo = Repository::init_opts(&project_path, &opts).map_err(|error| {
+            BackendError::Git {
+                message: format!(
+                    "Failed to initialize git repository at {}: {}",
+                    project_path.display(),
+                    error
+                ),
+            }
+        })?;
+        create_initial_commit(&repo)?;
+        Ok(())
+    })();
+
+    if let Err(error) = setup_result {
+        return rollback_created_new_repo(&project_path, error).await;
+    }
+
+    let create_request = CreateProjectRequest {
+        name: request.repo_name,
+        description: String::new(),
+        group_id: request.group_id,
+        group_name: request.group_name,
+        path: Some(project_path_string.clone()),
+        git_flow_settings: request.git_flow_settings,
+    };
+
+    match create_project(workspace_path, metadata_root, create_request).await {
+        Ok(project) => {
+            let detection =
+                detect_project_git_flow_internal(workspace_path, Some(project_path_string.as_str()));
+            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+        }
+        Err(error) => rollback_created_new_repo(&project_path, error).await,
+    }
 }
 
 pub async fn import_git_repo(
@@ -2035,18 +2198,19 @@ pub async fn import_git_repo(
         workspace_path,
         request.git_flow_settings.as_ref(),
     );
-    ensure_unique_project_name_in_group(
-        &state.project_groups,
+    ensure_unique_project_name_in_target(
+        &state,
         request.group_id.as_deref(),
+        request.group_name.as_deref(),
         &project.name,
     )?;
 
     let project_path = resolve_project_path(workspace_path, &project.path);
-    ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
     ensure_project_directory(&project_path, "import_git_repo").await?;
 
-    insert_project_into_group(
-        &mut state.project_groups,
+    insert_project_into_registry(
+        &mut state,
         request.group_id.as_deref(),
         request.group_name.as_deref(),
         project.clone(),
@@ -2055,7 +2219,7 @@ pub async fn import_git_repo(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "import_git_repo").await?;
-    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+    let persisted_project = find_project_by_id_in_state(&sanitized_state, &project.id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
@@ -2063,7 +2227,7 @@ pub async fn import_git_repo(
         operation = "import_git_repo",
         project_id = %project.id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(persisted_project)
@@ -2114,10 +2278,104 @@ pub async fn rename_project_group(
         operation = "rename_project_group",
         group_id = %group_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_group)
+}
+
+pub async fn create_project_group(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    name: &str,
+    project_ids: &[String],
+) -> Result<Vec<ProjectGroupDto>> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err(BackendError::Validation(
+            "Group name cannot be empty".to_string(),
+        ));
+    }
+
+    let mut unique_project_ids = Vec::new();
+    let mut seen = HashSet::new();
+    for project_id in project_ids.iter().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if seen.insert(project_id.to_string()) {
+            unique_project_ids.push(project_id.to_string());
+        }
+    }
+
+    if unique_project_ids.len() < 2 {
+        return Err(BackendError::Validation(
+            "A group requires at least two projects.".to_string(),
+        ));
+    }
+
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let mut grouped_projects = Vec::with_capacity(unique_project_ids.len());
+    for project_id in &unique_project_ids {
+        let project = take_project_from_registry(&mut state, project_id).ok_or_else(|| {
+            BackendError::Validation(format!("Unknown project id: {}", project_id))
+        })?;
+        grouped_projects.push(project);
+    }
+
+    state.project_groups.push(ProjectGroupDto {
+        id: format!("group-{}", Utc::now().timestamp_millis()),
+        name: trimmed_name.to_string(),
+        is_open: true,
+        projects: grouped_projects,
+    });
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "create_project_group").await?;
+    Ok(sanitized_state.project_groups)
+}
+
+pub async fn move_project_to_group(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+    group_id: Option<&str>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let current_group_id = find_group_id_for_project(&state, project_id);
+    let target_group_id = group_id.map(str::trim).filter(|value| !value.is_empty());
+
+    if current_group_id.as_deref() == target_group_id {
+        let (sanitized_state, _) =
+            persist_sanitized_state(workspace_path, metadata_root, state, "move_project_to_group").await?;
+        return Ok(sanitized_state.project_groups);
+    }
+
+    if let Some(target_group_id) = target_group_id {
+        if !state.project_groups.iter().any(|group| group.id == target_group_id) {
+            return Err(BackendError::Validation(format!(
+                "Unknown project group id: {}",
+                target_group_id
+            )));
+        }
+    }
+
+    let project = take_project_from_registry(&mut state, project_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    if let Some(target_group_id) = target_group_id {
+        let group = state
+            .project_groups
+            .iter_mut()
+            .find(|group| group.id == target_group_id)
+            .ok_or_else(|| {
+                BackendError::Validation(format!("Unknown project group id: {}", target_group_id))
+            })?;
+        group.projects.push(project);
+    } else {
+        state.standalone_projects.push(project);
+    }
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "move_project_to_group").await?;
+    Ok(sanitized_state.project_groups)
 }
 
 pub async fn rename_project(
@@ -2142,16 +2400,9 @@ pub async fn rename_project(
     );
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.name = trimmed_name.to_string();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.name = trimmed_name.to_string();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2160,9 +2411,14 @@ pub async fn rename_project(
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "rename_project").await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2171,7 +2427,7 @@ pub async fn rename_project(
         operation = "rename_project",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_project)
@@ -2193,16 +2449,9 @@ pub async fn update_project_git_flow(
     );
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.git_flow_settings = normalized_git_flow_settings.clone();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.git_flow_settings = normalized_git_flow_settings.clone();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2216,9 +2465,14 @@ pub async fn update_project_git_flow(
     )
     .await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2227,7 +2481,7 @@ pub async fn update_project_git_flow(
         operation = "update_project_git_flow",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_project)
@@ -2339,15 +2593,11 @@ pub async fn preview_project_access_change(
     live_terminal_project_ids: &HashSet<String>,
 ) -> Result<ProjectAccessChangePreviewDto> {
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = state
-        .project_groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
 
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
     let mut blocking_reasons = Vec::new();
     let mut plan_labels = HashSet::new();
     let mut manual_feature_labels = HashSet::new();
@@ -2623,7 +2873,7 @@ pub async fn update_project_access(
                 requires_confirmation = preview.requires_confirmation
             );
             return Err(BackendError::Validation(format!(
-                "This subproject cannot be switched to read-only right now: {}.",
+                "This project cannot be switched to read-only right now: {}.",
                 blocking_reasons_message(&preview.blocking_reasons)
             )));
         }
@@ -2644,28 +2894,21 @@ pub async fn update_project_access(
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            if !user_read_only && project.git_setup_state != PROJECT_GIT_SETUP_READY {
-                tracing::warn!(
-                    action = "project_access_update_rejected",
-                    project_id = %project_id,
-                    user_read_only = user_read_only,
-                    project_git_setup_state = %project.git_setup_state,
-                    reason = "git_not_ready"
-                );
-                return Err(BackendError::Validation(
-                    "Git must be ready before this subproject can become editable.".to_string(),
-                ));
-            }
-            project.user_read_only = user_read_only;
-            updated_project = Some(project.clone());
-            break;
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        if !user_read_only && project.git_setup_state != PROJECT_GIT_SETUP_READY {
+            tracing::warn!(
+                action = "project_access_update_rejected",
+                project_id = %project_id,
+                user_read_only = user_read_only,
+                project_git_setup_state = %project.git_setup_state,
+                reason = "git_not_ready"
+            );
+            return Err(BackendError::Validation(
+                "Git must be ready before this project can become editable.".to_string(),
+            ));
         }
+        project.user_read_only = user_read_only;
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2679,9 +2922,14 @@ pub async fn update_project_access(
     )
     .await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2742,16 +2990,9 @@ pub async fn archive_project(
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.status = "archived".to_string();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.status = "archived".to_string();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2760,9 +3001,14 @@ pub async fn archive_project(
     let (sanitized_state, _) =
         persist_sanitized_state(workspace_path, metadata_root, state, "archive_project").await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2780,33 +3026,17 @@ pub async fn remove_project_group(
         operation = "remove_project_group",
         group_id = %group_id,
         before_group_count = state.project_groups.len(),
-        before_project_count = count_projects(&state.project_groups)
+        before_project_count = count_registry_projects(&state.standalone_projects, &state.project_groups)
     );
-    let removed_project_ids = state
+    let group_index = state
         .project_groups
         .iter()
-        .find(|group| group.id == group_id)
-        .map(|group| {
-            group
-                .projects
-                .iter()
-                .map(|project| project.id.clone())
-                .collect::<Vec<_>>()
-        })
+        .position(|group| group.id == group_id)
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown project group id: {}", group_id))
         })?;
-
-    state.project_groups.retain(|group| group.id != group_id);
-
-    if let Some(plan) = state.current_plan.as_mut() {
-        plan.project_ids.retain(|id| {
-            !removed_project_ids
-                .iter()
-                .any(|project_id| project_id == id)
-        });
-        plan.updated_at = Utc::now().to_rfc3339();
-    }
+    let dissolved_group = state.project_groups.remove(group_index);
+    state.standalone_projects.extend(dissolved_group.projects);
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "remove_project_group")
@@ -2816,7 +3046,7 @@ pub async fn remove_project_group(
         operation = "remove_project_group",
         group_id = %group_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(sanitized_state.project_groups)
@@ -2833,29 +3063,11 @@ pub async fn close_project(
         operation = "remove_project",
         project_id = %project_id,
         before_group_count = state.project_groups.len(),
-        before_project_count = count_projects(&state.project_groups)
+        before_project_count = count_registry_projects(&state.standalone_projects, &state.project_groups)
     );
-    let initial_project_count: usize = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
+    let removed_project = take_project_from_registry(&mut state, project_id);
 
-    for group in state.project_groups.iter_mut() {
-        group.projects.retain(|project| project.id != project_id);
-    }
-
-    state
-        .project_groups
-        .retain(|group| !group.projects.is_empty());
-
-    let remaining_project_count: usize = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
-
-    if initial_project_count == remaining_project_count {
+    if removed_project.is_none() {
         return Err(BackendError::Validation(format!(
             "Unknown project id: {}",
             project_id
@@ -2874,7 +3086,7 @@ pub async fn close_project(
         operation = "remove_project",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(sanitized_state.project_groups)
@@ -2902,11 +3114,7 @@ pub async fn debug_reset_project(
     }
 
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = state
-        .project_groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
     let project_path = resolve_project_path(workspace_path, &project.path);
@@ -2945,27 +3153,30 @@ fn merge_task_lists(mut legacy_tasks: Vec<Value>, manual_tasks: Vec<Value>) -> V
     merged
 }
 
-fn collect_valid_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_valid_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
         .map(|project| project.id.clone())
         .collect()
 }
 
-fn collect_actionable_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_actionable_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
         .filter(|project| !project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
 }
 
-fn collect_read_only_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_read_only_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
         .filter(|project| project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
@@ -3085,12 +3296,16 @@ fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
 fn build_manual_feature_execution_targets(
     project_ids: &[String],
     feature_slug: &str,
+    standalone_projects: &[ProjectDto],
     project_groups: &[ProjectGroupDto],
 ) -> Vec<WorkspaceTaskExecutionTargetDto> {
     project_ids
         .iter()
         .map(|project_id| {
-            let project = find_project_by_id(project_groups, project_id);
+            let project = standalone_projects
+                .iter()
+                .find(|project| project.id == *project_id)
+                .or_else(|| find_project_by_id(project_groups, project_id));
             let branch_name = render_standalone_feature_branch_name(
                 project.map(|project| &project.git_flow_settings),
                 feature_slug,
@@ -3394,7 +3609,8 @@ fn try_read_workspace_state_from_tree(
 }
 
 fn is_workspace_state_exploitable(state: &WorkspaceState) -> bool {
-    !state.project_groups.is_empty()
+    !state.standalone_projects.is_empty()
+        || !state.project_groups.is_empty()
         || state.current_plan.is_some()
         || !state.plan_nodes.is_empty()
         || !state.predicted_branches.is_empty()
@@ -3544,15 +3760,18 @@ fn reconstruct_workspace_state_from_hints(
         })
         .collect::<Vec<_>>();
 
-    WorkspaceState {
+    let mut state = WorkspaceState {
         version: WorkspaceState::default().version,
+        standalone_projects: Vec::new(),
         project_groups,
         current_plan: None,
         plan_nodes: Vec::new(),
         predicted_branches: Vec::new(),
         manual_features: Vec::new(),
         reserved_standalone_feature_slugs: Vec::new(),
-    }
+    };
+    collapse_singleton_project_groups(&mut state);
+    state
 }
 
 fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<String> {
@@ -3820,15 +4039,68 @@ async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> 
     Ok(Some(state))
 }
 
+fn sanitize_project_entry(
+    workspace_path: &Path,
+    project: ProjectDto,
+    seen_paths: &mut HashSet<String>,
+    repair_report: &mut ProjectRegistryRepairReportDto,
+) -> Option<ProjectDto> {
+    if project.id.starts_with("session-project-") {
+        repair_report.removed_synthetic_projects += 1;
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
+
+    let resolved_path = resolve_project_path(workspace_path, &project.path);
+    let normalized_key = normalized_path_key(&resolved_path);
+    if normalized_key.trim().is_empty() {
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
+
+    if seen_paths.contains(&normalized_key) {
+        repair_report.duplicate_paths_removed += 1;
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
+
+    seen_paths.insert(normalized_key);
+    let git_flow_settings = auto_detect_project_git_flow_settings(
+        workspace_path,
+        &project.path,
+        Some(&project.git_flow_settings),
+    );
+    let git_detection = detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
+    if git_flow_settings != project.git_flow_settings {
+        repair_report.git_flow_settings_auto_updated += 1;
+    }
+    Some(normalize_project_access(
+        ProjectDto {
+            git_flow_settings,
+            ..project
+        },
+        derive_git_setup_state(&git_detection),
+    ))
+}
+
 fn sanitize_workspace_state(
     workspace_path: &Path,
     mut state: WorkspaceState,
 ) -> (WorkspaceState, ProjectRegistryRepairReportDto) {
     let mut repair_report = ProjectRegistryRepairReportDto::default();
     let mut seen_paths = HashSet::new();
+    let mut sanitized_standalone_projects = Vec::with_capacity(state.standalone_projects.len());
     let mut sanitized_groups = Vec::with_capacity(state.project_groups.len());
 
-    for group in state.project_groups {
+    for project in std::mem::take(&mut state.standalone_projects) {
+        if let Some(project) =
+            sanitize_project_entry(workspace_path, project, &mut seen_paths, &mut repair_report)
+        {
+            sanitized_standalone_projects.push(project);
+        }
+    }
+
+    for group in std::mem::take(&mut state.project_groups) {
         if group.id.starts_with("session-group-") {
             repair_report.removed_synthetic_groups += 1;
             repair_report.removed_group_ids.push(group.id);
@@ -3837,48 +4109,22 @@ fn sanitize_workspace_state(
 
         let mut sanitized_projects = Vec::with_capacity(group.projects.len());
         for project in group.projects {
-            if project.id.starts_with("session-project-") {
-                repair_report.removed_synthetic_projects += 1;
-                repair_report.removed_project_ids.push(project.id);
-                continue;
+            if let Some(project) =
+                sanitize_project_entry(workspace_path, project, &mut seen_paths, &mut repair_report)
+            {
+                sanitized_projects.push(project);
             }
-
-            let resolved_path = resolve_project_path(workspace_path, &project.path);
-            let normalized_key = normalized_path_key(&resolved_path);
-            if normalized_key.trim().is_empty() {
-                repair_report.removed_project_ids.push(project.id);
-                continue;
-            }
-
-            if seen_paths.contains(&normalized_key) {
-                repair_report.duplicate_paths_removed += 1;
-                repair_report.removed_project_ids.push(project.id);
-                continue;
-            }
-
-            seen_paths.insert(normalized_key);
-            let git_flow_settings = auto_detect_project_git_flow_settings(
-                workspace_path,
-                &project.path,
-                Some(&project.git_flow_settings),
-            );
-            let git_detection =
-                detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
-            if git_flow_settings != project.git_flow_settings {
-                repair_report.git_flow_settings_auto_updated += 1;
-            }
-            sanitized_projects.push(normalize_project_access(
-                ProjectDto {
-                    git_flow_settings,
-                    ..project
-                },
-                derive_git_setup_state(&git_detection),
-            ));
         }
 
         if sanitized_projects.is_empty() {
             repair_report.empty_groups_removed += 1;
             repair_report.removed_group_ids.push(group.id);
+            continue;
+        }
+
+        if sanitized_projects.len() == 1 {
+            repair_report.singleton_groups_migrated += 1;
+            sanitized_standalone_projects.extend(sanitized_projects);
             continue;
         }
 
@@ -3902,10 +4148,13 @@ fn sanitize_workspace_state(
         true
     });
 
+    repair_report.mount_names_assigned +=
+        assign_group_mount_names(&mut sanitized_standalone_projects);
+    state.standalone_projects = sanitized_standalone_projects;
     state.project_groups = sanitized_groups;
-    let _valid_project_ids = collect_valid_project_ids(&state.project_groups);
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
-    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
+    let _valid_project_ids = collect_valid_project_ids_from_state(&state);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
+    let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
 
     if let Some(plan) = state.current_plan.as_mut() {
         let original_project_ids = plan.project_ids.clone();
@@ -4620,6 +4869,10 @@ fn ensure_valid_project_group_target(
         )));
     }
 
+    if group_name.unwrap_or_default().trim().is_empty() {
+        return Ok(());
+    }
+
     if normalize_group_name(group_name, fallback_name)
         .trim()
         .is_empty()
@@ -4630,6 +4883,10 @@ fn ensure_valid_project_group_target(
     }
 
     Ok(())
+}
+
+fn target_is_standalone(group_id: Option<&str>, group_name: Option<&str>) -> bool {
+    group_id.is_none() && group_name.unwrap_or_default().trim().is_empty()
 }
 
 fn ensure_unique_project_name_in_group(
@@ -4656,10 +4913,34 @@ fn ensure_unique_project_name_in_group(
             });
         if duplicate.is_some() {
             return Err(BackendError::Validation(format!(
-                "A subproject named \"{}\" already exists in this global project.",
+                "A project named \"{}\" already exists in this group.",
                 trimmed_name
             )));
         }
+    }
+
+    Ok(())
+}
+
+fn ensure_unique_project_name_in_target(
+    state: &WorkspaceState,
+    group_id: Option<&str>,
+    group_name: Option<&str>,
+    project_name: &str,
+) -> Result<()> {
+    ensure_unique_project_name_in_group(&state.project_groups, group_id, project_name)?;
+
+    let trimmed_name = project_name.trim();
+    if target_is_standalone(group_id, group_name)
+        && state
+            .standalone_projects
+            .iter()
+            .any(|project| project.name.trim().eq_ignore_ascii_case(trimmed_name))
+    {
+        return Err(BackendError::Validation(format!(
+            "A project named \"{}\" already exists outside groups.",
+            trimmed_name
+        )));
     }
 
     Ok(())
@@ -4693,7 +4974,29 @@ fn ensure_unique_project_path(
 
     if duplicate {
         return Err(BackendError::Validation(
-            "A subproject with this folder already exists in the workspace.".to_string(),
+            "A project with this folder already exists in the workspace.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_unique_project_path_in_state(
+    state: &WorkspaceState,
+    workspace_path: &Path,
+    project_path: &Path,
+) -> Result<()> {
+    ensure_unique_project_path(&state.project_groups, workspace_path, project_path)?;
+
+    let next_project_path_key = normalized_path_key(project_path);
+    let duplicate = state.standalone_projects.iter().any(|project| {
+        let existing_path = resolve_project_path(workspace_path, &project.path);
+        normalized_path_key(&existing_path) == next_project_path_key
+    });
+
+    if duplicate {
+        return Err(BackendError::Validation(
+            "A project with this folder already exists in the workspace.".to_string(),
         ));
     }
 
@@ -4727,6 +5030,56 @@ fn insert_project_into_group(
     });
 
     Ok(())
+}
+
+fn insert_project_into_registry(
+    state: &mut WorkspaceState,
+    group_id: Option<&str>,
+    group_name: Option<&str>,
+    project: ProjectDto,
+) -> Result<()> {
+    if target_is_standalone(group_id, group_name) {
+        state.standalone_projects.push(project);
+        return Ok(());
+    }
+
+    insert_project_into_group(&mut state.project_groups, group_id, group_name, project)
+}
+
+fn collapse_singleton_project_groups(state: &mut WorkspaceState) {
+    let mut next_groups = Vec::with_capacity(state.project_groups.len());
+    for mut group in std::mem::take(&mut state.project_groups) {
+        match group.projects.len() {
+            0 => {}
+            1 => {
+                if let Some(project) = group.projects.pop() {
+                    state.standalone_projects.push(project);
+                }
+            }
+            _ => next_groups.push(group),
+        }
+    }
+    state.project_groups = next_groups;
+}
+
+fn take_project_from_registry(state: &mut WorkspaceState, project_id: &str) -> Option<ProjectDto> {
+    if let Some(index) = state
+        .standalone_projects
+        .iter()
+        .position(|project| project.id == project_id)
+    {
+        return Some(state.standalone_projects.remove(index));
+    }
+
+    let mut removed_project = None;
+    for group in state.project_groups.iter_mut() {
+        if let Some(index) = group.projects.iter().position(|project| project.id == project_id) {
+            removed_project = Some(group.projects.remove(index));
+            break;
+        }
+    }
+    collapse_singleton_project_groups(state);
+    removed_project
 }
 
 fn ensure_plan_has_project(state: &mut WorkspaceState, project: &ProjectDto) {
@@ -4868,6 +5221,44 @@ fn find_project_by_id<'a>(
         .iter()
         .flat_map(|group| group.projects.iter())
         .find(|project| project.id == project_id)
+}
+
+fn find_project_by_id_in_state<'a>(
+    state: &'a WorkspaceState,
+    project_id: &str,
+) -> Option<&'a ProjectDto> {
+    state
+        .standalone_projects
+        .iter()
+        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .find(|project| project.id == project_id)
+}
+
+fn find_project_by_id_mut_in_state<'a>(
+    state: &'a mut WorkspaceState,
+    project_id: &str,
+) -> Option<&'a mut ProjectDto> {
+    if let Some(project) = state
+        .standalone_projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+    {
+        return Some(project);
+    }
+
+    state
+        .project_groups
+        .iter_mut()
+        .flat_map(|group| group.projects.iter_mut())
+        .find(|project| project.id == project_id)
+}
+
+fn find_group_id_for_project(state: &WorkspaceState, project_id: &str) -> Option<String> {
+    state
+        .project_groups
+        .iter()
+        .find(|group| group.projects.iter().any(|project| project.id == project_id))
+        .map(|group| group.id.clone())
 }
 
 fn task_status_matches(task: &Value, expected: &[&str]) -> bool {
@@ -5076,6 +5467,142 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn create_new_project_repo_creates_git_repo_with_initial_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create new repo");
+
+        let project_path = parent_path.join("backend-api");
+        let repo = Repository::open(&project_path).expect("open created repo");
+        assert!(project_path.join(".git").is_dir());
+        assert!(repo.head().expect("head").target().is_some());
+        assert_eq!(result.project.name, "Backend API");
+        assert_eq!(result.project.git_setup_state, PROJECT_GIT_SETUP_READY);
+        assert!(!result.project.is_read_only);
+        assert_eq!(result.detection.setup_state, PROJECT_GIT_DETECTION_READY);
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_blocks_existing_target_folder() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        stdfs::create_dir_all(parent_path.join("backend-api")).expect("create target");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemAlreadyExists { message })
+                if message.contains("backend-api")
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_blocks_parent_inside_git_repo() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        init_git_repo(&parent_path, "main", &[]);
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::Validation(message))
+                if message.contains("not inside an existing Git repository")
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_reuses_project_path_uniqueness_validation() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        let project_path = parent_path.join("backend-api");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Existing".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create existing project");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Other Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::Validation(message))
+                if message.contains("folder already exists")
+        ));
+    }
+
     #[test]
     fn manual_feature_targets_use_project_standalone_templates() {
         let mut web = make_project("project-web", "apps/web");
@@ -5097,6 +5624,7 @@ mod tests {
         let targets = build_manual_feature_execution_targets(
             &["project-web".to_string(), "project-api".to_string()],
             "quick-export",
+            &[],
             &project_groups,
         );
 
@@ -5173,6 +5701,7 @@ mod tests {
         let workspace_path = PathBuf::from("C:/workspace");
         let state = WorkspaceState {
             version: 3,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5225,6 +5754,7 @@ mod tests {
         init_git_repo(&workspace_path.join("apps/api"), "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![
                 ProjectGroupDto {
                     id: "group-main".to_string(),
@@ -5357,6 +5887,7 @@ mod tests {
         let workspace_path = PathBuf::from("C:/workspace");
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5449,6 +5980,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5459,11 +5991,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "master");
         assert_eq!(project.git_flow_settings.base_branch, "dev");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5475,6 +6008,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5485,11 +6019,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "main");
         assert_eq!(project.git_flow_settings.base_branch, "develop");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5501,6 +6036,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5511,11 +6047,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "trunk");
         assert_eq!(project.git_flow_settings.base_branch, "integration");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5527,6 +6064,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5537,11 +6075,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "main");
         assert_eq!(project.git_flow_settings.base_branch, "develop");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5557,6 +6096,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5567,11 +6107,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "trunk");
         assert_eq!(project.git_flow_settings.base_branch, "release");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5649,6 +6190,7 @@ mod tests {
 
         let valid_state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
                 name: "Suite".to_string(),
@@ -5686,8 +6228,9 @@ mod tests {
             report.restored_commit.as_deref(),
             Some(expected_commit.as_str())
         );
-        assert_eq!(restored.project_groups.len(), 1);
-        assert_eq!(restored.project_groups[0].projects[0].id, "project-web");
+        assert_eq!(restored.project_groups.len(), 0);
+        assert_eq!(restored.standalone_projects.len(), 1);
+        assert_eq!(restored.standalone_projects[0].id, "project-web");
     }
 
     #[test]
@@ -5716,13 +6259,10 @@ mod tests {
             .expect("reconstructed state");
 
         assert_eq!(report.status, "reconstructed_from_hints");
-        assert_eq!(reconstructed.project_groups.len(), 1);
-        assert_eq!(reconstructed.project_groups[0].id, "group-1");
-        assert_eq!(
-            reconstructed.project_groups[0].projects[0].id,
-            "project-web"
-        );
-        assert_eq!(reconstructed.project_groups[0].projects[0].name, "Web");
+        assert_eq!(reconstructed.project_groups.len(), 0);
+        assert_eq!(reconstructed.standalone_projects.len(), 1);
+        assert_eq!(reconstructed.standalone_projects[0].id, "project-web");
+        assert_eq!(reconstructed.standalone_projects[0].name, "Web");
     }
 
     #[tokio::test]
@@ -5735,6 +6275,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 3,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
                 name: "Suite".to_string(),
@@ -5786,6 +6327,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 3,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
                 name: "Suite".to_string(),
@@ -5917,6 +6459,7 @@ mod tests {
         init_git_repo(&project_path, "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),

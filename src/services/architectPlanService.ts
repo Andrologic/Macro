@@ -1630,8 +1630,12 @@ const loadParticipantSnapshots = async (
   const repoPathByProjectId = registrySnapshot?.repoPathByProjectId ?? new Map<string, string>();
 
   try {
-    const projects = deps
-      ? (await deps.getAppState()).projectGroups.flatMap((group) => group.projects)
+    const appState = deps ? await deps.getAppState() : null;
+    const projects = appState
+      ? [
+          ...(appState.standaloneProjects ?? []),
+          ...appState.projectGroups.flatMap((group) => group.projects),
+        ]
       : [];
     return uniqueProjectIds.map((projectId) => {
       const project = projects.find((candidate) => candidate.id === projectId);

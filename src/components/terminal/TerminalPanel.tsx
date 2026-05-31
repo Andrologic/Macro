@@ -37,6 +37,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects ?? []);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const tasks = useTaskStore((state) => state.tasks);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -58,13 +59,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const terminalScope = useMemo(
     () =>
       resolveSelectedTaskTerminalScope({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
         selectedTask,
         lastManualProjectIdByTaskId,
       }),
-    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
+    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask, standaloneProjects]
   );
   const orderedTabs = useMemo(
     () =>

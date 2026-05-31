@@ -119,7 +119,44 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePathsByProjectId['macro-api']).toBe('C:/dev/macro-api');
   });
 
-  it('prefers task worktrees for targeted subprojects in implement mode', async () => {
+  it('uses a selected standalone project as a ready single-project scope', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'solo-app',
+      name: 'Solo App',
+      mountName: 'solo-app',
+      path: '/repos/solo-app',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Architect',
+      projects: [standaloneProject],
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'solo-app',
+    });
+
+    expect(context.groupId).toBeNull();
+    expect(context.groupName).toBeNull();
+    expect(context.projectId).toBe('solo-app');
+    expect(context.projectIds).toEqual(['solo-app']);
+    expect(context.actionableProjectIds).toEqual(['solo-app']);
+    expect(context.focusedProjectId).toBe('solo-app');
+    expect(context.virtualRootEnabled).toBe(false);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'solo-app',
+        groupId: null,
+        mountName: 'solo-app',
+        displayName: 'Solo App',
+        workspacePath: '/repos/solo-app',
+        isReadOnly: false,
+      },
+    ]);
+    expect(context.workspacePath).toBe('/repos/solo-app');
+  });
+
+  it('prefers task worktrees for targeted projects in implement mode', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -361,7 +398,7 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
-  it('falls back to the primary subproject of the selected global project when no focus repo is set', async () => {
+  it('falls back to the primary project of the selected group when no focus repo is set', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Architect',

@@ -23,8 +23,11 @@ import {
   getAcceptedActionsAfterDecliningPrompt,
   hasDuplicateSubProjectName,
   inferProjectNameFromPath,
+  isValidProjectFolderName,
+  joinProjectPath,
   normalizeProjectPath,
   shouldConfirmDetectedGitFlow,
+  slugifyProjectFolderName,
   type PendingProjectCreation,
 } from './ProjectModal.helpers';
 
@@ -57,7 +60,7 @@ const testTranslate = (
 
 const buildProjectGroup = (overrides: Partial<ProjectGroup>): ProjectGroup => ({
   id: 'group-id',
-  name: 'Global Project',
+  name: 'Group',
   isOpen: true,
   projects: [],
   ...overrides,
@@ -97,6 +100,10 @@ describe('ProjectModal helpers', () => {
     expect(normalizeProjectPath(' C:\\Work\\App\\\\ ')).toBe('c:/work/app');
     expect(inferProjectNameFromPath('C:\\Work\\App\\')).toBe('App');
     expect(inferProjectNameFromPath('/repos/macro/api')).toBe('api');
+    expect(slugifyProjectFolderName('Backend API')).toBe('backend-api');
+    expect(joinProjectPath('C:\\Work\\Suite\\', 'backend-api')).toBe('C:/Work/Suite/backend-api');
+    expect(isValidProjectFolderName('backend-api')).toBe(true);
+    expect(isValidProjectFolderName('../backend')).toBe(false);
   });
 
   it('finds duplicate paths and names case-insensitively', () => {
@@ -120,7 +127,6 @@ describe('ProjectModal helpers', () => {
       buildPendingProjectCreation({
         isAttachingToExistingGroup: false,
         targetGroupId: null,
-        globalProjectName: ' Suite ',
         subProjectPath: ' C:/work/app ',
         derivedSubProjectName: 'app',
       })
@@ -128,7 +134,7 @@ describe('ProjectModal helpers', () => {
       name: 'app',
       description: '',
       groupId: null,
-      groupName: 'Suite',
+      groupName: null,
       path: 'C:/work/app',
     });
 
@@ -136,7 +142,6 @@ describe('ProjectModal helpers', () => {
       buildPendingProjectCreation({
         isAttachingToExistingGroup: true,
         targetGroupId: 'group-id',
-        globalProjectName: 'Ignored',
         subProjectPath: '',
         derivedSubProjectName: 'api',
       })

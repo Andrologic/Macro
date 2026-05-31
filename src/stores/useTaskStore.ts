@@ -1233,7 +1233,10 @@ const ensureAppSync = () => {
 
     if (nextState.selectedProjectId !== previousState.selectedProjectId) {
       const scopedProjectIds = getScopedProjectIds(
-        nextState.projectGroups,
+        {
+          standaloneProjects: nextState.standaloneProjects,
+          projectGroups: nextState.projectGroups,
+        },
         nextState.selectedGroupId,
         nextState.selectedProjectId
       );
@@ -2245,8 +2248,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
 
       if (restoreSelection) {
-        const { selectedGroupId, selectedProjectId, projectGroups } = useAppStore.getState();
-        const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+        const { selectedGroupId, selectedProjectId, standaloneProjects, projectGroups } = useAppStore.getState();
+        const scopedProjectIds = getScopedProjectIds(
+          { standaloneProjects, projectGroups },
+          selectedGroupId,
+          selectedProjectId
+        );
         const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
         if (selectedTaskIdFromApp && !tasks.some((task) => task.id === selectedTaskIdFromApp)) {
           useAppStore.getState().setSelectedTask(null);

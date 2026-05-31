@@ -77,7 +77,7 @@ describe('projectRegistry', () => {
     expect(formatProjectRegistryRepairSummary(result.report)).toContain('Macro a réparé');
   });
 
-  it('keeps all subprojects selected when only the group is restored', () => {
+  it('keeps all projects selected when only the group is restored', () => {
     const result = normalizeProjectRegistry({
       projectGroups: [
         {
@@ -96,6 +96,26 @@ describe('projectRegistry', () => {
 
     expect(result.selectedGroupId).toBe('group-main');
     expect(result.selectedProjectId).toBeNull();
+  });
+
+  it('migrates singleton groups to standalone projects and repairs selection', () => {
+    const result = normalizeProjectRegistry({
+      projectGroups: [
+        {
+          id: 'group-single',
+          name: 'Single',
+          isOpen: true,
+          projects: [makeProject('project-solo', 'C:/dev/app/solo', 'Solo')],
+        },
+      ],
+      selectedGroupId: 'group-single',
+      selectedProjectId: 'project-solo',
+    });
+
+    expect(result.projectGroups).toEqual([]);
+    expect(result.standaloneProjects.map((project) => project.id)).toEqual(['project-solo']);
+    expect(result.selectedGroupId).toBeNull();
+    expect(result.selectedProjectId).toBe('project-solo');
   });
 
   it('reconciles remembered projects against the canonical registry', () => {
@@ -134,6 +154,34 @@ describe('projectRegistry', () => {
         groupId: 'group-main',
         name: 'Macro Web',
         path: 'C:/dev/app/web',
+        lastOpenedAt: '2026-03-14T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('reconciles remembered standalone projects without a group id', () => {
+    const remembered = reconcileRememberedProjects(
+      {
+        standaloneProjects: [makeProject('project-solo', 'C:/dev/app/solo', 'Solo')],
+        projectGroups: [],
+      },
+      [
+        {
+          projectId: 'legacy-id',
+          groupId: 'legacy-group',
+          name: 'Old Name',
+          path: 'C:/dev/app/solo',
+          lastOpenedAt: '2026-03-14T00:00:00.000Z',
+        },
+      ]
+    );
+
+    expect(remembered).toEqual([
+      {
+        projectId: 'project-solo',
+        groupId: null,
+        name: 'Solo',
+        path: 'C:/dev/app/solo',
         lastOpenedAt: '2026-03-14T00:00:00.000Z',
       },
     ]);

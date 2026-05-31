@@ -586,7 +586,7 @@ describe('macroSyncService', () => {
     expect(getMacroSyncDescription(result!)).toContain('authentication');
   });
 
-  it('falls back to all repositories in the selected global project when no plan targets are active', async () => {
+  it('falls back to all repositories in the selected group when no plan targets are active', async () => {
     const service = createMacroSyncService({
       tauriIpc: {
         isTauriAvailable: () => true,

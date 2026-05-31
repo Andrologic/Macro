@@ -725,7 +725,7 @@ describe('useFileChangesStore', () => {
     expect(repository?.planBranchName).toBe('release/project-a');
   });
 
-  it('narrows loaded repositories to the selected subproject scope', async () => {
+  it('narrows loaded repositories to the selected project scope', async () => {
     appStoreState.selectedProjectId = 'project-b';
 
     await useFileChangesStore.getState().loadCurrentChanges();
@@ -738,7 +738,7 @@ describe('useFileChangesStore', () => {
     expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
   });
 
-  it('marks the task as out of scope when the selected global project has no matching repositories', async () => {
+  it('marks the task as out of scope when the selected group has no matching repositories', async () => {
     appStoreState.selectedGroupId = 'group-2';
 
     await useFileChangesStore.getState().loadCurrentChanges();
@@ -752,7 +752,7 @@ describe('useFileChangesStore', () => {
     expect(gitStatusMock).not.toHaveBeenCalled();
   });
 
-  it('recomputes the scoped repository list when the focused subproject changes on the same task', async () => {
+  it('recomputes the scoped repository list when the focused project changes on the same task', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 
@@ -1568,7 +1568,7 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().lastError).toBeNull();
   });
 
-  it('does not change the task status when only the focused subproject is resolved', async () => {
+  it('does not change the task status when only the focused project is resolved', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 

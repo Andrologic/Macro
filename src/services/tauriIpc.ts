@@ -503,6 +503,7 @@ export interface DbProjectRegistryRepairReport {
 export interface ProjectRegistryRepairReportDto {
   duplicate_paths_removed: number;
   empty_groups_removed: number;
+  singleton_groups_migrated?: number;
   removed_synthetic_groups: number;
   removed_synthetic_projects: number;
   mount_names_assigned: number;
@@ -517,7 +518,9 @@ export interface ProjectRegistryRepairReportDto {
 }
 
 export interface ProjectRegistryDiagnosticsDto {
+  rawStandaloneProjects?: Project[];
   rawProjectGroups: ProjectGroup[];
+  sanitizedStandaloneProjects?: Project[];
   sanitizedProjectGroups: ProjectGroup[];
   rawGroupCount: number;
   rawProjectCount: number;
@@ -870,6 +873,7 @@ export interface FsWriteResultDto {
 
 export interface WorkspaceBootstrapDto {
   plan: Plan | null;
+  standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
@@ -2440,6 +2444,24 @@ export async function workspaceCreateProject(params: {
   });
 }
 
+export async function workspaceCreateNewProjectRepo(params: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId?: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
+}): Promise<ProjectGitSetupCommitResult> {
+  return invoke<ProjectGitSetupCommitResult>("workspace_create_new_project_repo", {
+    repoName: params.repoName,
+    parentPath: params.parentPath,
+    folderName: params.folderName,
+    groupId: params.groupId ?? null,
+    groupName: params.groupName ?? null,
+    gitFlowSettings: params.gitFlowSettings ?? null,
+  });
+}
+
 export async function workspaceImportGitRepo(params: {
   gitUrl: string;
   projectName: string;
@@ -2467,6 +2489,26 @@ export async function workspaceRenameProjectGroup(params: {
   return invoke<ProjectGroup>("workspace_rename_project_group", {
     groupId: params.groupId,
     name: params.name,
+  });
+}
+
+export async function workspaceCreateProjectGroup(params: {
+  name: string;
+  projectIds: string[];
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>("workspace_create_project_group", {
+    name: params.name,
+    projectIds: params.projectIds,
+  });
+}
+
+export async function workspaceMoveProjectToGroup(params: {
+  projectId: string;
+  groupId?: string | null;
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>("workspace_move_project_to_group", {
+    projectId: params.projectId,
+    groupId: params.groupId ?? null,
   });
 }
 

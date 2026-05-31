@@ -66,7 +66,7 @@ pub(crate) fn mount_workspace_path(mount: &WorkspaceProjectMount) -> CommandResu
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             command_error(format!(
-                "Subproject {} has no workspace path.",
+                "Project {} has no workspace path.",
                 mount.mount_name
             ))
         })?;
@@ -211,7 +211,7 @@ pub(crate) fn resolve_virtual_mount_target<'a>(
         .filter(|mount| mount_has_workspace(mount))
         .collect::<Vec<_>>();
     match available_mounts.as_slice() {
-        [] => Err(command_error("No virtual-root subproject is available.")),
+        [] => Err(command_error("No virtual-root project is available.")),
         [mount] => Ok(ResolvedMountTarget {
             mount,
             relative_path: normalized_path.if_empty(".").to_string(),

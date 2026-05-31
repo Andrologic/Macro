@@ -160,7 +160,7 @@ export const createArchitectScopePromotionService = (
         throw new Error(`Cannot promote project ${projectId}: project is not registered.`);
       }
       if (project.isReadOnly) {
-        throw new Error(`Cannot promote project ${project.name || projectId}: the subproject is read-only.`);
+        throw new Error(`Cannot promote project ${project.name || projectId}: the project is read-only.`);
       }
       if (!project.path?.trim()) {
         throw new Error(`Cannot promote project ${project.name || projectId}: repository path is missing.`);

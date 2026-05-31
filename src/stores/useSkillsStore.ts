@@ -45,7 +45,10 @@ export interface SkillTurnPreparation {
 
 const getProjectRootsFromAppState = (): SkillProjectRoot[] => {
   const appState = useAppStore.getState();
-  const projects = appState.projectGroups.flatMap((group) => group.projects);
+  const projects = [
+    ...(appState.standaloneProjects ?? []),
+    ...appState.projectGroups.flatMap((group) => group.projects),
+  ];
   const roots = projects
     .map((project) => ({
       projectId: project.id,

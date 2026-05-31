@@ -300,7 +300,7 @@ export const GeneralView: React.FC = () => {
                     <div className="space-y-4">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">
-                                {t('settings.openSubprojectsWith', 'Open subprojects with')}
+                                {t('settings.openSubprojectsWith', 'Open projects with')}
                             </label>
                             <p className="text-xs text-muted-foreground">
                                 {t(
@@ -315,7 +315,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.codeEditorApp', 'Code editor'),
                                 t(
                                     'settings.codeEditorAppDesc',
-                                    'Used when clicking the code editor quick action for a subproject.'
+                                    'Used when clicking the code editor quick action for a project.'
                                 )
                             )}
                             {renderProjectOpenSelect(
@@ -323,7 +323,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.terminalApp', 'Terminal'),
                                 t(
                                     'settings.terminalAppDesc',
-                                    'Used when clicking the terminal quick action for a subproject.'
+                                    'Used when clicking the terminal quick action for a project.'
                                 )
                             )}
                             {renderProjectOpenSelect(
@@ -331,7 +331,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.fileExplorerApp', 'File explorer'),
                                 t(
                                     'settings.fileExplorerAppDesc',
-                                    'Used when clicking the file explorer quick action for a subproject.'
+                                    'Used when clicking the file explorer quick action for a project.'
                                 )
                             )}
                         </div>

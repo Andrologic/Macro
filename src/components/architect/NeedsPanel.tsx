@@ -54,6 +54,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const {
     activeArchitectPlanId,
     architectPlanSwitch,
+    standaloneProjects,
     projectGroups,
     selectedGroupId,
     selectedProjectId,
@@ -62,6 +63,7 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
       activeArchitectPlanId: state.activeArchitectPlanId,
       architectPlanSwitch:
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
+      standaloneProjects: state.standaloneProjects ?? [],
       projectGroups: state.projectGroups,
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
@@ -70,11 +72,12 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const [filter, setFilter] = useState<'all' | NeedCategory>('all');

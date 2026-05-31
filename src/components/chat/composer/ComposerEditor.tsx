@@ -1,5 +1,4 @@
 import React, { useEffect, useImperativeHandle, forwardRef, useRef, useCallback } from 'react';
-import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
@@ -32,6 +31,7 @@ import type { ContextRefKind } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
+import { LexicalComposer } from './SafeLexicalComposer';
 import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
 
 // ------ Types ------

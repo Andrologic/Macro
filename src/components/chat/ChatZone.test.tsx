@@ -338,6 +338,36 @@ const translationMock = createTranslationMock({
   'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
   'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
   'chat.toolTurnLimitFallbackDescription': 'Macro showed a fallback summary.',
+  'chat.contextWindow.ariaLabel': 'Diagnostic du contexte',
+  'chat.contextWindow.titleWithPercent': '{{label}} · {{percent}} du budget utile',
+  'chat.contextWindow.status.window': 'Fenêtre de contexte',
+  'chat.contextWindow.status.compacting': 'Compactage en cours',
+  'chat.contextWindow.providerFallback': 'Provider',
+  'chat.contextWindow.modelFallback': 'Modèle non sélectionné',
+  'chat.contextWindow.usefulBudgetShort': 'budget utile',
+  'chat.contextWindow.compactButton.none': 'Rien à compacter',
+  'chat.contextWindow.compactButton.aggressive': 'Compacter plus agressivement',
+  'chat.contextWindow.compactButton.default': 'Compacter maintenant',
+  'chat.contextWindow.metrics.payload': 'Payload',
+  'chat.contextWindow.metrics.modelLimit': 'Limite modèle',
+  'chat.contextWindow.metrics.estimatedLimit': 'Limite estimée',
+  'chat.contextWindow.metrics.usefulBudget': 'Budget utile',
+  'chat.contextWindow.metrics.margin': 'Marge',
+  'chat.contextWindow.metrics.limitSource': 'Source limite',
+  'chat.contextWindow.metrics.confidence': 'Confiance',
+  'chat.contextWindow.metrics.totalContext': 'Contexte total',
+  'chat.contextWindow.metrics.checkpoint': 'Checkpoint',
+  'chat.contextWindow.limitSource.providerMetadata': 'Provider',
+  'chat.contextWindow.limitSource.macroFallback': 'Fallback Macro',
+  'chat.contextWindow.confidence.verified': 'Vérifiée',
+  'chat.contextWindow.none': 'Aucun',
+  'chat.contextWindow.manual.action': 'Action manuelle',
+  'chat.contextWindow.manual.latestResult': 'Dernier résultat',
+  'chat.contextWindow.manual.feedback.compactedLabel': 'Checkpoint créé',
+  'chat.contextWindow.manual.feedback.compactedDetail': '{{tokens}} tokens économisés',
+  'chat.contextWindow.compaction': 'Compaction',
+  'chat.contextWindow.countSummary': '{{messages}} messages · {{sources}} sources',
+  'chat.contextWindow.refresh': 'Actualiser',
 });
 const COMPACTION_PROGRESS_TEXT = 'Compactage du contexte...';
 const COMPACTION_BOUNDARY_TEXT = 'Contexte compacté';
@@ -3879,7 +3909,7 @@ describe('ChatZone', () => {
     expect(taskState.startTask).not.toHaveBeenCalled();
   });
 
-  it('shows the focused subproject name instead of a multi-repository count in the kickoff summary', async () => {
+  it('shows the focused project name instead of a multi-repository count in the kickoff summary', async () => {
     appState = {
       ...appState,
       mode: 'Implement',

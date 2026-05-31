@@ -163,6 +163,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             hiddenContext: "hidden",
             providerInputItemsJson: null,
             providerTurnStateJson: null,
+            contextRefsJson: null,
           },
         },
       },
@@ -189,6 +190,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             hiddenContext: null,
             providerInputItemsJson: JSON.stringify([{ type: "message" }]),
             providerTurnStateJson: null,
+            contextRefsJson: null,
           },
         },
       },
@@ -502,6 +504,13 @@ describe("tauriIpc executeWorkspaceTool", () => {
         "create_initial_commit",
       ],
     });
+    await tauriIpc.workspaceCreateNewProjectRepo({
+      repoName: "API",
+      parentPath: "C:/dev",
+      folderName: "api",
+      groupId: "group-1",
+      groupName: "Suite",
+    });
     await tauriIpc.workspaceUpdateProjectGitFlowWithSetup({
       projectId: "project-1",
       gitFlowSettings: {
@@ -552,6 +561,17 @@ describe("tauriIpc executeWorkspaceTool", () => {
             "initialize_repo",
             "create_initial_commit",
           ],
+        },
+      },
+      {
+        command: "workspace_create_new_project_repo",
+        payload: {
+          repoName: "API",
+          parentPath: "C:/dev",
+          folderName: "api",
+          groupId: "group-1",
+          groupName: "Suite",
+          gitFlowSettings: null,
         },
       },
       {

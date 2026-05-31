@@ -35,6 +35,7 @@ import {
   Clock,
   MoreHorizontal,
   MoreVertical,
+  GripVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -140,6 +141,7 @@ export type IconName =
   | 'clock'
   | 'more-horizontal'
   | 'more-vertical'
+  | 'grip-vertical'
   | 'panel-left-close'
   | 'panel-left-open'
   | 'panel-right-close'
@@ -277,6 +279,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'clock': Clock,
   'more-horizontal': MoreHorizontal,
   'more-vertical': MoreVertical,
+  'grip-vertical': GripVertical,
   'panel-left-close': PanelLeftClose,
   'panel-left-open': PanelLeftOpen,
   'panel-right-close': PanelRightClose,

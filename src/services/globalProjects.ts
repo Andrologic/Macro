@@ -1,4 +1,4 @@
-import type { GlobalProject, Project, ProjectGroup } from '../types';
+import type { GlobalProject, Project, ProjectGroup, ProjectRegistry } from '../types';
 import type { LocalProjectContextState } from './localProjectContext';
 
 export const isProjectReadOnly = (project: Pick<Project, 'isReadOnly'> | null | undefined): boolean =>
@@ -30,6 +30,19 @@ export const getProjectGroupByProjectId = (
 ): ProjectGroup | null => {
   if (!projectId) return null;
   return groups.find((group) => group.projects.some((project) => project.id === projectId)) ?? null;
+};
+
+export const getAllProjects = (
+  projectGroups: ProjectGroup[] | ProjectRegistry,
+  standaloneProjects: Project[] = []
+): Project[] => {
+  if (Array.isArray(projectGroups)) {
+    return [...standaloneProjects, ...projectGroups.flatMap((group) => group.projects)];
+  }
+  return [
+    ...(projectGroups.standaloneProjects ?? []),
+    ...(projectGroups.projectGroups ?? []).flatMap((group) => group.projects),
+  ];
 };
 
 export const getSubProjectsForGroup = (groups: ProjectGroup[], groupId: string | null | undefined): Project[] => {
@@ -107,11 +120,12 @@ export const getFocusedProjectForGroup = (
 };
 
 export const getScopedProjectIds = (
-  groups: ProjectGroup[],
+  groups: ProjectGroup[] | ProjectRegistry,
   groupId: string | null | undefined,
   projectId: string | null | undefined
 ): string[] => {
-  const groupProjectIds = getSubProjectsForGroup(groups, groupId).map((project) => project.id);
+  const projectGroups = Array.isArray(groups) ? groups : groups.projectGroups;
+  const groupProjectIds = getSubProjectsForGroup(projectGroups, groupId).map((project) => project.id);
   if (groupProjectIds.length > 0) {
     return groupProjectIds;
   }
@@ -124,11 +138,12 @@ export const getScopedProjectIds = (
 };
 
 export const getRepositoryScopedProjectIds = (
-  groups: ProjectGroup[],
+  groups: ProjectGroup[] | ProjectRegistry,
   groupId: string | null | undefined,
   projectId: string | null | undefined
 ): string[] => {
-  const groupProjects = getSubProjectsForGroup(groups, groupId);
+  const projectGroups = Array.isArray(groups) ? groups : groups.projectGroups;
+  const groupProjects = getSubProjectsForGroup(projectGroups, groupId);
   if (groupProjects.length > 0) {
     const groupProjectIds = new Set(groupProjects.map((project) => project.id));
     if (projectId && groupProjectIds.has(projectId)) {
@@ -146,23 +161,21 @@ export const getRepositoryScopedProjectIds = (
 };
 
 export const getScopedActionableProjectIds = (
-  groups: ProjectGroup[],
+  groups: ProjectGroup[] | ProjectRegistry,
   groupId: string | null | undefined,
   projectId: string | null | undefined
 ): string[] =>
   getScopedProjectIds(groups, groupId, projectId).filter((scopedProjectId) =>
-    groups
-      .flatMap((group) => group.projects)
+    getAllProjects(groups)
       .some((project) => project.id === scopedProjectId && isProjectActionable(project))
   );
 
 export const getScopedReadOnlyProjectIds = (
-  groups: ProjectGroup[],
+  groups: ProjectGroup[] | ProjectRegistry,
   groupId: string | null | undefined,
   projectId: string | null | undefined
 ): string[] =>
   getScopedProjectIds(groups, groupId, projectId).filter((scopedProjectId) =>
-    groups
-      .flatMap((group) => group.projects)
+    getAllProjects(groups)
       .some((project) => project.id === scopedProjectId && isProjectReadOnly(project))
   );

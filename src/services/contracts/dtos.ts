@@ -1,6 +1,7 @@
 import type {
   Plan,
   ProjectGroup,
+  ProjectRegistry,
   PlanNode,
   PredictedBranch,
   Conversation,
@@ -21,6 +22,7 @@ import type {
 
 export interface AppBootstrapDto {
   plan: Plan | null;
+  standaloneProjects?: ProjectRegistry['standaloneProjects'];
   projectGroups: ProjectGroup[];
   planNodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];

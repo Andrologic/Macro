@@ -167,7 +167,7 @@ export const ArchitectGitFlowView: React.FC = () => {
         <p className="text-xs text-muted-foreground">
           {t(
             'settings.architectGitFlow.subtitle',
-            'Configure the default Git workflow applied to new subprojects, including the development target and feature branch templates. Existing subprojects can override these values individually.'
+            'Configure the default Git workflow applied to new projects, including the development target and feature branch templates. Existing projects can override these values individually.'
           )}
         </p>
       </section>

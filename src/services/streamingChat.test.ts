@@ -132,7 +132,7 @@ const loadStreamingChat = async (
     ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT:
       'After using tools, provide a concise recap to the user.',
     ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX:
-      'Keep every strategy node inside the active plan subproject scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.',
+      'Keep every strategy node inside the active plan project scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.',
   }));
 
   streamingChatImportCounter += 1;

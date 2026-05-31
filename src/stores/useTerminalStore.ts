@@ -245,7 +245,7 @@ const assertProjectSupportsTerminal = (projectId: string): Project => {
     throw new Error(`Unknown project id: ${projectId}`);
   }
   if (project.isReadOnly) {
-    throw new Error(`Subproject "${project.name}" is read-only. Terminal sessions are unavailable.`);
+    throw new Error(`Project "${project.name}" is read-only. Terminal sessions are unavailable.`);
   }
   return project;
 };
@@ -330,7 +330,10 @@ const resolveSessionBaseCwd = (projectId: string, fallbackProjectPath: string): 
   const chatState = useChatStore.getState();
   const executionContext = resolveProjectExecutionContext({
     mode: appState.mode,
-    projects: appState.projectGroups.flatMap((group) => group.projects),
+    projects: [
+      ...(appState.standaloneProjects ?? []),
+      ...appState.projectGroups.flatMap((group) => group.projects),
+    ],
     projectGroups: appState.projectGroups,
     tasks: taskState.tasks,
     conversations: chatState.conversations,
@@ -407,6 +410,7 @@ const resolveCurrentTerminalScope = (
   const appState = useAppStore.getState();
 
   return resolveSelectedTaskTerminalScope({
+    standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
     selectedGroupId: appState.selectedGroupId,
     selectedProjectId: appState.selectedProjectId,
@@ -425,6 +429,7 @@ const resolveManualTerminalContext = (params?: {
   const chatState = useChatStore.getState();
   const selectedTask = getCurrentSelectedTask();
   const scope = resolveSelectedTaskTerminalScope({
+    standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
     selectedGroupId: params?.groupId?.trim() || appState.selectedGroupId,
     selectedProjectId: params?.projectId?.trim() || appState.selectedProjectId,
@@ -440,7 +445,10 @@ const resolveManualTerminalContext = (params?: {
     params?.projectId && scope.scopedProjectIds.includes(params.projectId)
       ? params.projectId
       : scope.preferredProjectId;
-  const allProjects = appState.projectGroups.flatMap((group) => group.projects);
+  const allProjects = [
+    ...(appState.standaloneProjects ?? []),
+    ...appState.projectGroups.flatMap((group) => group.projects),
+  ];
   const targetProject = allProjects.find((project) => project.id === targetProjectId) ?? null;
   if (!targetProject) {
     return null;
@@ -1227,7 +1235,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       const appState = useAppStore.getState();
       const taskState = useTaskStore.getState();
       const chatState = useChatStore.getState();
-      const allProjects = appState.projectGroups.flatMap((group) => group.projects);
+      const allProjects = [
+        ...(appState.standaloneProjects ?? []),
+        ...appState.projectGroups.flatMap((group) => group.projects),
+      ];
       const orderedTabs = getOrderedTabs(get().tabs, get().tabOrder);
       const tabsToSync = orderedTabs.filter((tab) => {
         if (!tab.taskId) {

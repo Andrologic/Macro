@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct WorkspaceState {
     #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default, rename = "standaloneProjects")]
+    pub standalone_projects: Vec<ProjectDto>,
     #[serde(default)]
     pub project_groups: Vec<ProjectGroupDto>,
     #[serde(default)]
@@ -24,6 +26,7 @@ impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
             version: default_version(),
+            standalone_projects: Vec::new(),
             project_groups: Vec::new(),
             current_plan: None,
             plan_nodes: Vec::new(),
@@ -35,12 +38,14 @@ impl Default for WorkspaceState {
 }
 
 const fn default_version() -> u32 {
-    3
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceBootstrapDto {
     pub plan: Option<PlanDto>,
+    #[serde(rename = "standaloneProjects")]
+    pub standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "projectGroups")]
     pub project_groups: Vec<ProjectGroupDto>,
     #[serde(rename = "planNodes")]
@@ -698,6 +703,16 @@ pub struct CreateProjectRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNewProjectRepoRequest {
+    pub repo_name: String,
+    pub parent_path: String,
+    pub folder_name: String,
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+    pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportGitRepoRequest {
     pub git_url: String,
     pub project_name: String,
@@ -712,6 +727,8 @@ pub struct ImportGitRepoRequest {
 pub struct ProjectRegistryRepairReportDto {
     pub duplicate_paths_removed: usize,
     pub empty_groups_removed: usize,
+    #[serde(default)]
+    pub singleton_groups_migrated: usize,
     pub removed_synthetic_groups: usize,
     pub removed_synthetic_projects: usize,
     pub mount_names_assigned: usize,
@@ -731,6 +748,7 @@ impl ProjectRegistryRepairReportDto {
     pub fn has_repairs(&self) -> bool {
         self.duplicate_paths_removed > 0
             || self.empty_groups_removed > 0
+            || self.singleton_groups_migrated > 0
             || self.removed_synthetic_groups > 0
             || self.removed_synthetic_projects > 0
             || self.mount_names_assigned > 0
@@ -773,8 +791,12 @@ fn default_project_git_detection_setup_state() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRegistryDiagnosticsDto {
+    #[serde(default, rename = "rawStandaloneProjects")]
+    pub raw_standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "rawProjectGroups")]
     pub raw_project_groups: Vec<ProjectGroupDto>,
+    #[serde(default, rename = "sanitizedStandaloneProjects")]
+    pub sanitized_standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "sanitizedProjectGroups")]
     pub sanitized_project_groups: Vec<ProjectGroupDto>,
     #[serde(rename = "rawGroupCount")]

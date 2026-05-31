@@ -23,6 +23,7 @@ interface ResolvePreferredManualProjectIdParams {
 }
 
 interface ResolveTerminalGroupIdParams {
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null | undefined;
   selectedProjectId: string | null | undefined;
@@ -137,8 +138,10 @@ export const resolveSelectedTaskTerminalScope = (
   const scopedProjects =
     groupProjects.length > 0
       ? groupProjects.filter((project) => allowedProjectIds.has(project.id))
-      : params.projectGroups
-          .flatMap((group) => group.projects)
+      : [
+          ...(params.standaloneProjects ?? []),
+          ...params.projectGroups.flatMap((group) => group.projects),
+        ]
           .filter((project) => allowedProjectIds.has(project.id));
   const actionableScopedProjects = scopedProjects.filter((project) => !project.isReadOnly);
   const terminalProjects =

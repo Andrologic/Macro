@@ -176,6 +176,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
   );
 
   const mode = useAppStore((state) => state.mode);
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects ?? []);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
@@ -201,7 +202,10 @@ export const SlashContextMenuPlugin: React.FC = () => {
     () =>
       resolveProjectExecutionContext({
         mode,
-        projects: projectGroups.flatMap((group) => group.projects),
+        projects: [
+          ...standaloneProjects,
+          ...projectGroups.flatMap((group) => group.projects),
+        ],
         projectGroups,
         tasks,
         conversations,
@@ -224,6 +228,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
       selectedGroupId,
       selectedProjectId,
       selectedTaskId,
+      standaloneProjects,
       tasks,
     ],
   );

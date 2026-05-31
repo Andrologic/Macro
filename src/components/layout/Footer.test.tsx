@@ -461,7 +461,7 @@ describe('Footer', () => {
     mock.restore();
   });
 
-  it('keeps the global project focus stable while the footer git scope changes', async () => {
+  it('keeps the group focus stable while the footer git scope changes', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -482,7 +482,7 @@ describe('Footer', () => {
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@6');
   });
 
-  it('renders the global project label with enough line height for descenders', async () => {
+  it('renders the group label with enough line height for descenders', async () => {
     appState.projectGroups = [
       {
         id: 'group-1',

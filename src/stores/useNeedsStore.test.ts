@@ -121,7 +121,7 @@ describe('useNeedsStore', () => {
     mock.restore();
   });
 
-  it('defaults new needs to the selected global project without forcing a subproject', async () => {
+  it('defaults new needs to the selected group without forcing a project', async () => {
     const { useNeedsStore } = await loadNeedsStore();
     useNeedsStore.setState({
       needs: [],

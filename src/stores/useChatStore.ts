@@ -23,6 +23,7 @@ import {
   PendingToolApproval,
   PersistedContextReference,
   ProviderTurnState,
+  Project,
   ProjectGroup,
   ReasoningEffort,
   SkillManifest,
@@ -1300,6 +1301,7 @@ const isChatContextKeyCurrent = (contextKey: ChatContextKey): boolean =>
 interface ResolveImplementTaskForContextInput {
   selectedTaskId?: string | null;
   tasks: ImplementTask[];
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -1322,13 +1324,17 @@ const taskMatchesScopedProjectIds = (
 export const resolveImplementTaskForContext = ({
   selectedTaskId,
   tasks,
+  standaloneProjects,
   projectGroups,
   selectedGroupId,
   selectedProjectId,
   localContext,
 }: ResolveImplementTaskForContextInput): ImplementTask | null => {
   const scopedProjectIds = getScopedProjectIds(
-    projectGroups,
+    {
+      standaloneProjects: standaloneProjects ?? [],
+      projectGroups,
+    },
     selectedGroupId,
     selectedProjectId,
   );
@@ -1655,7 +1661,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const taskState = useTaskStore.getState();
     return resolveProjectExecutionContext({
       mode: appState.mode,
-      projects: appState.projectGroups.flatMap((group) => group.projects),
+      projects: [
+        ...(appState.standaloneProjects ?? []),
+        ...appState.projectGroups.flatMap((group) => group.projects),
+      ],
       projectGroups: appState.projectGroups,
       tasks: taskState.tasks,
       conversations: get().conversations,
@@ -5418,7 +5427,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (explicitProjectId) {
           const explicitProject = appState.getProjectById(explicitProjectId);
           if (explicitProject?.isReadOnly) {
-            return `Error executing terminal_create_session: subproject "${explicitProject.name}" is read-only.`;
+            return `Error executing terminal_create_session: project "${explicitProject.name}" is read-only.`;
           }
         }
 
@@ -6002,7 +6011,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
       systemInstructions.push(
-        `[Execution Context] global_project="${executionContext.groupName || executionContext.groupId || "none"}", default_subproject="${executionContext.projectName || executionContext.projectId || "none"}", focused_subproject="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only subproject mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one subproject explicitly. Git and terminal operations must target exactly one subproject; there is no git or terminal at the virtual root.`,
+        `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. Git and terminal operations must target exactly one project; there is no git or terminal at the virtual root.`,
       );
     }
 
@@ -6057,7 +6066,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       systemInstructions.push(
-        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each subproject Git workflow profile and merge into the plan integration branch.",
+        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
       );
       systemInstructions.push(
         "Each executable plan node owns its own work branch. Express sequential work with `dependencies`, never by reusing a `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.",
@@ -6919,7 +6928,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         content:
           "Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. " +
           "title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. " +
-          "featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each subproject's independent feature template." +
+          "featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each project's independent feature template." +
           unavailableBranchSummary,
       },
       {
@@ -7205,10 +7214,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? projectIds
           : appState.selectedGroupId
             ? getScopedActionableProjectIds(
-                appState.projectGroups,
+                {
+                  standaloneProjects: appState.standaloneProjects,
+                  projectGroups: appState.projectGroups,
+                },
                 appState.selectedGroupId,
                 null,
               )
+            : appState.selectedProjectId
+              ? getScopedActionableProjectIds(
+                  {
+                    standaloneProjects: appState.standaloneProjects,
+                    projectGroups: appState.projectGroups,
+                  },
+                  null,
+                  appState.selectedProjectId,
+                )
             : [];
 
       return projectIdsToCheck.map((projectId) => ({
@@ -9938,6 +9959,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const resolvedTask = resolveImplementTaskForContext({
         selectedTaskId: conversation.task_id,
         tasks: useTaskStore.getState().tasks,
+        standaloneProjects: appState.standaloneProjects,
         projectGroups: appState.projectGroups,
         selectedGroupId: appState.selectedGroupId,
         selectedProjectId: appState.selectedProjectId,
@@ -10801,6 +10823,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const architectWorkspaceState =
       mode === "Architect"
         ? resolveProjectWorkspaceState({
+            standaloneProjects: appState.standaloneProjects,
             projectGroups: appState.projectGroups,
             selectedGroupId,
             selectedProjectId,
@@ -10873,6 +10896,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             resolvePlanProjectContextId(activePlan, selectedProjectId) ||
             getArchitectPlanVisibleProjectIds(activePlan)[0] ||
             selectedProjectId ||
+            appState.standaloneProjects[0]?.id ||
             appState.projectGroups.flatMap((group) => group.projects)[0]?.id ||
             null;
           const fallbackGroupId = selectedGroupId ?? null;
@@ -11828,6 +11852,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const resolvedTask = resolveImplementTaskForContext({
           selectedTaskId: appState.selectedTaskId,
           tasks: useTaskStore.getState().tasks,
+          standaloneProjects: appState.standaloneProjects,
           projectGroups: appState.projectGroups,
           selectedGroupId: appState.selectedGroupId,
           selectedProjectId: appState.selectedProjectId,

@@ -32,6 +32,7 @@ export const ImplementCenter: React.FC = () => {
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const tasks = useTaskStore((state) => state.tasks);
 
@@ -46,22 +47,24 @@ export const ImplementCenter: React.FC = () => {
   const terminalScope = React.useMemo(
     () =>
       resolveSelectedTaskTerminalScope({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
         selectedTask,
         lastManualProjectIdByTaskId,
       }),
-    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
+    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask, standaloneProjects]
   );
   const workspaceState = React.useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const hasAnyTabForSelectedTask = React.useMemo(

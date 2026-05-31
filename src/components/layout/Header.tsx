@@ -13,7 +13,7 @@ import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { getGlobalProjectById } from '../../services/globalProjects';
 import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
-import { type AppMode } from '../../types';
+import { type AppMode, type Project } from '../../types';
 import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
@@ -52,6 +52,13 @@ interface ModeOption {
 
 export type MacosTitlebarMouseAction = 'none' | 'toggle-maximize' | 'start-dragging';
 
+const projectHasGitIntegration = (
+  project: Pick<Project, 'gitSetupState' | 'readOnlyReason'>
+): boolean => {
+  if (project.gitSetupState === 'not_git') return false;
+  return project.readOnlyReason !== 'missing_git' && project.readOnlyReason !== 'manual_and_missing_git';
+};
+
 export function resolveMacosTitlebarMouseAction({
   button,
   clickCount,
@@ -84,7 +91,9 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
+  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const projectGroups = useAppStore((state) => state.projectGroups);
+  const getProjectById = useAppStore((state) => state.getProjectById);
   const uiZoomMode = useAppStore((state) => state.uiZoomMode);
   const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
 
@@ -232,7 +241,16 @@ export function Header({
     }
   };
 
-  const projectName = getGlobalProjectById(projectGroups, selectedGroupId)?.name ?? null;
+  const selectedGroup = getGlobalProjectById(projectGroups, selectedGroupId);
+  const selectedProject = selectedProjectId ? getProjectById(selectedProjectId) ?? null : null;
+  const projectName = selectedGroup?.name ?? selectedProject?.name ?? null;
+  const projectPickerIcon: IconName = selectedGroup
+    ? 'layers'
+    : selectedProject
+      ? projectHasGitIntegration(selectedProject)
+        ? 'folder-git-2'
+        : 'folder'
+      : 'layers';
 
   const renderModeButton = (modeOption: ModeOption) => (
     <button
@@ -312,7 +330,7 @@ export function Header({
                   data-tauri-drag-region="false"
                   data-tour-id="project-picker"
                 >
-                  <Icon name="layers" size={14} className="text-muted-foreground shrink-0" />
+                  <Icon name={projectPickerIcon} size={14} className="text-muted-foreground shrink-0" />
                   <span className="inline-flex min-w-0 items-center truncate leading-none text-foreground">
                     {projectName || t('header.selectProject')}
                   </span>

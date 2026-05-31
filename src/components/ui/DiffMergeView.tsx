@@ -341,8 +341,6 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
     mergeViewRef.current = mergeView;
     debugDiffMergeViewLog('mount', {
       language: resolvedLanguage,
-      layout,
-      presentationMode,
       editable,
       originalLength: originalRef.current.length,
       modifiedLength: modifiedRef.current.length,
@@ -491,8 +489,6 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       mergeViewRef.current = null;
       debugDiffMergeViewLog('unmount', {
         language: resolvedLanguage,
-        layout,
-        presentationMode,
       });
     };
   }, [

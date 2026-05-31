@@ -14,6 +14,7 @@ import {
 import { useAppStore } from "../stores/useAppStore";
 import {
   getFocusedProjectForGroup,
+  getAllProjects,
   getSubProjectsForGroup,
 } from "./globalProjects";
 
@@ -772,10 +773,22 @@ const getSelectedProjectRoot = (): string => {
     return normalize(focusedProject.path) || ".";
   }
 
-  for (const group of appState.projectGroups) {
-    const firstProject = group.projects[0];
-    if (firstProject?.path) {
-      return normalize(firstProject.path) || ".";
+  if (appState.selectedProjectId) {
+    const selectedProject = getAllProjects({
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    }).find((project) => project.id === appState.selectedProjectId);
+    if (selectedProject?.path) {
+      return normalize(selectedProject.path) || ".";
+    }
+  }
+
+  for (const project of getAllProjects({
+    standaloneProjects: appState.standaloneProjects ?? [],
+    projectGroups: appState.projectGroups,
+  })) {
+    if (project.path) {
+      return normalize(project.path) || ".";
     }
   }
 
@@ -824,7 +837,10 @@ const getProjectWorkspaceCandidates = (
   const appState = useAppStore.getState();
   const projects = options.groupId
     ? getSubProjectsForGroup(appState.projectGroups, options.groupId)
-    : appState.projectGroups.flatMap((group) => group.projects);
+    : getAllProjects({
+        standaloneProjects: appState.standaloneProjects ?? [],
+        projectGroups: appState.projectGroups,
+      });
 
   return projects.map((project) => ({
     id: project.id,
@@ -1144,7 +1160,7 @@ const buildReadOnlyToolError = (
 ): string => {
   const label = candidate.name || candidate.mountName || candidate.id;
   if (toolName === "terminal_create_session") {
-    return `Error executing terminal_create_session: subproject "${label}" is read-only.`;
+    return `Error executing terminal_create_session: project "${label}" is read-only.`;
   }
   if (
     toolName === "write" ||
@@ -1152,12 +1168,12 @@ const buildReadOnlyToolError = (
     toolName === "delete" ||
     toolName === "apply_patch"
   ) {
-    return `Error executing ${toolName}: subproject "${label}" is read-only.`;
+    return `Error executing ${toolName}: project "${label}" is read-only.`;
   }
   if (gitMutatingToolIds.has(toolName)) {
-    return `Error executing ${toolName}: subproject "${label}" is read-only.`;
+    return `Error executing ${toolName}: project "${label}" is read-only.`;
   }
-  return `Subproject "${label}" is read-only.`;
+  return `Project "${label}" is read-only.`;
 };
 
 const resolveMutatingVirtualTarget = async (params: {
@@ -1817,9 +1833,9 @@ export const executeWorkspaceTool = async (
 
         if (!target.candidate?.workspacePath) {
           if (target.matchCount > 1) {
-            return `Error executing list: multiple subprojects match "${rawFsPath}". Prefix the path with a mount name or pass project_id.`;
+            return `Error executing list: multiple projects match "${rawFsPath}". Prefix the path with a mount name or pass project_id.`;
           }
-          return `Error executing list: unable to resolve "${rawFsPath}" to a subproject.`;
+          return `Error executing list: unable to resolve "${rawFsPath}" to a project.`;
         }
 
         const recursive = rawArgs.recursive !== false;
@@ -1875,9 +1891,9 @@ export const executeWorkspaceTool = async (
 
         if (!target.candidate?.workspacePath) {
           if (target.matchCount > 1) {
-            return `Error executing read: multiple subprojects contain "${rawFsPath}". Prefix the path with a mount name or pass project_id.`;
+            return `Error executing read: multiple projects contain "${rawFsPath}". Prefix the path with a mount name or pass project_id.`;
           }
-          return `Error executing read: unable to resolve "${rawFsPath}" to a subproject.`;
+          return `Error executing read: unable to resolve "${rawFsPath}" to a project.`;
         }
 
         const path = joinPathWithinWorkspace(
@@ -1949,7 +1965,7 @@ export const executeWorkspaceTool = async (
         const candidate = target.candidate;
         const workspacePath = candidate?.workspacePath;
         if (!candidate || !workspacePath) {
-          return "Error executing write: select a subproject with project_id or a mount-prefixed path before writing.";
+          return "Error executing write: select a project with project_id or a mount-prefixed path before writing.";
         }
 
         const resolved = formatResolvedWorkspacePath(
@@ -2038,7 +2054,7 @@ export const executeWorkspaceTool = async (
         const candidate = target.candidate;
         const workspacePath = candidate?.workspacePath;
         if (!candidate || !workspacePath) {
-          return "Error executing edit: select a subproject with project_id or a mount-prefixed path before editing.";
+          return "Error executing edit: select a project with project_id or a mount-prefixed path before editing.";
         }
 
         const resolved = formatResolvedWorkspacePath(
@@ -2146,7 +2162,7 @@ export const executeWorkspaceTool = async (
         const candidate = target.candidate;
         const workspacePath = candidate?.workspacePath;
         if (!candidate || !workspacePath) {
-          return "Error executing delete: select a subproject with project_id or a mount-prefixed path before deleting.";
+          return "Error executing delete: select a project with project_id or a mount-prefixed path before deleting.";
         }
 
         const resolved = formatResolvedWorkspacePath(
@@ -2258,7 +2274,7 @@ export const executeWorkspaceTool = async (
             return error;
           }
           if (!target.candidate?.workspacePath) {
-            return "Error executing apply_patch: select a subproject with project_id or mount-prefixed paths before patching.";
+            return "Error executing apply_patch: select a project with project_id or mount-prefixed paths before patching.";
           }
 
           const resolved = formatResolvedWorkspacePath(
@@ -2634,7 +2650,7 @@ export const executeWorkspaceTool = async (
         }
 
         if (!target.candidate?.workspacePath) {
-          return "Error executing git tool: select a subproject with project_id or a mount-prefixed repo_path before running git commands.";
+          return "Error executing git tool: select a project with project_id or a mount-prefixed repo_path before running git commands.";
         }
 
         const resolved = formatResolvedWorkspacePath(

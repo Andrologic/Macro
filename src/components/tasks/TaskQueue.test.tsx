@@ -481,7 +481,7 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.textContent).not.toContain('This scope is currently read-only.');
-    expect(document.body.textContent).not.toContain('Implementation needs at least one editable repository.');
+    expect(document.body.textContent).not.toContain('Implementation needs at least one editable project.');
     expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
     const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
       string,
@@ -495,7 +495,7 @@ describe('TaskQueue', () => {
     expect(title).toBe('This scope is currently read-only.');
     expect(options.tone).toBe('warning');
     expect(options.notificationKey).toBe('implement-read-only-scope:group-1');
-    expect(options.description).toContain('Implementation needs at least one editable repository.');
+    expect(options.description).toContain('Implementation needs at least one editable project.');
     expect(options.actions[0]?.label).toBe('Initialize Git');
 
     await act(async () => {

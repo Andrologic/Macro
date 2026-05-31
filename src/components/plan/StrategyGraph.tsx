@@ -457,6 +457,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
     planNodes,
     predictedBranches,
@@ -473,6 +474,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
       selectedTaskId: state.selectedTaskId,
+      standaloneProjects: state.standaloneProjects ?? [],
       projectGroups: state.projectGroups,
       planNodes: state.planNodes,
       predictedBranches: state.predictedBranches,
@@ -510,11 +512,16 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
+  );
+  const projectRegistry = useMemo(
+    () => ({ standaloneProjects, projectGroups }),
+    [projectGroups, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const [isValidating, setIsValidating] = useState(false);
@@ -793,7 +800,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       setActivePlanContext({ ...activePlanContext, status: 'validated' });
       await useTaskStore.getState().refreshFromPlan();
 
-      const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+      const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
       const activationCandidateTask = getPlanActivationCandidateTask(
         useTaskStore.getState().tasks,
         plan.id,
@@ -829,7 +836,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
     }
 
-    const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+    const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
     const scopedNodes =
       scopedProjectIds.length > 0
         ? planNodes.filter((node: PlanNode) =>
@@ -1006,7 +1013,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectGroups, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
+  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectRegistry, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
 
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
