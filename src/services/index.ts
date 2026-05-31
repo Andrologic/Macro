@@ -110,8 +110,15 @@ export const services = {
   createProjectWithGitSetup: (
     data: Parameters<ServiceProvider['createProjectWithGitSetup']>[0]
   ) => callProviderMethod('createProjectWithGitSetup', data),
+  createNewProjectRepo: (
+    data: Parameters<ServiceProvider['createNewProjectRepo']>[0]
+  ) => callProviderMethod('createNewProjectRepo', data),
   renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
     callProviderMethod('renameProjectGroup', data),
+  createProjectGroup: (data: Parameters<ServiceProvider['createProjectGroup']>[0]) =>
+    callProviderMethod('createProjectGroup', data),
+  moveProjectToGroup: (data: Parameters<ServiceProvider['moveProjectToGroup']>[0]) =>
+    callProviderMethod('moveProjectToGroup', data),
   renameProject: (data: Parameters<ServiceProvider['renameProject']>[0]) =>
     callProviderMethod('renameProject', data),
   updateProjectGitFlow: (data: Parameters<ServiceProvider['updateProjectGitFlow']>[0]) =>

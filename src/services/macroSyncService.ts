@@ -1,4 +1,4 @@
-import type { AppMode, ProjectGroup } from '../types';
+import type { AppMode, Project, ProjectGroup } from '../types';
 import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
@@ -46,6 +46,7 @@ interface MacroSyncAppState {
   activePlanContext: { targetBranch: string } | null;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => { path: string } | undefined;
   setMetadataSyncStatus: (params: {
@@ -167,7 +168,10 @@ const resolveProjectPath = (
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
   const scopedProjectIds = getScopedProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    },
     appState.selectedGroupId,
     appState.selectedProjectId
   );

@@ -643,6 +643,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
     getProjectById,
     openSettings,
@@ -752,11 +753,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const enabledCommitProviders = useMemo(
     () => providerConfigs.filter((provider) => providerHasCredentials(provider)),

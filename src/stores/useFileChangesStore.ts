@@ -8,7 +8,7 @@ import {
 } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
-import type { ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
+import type { Project, ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
 import {
   EMPTY_REVIEW_TASK_SUMMARY,
   buildReviewTaskSummary,
@@ -224,6 +224,7 @@ interface FileChangesAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => FileChangesProjectRef | null | undefined;
 }
@@ -687,7 +688,10 @@ const getScopedExecutionTargets = (
   }
 
   const scopedProjectIds = getRepositoryScopedProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    },
     appState.selectedGroupId,
     appState.selectedProjectId
   );
@@ -835,7 +839,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedProject?.name || tChanges(
           'implement.selectedSubproject',
-          'the selected subproject'
+          'the selected project'
         ),
       }
     );
@@ -848,7 +852,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedGroup.name || tChanges(
           'implement.selectedGlobalProject',
-          'the selected global project'
+          'the selected group'
         ),
       }
     );
@@ -861,7 +865,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedProject.name || tChanges(
           'implement.selectedSubproject',
-          'the selected subproject'
+          'the selected project'
         ),
       }
     );

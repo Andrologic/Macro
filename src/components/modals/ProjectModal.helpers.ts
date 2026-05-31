@@ -12,7 +12,8 @@ import {
   type ProjectSetupPromptDetails,
 } from './projectGitSetup';
 
-export type ProjectModalMode = 'new_group' | 'existing_group';
+export type ProjectModalSourceMode = 'new_repo' | 'existing_repo';
+export type ProjectDestinationMode = 'standalone' | 'existing_group' | 'new_group';
 
 export interface PendingProjectCreation {
   name: string;
@@ -50,7 +51,6 @@ export interface ProjectWithGitSetupPayload extends PendingProjectCreation {
 interface BuildPendingProjectCreationOptions {
   isAttachingToExistingGroup: boolean;
   targetGroupId: string | null;
-  globalProjectName: string;
   subProjectPath: string;
   derivedSubProjectName: string;
 }
@@ -63,13 +63,44 @@ export const inferProjectNameFromPath = (value: string): string => {
   return parts[parts.length - 1] || '';
 };
 
+export const slugifyProjectFolderName = (value: string): string => {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'repo';
+};
+
+export const isValidProjectFolderName = (value: string): boolean => {
+  const trimmed = value.trim();
+  return Boolean(trimmed) && !trimmed.includes('/') && !trimmed.includes('\\') && trimmed !== '.' && trimmed !== '..';
+};
+
+export const joinProjectPath = (parentPath: string, folderName: string): string => {
+  const trimmedParentPath = parentPath.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  const trimmedFolderName = folderName.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmedParentPath || !trimmedFolderName) {
+    return '';
+  }
+  return `${trimmedParentPath}/${trimmedFolderName}`;
+};
+
 export const findProjectByPath = (
   projectGroups: ProjectGroup[],
-  requestedPath: string
+  requestedPath: string,
+  standaloneProjects: Project[] = []
 ): Project | null => {
   const normalizedRequestedPath = normalizeProjectPath(requestedPath);
   if (!normalizedRequestedPath) {
     return null;
+  }
+
+  for (const project of standaloneProjects) {
+    if (normalizeProjectPath(project.path) === normalizedRequestedPath) {
+      return project;
+    }
   }
 
   for (const group of projectGroups) {
@@ -101,7 +132,6 @@ export const hasDuplicateSubProjectName = (
 export const buildPendingProjectCreation = ({
   isAttachingToExistingGroup,
   targetGroupId,
-  globalProjectName,
   subProjectPath,
   derivedSubProjectName,
 }: BuildPendingProjectCreationOptions): PendingProjectCreation => {
@@ -111,7 +141,7 @@ export const buildPendingProjectCreation = ({
     name: derivedSubProjectName,
     description: '',
     groupId: isAttachingToExistingGroup ? targetGroupId : null,
-    groupName: isAttachingToExistingGroup ? null : globalProjectName.trim(),
+    groupName: null,
     path: trimmedSubProjectPath || undefined,
   };
 };

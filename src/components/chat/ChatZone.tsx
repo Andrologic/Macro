@@ -124,17 +124,31 @@ const formatManualCompactionTokens = (value: number): string => {
 const getManualCompactionSkipDescription = (
   reason: ManualCompactionSkipReason,
   result: Extract<ManualCompactionResult, { outcome: 'skipped' }>,
+  t: ReturnType<typeof useTranslation>['t'],
 ): string => {
   switch (reason) {
     case 'not_enough_history':
-      return `Macro garde les ${result.retainedTurnCount} derniers tours utilisateur; cette conversation n'a pas encore assez d'historique ancien à remplacer.`;
+      return t(
+        'chat.manualCompaction.skipNotEnoughHistory',
+        "Macro keeps the last {{count}} user turns; this conversation does not have enough older history to replace yet.",
+        { count: result.retainedTurnCount },
+      );
     case 'already_current':
-      return 'Le checkpoint existant couvre déjà les anciens tours utiles pour ce contexte.';
+      return t(
+        'chat.manualCompaction.skipAlreadyCurrent',
+        'The existing checkpoint already covers the useful older turns for this context.',
+      );
     case 'not_beneficial':
-      return "Le résumé estimé n'aurait pas réduit le payload envoyé au provider.";
+      return t(
+        'chat.manualCompaction.skipNotBeneficial',
+        'The estimated summary would not have reduced the payload sent to the provider.',
+      );
     case 'below_threshold':
     default:
-      return "Le contexte est encore très léger; créer un résumé maintenant ajouterait surtout du bruit.";
+      return t(
+        'chat.manualCompaction.skipBelowThreshold',
+        'Context is still light; creating a summary now would mostly add noise.',
+      );
   }
 };
 
@@ -811,7 +825,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
+    getProjectById,
     activeArchitectPlanId,
     activePlanContext,
     planNodes,
@@ -824,7 +840,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
+    standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
+    getProjectById: state.getProjectById,
     activeArchitectPlanId: state.activeArchitectPlanId,
     activePlanContext: state.activePlanContext,
     planNodes: state.planNodes,
@@ -1168,7 +1186,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         });
       } else {
         notify.info(t('chat.manualCompaction.skippedTitle', 'Compactage ignoré'), {
-          description: getManualCompactionSkipDescription(result.reason, result),
+          description: getManualCompactionSkipDescription(result.reason, result, t),
         });
       }
     } catch (error) {
@@ -1349,24 +1367,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const projectNameById = useMemo(
     () =>
       new Map(
-        projectGroups.flatMap((group) =>
-          group.projects.map((project) => [project.id, project.name] as const)
-        )
+        [
+          ...standaloneProjects,
+          ...projectGroups.flatMap((group) => group.projects),
+        ].map((project) => [project.id, project.name] as const)
       ),
-    [projectGroups]
+    [projectGroups, standaloneProjects]
+  );
+  const projectRegistry = useMemo(
+    () => ({ standaloneProjects, projectGroups }),
+    [projectGroups, standaloneProjects]
   );
   const repositoryScopedProjectIds = useMemo(
-    () => getRepositoryScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getRepositoryScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const isModeProjectWorkspaceMissing =
@@ -1421,8 +1445,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     [projectGroups, selectedGroupId]
   );
   const focusedProject = useMemo(
-    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () =>
+      selectedGroupId
+        ? getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId)
+        : selectedProjectId
+          ? getProjectById(selectedProjectId) ?? null
+          : null,
+    [getProjectById, projectGroups, selectedGroupId, selectedProjectId]
   );
   const selectedGlobalProjectName = selectedGlobalProject?.name ?? null;
   const focusedProjectName = focusedProject?.name ?? null;
@@ -1437,7 +1466,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Architect') {
       return {
         icon: 'compass' as const,
-        title: `${t('header.architect', 'Architect')} - ${selectedGlobalProjectName || t('header.selectProject', 'Select Project')}`,
+        title: `${t('header.architect', 'Architect')} - ${projectScopeLabel || t('header.selectProject', 'Select Project')}`,
         subtitle:
           isModeProjectWorkspaceMissing
             ? null

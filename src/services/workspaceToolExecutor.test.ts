@@ -4,6 +4,12 @@ const actualTauriIpc = await import("./tauriIpc");
 type MockAppState = {
   selectedProjectId: string | null;
   selectedGroupId: string | null;
+  standaloneProjects: Array<{
+    id: string;
+    name: string;
+    mountName: string;
+    path: string;
+  }>;
   projectGroups: Array<{
     id: string;
     name: string;
@@ -20,6 +26,7 @@ type MockAppState = {
 const defaultAppState: MockAppState = {
   selectedProjectId: null,
   selectedGroupId: null,
+  standaloneProjects: [],
   projectGroups: [
     {
       id: "macro-suite",
@@ -363,7 +370,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
   });
 
-  it("routes a prefixed relative path to the matching subproject workspace", async () => {
+  it("routes a prefixed relative path to the matching project workspace", async () => {
     const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
 
     const routing = resolveToolWorkspaceRouting(
@@ -403,7 +410,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(routing.args).toEqual({});
   });
 
-  it("falls back to the focused subproject inside the selected global project", async () => {
+  it("falls back to the focused project inside the selected group", async () => {
     const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor({
       selectedGroupId: "macro-suite",
       selectedProjectId: "web",
@@ -422,7 +429,33 @@ describe("workspaceToolExecutor helpers", () => {
     expect(routing.args).toEqual({ path: "src/App.tsx" });
   });
 
-  it("lists a virtual root containing only subproject mounts", async () => {
+  it("falls back to the selected standalone project when no group is active", async () => {
+    const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor({
+      selectedGroupId: null,
+      selectedProjectId: "solo",
+      standaloneProjects: [
+        {
+          id: "solo",
+          name: "Solo App",
+          mountName: "solo",
+          path: "/repos/solo-app",
+        },
+      ],
+      projectGroups: [],
+    });
+
+    const routing = resolveToolWorkspaceRouting(
+      "read",
+      { path: "src/App.tsx" },
+      {},
+    );
+
+    expect(routing.projectId).toBeNull();
+    expect(routing.workspacePath).toBe("/repos/solo-app");
+    expect(routing.args).toEqual({ path: "src/App.tsx" });
+  });
+
+  it("lists a virtual root containing only project mounts", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
@@ -468,7 +501,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
   });
 
-  it("fans out glob results across subprojects and prefixes virtual paths", async () => {
+  it("fans out glob results across projects and prefixes virtual paths", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
@@ -538,7 +571,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(parsed.paths).toEqual(["api/src/server.ts", "web/src/App.tsx"]);
   });
 
-  it("resolves read operations against the focused subproject before cross-mount search", async () => {
+  it("resolves read operations against the focused project before cross-mount search", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
@@ -594,7 +627,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(result).toContain("export const App = 'web';");
   });
 
-  it("routes git_merge through the selected subproject repository in virtual-root mode", async () => {
+  it("routes git_merge through the selected project repository in virtual-root mode", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
@@ -1093,7 +1126,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(deletes).toEqual(["C:/worktrees/web-task/src/obsolete.ts"]);
   });
 
-  it("rejects delete on an explicitly targeted read-only subproject", async () => {
+  it("rejects delete on an explicitly targeted read-only project", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
@@ -1135,7 +1168,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
 
     expect(result).toBe(
-      'Error executing delete: subproject "API" is read-only.'
+      'Error executing delete: project "API" is read-only.'
     );
   });
 

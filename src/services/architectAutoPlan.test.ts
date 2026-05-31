@@ -422,7 +422,7 @@ describe('architectAutoPlan', () => {
     expect(reloaded?.targetBranchesByProjectId).toEqual({ web: 'develop' });
   });
 
-  it('keeps read-only subprojects as context when expanding a blank plan', async () => {
+  it('keeps read-only projects as context when expanding a blank plan', async () => {
     const { createArchitectPlan, ensureProjectGroupPlan, getArchitectPlan } =
       createArchitectAutoPlanHarness();
     const created = await createArchitectPlan({

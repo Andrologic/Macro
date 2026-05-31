@@ -409,7 +409,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "list",
-    "List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.",
+    "List files and directories under a path in the local workspace. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.",
     {
       type: "object",
       properties: {
@@ -421,7 +421,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         recursive: {
           type: "boolean",
@@ -441,7 +441,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "read",
-    "Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.",
+    "Read a file from the local execution workspace by path. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
     {
       type: "object",
       properties: {
@@ -449,7 +449,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         start_line: {
           type: "number",
@@ -462,7 +462,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "write",
-    "Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
+    "Create or overwrite a file in the current execution workspace with full content. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -470,7 +470,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         content: { type: "string", description: "Final file content." },
         create_dirs: {
@@ -483,7 +483,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "edit",
-    "Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
+    "Edit a file in the current execution workspace by replacing exact text. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -491,7 +491,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         old_text: { type: "string", description: "Exact text to replace." },
         new_text: { type: "string", description: "Replacement text." },
@@ -505,7 +505,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "delete",
-    "Delete a file in the current execution workspace. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
+    "Delete a file in the current execution workspace. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
     {
       type: "object",
       properties: {
@@ -513,7 +513,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
       },
       required: ["path"],
@@ -528,7 +528,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         patch_text: {
           type: "string",
@@ -541,7 +541,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "glob",
-    "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+    "Find files in the current execution workspace matching a glob pattern. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -549,7 +549,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         include_hidden: {
           type: "boolean",
@@ -561,7 +561,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "grep",
-    "Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+    "Search text in files under the current execution workspace. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -569,7 +569,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         is_regexp: {
           type: "boolean",
@@ -593,14 +593,14 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "git_status",
-    "Get git status for exactly one subproject repository context. There is no git status at the virtual global root.",
+    "Get git status for exactly one project Git repository context. There is no git status at the virtual group root.",
     {
       type: "object",
       properties: {
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         repo_path: {
           type: "string",
@@ -690,7 +690,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "git_merge",
-    "Merge a source branch into a target branch for exactly one subproject repository context.",
+    "Merge a source branch into a target branch for exactly one project Git repository context.",
     {
       type: "object",
       properties: {
@@ -728,18 +728,18 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     "terminal_create_session",
-    "Create a terminal session bound to exactly one subproject. project_id is required. There is no terminal at the virtual global root.",
+    "Create a terminal session bound to exactly one project. project_id is required. There is no terminal at the virtual group root.",
     {
       type: "object",
       properties: {
         project_id: {
           type: "string",
-          description: "Required subproject identifier.",
+          description: "Required project identifier.",
         },
         cwd: {
           type: "string",
           description:
-            "Optional directory under the selected subproject or worktree.",
+            "Optional directory under the selected project or worktree.",
         },
       },
       required: ["project_id"],
@@ -959,7 +959,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Add concrete per-node todos for the implementation checklist, and declare artifactContracts only when a task must hand off critical durable knowledge such as audit findings, a migration map, an API contract, or a risk register. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each project's Git workflow profile. Add concrete per-node todos for the implementation checklist, and declare artifactContracts only when a task must hand off critical durable knowledge such as audit findings, a migration map, an API contract, or a risk register. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1000,7 +1000,7 @@ export const MACRO_TOOL_REGISTRY = [
               projectId: {
                 type: "string",
                 description:
-                  "Optional editable subproject id for this node. If omitted, the node uses the active plan's editable projectIds.",
+                  "Optional editable project id for this node. If omitted, the node uses the active plan's editable projectIds.",
               },
               project_id: {
                 type: "string",
@@ -1011,7 +1011,7 @@ export const MACRO_TOOL_REGISTRY = [
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "Optional editable subproject ids for this node. Must be a subset of the active plan's projectIds; context_project_ids are read-only context and cannot receive executable branches.",
+                  "Optional editable project ids for this node. Must be a subset of the active plan's projectIds; context_project_ids are read-only context and cannot receive executable branches.",
               },
               project_ids: {
                 type: "array",

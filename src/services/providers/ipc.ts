@@ -198,6 +198,7 @@ export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   const bootstrap = await tauriIpc.workspaceGetBootstrap();
   return {
     plan: bootstrap.plan,
+    standaloneProjects: bootstrap.standaloneProjects ?? [],
     projectGroups: bootstrap.projectGroups,
     planNodes: bootstrap.planNodes,
     predictedBranches: bootstrap.predictedBranches,
@@ -379,6 +380,24 @@ export const createProjectWithGitSetup = async (data: {
   });
 };
 
+export const createNewProjectRepo = async (data: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: Project['gitFlowSettings'];
+}): Promise<ProjectGitSetupCommitResult> => {
+  return tauriIpc.workspaceCreateNewProjectRepo({
+    repoName: data.repoName,
+    parentPath: data.parentPath,
+    folderName: data.folderName,
+    groupId: data.groupId,
+    groupName: data.groupName,
+    gitFlowSettings: data.gitFlowSettings,
+  });
+};
+
 export const importGitRepo = async (data: {
   gitUrl: string;
   projectName: string;
@@ -411,6 +430,24 @@ export const renameProjectGroup = async (data: {
   });
 
   return { projectGroup };
+};
+
+export const createProjectGroup: ServiceProvider['createProjectGroup'] = async (data) => {
+  const projectGroups = await tauriIpc.workspaceCreateProjectGroup({
+    name: data.name,
+    projectIds: data.projectIds,
+  });
+
+  return { projectGroups };
+};
+
+export const moveProjectToGroup: ServiceProvider['moveProjectToGroup'] = async (data) => {
+  const projectGroups = await tauriIpc.workspaceMoveProjectToGroup({
+    projectId: data.projectId,
+    groupId: data.groupId,
+  });
+
+  return { projectGroups };
 };
 
 export const renameProject = async (data: {
@@ -623,8 +660,11 @@ export const provider: ServiceProvider = {
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
+  createNewProjectRepo,
   importGitRepo,
   renameProjectGroup,
+  createProjectGroup,
+  moveProjectToGroup,
   renameProject,
   updateProjectGitFlow,
   updateProjectGitFlowWithSetup,

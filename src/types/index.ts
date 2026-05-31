@@ -551,6 +551,11 @@ export interface ProjectGroup {
   projects: Project[];
 }
 
+export interface ProjectRegistry {
+  standaloneProjects: Project[];
+  projectGroups: ProjectGroup[];
+}
+
 export interface GlobalProject {
   groupId: string;
   name: string;

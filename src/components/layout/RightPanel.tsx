@@ -17,17 +17,26 @@ interface RightPanelProps {
 
 export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
   const { t } = useTranslation();
-  const { currentPlan, projectGroups, selectedGroupId } = useAppStore();
+  const { currentPlan, standaloneProjects = [], projectGroups, selectedGroupId, selectedProjectId, getProjectById } = useAppStore();
   const [panelView, setPanelView] = useState<PanelView>('tree');
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
   const { trees, commitsByProject, loadTree, loadCommits } = useGitStore();
   const selectedGlobalProject = selectedGroupId
     ? projectGroups.find((group) => group.id === selectedGroupId) ?? null
     : null;
+  const selectedStandaloneProject = !selectedGroupId && selectedProjectId
+    ? getProjectById(selectedProjectId) ?? null
+    : null;
   const activeProjects = useMemo(
-    () => (selectedGlobalProject?.projects || projectGroups.flatMap((group) => group.projects))
+    () => (
+      selectedGlobalProject?.projects ||
+      (selectedStandaloneProject ? [selectedStandaloneProject] : [
+        ...standaloneProjects,
+        ...projectGroups.flatMap((group) => group.projects),
+      ])
+    )
       .filter((project) => currentPlan?.project_ids.includes(project.id)),
-    [currentPlan?.project_ids, projectGroups, selectedGlobalProject]
+    [currentPlan?.project_ids, projectGroups, selectedGlobalProject, selectedStandaloneProject, standaloneProjects]
   );
 
   useEffect(() => {
@@ -66,12 +75,12 @@ export const RightPanel: React.FC<RightPanelProps> = ({ className, width }) => {
               size={16}
               className="text-primary"
             />
-            {selectedGlobalProject?.name || t('project.globalProject', 'Global Project')}
+            {selectedGlobalProject?.name || selectedStandaloneProject?.name || t('project.project', 'Project')}
           </h1>
           <p className="text-[11px] text-muted-foreground truncate">
             {t('project.subprojectCount', {
               count: activeProjects.length,
-              defaultValue: '{{count}} subprojects',
+              defaultValue: '{{count}} projects',
             })}
           </p>
         </div>

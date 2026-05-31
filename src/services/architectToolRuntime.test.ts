@@ -231,7 +231,7 @@ const createRuntime = (plan: ArchitectPlanRecord) => {
 };
 
 describe('architectToolRuntime strategy scope', () => {
-  it('keeps unscoped generated nodes inside the active mono-subproject plan', async () => {
+  it('keeps unscoped generated nodes inside the active mono-project plan', async () => {
     const runtime = createRuntime(createPlan());
 
     await handleArchitectToolCall(runtime.params);
@@ -288,7 +288,7 @@ describe('architectToolRuntime strategy scope', () => {
     ]);
   });
 
-  it('uses every editable subproject already attached to a multi-subproject plan', async () => {
+  it('uses every editable project already attached to a multi-project plan', async () => {
     const runtime = createRuntime(createPlan({
       projectIds: ['mouillage-app', 'mouillage-docs'],
       expectedProjectIds: ['mouillage-app', 'mouillage-docs', 'mouillage-context'],
@@ -536,7 +536,7 @@ describe('architectToolRuntime strategy scope', () => {
     ]);
   });
 
-  it('rejects context-only and external subprojects in explicit node scope', async () => {
+  it('rejects context-only and external projects in explicit node scope', async () => {
     const contextRuntime = createRuntime(createPlan({
       contextProjectIds: ['mouillage-context'],
       expectedProjectIds: ['mouillage-app', 'mouillage-context'],
@@ -549,7 +549,7 @@ describe('architectToolRuntime strategy scope', () => {
       },
     ];
 
-    await expect(handleArchitectToolCall(contextRuntime.params)).rejects.toThrow('context-only subproject');
+    await expect(handleArchitectToolCall(contextRuntime.params)).rejects.toThrow('context-only project');
 
     const externalRuntime = createRuntime(createPlan());
     externalRuntime.params.args.nodes = [

@@ -369,7 +369,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
     name: 'Terminal Session',
     category: 'terminal',
     status: 'enabled',
-    description: 'Create a terminal session bound to one subproject',
+    description: 'Create a terminal session bound to one project',
     icon: 'terminal',
     config: {
       enabled: true,

@@ -5,10 +5,11 @@ use crate::db::repository;
 use crate::git::GitState;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
-    ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto,
-    ProjectGroupDto, ProjectRegistryDiagnosticsDto, WorkspaceArchitectActivatePlanChatRequestDto,
+    CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
+    ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto,
+    ProjectAccessChangePreviewDto, ProjectDto, ProjectGitFlowDetectionDto,
+    ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto, ProjectGroupDto,
+    ProjectRegistryDiagnosticsDto, WorkspaceArchitectActivatePlanChatRequestDto,
     WorkspaceArchitectActivatePlanHeadRequestDto, WorkspaceArchitectListPlansRequestDto,
     WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
     WorkspaceArchitectPlanTranscriptDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
@@ -344,6 +345,33 @@ pub async fn workspace_create_project_with_git_setup(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
+pub async fn workspace_create_new_project_repo(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    repo_name: String,
+    parent_path: String,
+    folder_name: String,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+) -> Result<ProjectGitSetupCommitResultDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let request = CreateNewProjectRepoRequest {
+        repo_name,
+        parent_path,
+        folder_name,
+        group_id,
+        group_name,
+        git_flow_settings,
+    };
+
+    workspace::create_new_project_repo(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workspace_import_git_repo(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
@@ -382,6 +410,38 @@ pub async fn workspace_rename_project_group(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::rename_project_group(&workspace_path, &metadata_root, &group_id, &name).await
+}
+
+#[tauri::command]
+pub async fn workspace_create_project_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    name: String,
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::create_project_group(&workspace_path, &metadata_root, &name, &project_ids).await
+}
+
+#[tauri::command]
+pub async fn workspace_move_project_to_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    group_id: Option<String>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::move_project_to_group(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        group_id.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

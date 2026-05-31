@@ -141,6 +141,15 @@ export const createProjectWithGitSetup = async (_data: {
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
 }): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createProjectWithGitSetup');
 
+export const createNewProjectRepo = async (_data: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: Project['gitFlowSettings'];
+}): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createNewProjectRepo');
+
 export const importGitRepo = async (_data: {
   gitUrl: string;
   projectName: string;
@@ -155,6 +164,12 @@ export const renameProjectGroup = async (_data: {
   groupId: string;
   name: string;
 }): Promise<{ projectGroup: ProjectGroup }> => remoteUnsupported('renameProjectGroup');
+
+export const createProjectGroup: ServiceProvider['createProjectGroup'] = async (_data) =>
+  remoteUnsupported('createProjectGroup');
+
+export const moveProjectToGroup: ServiceProvider['moveProjectToGroup'] = async (_data) =>
+  remoteUnsupported('moveProjectToGroup');
 
 export const renameProject = async (_data: {
   projectId: string;
@@ -341,8 +356,11 @@ export const provider: ServiceProvider = {
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
+  createNewProjectRepo,
   importGitRepo,
   renameProjectGroup,
+  createProjectGroup,
+  moveProjectToGroup,
   renameProject,
   updateProjectGitFlow,
   updateProjectGitFlowWithSetup,

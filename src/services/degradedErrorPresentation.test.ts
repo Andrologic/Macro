@@ -72,7 +72,7 @@ describe('degradedErrorPresentation', () => {
   });
 
   it('detects generic read-only service errors', () => {
-    const presentation = presentServiceError('Cannot promote project Web: the subproject is read-only.');
+    const presentation = presentServiceError('Cannot promote project Web: the project is read-only.');
 
     expect(presentation.title).toContain('not ready');
     expect(presentation.primaryAction).toBe('open_project_settings');

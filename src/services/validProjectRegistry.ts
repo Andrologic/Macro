@@ -1,4 +1,4 @@
-import type { ProjectGroup } from '../types';
+import type { Project, ProjectGroup } from '../types';
 import {
   getScopedActionableProjectIds,
   getScopedProjectIds,
@@ -7,6 +7,7 @@ import {
 import { getRegisteredAppState } from './appStateRuntime';
 
 export interface ValidProjectRegistryAppState {
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
   selectedProjectId: string | null;
@@ -52,6 +53,7 @@ export const isSyntheticProjectId = (value?: string | null): boolean =>
   Boolean(value && value.startsWith('session-project-'));
 
 export const buildValidProjectRegistrySnapshot = (params: {
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -65,8 +67,10 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const repoPathByProjectId = new Map<string, string>();
   const gitFlowSettingsByProjectId = new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>();
 
-  for (const group of params.projectGroups) {
-    for (const project of group.projects) {
+  for (const project of [
+    ...(params.standaloneProjects ?? []),
+    ...params.projectGroups.flatMap((group) => group.projects),
+  ]) {
       const projectId = typeof project.id === 'string' ? project.id.trim() : '';
       const repoPath = normalizeProjectRegistryPath(project.path);
       if (!projectId || isSyntheticProjectId(projectId) || !repoPath || validProjectIdSet.has(projectId)) {
@@ -84,12 +88,14 @@ export const buildValidProjectRegistrySnapshot = (params: {
       actionableProjectIdSet.add(projectId);
       repoPathByProjectId.set(projectId, repoPath);
     }
-  }
 
   const scopedProjectIds = Array.from(
     new Set(
       getScopedProjectIds(
-        params.projectGroups,
+        {
+          standaloneProjects: params.standaloneProjects ?? [],
+          projectGroups: params.projectGroups,
+        },
         params.selectedGroupId ?? null,
         params.selectedProjectId ?? null
       ).filter((projectId) => validProjectIdSet.has(projectId))
@@ -98,7 +104,10 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const scopedActionableProjectIds = Array.from(
     new Set(
       getScopedActionableProjectIds(
-        params.projectGroups,
+        {
+          standaloneProjects: params.standaloneProjects ?? [],
+          projectGroups: params.projectGroups,
+        },
         params.selectedGroupId ?? null,
         params.selectedProjectId ?? null
       ).filter((projectId) => actionableProjectIdSet.has(projectId))
@@ -107,7 +116,10 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const scopedReadOnlyProjectIds = Array.from(
     new Set(
       getScopedReadOnlyProjectIds(
-        params.projectGroups,
+        {
+          standaloneProjects: params.standaloneProjects ?? [],
+          projectGroups: params.projectGroups,
+        },
         params.selectedGroupId ?? null,
         params.selectedProjectId ?? null
       ).filter((projectId) => readOnlyProjectIdSet.has(projectId))
@@ -142,6 +154,7 @@ export const loadValidProjectRegistrySnapshot = async (options?: {
     const getAppState = options?.getAppState ?? loadDefaultValidProjectRegistryAppState;
     const state = await getAppState();
     return buildValidProjectRegistrySnapshot({
+      standaloneProjects: state.standaloneProjects ?? [],
       projectGroups: state.projectGroups,
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,

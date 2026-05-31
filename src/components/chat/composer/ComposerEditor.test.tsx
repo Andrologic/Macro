@@ -284,9 +284,9 @@ describe('ComposerEditor context references', () => {
 
   afterEach(async () => {
     await act(async () => {
-      root.unmount();
+      root?.unmount();
     });
-    container.remove();
+    container?.remove();
     document.body.innerHTML = '';
     mock.restore();
   });

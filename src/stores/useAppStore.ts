@@ -7,8 +7,9 @@ import {
   AgentType,
   CodeOverflowMode,
   Plan,
-  ProjectGroup,
-  Project,
+	  ProjectGroup,
+	  Project,
+	  ProjectRegistry,
   ProjectGitFlowSettings,
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
@@ -145,7 +146,7 @@ export interface MetadataSyncRepositoryStatus {
 
 interface RememberedProject {
   projectId: string;
-  groupId: string;
+  groupId: string | null;
   name: string;
   path: string;
   lastOpenedAt: string;
@@ -334,12 +335,38 @@ const sortByUpdatedAtDesc = <T extends { updated_at?: string }>(
     return rightTime - leftTime;
   });
 
-const collectProjectRegistryIds = (groups: ProjectGroup[]) => ({
-  validGroupIds: groups.map((group) => group.id),
-  validProjectIds: groups.flatMap((group) =>
-    group.projects.map((project) => project.id),
-  ),
-});
+const getAllProjectsFromRegistry = (registry: ProjectRegistry): Project[] => [
+  ...registry.standaloneProjects,
+  ...registry.projectGroups.flatMap((group) => group.projects),
+];
+
+const getProjectGroupIdFromRegistry = (
+  registry: ProjectRegistry,
+  projectId: string | null | undefined,
+): string | null =>
+  projectId
+    ? registry.projectGroups.find((group) =>
+        group.projects.some((project) => project.id === projectId),
+      )?.id ?? null
+    : null;
+
+const findProjectInRegistry = (
+  registry: ProjectRegistry,
+  projectId: string | null | undefined,
+): Project | null =>
+  projectId
+    ? getAllProjectsFromRegistry(registry).find((project) => project.id === projectId) ?? null
+    : null;
+
+const collectProjectRegistryIds = (registryInput: ProjectRegistry | ProjectGroup[]) => {
+  const registry = Array.isArray(registryInput)
+    ? { standaloneProjects: [], projectGroups: registryInput }
+    : registryInput;
+  return {
+    validGroupIds: registry.projectGroups.map((group) => group.id),
+    validProjectIds: getAllProjectsFromRegistry(registry).map((project) => project.id),
+  };
+};
 
 const isSelectionOnlyProjectRegistryRepair = (
   report: ProjectRegistryRepairReport,
@@ -463,12 +490,13 @@ const scheduleScopedBlankPlanConsolidation = (params: {
 };
 
 const reconcileProjectRegistryDependencies = async (params: {
+  standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
   selectedProjectId: string | null;
 }): Promise<void> => {
   const { validGroupIds, validProjectIds } = collectProjectRegistryIds(
-    params.projectGroups,
+    { standaloneProjects: params.standaloneProjects, projectGroups: params.projectGroups },
   );
   await localProjectContext.reconcileLocalProjectRegistryState({
     validGroupIds,
@@ -894,7 +922,10 @@ const activateArchitectPlanInStore = async (input: {
       latestAppState.selectedProjectId,
     );
     const scopedProjectIds = getScopedProjectIds(
-      latestAppState.projectGroups,
+      {
+        standaloneProjects: latestAppState.standaloneProjects,
+        projectGroups: latestAppState.projectGroups,
+      },
       latestAppState.selectedGroupId,
       latestAppState.selectedProjectId,
     );
@@ -938,7 +969,10 @@ const activateArchitectPlanInStore = async (input: {
   scheduleScopedBlankPlanConsolidation({
     branchName: targetBranch,
     scopedProjectIds: getScopedProjectIds(
-      latestAppState.projectGroups,
+      {
+        standaloneProjects: latestAppState.standaloneProjects,
+        projectGroups: latestAppState.projectGroups,
+      },
       latestAppState.selectedGroupId,
       latestAppState.selectedProjectId,
     ),
@@ -974,7 +1008,10 @@ const resolveArchitectPlanForScope = async (input: {
 }): Promise<boolean> => {
   const appState = useAppStore.getState();
   const scopedProjectIds = getScopedProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects,
+      projectGroups: appState.projectGroups,
+    },
     input.groupId,
     input.projectId,
   );
@@ -1085,6 +1122,13 @@ const pruneLegacyPlaceholderWorkspaces = (groups: ProjectGroup[]): ProjectGroup[
     .filter((group) => group.projects.length > 0);
 };
 
+const pruneLegacyPlaceholderStandaloneProjects = (projects: Project[]): Project[] =>
+  projects.filter(
+    (project) =>
+      !isLegacyPlaceholderWorkspacePath(project.path) &&
+      !isImplicitWorkspaceRootPath(project.path),
+  );
+
 const pruneLegacyRememberedProjects = (
   projects: RememberedProject[],
 ): RememberedProject[] =>
@@ -1115,10 +1159,11 @@ const buildMetadataRecoveryHints = (
 interface AppStore {
   mode: AppMode;
   agentType: AgentType;
-  currentPlan: Plan | null;
-  projectGroups: ProjectGroup[];
+	  currentPlan: Plan | null;
+	  standaloneProjects: Project[];
+	  projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
-  selectedProjectId: string | null; // focused subproject for repo-specific panels/actions
+  selectedProjectId: string | null; // focused project for repo-specific panels/actions
   selectedTaskId: string | null;
   taskSortOption: TaskSortOption;
   isLoading: boolean;
@@ -1172,6 +1217,11 @@ interface AppStore {
   setTaskSortOption: (option: TaskSortOption) => void;
   toggleProjectGroup: (groupId: string) => void;
   renameProjectGroup: (groupId: string, name: string) => Promise<void>;
+  createProjectGroup: (name: string, projectIds: string[]) => Promise<void>;
+  moveProjectToGroup: (
+    projectId: string,
+    groupId: string | null,
+  ) => Promise<void>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   updateProjectGitFlow: (
     projectId: string,
@@ -1251,7 +1301,7 @@ interface AppStore {
   closeProjectModal: () => void;
   openProjectGitFlowModal: (projectId: string) => void;
   closeProjectGitFlowModal: () => void;
-  createProject: (data: CreateProjectData) => Promise<void>;
+  createProject: (data: CreateProjectData) => Promise<Project>;
   createProjectWithGitSetup: (
     data: CreateProjectData & {
       path: string;
@@ -1260,6 +1310,9 @@ interface AppStore {
       expectedSetupState: ProjectGitSetupState;
       expectedRecommendedActionSequence: ProjectGitSetupAction[];
     },
+  ) => Promise<ProjectGitSetupCommitResult>;
+  createNewProjectRepo: (
+    data: CreateNewProjectRepoData,
   ) => Promise<ProjectGitSetupCommitResult>;
   refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
@@ -1277,6 +1330,15 @@ interface CreateProjectData {
   groupId: string | null;
   groupName?: string | null;
   path?: string;
+  gitFlowSettings?: ProjectGitFlowSettings;
+}
+
+interface CreateNewProjectRepoData {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId: string | null;
+  groupName?: string | null;
   gitFlowSettings?: ProjectGitFlowSettings;
 }
 
@@ -1303,7 +1365,7 @@ const loadProjectRegistrySnapshot = async (params: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
 }): Promise<ProjectRegistrySnapshot> => {
-  const { projectGroups, plan, planNodes, predictedBranches } =
+  const { standaloneProjects, projectGroups, plan, planNodes, predictedBranches } =
     await services.getAppBootstrap();
 
   return {
@@ -1312,6 +1374,7 @@ const loadProjectRegistrySnapshot = async (params: {
     predictedBranches: predictedBranches ?? [],
     normalizedRegistry: normalizeProjectRegistry({
       projectGroups,
+      standaloneProjects: standaloneProjects ?? [],
       selectedGroupId: params.selectedGroupId,
       selectedProjectId: params.selectedProjectId,
     }),
@@ -1344,8 +1407,9 @@ const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: "Implement",
   agentType: "build",
-  currentPlan: null,
-  projectGroups: [],
+	  currentPlan: null,
+	  standaloneProjects: [],
+	  projectGroups: [],
   selectedGroupId: null,
   selectedProjectId: null,
   selectedTaskId: null,
@@ -1425,13 +1489,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setProjectGroups: (groups) =>
     set((state) => {
-      const normalized = normalizeProjectRegistry({
-        projectGroups: groups,
+	      const normalized = normalizeProjectRegistry({
+	        standaloneProjects: state.standaloneProjects,
+	        projectGroups: groups,
         selectedGroupId: state.selectedGroupId,
         selectedProjectId: state.selectedProjectId,
       });
       return {
-        projectGroups: normalized.projectGroups,
+	        projectGroups: normalized.projectGroups,
+	        standaloneProjects: normalized.standaloneProjects,
         selectedGroupId: normalized.selectedGroupId,
         selectedProjectId: normalized.selectedProjectId,
         projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
@@ -1601,11 +1667,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const selectedProject = nextProjectId
         ? previous.getProjectById(nextProjectId)
         : null;
-      const rememberedProject =
-        selectedProject && nextGroupId
-          ? {
-              projectId: selectedProject.id,
-              groupId: nextGroupId,
+	      const rememberedProject =
+	        selectedProject
+	          ? {
+	              projectId: selectedProject.id,
+	              groupId: nextGroupId,
               name: selectedProject.name,
               path: selectedProject.path,
               lastOpenedAt: new Date().toISOString(),
@@ -1837,21 +1903,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (!canonicalGroup) {
         const nextRecentProjects = reconcileRememberedProjects(
-          preflightSnapshot.normalizedRegistry.projectGroups,
+          preflightSnapshot.normalizedRegistry,
           previousState.recentProjects,
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
-          preflightSnapshot.normalizedRegistry.projectGroups,
+          preflightSnapshot.normalizedRegistry,
           previousState.macroEnabledProjects,
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          preflightSnapshot.normalizedRegistry.projectGroups,
-        );
+          preflightSnapshot.normalizedRegistry,
+          );
         const missingMessage =
           "Project group no longer exists in Macro. The registry was refreshed.";
 
         set({
           currentPlan: preflightSnapshot.plan,
+          standaloneProjects: preflightSnapshot.normalizedRegistry.standaloneProjects,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
           selectedProjectId:
@@ -1886,6 +1953,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
+          standaloneProjects: preflightSnapshot.normalizedRegistry.standaloneProjects,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
           selectedProjectId:
@@ -1911,19 +1979,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1956,6 +2025,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -1973,6 +2043,65 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ isLoading: false, lastError: normalized.message });
       logProjectRegistryAction("failed", {
         action: "rename_group",
+        groupId,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
+  createProjectGroup: async (name, projectIds) => {
+    const trimmedName = name.trim();
+    const uniqueProjectIds = Array.from(
+      new Set(projectIds.map((projectId) => projectId.trim()).filter(Boolean)),
+    );
+    if (!trimmedName || uniqueProjectIds.length < 2) {
+      return;
+    }
+
+    set({ isLoading: true, lastError: null });
+    try {
+      await services.createProjectGroup({
+        name: trimmedName,
+        projectIds: uniqueProjectIds,
+      });
+      await get().refreshProjectRegistry();
+      logProjectRegistryAction("succeeded", {
+        action: "create_group",
+        projectCount: uniqueProjectIds.length,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction("failed", {
+        action: "create_group",
+        projectCount: uniqueProjectIds.length,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
+  moveProjectToGroup: async (projectId, groupId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      await services.moveProjectToGroup({ projectId, groupId });
+      await get().refreshProjectRegistry();
+      logProjectRegistryAction("succeeded", {
+        action: "move_project_to_group",
+        projectId,
+        groupId,
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction("failed", {
+        action: "move_project_to_group",
+        projectId,
         groupId,
         error: normalized.message,
         code: normalized.code,
@@ -2000,27 +2129,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         requestedProject,
       );
 
       if (!canonicalProject) {
         const nextRecentProjects = reconcileRememberedProjects(
-          preflightSnapshot.normalizedRegistry.projectGroups,
+          preflightSnapshot.normalizedRegistry,
           previousState.recentProjects,
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
-          preflightSnapshot.normalizedRegistry.projectGroups,
+          preflightSnapshot.normalizedRegistry,
           previousState.macroEnabledProjects,
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          preflightSnapshot.normalizedRegistry.projectGroups,
-        );
+          preflightSnapshot.normalizedRegistry,
+          );
         const missingMessage =
-          "Subproject no longer exists in Macro. The registry was refreshed.";
+          "Project no longer exists in Macro. The registry was refreshed.";
 
         set({
           currentPlan: preflightSnapshot.plan,
+          standaloneProjects: preflightSnapshot.normalizedRegistry.standaloneProjects,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
           selectedProjectId:
@@ -2055,6 +2185,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
+          standaloneProjects: preflightSnapshot.normalizedRegistry.standaloneProjects,
           projectGroups: preflightSnapshot.normalizedRegistry.projectGroups,
           selectedGroupId: preflightSnapshot.normalizedRegistry.selectedGroupId,
           selectedProjectId:
@@ -2080,19 +2211,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2125,6 +2257,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2166,14 +2299,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
           code: "PROJECT_NOT_FOUND",
-          message: "Subproject no longer exists in Macro.",
+          message: "Project no longer exists in Macro.",
         };
       }
 
@@ -2188,19 +2321,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2233,6 +2367,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2290,14 +2425,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
           code: "PROJECT_NOT_FOUND",
-          message: "Subproject no longer exists in Macro.",
+          message: "Project no longer exists in Macro.",
         };
       }
 
@@ -2313,19 +2448,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2358,6 +2494,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2420,23 +2557,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!canonicalGroup) {
         const normalizedRegistry = preflightSnapshot.normalizedRegistry;
         const nextRecentProjects = reconcileRememberedProjects(
-          normalizedRegistry.projectGroups,
+          normalizedRegistry,
           previousState.recentProjects.filter(
             (project) => !removedProjectIds.has(project.projectId),
           ),
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
-          normalizedRegistry.projectGroups,
+          normalizedRegistry,
           previousState.macroEnabledProjects.filter(
             (project) => !removedProjectIds.has(project.projectId),
           ),
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          normalizedRegistry.projectGroups,
-        );
+          normalizedRegistry,
+          );
 
         set({
           currentPlan: preflightSnapshot.plan,
+          standaloneProjects: normalizedRegistry.standaloneProjects,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2475,14 +2613,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
           lastError: null,
         });
 
-        const nextFocusedProject = normalizedRegistry.selectedProjectId
-          ? (normalizedRegistry.projectGroups
-              .flatMap((group) => group.projects)
-              .find(
-                (project) =>
-                  project.id === normalizedRegistry.selectedProjectId,
-              ) ?? null)
-          : null;
+        const nextFocusedProject = findProjectInRegistry(
+          normalizedRegistry,
+          normalizedRegistry.selectedProjectId,
+        );
         void savePreference(
           PREF_KEYS.LAST_SELECTED_GROUP_ID,
           normalizedRegistry.selectedGroupId,
@@ -2509,6 +2643,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
+          standaloneProjects: normalizedRegistry.standaloneProjects,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2546,23 +2681,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects.filter(
           (project) => !removedProjectIds.has(project.projectId),
         ),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects.filter(
           (project) => !removedProjectIds.has(project.projectId),
         ),
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2601,13 +2737,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         lastError: null,
       });
 
-      const nextFocusedProject = normalizedRegistry.selectedProjectId
-        ? (normalizedRegistry.projectGroups
-            .flatMap((group) => group.projects)
-            .find(
-              (project) => project.id === normalizedRegistry.selectedProjectId,
-            ) ?? null)
-        : null;
+      const nextFocusedProject = findProjectInRegistry(
+          normalizedRegistry,
+          normalizedRegistry.selectedProjectId,
+        );
       void savePreference(
         PREF_KEYS.LAST_SELECTED_GROUP_ID,
         normalizedRegistry.selectedGroupId,
@@ -2634,6 +2767,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2685,7 +2819,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         removedProject,
       );
       const closedProjectGroupId =
@@ -2700,23 +2834,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!canonicalProject) {
         const normalizedRegistry = preflightSnapshot.normalizedRegistry;
         const nextRecentProjects = reconcileRememberedProjects(
-          normalizedRegistry.projectGroups,
+          normalizedRegistry,
           previousState.recentProjects.filter(
             (project) => project.projectId !== projectId,
           ),
         );
         const nextMacroEnabledProjects = reconcileRememberedProjects(
-          normalizedRegistry.projectGroups,
+          normalizedRegistry,
           previousState.macroEnabledProjects.filter(
             (project) => project.projectId !== projectId,
           ),
         );
         const { validProjectIds } = collectProjectRegistryIds(
-          normalizedRegistry.projectGroups,
-        );
+          normalizedRegistry,
+          );
 
         set({
           currentPlan: preflightSnapshot.plan,
+          standaloneProjects: normalizedRegistry.standaloneProjects,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2755,14 +2890,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
           lastError: null,
         });
 
-        const nextFocusedProject = normalizedRegistry.selectedProjectId
-          ? (normalizedRegistry.projectGroups
-              .flatMap((group) => group.projects)
-              .find(
-                (project) =>
-                  project.id === normalizedRegistry.selectedProjectId,
-              ) ?? null)
-          : null;
+        const nextFocusedProject = findProjectInRegistry(
+          normalizedRegistry,
+          normalizedRegistry.selectedProjectId,
+        );
         void savePreference(
           PREF_KEYS.LAST_SELECTED_GROUP_ID,
           normalizedRegistry.selectedGroupId,
@@ -2789,6 +2920,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           mode: previousState.mode,
         });
         await reconcileProjectRegistryDependencies({
+          standaloneProjects: normalizedRegistry.standaloneProjects,
           projectGroups: normalizedRegistry.projectGroups,
           selectedGroupId: normalizedRegistry.selectedGroupId,
           selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2823,23 +2955,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects.filter(
           (project) => project.projectId !== canonicalProject.id,
         ),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects.filter(
           (project) => project.projectId !== canonicalProject.id,
         ),
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2878,13 +3011,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         lastError: null,
       });
 
-      const nextFocusedProject = normalizedRegistry.selectedProjectId
-        ? (normalizedRegistry.projectGroups
-            .flatMap((group) => group.projects)
-            .find(
-              (project) => project.id === normalizedRegistry.selectedProjectId,
-            ) ?? null)
-        : null;
+      const nextFocusedProject = findProjectInRegistry(
+          normalizedRegistry,
+          normalizedRegistry.selectedProjectId,
+        );
       void savePreference(
         PREF_KEYS.LAST_SELECTED_GROUP_ID,
         normalizedRegistry.selectedGroupId,
@@ -2911,6 +3041,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -2962,14 +3093,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         resetProject,
       );
 
       if (!canonicalProject) {
         throw {
           code: "PROJECT_NOT_FOUND",
-          message: "Subproject no longer exists in Macro.",
+          message: "Project no longer exists in Macro.",
         };
       }
 
@@ -3051,23 +3182,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const didResetProjectInActiveGroup =
         canonicalProjectGroupId === previousState.selectedGroupId;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects.filter(
           (project) => project.projectId !== canonicalProject.id,
         ),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects.filter(
           (project) => project.projectId !== canonicalProject.id,
         ),
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3107,13 +3239,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         lastError: null,
       });
 
-      const nextFocusedProject = normalizedRegistry.selectedProjectId
-        ? (normalizedRegistry.projectGroups
-            .flatMap((group) => group.projects)
-            .find(
-              (project) => project.id === normalizedRegistry.selectedProjectId,
-            ) ?? null)
-        : null;
+      const nextFocusedProject = findProjectInRegistry(
+          normalizedRegistry,
+          normalizedRegistry.selectedProjectId,
+        );
       void savePreference(
         PREF_KEYS.LAST_SELECTED_GROUP_ID,
         normalizedRegistry.selectedGroupId,
@@ -3141,6 +3270,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3195,14 +3325,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: previousState.selectedProjectId,
       });
       const canonicalProject = resolveCanonicalProject(
-        preflightSnapshot.normalizedRegistry.projectGroups,
+        preflightSnapshot.normalizedRegistry,
         requestedProject,
       );
 
       if (!canonicalProject) {
         throw {
           code: "PROJECT_NOT_FOUND",
-          message: "Subproject no longer exists in Macro.",
+          message: "Project no longer exists in Macro.",
         };
       }
 
@@ -3221,19 +3351,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = postMutationSnapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: postMutationSnapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3266,6 +3397,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3337,32 +3469,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
           state.selectedProjectId,
         );
       }
-      const {
-        projectGroups: syncedGroups,
-        plan,
-        planNodes,
-        predictedBranches,
-      } = await services.getAppBootstrap();
-      const syncedGroupForProject = getProjectGroupByProjectId(
-        syncedGroups,
-        newProject.id,
-      );
-      const seededRegistry = syncedGroupForProject
-        ? syncedGroups
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId)
-            .projectGroups;
-      const normalizedRegistry = normalizeProjectRegistry({
-        projectGroups: seededRegistry,
-        selectedGroupId:
-          syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
-        selectedProjectId: newProject.id,
-      });
-      const targetGroupId =
-        getProjectGroupByProjectId(
-          normalizedRegistry.projectGroups,
-          newProject.id,
-        )?.id ?? normalizedRegistry.selectedGroupId;
-      const isCurrentGroup = targetGroupId === state.selectedGroupId;
+	      const {
+	        standaloneProjects: syncedStandaloneProjects,
+	        projectGroups: syncedGroups,
+	        plan,
+	        planNodes,
+	        predictedBranches,
+	      } = await services.getAppBootstrap();
+	      const syncedRegistry = {
+	        standaloneProjects: syncedStandaloneProjects ?? [],
+	        projectGroups: syncedGroups,
+	      };
+	      const syncedGroupForProject = getProjectGroupIdFromRegistry(syncedRegistry, newProject.id);
+	      const syncedProject = findProjectInRegistry(syncedRegistry, newProject.id);
+	      const fallbackRegistry = data.groupId
+	        ? {
+	            standaloneProjects: state.standaloneProjects,
+	            projectGroups: insertProjectInGroups(state.projectGroups, newProject, data.groupId)
+	              .projectGroups,
+	          }
+	        : {
+	            standaloneProjects: [...state.standaloneProjects, newProject],
+	            projectGroups: state.projectGroups,
+	          };
+	      const seededRegistry = syncedProject ? syncedRegistry : fallbackRegistry;
+	      const normalizedRegistry = normalizeProjectRegistry({
+	        standaloneProjects: seededRegistry.standaloneProjects,
+	        projectGroups: seededRegistry.projectGroups,
+	        selectedGroupId: syncedGroupForProject ?? data.groupId ?? null,
+	        selectedProjectId: newProject.id,
+	      });
+	      const targetGroupId = getProjectGroupIdFromRegistry(normalizedRegistry, newProject.id);
+	      const isCurrentGroup = targetGroupId === state.selectedGroupId;
       const preferredFocusProjectId = targetGroupId
         ? (getFocusedProjectIdForGroup(
             normalizedRegistry.projectGroups,
@@ -3371,37 +3509,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ) ?? newProject.id)
         : (normalizedRegistry.selectedProjectId ?? newProject.id);
 
-      const rememberedProject: RememberedProject | null = targetGroupId
-        ? {
-            projectId: newProject.id,
-            groupId: targetGroupId,
-            name: newProject.name,
-            path: newProject.path,
-            lastOpenedAt: new Date().toISOString(),
-          }
-        : null;
+	      const rememberedProject: RememberedProject = {
+	        projectId: newProject.id,
+	        groupId: targetGroupId,
+	        name: newProject.name,
+	        path: newProject.path,
+	        lastOpenedAt: new Date().toISOString(),
+	      };
 
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(state.recentProjects, rememberedProject)
-          : state.recentProjects,
-      );
+	        normalizedRegistry,
+	        upsertRememberedProject(state.recentProjects, rememberedProject),
+	      );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(
-              state.macroEnabledProjects,
-              rememberedProject,
-            )
-          : state.macroEnabledProjects,
-      );
+	        normalizedRegistry,
+	        upsertRememberedProject(
+	          state.macroEnabledProjects,
+	          rememberedProject,
+	        ),
+	      );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         planNodes: filterPlanNodesForRegistry(
           planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
@@ -3411,7 +3544,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           predictedBranches ?? [],
           validProjectIds,
         ),
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
         activeArchitectPlanId: isCurrentGroup
@@ -3428,8 +3561,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ),
       });
       void savePreference(
-        PREF_KEYS.LAST_SELECTED_GROUP_ID,
-        targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+	        targetGroupId,
       );
       void savePreference(
         PREF_KEYS.LAST_SELECTED_PROJECT_ID,
@@ -3447,18 +3580,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       );
 
       await persistSessionContext({
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
       });
-      await reconcileProjectRegistryDependencies({
-        projectGroups: normalizedRegistry.projectGroups,
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	      await reconcileProjectRegistryDependencies({
+	        standaloneProjects: normalizedRegistry.standaloneProjects,
+	        projectGroups: normalizedRegistry.projectGroups,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
       });
 
-      const restoredGroupId =
-        targetGroupId ?? normalizedRegistry.selectedGroupId;
+	      const restoredGroupId = targetGroupId;
       if (
         get().projectSwitchPolicy === "resume_per_project" &&
         restoredGroupId
@@ -3467,18 +3600,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       await ensureAutoPlanForSelection({
-        groupId: restoredGroupId,
+	        groupId: restoredGroupId,
         projectId: preferredFocusProjectId,
       });
 
       logProjectRegistryAction("succeeded", {
         action: "create_project",
-        projectId: newProject.id,
-        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        projectId: newProject.id,
+	        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
       set({ isLoading: false, lastError: null });
+      return newProject;
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
@@ -3517,31 +3651,37 @@ export const useAppStore = create<AppStore>((set, get) => ({
           state.selectedProjectId,
         );
       }
-      const {
-        projectGroups: syncedGroups,
-        plan,
-        planNodes,
-        predictedBranches,
-      } = await services.getAppBootstrap();
-      const syncedGroupForProject = getProjectGroupByProjectId(
-        syncedGroups,
-        newProject.id,
-      );
-      const seededRegistry = syncedGroupForProject
-        ? syncedGroups
-        : insertProjectInGroups(state.projectGroups, newProject, data.groupId)
-            .projectGroups;
-      const normalizedRegistry = normalizeProjectRegistry({
-        projectGroups: seededRegistry,
-        selectedGroupId:
-          syncedGroupForProject?.id ?? data.groupId ?? state.selectedGroupId,
-        selectedProjectId: newProject.id,
-      });
-      const targetGroupId =
-        getProjectGroupByProjectId(
-          normalizedRegistry.projectGroups,
-          newProject.id,
-        )?.id ?? normalizedRegistry.selectedGroupId;
+	      const {
+	        standaloneProjects: syncedStandaloneProjects,
+	        projectGroups: syncedGroups,
+	        plan,
+	        planNodes,
+	        predictedBranches,
+	      } = await services.getAppBootstrap();
+	      const syncedRegistry = {
+	        standaloneProjects: syncedStandaloneProjects ?? [],
+	        projectGroups: syncedGroups,
+	      };
+	      const syncedGroupForProject = getProjectGroupIdFromRegistry(syncedRegistry, newProject.id);
+	      const syncedProject = findProjectInRegistry(syncedRegistry, newProject.id);
+	      const fallbackRegistry = data.groupId
+	        ? {
+	            standaloneProjects: state.standaloneProjects,
+	            projectGroups: insertProjectInGroups(state.projectGroups, newProject, data.groupId)
+	              .projectGroups,
+	          }
+	        : {
+	            standaloneProjects: [...state.standaloneProjects, newProject],
+	            projectGroups: state.projectGroups,
+	          };
+	      const seededRegistry = syncedProject ? syncedRegistry : fallbackRegistry;
+	      const normalizedRegistry = normalizeProjectRegistry({
+	        standaloneProjects: seededRegistry.standaloneProjects,
+	        projectGroups: seededRegistry.projectGroups,
+	        selectedGroupId: syncedGroupForProject ?? data.groupId ?? null,
+	        selectedProjectId: newProject.id,
+	      });
+	      const targetGroupId = getProjectGroupIdFromRegistry(normalizedRegistry, newProject.id);
       const isCurrentGroup = targetGroupId === state.selectedGroupId;
       const preferredFocusProjectId = targetGroupId
         ? (getFocusedProjectIdForGroup(
@@ -3551,37 +3691,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ) ?? newProject.id)
         : (normalizedRegistry.selectedProjectId ?? newProject.id);
 
-      const rememberedProject: RememberedProject | null = targetGroupId
-        ? {
-            projectId: newProject.id,
-            groupId: targetGroupId,
-            name: newProject.name,
-            path: newProject.path,
-            lastOpenedAt: new Date().toISOString(),
-          }
-        : null;
+	      const rememberedProject: RememberedProject = {
+	        projectId: newProject.id,
+	        groupId: targetGroupId,
+	        name: newProject.name,
+	        path: newProject.path,
+	        lastOpenedAt: new Date().toISOString(),
+	      };
 
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(state.recentProjects, rememberedProject)
-          : state.recentProjects,
+	        normalizedRegistry,
+	        upsertRememberedProject(state.recentProjects, rememberedProject),
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
-        rememberedProject
-          ? upsertRememberedProject(
-              state.macroEnabledProjects,
-              rememberedProject,
-            )
-          : state.macroEnabledProjects,
+	        normalizedRegistry,
+	        upsertRememberedProject(
+	          state.macroEnabledProjects,
+	          rememberedProject,
+	        ),
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         planNodes: filterPlanNodesForRegistry(
           planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
@@ -3591,7 +3726,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           predictedBranches ?? [],
           validProjectIds,
         ),
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
         activeArchitectPlanId: isCurrentGroup
@@ -3608,8 +3743,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ),
       });
       void savePreference(
-        PREF_KEYS.LAST_SELECTED_GROUP_ID,
-        targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+	        targetGroupId,
       );
       void savePreference(
         PREF_KEYS.LAST_SELECTED_PROJECT_ID,
@@ -3627,18 +3762,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       );
 
       await persistSessionContext({
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
       });
-      await reconcileProjectRegistryDependencies({
-        projectGroups: normalizedRegistry.projectGroups,
-        selectedGroupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+	      await reconcileProjectRegistryDependencies({
+	        standaloneProjects: normalizedRegistry.standaloneProjects,
+	        projectGroups: normalizedRegistry.projectGroups,
+	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
       });
 
-      const restoredGroupId =
-        targetGroupId ?? normalizedRegistry.selectedGroupId;
+	      const restoredGroupId = targetGroupId;
       if (
         get().projectSwitchPolicy === "resume_per_project" &&
         restoredGroupId
@@ -3676,6 +3811,191 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  createNewProjectRepo: async (data) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const previousState = get();
+      const gitFlowSettings =
+        data.gitFlowSettings || getDefaultProjectGitFlowSettings();
+      logProjectRegistryAction("started", {
+        action: "create_new_project_repo",
+        groupId: data.groupId,
+        parentPath: data.parentPath,
+        folderName: data.folderName,
+        beforeCount: countProjectsInRegistry(previousState.projectGroups),
+      });
+      const result = await services.createNewProjectRepo({
+        ...data,
+        gitFlowSettings,
+      });
+      const newProject = result.project;
+      const state = get();
+      if (state.selectedGroupId) {
+        await persistCurrentProjectContext(
+          state.selectedGroupId,
+          state.selectedProjectId,
+        );
+      }
+	      const {
+	        standaloneProjects: syncedStandaloneProjects,
+	        projectGroups: syncedGroups,
+	        plan,
+	        planNodes,
+	        predictedBranches,
+	      } = await services.getAppBootstrap();
+	      const syncedRegistry = {
+	        standaloneProjects: syncedStandaloneProjects ?? [],
+	        projectGroups: syncedGroups,
+	      };
+	      const syncedGroupForProject = getProjectGroupIdFromRegistry(syncedRegistry, newProject.id);
+	      const syncedProject = findProjectInRegistry(syncedRegistry, newProject.id);
+	      const fallbackRegistry = data.groupId
+	        ? {
+	            standaloneProjects: state.standaloneProjects,
+	            projectGroups: insertProjectInGroups(state.projectGroups, newProject, data.groupId)
+	              .projectGroups,
+	          }
+	        : {
+	            standaloneProjects: [...state.standaloneProjects, newProject],
+	            projectGroups: state.projectGroups,
+	          };
+	      const seededRegistry = syncedProject ? syncedRegistry : fallbackRegistry;
+	      const normalizedRegistry = normalizeProjectRegistry({
+	        standaloneProjects: seededRegistry.standaloneProjects,
+	        projectGroups: seededRegistry.projectGroups,
+	        selectedGroupId: syncedGroupForProject ?? data.groupId ?? null,
+	        selectedProjectId: newProject.id,
+	      });
+	      const targetGroupId = getProjectGroupIdFromRegistry(normalizedRegistry, newProject.id);
+      const isCurrentGroup = targetGroupId === state.selectedGroupId;
+      const preferredFocusProjectId = targetGroupId
+        ? (getFocusedProjectIdForGroup(
+            normalizedRegistry.projectGroups,
+            targetGroupId,
+            isCurrentGroup ? state.selectedProjectId : newProject.id,
+          ) ?? newProject.id)
+        : (normalizedRegistry.selectedProjectId ?? newProject.id);
+
+	      const rememberedProject: RememberedProject = {
+	        projectId: newProject.id,
+	        groupId: targetGroupId,
+	        name: newProject.name,
+	        path: newProject.path,
+	        lastOpenedAt: new Date().toISOString(),
+	      };
+
+      const nextRecentProjects = reconcileRememberedProjects(
+	        normalizedRegistry,
+	        upsertRememberedProject(state.recentProjects, rememberedProject),
+      );
+      const nextMacroEnabledProjects = reconcileRememberedProjects(
+	        normalizedRegistry,
+	        upsertRememberedProject(
+	          state.macroEnabledProjects,
+	          rememberedProject,
+	        ),
+      );
+      const { validProjectIds } = collectProjectRegistryIds(
+        normalizedRegistry,
+        );
+
+      set({
+        currentPlan: plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
+        projectGroups: normalizedRegistry.projectGroups,
+        planNodes: filterPlanNodesForRegistry(
+          planNodes?.length ? planNodes : derivePlanNodesFromPlan(plan),
+          validProjectIds,
+        ),
+        predictedBranches: filterPredictedBranchesForRegistry(
+          predictedBranches ?? [],
+          validProjectIds,
+        ),
+	        selectedGroupId: targetGroupId,
+        selectedProjectId: preferredFocusProjectId,
+        selectedTaskId: isCurrentGroup ? state.selectedTaskId : null,
+        activeArchitectPlanId: isCurrentGroup
+          ? state.activeArchitectPlanId
+          : null,
+        architectPlanSwitch: isCurrentGroup
+          ? state.architectPlanSwitch
+          : idleArchitectPlanSwitchState(),
+        activePlanContext: isCurrentGroup ? state.activePlanContext : null,
+        recentProjects: nextRecentProjects,
+        macroEnabledProjects: nextMacroEnabledProjects,
+        projectRegistryRepairSummary: formatProjectRegistryRepairSummary(
+          normalizedRegistry.report,
+        ),
+      });
+      void savePreference(
+	        PREF_KEYS.LAST_SELECTED_GROUP_ID,
+	        targetGroupId,
+      );
+      void savePreference(
+        PREF_KEYS.LAST_SELECTED_PROJECT_ID,
+        preferredFocusProjectId,
+      );
+      if (shouldPersistProjectPath(newProject.path)) {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, newProject.path);
+      } else {
+        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+      }
+      void savePreference(PREF_KEYS.RECENT_PROJECTS, nextRecentProjects);
+      void savePreference(
+        PREF_KEYS.MACRO_ENABLED_PROJECTS,
+        nextMacroEnabledProjects,
+      );
+
+      await persistSessionContext({
+	        selectedGroupId: targetGroupId,
+        selectedProjectId: preferredFocusProjectId,
+        mode: state.mode,
+      });
+	      await reconcileProjectRegistryDependencies({
+	        standaloneProjects: normalizedRegistry.standaloneProjects,
+	        projectGroups: normalizedRegistry.projectGroups,
+	        selectedGroupId: targetGroupId,
+        selectedProjectId: preferredFocusProjectId,
+      });
+
+	      const restoredGroupId = targetGroupId;
+      if (
+        get().projectSwitchPolicy === "resume_per_project" &&
+        restoredGroupId
+      ) {
+        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
+      }
+
+      await ensureAutoPlanForSelection({
+        groupId: restoredGroupId,
+        projectId: preferredFocusProjectId,
+      });
+
+      logProjectRegistryAction("succeeded", {
+        action: "create_new_project_repo",
+        projectId: newProject.id,
+        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
+        repairApplied: normalizedRegistry.report.repaired,
+      });
+      set({ isLoading: false, lastError: null });
+      return result;
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      logProjectRegistryAction("failed", {
+        action: "create_new_project_repo",
+        groupId: data.groupId,
+        parentPath: data.parentPath,
+        folderName: data.folderName,
+        error: normalized.message,
+        code: normalized.code,
+        details: normalized.details ?? null,
+      });
+      throw normalized;
+    }
+  },
+
   refreshProjectRegistry: async () => {
     set({ isLoading: true, lastError: null });
     try {
@@ -3686,19 +4006,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       const normalizedRegistry = snapshot.normalizedRegistry;
       const nextRecentProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.recentProjects,
       );
       const nextMacroEnabledProjects = reconcileRememberedProjects(
-        normalizedRegistry.projectGroups,
+        normalizedRegistry,
         previousState.macroEnabledProjects,
       );
       const { validProjectIds } = collectProjectRegistryIds(
-        normalizedRegistry.projectGroups,
-      );
+        normalizedRegistry,
+        );
 
       set({
         currentPlan: snapshot.plan,
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3731,6 +4052,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode: previousState.mode,
       });
       await reconcileProjectRegistryDependencies({
+        standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
         selectedGroupId: normalizedRegistry.selectedGroupId,
         selectedProjectId: normalizedRegistry.selectedProjectId,
@@ -3764,9 +4086,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.IS_RIGHT_PANEL_OPEN, open);
   },
 
-  getProjectById: (id) => {
-    const state = get();
-    for (const group of state.projectGroups) {
+	  getProjectById: (id) => {
+	    const state = get();
+	    const standaloneProject = state.standaloneProjects.find((project) => project.id === id);
+	    if (standaloneProject) return standaloneProject;
+	    for (const group of state.projectGroups) {
       const project = group.projects.find((p) => p.id === id);
       if (project) return project;
     }
@@ -3835,18 +4159,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
         pruneLegacyRememberedProjects(recentProjects);
       const prunedMacroEnabledProjects =
         pruneLegacyRememberedProjects(macroEnabledProjects);
-      let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
-        null;
-      let bootstrapPlan: Plan | null = null;
-      let bootstrapProjectGroups: ProjectGroup[] = [];
+	      let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
+	        null;
+	      let bootstrapPlan: Plan | null = null;
+	      let bootstrapStandaloneProjects: Project[] = [];
+	      let bootstrapProjectGroups: ProjectGroup[] = [];
       let bootstrapPlanNodes: PlanNode[] = [];
       let bootstrapPredictedBranches: PredictedBranch[] = [];
       let bootstrapErrorMessage: string | null = null;
 
       try {
-        const bootstrap = await services.getAppBootstrap();
-        bootstrapPlan = bootstrap.plan;
-        bootstrapProjectGroups = bootstrap.projectGroups;
+	        const bootstrap = await services.getAppBootstrap();
+	        bootstrapPlan = bootstrap.plan;
+	        bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
+	        bootstrapProjectGroups = bootstrap.projectGroups;
         bootstrapPlanNodes = bootstrap.planNodes ?? [];
         bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
       } catch (bootstrapError) {
@@ -3869,9 +4195,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
             },
           );
 
-          const bootstrap = await services.getAppBootstrap();
-          bootstrapPlan = bootstrap.plan;
-          bootstrapProjectGroups = bootstrap.projectGroups;
+	          const bootstrap = await services.getAppBootstrap();
+	          bootstrapPlan = bootstrap.plan;
+	          bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
+	          bootstrapProjectGroups = bootstrap.projectGroups;
           bootstrapPlanNodes = bootstrap.planNodes ?? [];
           bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
           metadataRecoveryReport =
@@ -3885,9 +4212,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
-      const prunedProjectGroups = pruneLegacyPlaceholderWorkspaces(
-        bootstrapProjectGroups,
-      );
+	      const prunedStandaloneProjects = pruneLegacyPlaceholderStandaloneProjects(
+	        bootstrapStandaloneProjects,
+	      );
+	      const prunedProjectGroups = pruneLegacyPlaceholderWorkspaces(
+	        bootstrapProjectGroups,
+	      );
 
       const sessionSelectedProjectId =
         sessionContext?.selectedProjectId ?? null;
@@ -3900,23 +4230,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const effectiveLastSelectedGroupId =
         sessionSelectedGroupId || lastSelectedGroupId;
 
-      const normalizedRegistry = normalizeProjectRegistry({
-        projectGroups: prunedProjectGroups,
+	      const normalizedRegistry = normalizeProjectRegistry({
+	        standaloneProjects: prunedStandaloneProjects,
+	        projectGroups: prunedProjectGroups,
         selectedGroupId: effectiveLastSelectedGroupId,
         selectedProjectId: effectiveLastSelectedProjectId,
-      });
-      let resolvedProjectGroups = normalizedRegistry.projectGroups;
+	      });
+	      let resolvedStandaloneProjects = normalizedRegistry.standaloneProjects;
+	      let resolvedProjectGroups = normalizedRegistry.projectGroups;
       let resolvedGroupId = normalizedRegistry.selectedGroupId;
       let resolvedProjectId = normalizedRegistry.selectedProjectId;
 
-      const cleanedRecentProjects = reconcileRememberedProjects(
-        resolvedProjectGroups,
-        prunedRecentProjects,
-      );
-      const cleanedMacroEnabledProjects = reconcileRememberedProjects(
-        resolvedProjectGroups,
-        prunedMacroEnabledProjects,
-      );
+	      const cleanedRecentProjects = reconcileRememberedProjects(
+	        {
+	          standaloneProjects: resolvedStandaloneProjects,
+	          projectGroups: resolvedProjectGroups,
+	        },
+	        prunedRecentProjects,
+	      );
+	      const cleanedMacroEnabledProjects = reconcileRememberedProjects(
+	        {
+	          standaloneProjects: resolvedStandaloneProjects,
+	          projectGroups: resolvedProjectGroups,
+	        },
+	        prunedMacroEnabledProjects,
+	      );
 
       const sanitizedLastOpenProjectPath = shouldPersistProjectPath(
         lastOpenProjectPath,
@@ -3928,50 +4266,60 @@ export const useAppStore = create<AppStore>((set, get) => ({
         void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
       }
 
-      if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
-        const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
-        const groupForPath = resolvedProjectGroups.find((group) =>
-          group.projects.some(
-            (project) => normalizePath(project.path) === normalizedLastPath,
-          ),
-        );
+	      if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
+	        const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
+	        const standaloneProjectForPath = resolvedStandaloneProjects.find(
+	          (project) => normalizePath(project.path) === normalizedLastPath,
+	        );
+	        if (standaloneProjectForPath) {
+	          resolvedGroupId = null;
+	          resolvedProjectId = standaloneProjectForPath.id;
+	        }
+	        const groupForPath = resolvedProjectGroups.find((group) =>
+	          group.projects.some(
+	            (project) => normalizePath(project.path) === normalizedLastPath,
+	          ),
+	        );
 
-        if (groupForPath) {
-          resolvedGroupId = groupForPath.id;
-        } else {
-          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
-        }
-      }
+	        if (!standaloneProjectForPath && groupForPath) {
+	          resolvedGroupId = groupForPath.id;
+	        } else if (!standaloneProjectForPath) {
+	          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+	        }
+	      }
 
-      if (!resolvedGroupId) {
-        const firstValidRecent = cleanedRecentProjects.find((recent) =>
-          resolvedProjectGroups.some((group) =>
-            group.projects.some(
-              (project) =>
-                normalizePath(project.path) === normalizePath(recent.path),
-            ),
-          ),
-        );
+	      if (!resolvedGroupId && !resolvedProjectId) {
+	        const firstValidRecent = cleanedRecentProjects.find((recent) =>
+	          getAllProjectsFromRegistry({
+	            standaloneProjects: resolvedStandaloneProjects,
+	            projectGroups: resolvedProjectGroups,
+	          }).some((project) => normalizePath(project.path) === normalizePath(recent.path)),
+	        );
 
-        if (firstValidRecent) {
-          const recentProjectMatch = resolvedProjectGroups
-            .flatMap((group) => group.projects)
-            .find(
-              (project) =>
-                normalizePath(project.path) ===
-                normalizePath(firstValidRecent.path),
-            );
-          const groupForRecent = getProjectGroupByProjectId(
-            resolvedProjectGroups,
-            recentProjectMatch?.id ?? null,
-          );
-          resolvedGroupId = groupForRecent?.id ?? null;
-        }
-      }
+	        if (firstValidRecent) {
+	          const recentProjectMatch = getAllProjectsFromRegistry({
+	            standaloneProjects: resolvedStandaloneProjects,
+	            projectGroups: resolvedProjectGroups,
+	          })
+	            .find(
+	              (project) =>
+	                normalizePath(project.path) ===
+	                normalizePath(firstValidRecent.path),
+	            );
+	          resolvedGroupId = getProjectGroupIdFromRegistry(
+	            {
+	              standaloneProjects: resolvedStandaloneProjects,
+	              projectGroups: resolvedProjectGroups,
+	            },
+	            recentProjectMatch?.id ?? null,
+	          );
+	          resolvedProjectId = recentProjectMatch?.id ?? null;
+	        }
+	      }
 
-      if (!resolvedGroupId) {
-        resolvedGroupId = resolvedProjectGroups[0]?.id ?? null;
-      }
+	      if (!resolvedGroupId && !resolvedProjectId) {
+	        resolvedGroupId = resolvedProjectGroups[0]?.id ?? null;
+	      }
 
       if (resolvedGroupId) {
         resolvedProjectId = resolveExplicitProjectIdForGroup(
@@ -3992,15 +4340,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ? lastAgentType
         : "build";
 
-      const { validProjectIds } = collectProjectRegistryIds(
-        resolvedProjectGroups,
-      );
+	      const { validProjectIds } = collectProjectRegistryIds(
+	        {
+	          standaloneProjects: resolvedStandaloneProjects,
+	          projectGroups: resolvedProjectGroups,
+	        },
+	      );
 
       set({
         mode: resolvedMode,
         agentType: resolvedAgentType,
-        currentPlan: bootstrapPlan,
-        projectGroups: resolvedProjectGroups,
+	        currentPlan: bootstrapPlan,
+	        standaloneProjects: resolvedStandaloneProjects,
+	        projectGroups: resolvedProjectGroups,
         planNodes: filterPlanNodesForRegistry(
           bootstrapPlanNodes?.length
             ? bootstrapPlanNodes
@@ -4045,11 +4397,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
         PREF_KEYS.MACRO_ENABLED_PROJECTS,
         cleanedMacroEnabledProjects,
       );
-      const resolvedFocusedProject = resolvedProjectId
-        ? (resolvedProjectGroups
-            .flatMap((group) => group.projects)
-            .find((project) => project.id === resolvedProjectId) ?? null)
-        : null;
+	      const resolvedFocusedProject = resolvedProjectId
+	        ? findProjectInRegistry(
+	            {
+	              standaloneProjects: resolvedStandaloneProjects,
+	              projectGroups: resolvedProjectGroups,
+	            },
+	            resolvedProjectId,
+	          )
+	        : null;
       void savePreference(
         PREF_KEYS.LAST_OPEN_PROJECT_PATH,
         resolvedFocusedProject?.path &&
@@ -4087,8 +4443,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     try {
-      await reconcileProjectRegistryDependencies({
-        projectGroups: get().projectGroups,
+	      await reconcileProjectRegistryDependencies({
+	        standaloneProjects: get().standaloneProjects,
+	        projectGroups: get().projectGroups,
         selectedGroupId: get().selectedGroupId,
         selectedProjectId: get().selectedProjectId,
       });
@@ -4099,15 +4456,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     try {
-      const current = get();
-      if (
-        (current.selectedGroupId || current.selectedProjectId) &&
-        current.projectSwitchPolicy === "resume_per_project"
-      ) {
-        await restoreProjectContext(
-          current.selectedGroupId || current.selectedProjectId!,
-        );
-      }
+	      const current = get();
+	      if (
+	        current.selectedGroupId &&
+	        current.projectSwitchPolicy === "resume_per_project"
+	      ) {
+	        await restoreProjectContext(current.selectedGroupId);
+	      }
     } catch (error) {
       devLogger.info(
         `[Init] project context restore failed after shell boot: ${toServiceError(error).message}`,

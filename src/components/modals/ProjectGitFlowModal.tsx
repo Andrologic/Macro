@@ -125,31 +125,31 @@ export const ProjectGitFlowModal: React.FC = () => {
     if (reason === 'dirty_worktree') {
       return t(
         'projects.accessBlockDirtyWorktree',
-        'This subproject still has a dirty worktree. Clean it up before switching to read-only.'
+        'This project still has a dirty worktree. Clean it up before switching to read-only.'
       );
     }
     if (reason === 'live_terminal') {
       return t(
         'projects.accessBlockLiveTerminal',
-        'A live terminal session is still attached to this subproject. Close it before switching to read-only.'
+        'A live terminal session is still attached to this project. Close it before switching to read-only.'
       );
     }
     if (reason === 'last_actionable_plan') {
       return t(
         'projects.accessBlockLastActionablePlan',
-        'This subproject is the last editable repository in an active plan.'
+        'This project is the last editable project in an active plan.'
       );
     }
     if (reason === 'last_actionable_feature') {
       return t(
         'projects.accessBlockLastActionableFeature',
-        'This subproject is the last editable repository in a manual feature.'
+        'This project is the last editable project in a manual feature.'
       );
     }
     if (reason === 'last_actionable_task') {
       return t(
         'projects.accessBlockLastActionableTask',
-        'This subproject is the last editable repository in an active task.'
+        'This project is the last editable project in an active task.'
       );
     }
     return t('common.error', 'An error occurred');
@@ -214,22 +214,22 @@ export const ProjectGitFlowModal: React.FC = () => {
     ? t('projects.accessReadOnly', 'Read-only')
     : t('projects.accessEditable', 'Editable');
   const accessReason = project.readOnlyReason === 'manual'
-    ? t('projects.accessManualReadOnly', 'This subproject is manually forced to read-only.')
+    ? t('projects.accessManualReadOnly', 'This project is manually forced to read-only.')
     : project.readOnlyReason === 'missing_git'
-      ? t('projects.accessMissingGit', 'Git is not initialized yet. This subproject stays read-only until Git is initialized.')
+      ? t('projects.accessMissingGit', 'Git is not initialized yet. This project stays read-only until Git is initialized.')
       : project.readOnlyReason === 'missing_initial_commit'
         ? t(
             'projects.accessMissingInitialCommit',
-            'This repository has no initial commit yet. Create one to make the subproject editable.'
+            'This Git repository has no initial commit yet. Create one to make the project editable.'
           )
         : project.readOnlyReason === 'manual_and_missing_git'
           ? t(
               'projects.accessManualAndMissingGit',
-              'This subproject is manually read-only and Git is not initialized yet.'
+              'This project is manually read-only and Git is not initialized yet.'
             )
           : t(
               'projects.accessEditableHelp',
-              'Editable subprojects can create worktrees, branches, terminal sessions, and implementation tasks.'
+              'Editable projects can create worktrees, branches, terminal sessions, and implementation tasks.'
             );
 
   const handleClose = () => {
@@ -538,7 +538,7 @@ export const ProjectGitFlowModal: React.FC = () => {
             <p className="mt-1 text-xs text-muted-foreground">
               {t(
                 'projects.projectSettingsSubtitle',
-                'Manage access mode and override the branch naming used by this subproject.'
+                'Manage access mode and override the branch naming used by this project.'
               )}{' '}
               <span className="text-foreground">{project.name}</span>
             </p>
@@ -756,7 +756,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           title={t('projects.readOnlyImpactTitle', 'Switch to read-only?')}
           description={t(
             'projects.readOnlyImpactDescription',
-            'Macro will remove this subproject from editable plan and task targets, but keep it available for context and read access.'
+            'Macro will remove this project from editable plan and task targets, but keep it available for context and read access.'
           )}
           confirmLabel={t('projects.makeReadOnly', 'Make read-only')}
           cancelLabel={t('common.cancel', 'Cancel')}

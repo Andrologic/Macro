@@ -140,6 +140,11 @@ describe('contextCompactionOrchestrator', () => {
       ...baseParams(messages),
       boundary: 'manual',
       mode: 'manual',
+      footprintFields: {
+        ...baseParams(messages).footprintFields,
+        modelContextWindowTokens: 5_000,
+        outputLimitTokens: 500,
+      },
       forceCompaction: true,
       onCompactionStarted: () => {
         started = true;

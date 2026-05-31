@@ -143,6 +143,7 @@ interface ArchitectToolAppState {
   } | null;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => Project | undefined;
   activateArchitectPlan: (
@@ -562,18 +563,18 @@ const validateStrategyNodeProjectIds = (params: {
 
     if (contextProjectIdSet.has(projectId)) {
       throw new Error(
-        `Strategy node "${params.nodeTitle}" targets context-only subproject "${projectId}". Context subprojects stay in contextProjectIds and cannot receive executable strategy branches.`,
+        `Strategy node "${params.nodeTitle}" targets context-only project "${projectId}". Context projects stay in contextProjectIds and cannot receive executable strategy branches.`,
       );
     }
 
     if (params.globalProjectIds.size > 0 && params.globalProjectIds.has(projectId)) {
       throw new Error(
-        `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", but that subproject is not in the editable scope of this plan. Add it to projectIds before generating the strategy.`,
+        `Strategy node "${params.nodeTitle}" targets project "${projectId}", but that project is not in the editable scope of this plan. Add it to projectIds before generating the strategy.`,
       );
     }
 
     throw new Error(
-      `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", which is outside this plan's global project scope.`,
+      `Strategy node "${params.nodeTitle}" targets project "${projectId}", which is outside this plan's group scope.`,
     );
   });
 };
@@ -786,6 +787,7 @@ const hydratePlanContext = async (params: {
     ) ||
     fallbackGroupProjectId ||
     latestAppStore.selectedProjectId ||
+    latestAppStore.standaloneProjects?.[0]?.id ||
     latestAppStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
     null;
 
@@ -831,7 +833,10 @@ const resolveStrategyForPlan = async (params: {
 
   const appState = getAppState();
   const selectedProjectIds = getScopedActionableProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    },
     appState.selectedGroupId,
     appState.selectedProjectId,
   );
@@ -847,7 +852,7 @@ const resolveStrategyForPlan = async (params: {
 
   if (defaultProjectIds.length === 0) {
     throw new Error(
-      "Cannot generate a strategy because the active plan has no editable subproject scope.",
+      "Cannot generate a strategy because the active plan has no editable project scope.",
     );
   }
 
@@ -1430,7 +1435,10 @@ export const handleArchitectToolCall = async (
           .map((projectId) => projectId.trim())
           .filter(Boolean)
       : getScopedActionableProjectIds(
-          appState.projectGroups,
+          {
+            standaloneProjects: appState.standaloneProjects ?? [],
+            projectGroups: appState.projectGroups,
+          },
           appState.selectedGroupId,
           appState.selectedProjectId,
         );

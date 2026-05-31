@@ -76,7 +76,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 'implement.taskCommandsModalDescription',
-                'Définis une commande par sous-projet pour {{project}}. Ces commandes seront réutilisées par toutes les tâches.',
+                'Définis une commande par projet pour {{project}}. Ces commandes seront réutilisées par toutes les tâches.',
                 { project: projectGroupName }
               )}
             </p>
@@ -176,11 +176,11 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
             {hasMissingCommand
               ? t(
                   'implement.taskCommandsModalIncomplete',
-                  'Renseigne une commande pour chaque sous-projet avant de sauvegarder.'
+                  'Renseigne une commande pour chaque projet avant de sauvegarder.'
                 )
               : t(
                   'implement.taskCommandsModalReady',
-                  'Les commandes seront exécutées dans le worktree de la tâche pour chaque sous-projet concerné.'
+                  'Les commandes seront exécutées dans le worktree de la tâche pour chaque projet concerné.'
                 )}
           </p>
           <div className="flex shrink-0 items-center justify-end gap-2">

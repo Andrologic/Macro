@@ -767,7 +767,7 @@ describe('FileChangesPanel', () => {
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
-  it('renders task artifacts as a changes subproject with new and inherited badges', async () => {
+  it('renders task artifacts as a changes project with new and inherited badges', async () => {
     const plan = buildArtifactPlan();
     const entries = buildArtifactEntries();
     getArchitectPlanMock = mock(async () => plan);
@@ -3304,7 +3304,7 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).not.toContain('Retry');
   });
 
-  it('reloads repository changes when the focused subproject changes', async () => {
+  it('reloads repository changes when the focused project changes', async () => {
     seedStores(buildRepository(false));
 
     await act(async () => {
@@ -3394,7 +3394,7 @@ describe('FileChangesPanel', () => {
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
   });
 
-  it('loads changes when only a focused subproject is selected', async () => {
+  it('loads changes when only a focused project is selected', async () => {
     seedStores(buildRepository(false));
     loadCurrentChangesMock.mockClear();
 

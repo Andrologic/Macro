@@ -425,6 +425,7 @@ type ArchitectGitFlowTauriDeps = Pick<
 interface ArchitectGitFlowAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  standaloneProjects?: ProjectGroup['projects'];
   projectGroups: ArchitectGitFlowProjectGroup[];
   getProjectById: (projectId: string) => ArchitectGitFlowProjectRef | null | undefined;
 }
@@ -552,6 +553,7 @@ const resolvePlanProjectRepoPathsFromAppState = (
   }
 
   const registrySnapshot = buildValidProjectRegistrySnapshot({
+    standaloneProjects: (appState.standaloneProjects || []) as unknown as ProjectGroup['projects'],
     projectGroups: (appState.projectGroups || []) as unknown as ProjectGroup[],
     selectedGroupId: appState.selectedGroupId,
     selectedProjectId: appState.selectedProjectId,

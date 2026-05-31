@@ -588,6 +588,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
     openProjectGitFlowModal,
     setSelectedProject,
@@ -596,6 +597,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
+    standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
     setSelectedProject: state.setSelectedProject,
@@ -800,16 +802,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
 
-    if (pendingTaskId || !selectedGroupId) return;
-    const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
-    const actionableProjectIds =
-      selectedGroup?.projects
-        .filter((project) => !project.isReadOnly)
-        .map((project) => project.id) ?? [];
-    const contextProjectIds =
-      selectedGroup?.projects
-        .filter((project) => project.isReadOnly)
-        .map((project) => project.id) ?? [];
+    if (pendingTaskId) return;
+    const actionableProjectIds = scopedActionableProjectIds;
+    const contextProjectIds = scopedReadOnlyProjectIds;
     const conversationProjectId =
       (selectedProjectId && actionableProjectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
       actionableProjectIds[0] ||
@@ -819,7 +814,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       notify.error(
         t(
           'implement.manualFeatureMissingProjects',
-          'No editable repository is available for this global project.'
+          'No editable project is available for this selection.'
         )
       );
       return;
@@ -925,7 +920,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       );
     } else if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
-      progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
+      progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} projects resolved', {
         resolved: resolvedCount,
         total: reviewSummary.repositoryCount,
       });
@@ -948,7 +943,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       } else {
         nextActionLabel = t(
           'implement.taskNextActionValidateAllRepositories',
-          'Next: validate and resolve the remaining subprojects'
+          'Next: validate and resolve the remaining projects'
         );
       }
     } else if (task.status === 'InProgress') {
@@ -958,7 +953,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     } else if (task.status === 'InReview') {
       nextActionLabel = t(
         'implement.taskNextActionValidateRepositories',
-        'Next: validate and commit each subproject'
+        'Next: validate and commit each project'
       );
     } else if (task.status === 'Completed') {
       nextActionLabel = t('implement.taskNextActionCompleted', 'Task completed across repositories');
@@ -976,18 +971,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
   const scopedProjectIds = useMemo(
-    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const scopedActionableProjectIds = useMemo(
-    () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedActionableProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const scopedReadOnlyProjectIds = useMemo(
-    () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedReadOnlyProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const workspaceState = resolveProjectWorkspaceState({
+    standaloneProjects,
     projectGroups,
     selectedGroupId,
     selectedProjectId,
@@ -1040,7 +1036,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
     const description = t(
       'projects.readOnlyWorkspaceImplementBody',
-      'Implementation needs at least one editable repository. Read-only subprojects stay available for navigation, search, and context.'
+      'Implementation needs at least one editable project. Read-only projects stay available for navigation, search, and context.'
     );
     const canOpenSettings = Boolean(firstReadOnlyProject) && !projectManagementDisabled;
 
@@ -1292,7 +1288,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {
             description: t(
               'implement.taskCommandRunSuccessDescription',
-              '{{count}} subprojects executed successfully.',
+              '{{count}} projects executed successfully.',
               { count: result.completedCount }
             ),
             category: 'task_run_completed',

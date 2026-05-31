@@ -138,13 +138,17 @@ export const Footer: React.FC = () => {
   const {
     selectedGroupId,
     selectedProjectId,
+    standaloneProjects,
     projectGroups,
+    getProjectById,
     metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
+    standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
+    getProjectById: state.getProjectById,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
   })));
@@ -180,14 +184,22 @@ export const Footer: React.FC = () => {
       new Map(
         projectGroups.flatMap((group) =>
           group.projects.map((project) => [project.id, project] as const)
-        )
+        ).concat(standaloneProjects.map((project) => [project.id, project] as const))
       ),
-    [projectGroups]
+    [projectGroups, standaloneProjects]
   );
-  const focusProjects = useMemo(
-    () => getSubProjectsForGroup(projectGroups, selectedGroupId),
-    [projectGroups, selectedGroupId]
-  );
+  const focusProjects = useMemo<ScopedProject[]>(() => {
+    if (selectedGroupId) {
+      return getSubProjectsForGroup(projectGroups, selectedGroupId);
+    }
+
+    if (selectedProjectId) {
+      const selectedProject = getProjectById(selectedProjectId);
+      return selectedProject ? [selectedProject] : [];
+    }
+
+    return [];
+  }, [getProjectById, projectGroups, selectedGroupId, selectedProjectId]);
   const focusedProject = useMemo(
     () => (selectedProjectId ? allProjectsById.get(selectedProjectId) ?? null : null),
     [allProjectsById, selectedProjectId]
@@ -282,7 +294,7 @@ export const Footer: React.FC = () => {
 
   useEffect(() => {
     setGitScopeProjectId(null);
-  }, [selectedGroupId]);
+  }, [selectedGroupId, selectedProjectId]);
 
   useEffect(() => {
     if (!gitScopeProjectId) return;
@@ -827,9 +839,9 @@ export const Footer: React.FC = () => {
       >
         <div className="flex h-full min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center overflow-hidden">
-            <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || undefined}>
-              <Icon name="layers" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
-              <span className="truncate leading-4 text-foreground">{selectedGlobalProject?.name || t('project.noGroup', 'No global project')}</span>
+            <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || focusedProject?.name || undefined}>
+              <Icon name={selectedGlobalProject ? 'layers' : 'folder-git-2'} size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+              <span className="truncate leading-4 text-foreground">{selectedGlobalProject?.name || focusedProject?.name || t('project.noGroup', 'No group')}</span>
             </span>
             <Button
               size="sm"

@@ -186,6 +186,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const {
     activeArchitectPlanId,
     activePlanContext,
+    standaloneProjects,
     projectGroups,
     selectedGroupId,
     selectedProjectId,
@@ -231,9 +232,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (!activePlanId) return null;
     return plans.find((plan) => plan.id === activePlanId) || null;
   }, [plans, activePlanId]);
+  const projectRegistry = useMemo(
+    () => ({ standaloneProjects: standaloneProjects ?? [], projectGroups }),
+    [projectGroups, standaloneProjects]
+  );
   const scopedProjectIds = useMemo(
-    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const selectorAsyncContext = useMemo<PlanSelectorAsyncContext>(
     () => ({
@@ -269,21 +274,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     activationRequestIdRef.current === requestId &&
     arePlanSelectorActivationContextsEqual(selectorAsyncContextRef.current, context);
   const scopedActionableProjectIds = useMemo(
-    () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedActionableProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const contextProjectIds = useMemo(
-    () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getScopedReadOnlyProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const scopedReadOnlyProjects = useMemo(
@@ -663,7 +669,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (scopedActionableProjectIds.length === 0) {
         const message = t(
           'implement.manualFeatureMissingProjects',
-          'No editable repository is available for this global project.'
+          'No editable project is available for this group.'
         );
         setError(message);
         notify.error(message);
@@ -1206,7 +1212,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 <p className="mt-1 text-xs leading-relaxed text-amber-50/80">
                   {t(
                     'projects.readOnlyWorkspaceArchitectBody',
-                    'Plans need at least one editable repository. Read-only subprojects still stay available for context and code reading.'
+                    'Plans need at least one editable project. Read-only projects still stay available for context and code reading.'
                   )}
                 </p>
                 {firstReadOnlyProject && (

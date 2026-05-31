@@ -114,8 +114,8 @@ export const getProjectSetupPromptDescription = (
 ): string => {
   const readOnlyFallback =
     context === 'project_creation'
-      ? 'the subproject will be added as read-only.'
-      : 'the subproject will stay read-only.';
+      ? 'the project will be added as read-only.'
+      : 'the project will stay read-only.';
 
   if (prompt.kind === 'init_git') {
     return t(

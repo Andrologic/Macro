@@ -93,6 +93,14 @@ export interface ServiceProvider {
     expectedSetupState: ProjectGitFlowDetection['setupState'];
     expectedRecommendedActionSequence: ProjectGitSetupAction[];
   }) => Promise<ProjectGitSetupCommitResult>;
+  createNewProjectRepo: (data: {
+    repoName: string;
+    parentPath: string;
+    folderName: string;
+    groupId: string | null;
+    groupName?: string | null;
+    gitFlowSettings?: ProjectGitFlowSettings;
+  }) => Promise<ProjectGitSetupCommitResult>;
   importGitRepo: (data: {
     gitUrl: string;
     projectName: string;
@@ -106,6 +114,14 @@ export interface ServiceProvider {
     groupId: string;
     name: string;
   }) => Promise<{ projectGroup: ProjectGroup }>;
+  createProjectGroup: (data: {
+    name: string;
+    projectIds: string[];
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
+  moveProjectToGroup: (data: {
+    projectId: string;
+    groupId: string | null;
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
   renameProject: (data: {
     projectId: string;
     name: string;

@@ -310,7 +310,7 @@ async fn resolve_project_target(
 
     if project.is_read_only {
         return Err(command_error(format!(
-            "Subproject \"{}\" is read-only. Terminal sessions are unavailable.",
+            "Project \"{}\" is read-only. Terminal sessions are unavailable.",
             project.name
         )));
     }
@@ -357,7 +357,7 @@ fn resolve_session_cwd(
     }
 
     Err(command_error(format!(
-        "cwd must remain inside the selected subproject or a valid worktree: {}",
+        "cwd must remain inside the selected project or a valid worktree: {}",
         canonical_candidate.display()
     )))
 }
