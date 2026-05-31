@@ -52,6 +52,17 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
     }))
   );
   const {
+    selectedConversationId,
+    messages,
+    messagesByConversationId,
+  } = useChatStore(
+    useShallow((state) => ({
+      selectedConversationId: state.selectedConversationId,
+      messages: state.messages,
+      messagesByConversationId: state.messagesByConversationId ?? {},
+    }))
+  );
+  const {
     activeArchitectPlanId,
     architectPlanSwitch,
     standaloneProjects,
@@ -108,6 +119,22 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
     if (filter === 'all') return scopedNeeds;
     return scopedNeeds.filter((n) => n.category === filter);
   }, [scopedNeeds, filter]);
+  const currentMessages = useMemo(
+    () =>
+      selectedConversationId
+        ? messagesByConversationId[selectedConversationId] ??
+          messages.filter((message) => message.conversation_id === selectedConversationId)
+        : [],
+    [messages, messagesByConversationId, selectedConversationId]
+  );
+  const hasUserArchitectMessage = useMemo(
+    () =>
+      currentMessages.some(
+        (message) =>
+          message.role === 'user' && message.content.trim().length > 0
+      ),
+    [currentMessages]
+  );
 
   const handleNeedClick = (needId: string) => {
     const need = needs.find((n) => n.id === needId);
@@ -219,7 +246,17 @@ const NeedsPanel: React.FC<NeedsPanelProps> = ({ className }) => {
           <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50 p-4 text-center">
             <Icon name="sparkles" size={32} className="mb-2" />
             <p className="text-sm">{t('architect.needsEmptyTitle', 'No needs identified for this project yet.')}</p>
-            <p className="text-xs mt-1">{t('architect.needsEmptyDescription', 'Chat with the Architect to uncover project requirements.')}</p>
+            <p className="text-xs mt-1">
+              {scopedNeeds.length === 0 && hasUserArchitectMessage
+                ? t(
+                    'architect.needsEmptyAfterUserMessageDescription',
+                    'Architect should now turn this explanation into structured needs.'
+                  )
+                : t(
+                    'architect.needsEmptyDescription',
+                    'Chat with the Architect to uncover project requirements.'
+                  )}
+            </p>
           </div>
         ) : (
           filteredNeeds.map((need) => (

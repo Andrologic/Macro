@@ -334,6 +334,8 @@ const translationMock = createTranslationMock({
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
+  'architect.createPlanAction': 'Create a plan',
+  'architect.selectPlanAction': 'Select a plan',
   'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
   'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
   'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
@@ -380,6 +382,7 @@ const scrollMagnetActiveValues: boolean[] = [];
 let composerEditorValue = '';
 let messageEditEditorValue = '';
 let composerEditorSetTextCalls: string[] = [];
+let composerEditorFocusCalls = 0;
 let latestComposerProps: Record<string, unknown> | null = null;
 let notifyInfoMock: ReturnType<typeof mock>;
 let notifySuccessMock: ReturnType<typeof mock>;
@@ -560,7 +563,11 @@ const loadChatZoneModule = async () => {
             composerEditorSetTextCalls.push(value);
           }
         },
-        focus: () => undefined,
+        focus: () => {
+          if (!isMessageEdit) {
+            composerEditorFocusCalls += 1;
+          }
+        },
       }));
       const value = isMessageEdit ? messageEditEditorValue : composerEditorValue;
       const renderedParts = value
@@ -835,6 +842,7 @@ const resetState = () => {
   composerEditorValue = '';
   messageEditEditorValue = '';
   composerEditorSetTextCalls = [];
+  composerEditorFocusCalls = 0;
   latestComposerProps = null;
   scrollMagnetActiveValues.length = 0;
 };
@@ -2836,6 +2844,83 @@ describe('ChatZone', () => {
     expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
   });
 
+  it('offers to create a plan in the central panel when none exists', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('macro:architect-plan-selector-state', {
+          detail: {
+            status: 'ready',
+            planCount: 0,
+            canCreate: true,
+            canSelect: false,
+          },
+        }),
+      );
+    });
+
+    const button = requireContainer().querySelector(
+      '[data-tour-id="architect-empty-plan-action"]'
+    ) as HTMLButtonElement | null;
+    expect(button?.textContent).toContain('Create a plan');
+
+    const requestDetails: unknown[] = [];
+    const handleRequest = (event: Event) => {
+      requestDetails.push((event as CustomEvent).detail);
+    };
+    window.addEventListener('macro:architect-plan-selector-request', handleRequest);
+    try {
+      await act(async () => {
+        button?.click();
+      });
+    } finally {
+      window.removeEventListener('macro:architect-plan-selector-request', handleRequest);
+    }
+
+    expect(requestDetails).toEqual([{ action: 'primary' }]);
+  });
+
+  it('offers to select a plan in the central panel when plans exist', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('macro:architect-plan-selector-state', {
+          detail: {
+            status: 'ready',
+            planCount: 2,
+            canCreate: true,
+            canSelect: true,
+          },
+        }),
+      );
+    });
+
+    const button = requireContainer().querySelector(
+      '[data-tour-id="architect-empty-plan-action"]'
+    ) as HTMLButtonElement | null;
+    expect(button?.textContent).toContain('Select a plan');
+  });
+
   it('does not create or send an Architect message when no plan is selected', async () => {
     appState = {
       ...appState,
@@ -3294,12 +3379,121 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
+  it('hides the Architect progress button before the first user explanation', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    chatState.messages = [];
+    needsState.needs = [];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(requireContainer().textContent).not.toContain('Identify Needs');
+    expect(requireContainer().textContent).not.toContain('Clarify Needs');
+    expect(requireContainer().textContent).not.toContain('Generate Strategy');
+  });
+
+  it('prefills the Architect composer to identify needs after the first explanation', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-user-1',
+        role: 'user',
+        content: 'I want to rebuild the onboarding flow.',
+      }),
+    ];
+    needsState.needs = [];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Identify Needs')
+    );
+
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+    });
+
+    expect(composerEditorSetTextCalls.at(-1)).toContain('need_add');
+    expect(composerEditorSetTextCalls.at(-1)).toContain('question');
+    expect(composerEditorFocusCalls).toBeGreaterThan(0);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('prefills the Architect composer to clarify non-validated needs', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    needsState.needs = [
+      {
+        id: 'need-1',
+        planId: 'plan-1',
+        status: 'refined',
+      },
+    ];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Clarify Needs')
+    );
+
+    expect(button).toBeDefined();
+
+    await act(async () => {
+      button?.click();
+    });
+
+    expect(composerEditorSetTextCalls.at(-1)).toContain('need_update');
+    expect(composerEditorSetTextCalls.at(-1)).toContain('validated');
+    expect(composerEditorSetTextCalls.at(-1)).not.toContain('strategy_generate');
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing composer draft when preparing the next Architect step', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = 'plan-1';
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-user-1',
+        role: 'user',
+        content: 'I want to rebuild the onboarding flow.',
+      }),
+    ];
+    composerEditorValue = 'Existing user draft';
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.includes('Identify Needs')
+    );
+
+    await act(async () => {
+      button?.click();
+    });
+
+    expect(composerEditorValue).toBe('Existing user draft');
+    expect(composerEditorSetTextCalls).toHaveLength(0);
+    expect(composerEditorFocusCalls).toBeGreaterThan(0);
+    expect(notifyInfoMock).toHaveBeenCalledTimes(1);
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     appState.planNodes = [];
     appState.predictedBranches = [];
-    needsState.needs = [{ id: 'need-1', planId: 'plan-1' }];
+    needsState.needs = [{ id: 'need-1', planId: 'plan-1', status: 'validated' }];
 
     await act(async () => {
       requireRoot().render(<ChatZone />);
@@ -3336,7 +3530,7 @@ describe('ChatZone', () => {
       targetBranch: 'develop',
     };
     appState.planNodes = [{ id: 'node-1', title: 'Existing strategy node' }];
-    needsState.needs = [{ id: 'need-1', planId: 'plan-1' }];
+    needsState.needs = [{ id: 'need-1', planId: 'plan-1', status: 'validated' }];
 
     await act(async () => {
       requireRoot().render(<ChatZone />);
