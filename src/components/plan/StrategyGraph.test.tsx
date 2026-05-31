@@ -130,6 +130,14 @@ type TaskStoreState = {
   activateTask: ReturnType<typeof mock>;
 };
 
+type NeedsStoreState = {
+  needs: Array<{
+    id: string;
+    planId?: string;
+    status: 'identified' | 'refined' | 'validated';
+  }>;
+};
+
 const createStoreHook = <T extends object,>(
   getSnapshot: () => T,
   setSnapshot: (nextState: T) => void,
@@ -177,6 +185,7 @@ const createStoreHook = <T extends object,>(
 let appState: AppStoreState;
 let chatState: ChatStoreState;
 let taskState: TaskStoreState;
+let needsState: NeedsStoreState;
 
 const useAppStore = createStoreHook(() => appState, (nextState) => {
   appState = nextState;
@@ -186,6 +195,9 @@ const useChatStore = createStoreHook(() => chatState, (nextState) => {
 });
 const useTaskStore = createStoreHook(() => taskState, (nextState) => {
   taskState = nextState;
+});
+const useNeedsStore = createStoreHook(() => needsState, (nextState) => {
+  needsState = nextState;
 });
 
 const PLAN_ACTIVATION_TASK_STATUS_ORDER: Record<TaskStatus, number> = {
@@ -349,6 +361,10 @@ const loadStrategyGraphModule = async () => {
     useTaskStore,
   }));
 
+  mock.module('../../stores/useNeedsStore', () => ({
+    useNeedsStore,
+  }));
+
   mock.module('../../services/architectGitFlowService', () => ({
     validatePlanAndProvisionBranches: (params: unknown) =>
       validatePlanAndProvisionBranchesMock(params),
@@ -467,6 +483,10 @@ const resetState = () => {
       useAppStore.getState().setSelectedTask(taskId);
     }),
   };
+
+  needsState = {
+    needs: [],
+  };
 };
 
 const seedStores = (
@@ -558,6 +578,34 @@ const seedStores = (
   });
 };
 
+const seedEmptyStrategy = (
+  needs: NeedsStoreState['needs'],
+) => {
+  useAppStore.setState({
+    selectedGroupId: 'group-1',
+    selectedProjectId: null,
+    projectGroups: [
+      {
+        id: 'group-1',
+        name: 'Project Group',
+        isOpen: true,
+        projects: [makeProject('project-1', '/tmp/project-1', 'Project One')],
+      },
+    ],
+    planNodes: [],
+    predictedBranches: [],
+    activePlanContext: {
+      id: 'plan-1',
+      slug: 'plan-1',
+      title: 'Plan One',
+      description: 'Plan description',
+      status: 'draft',
+      targetBranch: 'develop',
+    },
+  });
+  useNeedsStore.setState({ needs });
+};
+
 describe('StrategyGraph', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -604,6 +652,57 @@ describe('StrategyGraph', () => {
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
     ).not.toBeNull();
+  });
+
+  it('explains that needs must be identified before an empty strategy can be generated', async () => {
+    seedEmptyStrategy([]);
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain(
+      'Identify and validate needs before generating the strategy.'
+    );
+  });
+
+  it('explains that needs must be validated before an empty strategy can be generated', async () => {
+    seedEmptyStrategy([
+      {
+        id: 'need-1',
+        planId: 'plan-1',
+        status: 'refined',
+      },
+    ]);
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain(
+      'Validate every need before generating the strategy.'
+    );
+  });
+
+  it('explains that the strategy can be generated once needs are validated', async () => {
+    seedEmptyStrategy([
+      {
+        id: 'need-1',
+        planId: 'plan-1',
+        status: 'validated',
+      },
+    ]);
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain(
+      'The needs are ready. Generate the strategy when you want Macro to create the task graph.'
+    );
   });
 
   it('renders a synthetic finalization node after terminal strategy leaves only', async () => {

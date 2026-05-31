@@ -67,6 +67,12 @@ import {
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
+import {
+  ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT,
+  ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+  type ArchitectPlanSelectorRequestDetail,
+  type ArchitectPlanSelectorStateDetail,
+} from './planSelectorEvents';
 import { useChatStore } from '../../stores/useChatStore';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 
@@ -210,6 +216,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [showArchived, setShowArchived] = useState(false);
   const [showCreateKinds, setShowCreateKinds] = useState(false);
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
+  const [hasLoadedPlans, setHasLoadedPlans] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
@@ -301,6 +308,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   );
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
+  const canCreatePlanForScope = !isWorkspaceMissing && !isReadOnlyOnlyScope;
   const creatablePlanKinds = useMemo(
     () =>
       getCreatableArchitectPlanKinds(
@@ -536,6 +544,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setActivePlanId(null);
     } finally {
       if (loadPlansRequestIdRef.current === requestId) {
+        setHasLoadedPlans(true);
         setIsLoading(false);
       }
     }
@@ -764,6 +773,64 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setCreatingPlanKind(null);
     }
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const detail: ArchitectPlanSelectorStateDetail = {
+      status: !hasLoadedPlans || isLoading ? 'loading' : error ? 'error' : 'ready',
+      planCount: plans.length,
+      canCreate: canCreatePlanForScope,
+      canSelect: plans.length > 0,
+    };
+    window.dispatchEvent(
+      new CustomEvent<ArchitectPlanSelectorStateDetail>(
+        ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+        { detail },
+      ),
+    );
+  }, [
+    canCreatePlanForScope,
+    error,
+    hasLoadedPlans,
+    isLoading,
+    plans.length,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const handleRequest = (event: Event) => {
+      const detail = (event as CustomEvent<ArchitectPlanSelectorRequestDetail>).detail;
+      if (detail?.action !== 'primary') {
+        return;
+      }
+      if (!hasLoadedPlans || isLoading) {
+        setIsOpen(true);
+        setShowCreateKinds(false);
+        return;
+      }
+      if (plans.length === 0 && canCreatePlanForScope && !creatingPlanKind) {
+        void handleCreatePlan('feature');
+        return;
+      }
+      setIsOpen(true);
+      setShowCreateKinds(false);
+    };
+    window.addEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
+    return () => {
+      window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
+    };
+  }, [
+    canCreatePlanForScope,
+    creatingPlanKind,
+    handleCreatePlan,
+    hasLoadedPlans,
+    isLoading,
+    plans.length,
+  ]);
 
   const handleRenamePlan = (planId: string) => {
     const plan = plans.find((p) => p.id === planId);

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useNeedsStore } from '../../stores/useNeedsStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
 import { persistArchitectPlanStrategyPreview } from '../../services/architectPlanRuntimeService';
@@ -503,6 +504,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     }))
   );
   const tasks = useTaskStore((state) => state.tasks);
+  const needs = useNeedsStore((state) => state.needs);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
@@ -524,6 +526,28 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     [projectGroups, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const activePlanNeeds = useMemo(() => {
+    if (!activePlanContext?.id) return [];
+    return needs.filter((need) => need.planId === activePlanContext.id);
+  }, [activePlanContext?.id, needs]);
+  const emptyStrategyDescription = useMemo(() => {
+    if (activePlanNeeds.length === 0) {
+      return t(
+        'architect.noStrategyNeedsMissingDescription',
+        'Identify and validate needs before generating the strategy.'
+      );
+    }
+    if (activePlanNeeds.some((need) => need.status !== 'validated')) {
+      return t(
+        'architect.noStrategyNeedsUnvalidatedDescription',
+        'Validate every need before generating the strategy.'
+      );
+    }
+    return t(
+      'architect.noStrategyReadyDescription',
+      'The needs are ready. Generate the strategy when you want Macro to create the task graph.'
+    );
+  }, [activePlanNeeds, t]);
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
   const [isModalPanning, setIsModalPanning] = useState(false);
@@ -1486,7 +1510,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             {t('architect.noStrategyTitle', 'No strategy generated yet')}
           </h3>
           <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            {t('architect.noStrategyDescription', 'Discuss needs in Architect chat, then use Generate Strategy to create this graph.')}
+            {emptyStrategyDescription}
           </p>
         </div>
       </aside>

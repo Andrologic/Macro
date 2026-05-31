@@ -56,6 +56,11 @@ import { ToolApprovalFooter } from './ToolApprovalFooter';
 import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
+import {
+  ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+  dispatchArchitectPlanSelectorRequest,
+  type ArchitectPlanSelectorStateDetail,
+} from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
 import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
@@ -113,6 +118,11 @@ export const shouldShowContextControls = ({
 };
 
 type ManualCompactionPhase = 'idle' | 'analyzing';
+type ArchitectStrategyProgressAction =
+  | 'identify-needs'
+  | 'clarify-needs'
+  | 'generate-strategy'
+  | 'regenerate-strategy';
 const MANUAL_COMPACTION_RETAINED_USER_TURNS = 2;
 
 const formatManualCompactionTokens = (value: number): string => {
@@ -992,6 +1002,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   );
   const pendingPromptHistoryTextRef = useRef<string | null>(null);
   const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
+  const [
+    architectPlanSelectorState,
+    setArchitectPlanSelectorState,
+  ] = useState<ArchitectPlanSelectorStateDetail | null>(null);
   const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
   const currentMessages = useMemo(
     () =>
@@ -1502,6 +1516,41 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   ]);
 
   useEffect(() => {
+    const handlePlanSelectorState = (event: Event) => {
+      setArchitectPlanSelectorState(
+        (event as CustomEvent<ArchitectPlanSelectorStateDetail>).detail ?? null
+      );
+    };
+    window.addEventListener(
+      ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+      handlePlanSelectorState,
+    );
+    return () => {
+      window.removeEventListener(
+        ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+        handlePlanSelectorState,
+      );
+    };
+  }, []);
+
+  const missingArchitectPlanActionKind =
+    architectPlanSelectorState?.status === 'ready' &&
+    architectPlanSelectorState.planCount === 0 &&
+    architectPlanSelectorState.canCreate
+      ? 'create'
+      : 'select';
+  const isMissingArchitectPlanActionLoading =
+    architectPlanSelectorState?.status === 'loading';
+  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionLoading
+    ? t('architect.planSelector.loadingShort', 'Loading')
+    : missingArchitectPlanActionKind === 'create'
+      ? t('architect.createPlanAction', 'Create a plan')
+      : t('architect.selectPlanAction', 'Select a plan');
+  const handleMissingArchitectPlanAction = useCallback(() => {
+    dispatchArchitectPlanSelectorRequest({ action: 'primary' });
+  }, []);
+
+  useEffect(() => {
     setIsTaskTodoDropdownOpen(false);
   }, [selectedTask?.id, canShowImplementTaskTodoDropdown]);
 
@@ -1555,10 +1604,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return t('chat.typeMessage');
   }, [activePlanContext, mode, t]);
 
-  const activePlanNeedsCount = useMemo(() => {
-    if (!activeArchitectPlanId) return 0;
-    return needs.filter((need) => need.planId === activeArchitectPlanId).length;
+  const activePlanNeeds = useMemo(() => {
+    if (!activeArchitectPlanId) return [];
+    return needs.filter((need) => need.planId === activeArchitectPlanId);
   }, [activeArchitectPlanId, needs]);
+  const allActivePlanNeedsValidated =
+    activePlanNeeds.length > 0 &&
+    activePlanNeeds.every((need) => need.status === 'validated');
+  const hasUserArchitectMessage = useMemo(
+    () =>
+      mode === 'Architect' &&
+      currentMessages.some(
+        (message) =>
+          message.role === 'user' && message.content.trim().length > 0
+      ),
+    [currentMessages, mode]
+  );
 
   const hasExistingStrategy = useMemo(() => {
     if (!activeArchitectPlanId) return false;
@@ -1567,13 +1628,72 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isStrategyMutationLocked =
     mode === 'Architect' &&
     isArchitectPlanStrategyMutationLocked(activePlanContext?.status);
-  const isGenerateStrategyDisabled =
+  const architectStrategyProgressAction = useMemo<ArchitectStrategyProgressAction | null>(() => {
+    if (mode !== 'Architect') return null;
+    if (!activeArchitectPlanId) return null;
+    if (activePlanNeeds.length === 0) {
+      return hasUserArchitectMessage ? 'identify-needs' : null;
+    }
+    if (!allActivePlanNeedsValidated) {
+      return 'clarify-needs';
+    }
+    return hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy';
+  }, [
+    activeArchitectPlanId,
+    activePlanNeeds.length,
+    allActivePlanNeedsValidated,
+    hasExistingStrategy,
+    hasUserArchitectMessage,
+    mode,
+  ]);
+  const isArchitectStrategyProgressDisabled =
     isModeProjectWorkspaceMissing ||
     !activeArchitectPlanId ||
     isConversationPending ||
     isBusySending ||
-    isStrategyMutationLocked ||
-    (!hasExistingStrategy && activePlanNeedsCount === 0);
+    isStrategyMutationLocked;
+  const architectStrategyProgressButton = useMemo(() => {
+    if (!architectStrategyProgressAction) return null;
+    switch (architectStrategyProgressAction) {
+      case 'identify-needs':
+        return {
+          icon: 'sparkles' as const,
+          label: t('architect.identifyNeeds', 'Identify Needs'),
+          title: t(
+            'architect.identifyNeedsHint',
+            'Ask Architect to inspect the codebase and structure the first needs'
+          ),
+        };
+      case 'clarify-needs':
+        return {
+          icon: 'message-circle-question' as const,
+          label: t('architect.clarifyNeeds', 'Clarify Needs'),
+          title: t(
+            'architect.clarifyNeedsHint',
+            'Ask Architect to resolve open questions and validate the needs'
+          ),
+        };
+      case 'regenerate-strategy':
+        return {
+          icon: 'refresh-cw' as const,
+          label: t('architect.regenerateStrategy', 'Regenerate Strategy'),
+          title: t(
+            'architect.regenerateStrategyHint',
+            'Regenerate strategy from current needs'
+          ),
+        };
+      case 'generate-strategy':
+      default:
+        return {
+          icon: 'sparkles' as const,
+          label: t('architect.generateStrategy', 'Generate Strategy'),
+          title: t(
+            'architect.generateStrategyHint',
+            'Generate strategy from validated needs'
+          ),
+        };
+    }
+  }, [architectStrategyProgressAction, t]);
 
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -2019,10 +2139,50 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
+  const prefillArchitectProgressPrompt = useCallback((content: string) => {
+    const draftText =
+      composerEditorRef.current?.getTextContent() ?? inputValue;
+    const hasComposerDraft =
+      draftText.trim().length > 0 ||
+      composerImages.length > 0 ||
+      composerContextRefs.length > 0 ||
+      Boolean(composerEditSession);
+
+    if (hasComposerDraft) {
+      notify.info(t('architect.strategyProgressDraftTitle', 'Draft kept'), {
+        description: t(
+          'architect.strategyProgressDraftDescription',
+          'Send or clear the composer before Macro prepares the next Architect step.'
+        ),
+      });
+      requestAnimationFrame(() => {
+        composerEditorRef.current?.focus();
+      });
+      return;
+    }
+
+    clearComposerContextRefs();
+    setComposerImages([]);
+    setInputValue(content);
+    resetPromptHistoryNavigation();
+    composerEditorRef.current?.setText(content);
+    requestAnimationFrame(() => {
+      composerEditorRef.current?.focus();
+    });
+  }, [
+    clearComposerContextRefs,
+    composerContextRefs.length,
+    composerEditSession,
+    composerImages.length,
+    inputValue,
+    resetPromptHistoryNavigation,
+    t,
+  ]);
+
   const handleGenerateStrategy = async () => {
     if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
     if (isStrategyMutationLocked) return;
-    if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
+    if (!allActivePlanNeedsValidated) return;
 
     const conversationId = await ensureConversation();
     if (!conversationId) return;
@@ -2035,6 +2195,34 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch {
       // The store exposes the visible error state.
     }
+  };
+
+  const handleArchitectStrategyProgressAction = () => {
+    if (!architectStrategyProgressAction) return;
+    if (
+      architectStrategyProgressAction === 'generate-strategy' ||
+      architectStrategyProgressAction === 'regenerate-strategy'
+    ) {
+      void handleGenerateStrategy();
+      return;
+    }
+
+    if (architectStrategyProgressAction === 'identify-needs') {
+      prefillArchitectProgressPrompt(
+        t(
+          'architect.identifyNeedsPrompt',
+          'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.'
+        )
+      );
+      return;
+    }
+
+    prefillArchitectProgressPrompt(
+      t(
+        'architect.clarifyNeedsPrompt',
+        'Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.'
+      )
+    );
   };
 
   const handleEditStart = (message: ChatMessage) => {
@@ -2343,6 +2531,31 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     'Select or create a plan to start architecting.'
                   )}
                 </p>
+                <button
+                  type="button"
+                  onClick={handleMissingArchitectPlanAction}
+                  disabled={isMissingArchitectPlanActionLoading}
+                  data-tour-id="architect-empty-plan-action"
+                  className={cn(
+                    'inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors',
+                    isMissingArchitectPlanActionLoading
+                      ? 'border-border bg-muted text-muted-foreground cursor-wait'
+                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                  )}
+                >
+                  <Icon
+                    name={
+                      isMissingArchitectPlanActionLoading
+                        ? 'loader'
+                        : missingArchitectPlanActionKind === 'create'
+                          ? 'plus'
+                          : 'list'
+                    }
+                    size={14}
+                    className={cn(isMissingArchitectPlanActionLoading && 'animate-spin')}
+                  />
+                  {missingArchitectPlanActionLabel}
+                </button>
               </div>
             </div>
           ) : isSelectedTaskDependencyBlocked && selectedTask ? (
@@ -2529,15 +2742,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ModelDropdown />
                 <ReasoningDropdown />
               </div>
-              {mode === 'Architect' && (
+              {mode === 'Architect' && architectStrategyProgressButton && (
               <button
                 type="button"
-                onClick={() => void handleGenerateStrategy()}
+                onClick={handleArchitectStrategyProgressAction}
                 data-tour-id="architect-generate-strategy"
-                disabled={isGenerateStrategyDisabled}
+                disabled={isArchitectStrategyProgressDisabled}
                 className={cn(
                   'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                  isGenerateStrategyDisabled
+                  isArchitectStrategyProgressDisabled
                       ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
@@ -2550,17 +2763,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
                       : isStrategyMutationLocked
                         ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
-                      : !hasExistingStrategy && activePlanNeedsCount === 0
-                        ? t('architect.generateStrategyNeedPrompt', 'Add at least one need before generating a strategy')
-                        : hasExistingStrategy
-                          ? t('architect.regenerateStrategyHint', 'Regenerate strategy from current needs')
-                          : t('architect.generateStrategyHint', 'Generate strategy from identified needs')
+                        : architectStrategyProgressButton.title
                   }
                 >
-                  <Icon name={hasExistingStrategy ? 'refresh-cw' : 'sparkles'} size={12} />
-                  {hasExistingStrategy
-                    ? t('architect.regenerateStrategy', 'Regenerate Strategy')
-                    : t('architect.generateStrategy', 'Generate Strategy')}
+                  <Icon name={architectStrategyProgressButton.icon} size={12} />
+                  {architectStrategyProgressButton.label}
                 </button>
               )}
             </div>
