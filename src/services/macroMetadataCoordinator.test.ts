@@ -73,7 +73,7 @@ describe('macroMetadataCoordinator', () => {
     });
   });
 
-  it('debounces structural mutations into one local checkpoint', async () => {
+  it('commits structural mutations immediately', async () => {
     recordMacroMetadataMutation({
       workspacePath: '/repos/web',
       kind: 'plan_updated',
@@ -89,8 +89,12 @@ describe('macroMetadataCoordinator', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
     expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): update plan first-plan',
+    });
+    expect(macroBranchCommitIfDirtyMock.mock.calls[1]?.[0]).toEqual({
       workspacePath: '/repos/web',
       message: 'chore(@macro): update plan final-plan',
     });

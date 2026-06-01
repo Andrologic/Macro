@@ -2308,12 +2308,14 @@ export async function workspaceArchitectListPlans(params: {
   branchName: string;
   includeDeleted?: boolean;
   includeArchived?: boolean;
+  scopedProjectIdsHint?: string[];
 }): Promise<WorkspaceArchitectPlanListDto> {
   return invoke<WorkspaceArchitectPlanListDto>("workspace_architect_list_plans", {
     request: {
       branchName: params.branchName,
       includeDeleted: params.includeDeleted ?? false,
       includeArchived: params.includeArchived ?? false,
+      scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
     },
   });
 }

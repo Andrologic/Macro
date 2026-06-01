@@ -6,6 +6,7 @@ import {
   getTerminalScopeKey,
   resolvePreferredManualProjectId,
   resolveSelectedTaskTerminalScope,
+  resolveTerminalProjectForRequestedId,
   type LastManualProjectIdByTaskId,
   type TerminalTaskScope,
 } from '../services/manualTerminalTargets';
@@ -233,21 +234,28 @@ const getManualTerminalUnavailableMessage = (): string => {
   return 'Select a task before opening a terminal.';
 };
 
-const assertProjectSupportsTerminal = (projectId: string): Project => {
+const resolveSupportedTerminalProject = (projectId: string): { projectId: string; project: Project } => {
   const appState = useAppStore.getState();
-  const project =
-    (typeof appState.getProjectById === 'function' ? appState.getProjectById(projectId) : null) ||
-    appState.projectGroups
-      .flatMap((group) => group.projects)
-      .find((candidate) => candidate.id === projectId) ||
-    null;
-  if (!project) {
+  const resolvedProject = resolveTerminalProjectForRequestedId({
+    requestedProjectId: projectId,
+    standaloneProjects: appState.standaloneProjects,
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+    selectedTask: getCurrentSelectedTask(),
+    lastManualProjectIdByTaskId: null,
+  });
+  if (!resolvedProject) {
     throw new Error(`Unknown project id: ${projectId}`);
   }
-  if (project.isReadOnly) {
-    throw new Error(`Project "${project.name}" is read-only. Terminal sessions are unavailable.`);
+  if (resolvedProject.project.isReadOnly) {
+    throw new Error(`Project "${resolvedProject.project.name}" is read-only. Terminal sessions are unavailable.`);
   }
-  return project;
+  return resolvedProject;
+};
+
+const assertProjectSupportsTerminal = (projectId: string): Project => {
+  return resolveSupportedTerminalProject(projectId).project;
 };
 
 const resolvePromptTaskLabel = (
@@ -885,12 +893,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     createSession: async ({ projectId, cwd }) => {
-      const project = assertProjectSupportsTerminal(projectId);
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
       const session = await tauriIpc.terminalCreateSession({
-        projectId,
+        projectId: resolvedProject.projectId,
         cwd: resolveSessionCreationCwd({
-          projectId,
-          projectPath: project.path,
+          projectId: resolvedProject.projectId,
+          projectPath: resolvedProject.project.path,
           cwd: cwd ?? null,
         }),
       });

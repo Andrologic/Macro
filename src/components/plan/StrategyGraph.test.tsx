@@ -667,7 +667,7 @@ describe('StrategyGraph', () => {
     );
   });
 
-  it('explains that needs must be validated before an empty strategy can be generated', async () => {
+  it('explains that unvalidated needs can still be clarified before generation', async () => {
     seedEmptyStrategy([
       {
         id: 'need-1',
@@ -682,7 +682,7 @@ describe('StrategyGraph', () => {
     });
 
     expect(document.body.textContent).toContain(
-      'Validate every need before generating the strategy.'
+      'Clarify needs if useful, or generate the strategy now.'
     );
   });
 

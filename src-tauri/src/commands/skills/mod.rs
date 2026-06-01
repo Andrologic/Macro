@@ -1421,13 +1421,17 @@ pub async fn skills_open_location(
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<()> {
     let skill = resolve_skill(&skill_id, &project_roots)?;
-    let skill_root = fs::canonicalize(&skill.root_path).map_err(|error| {
-        command_error(format!("Skill folder is not available: {}", error))
-    })?;
+    let skill_root = fs::canonicalize(&skill.root_path)
+        .map_err(|error| command_error(format!("Skill folder is not available: {}", error)))?;
     let target_path = match target.trim() {
         "skillFile" => PathBuf::from(&skill.skill_file_path),
         "folder" => PathBuf::from(&skill.root_path),
-        other => return Err(command_error(format!("Unsupported skill open target: {}", other))),
+        other => {
+            return Err(command_error(format!(
+                "Unsupported skill open target: {}",
+                other
+            )))
+        }
     };
     let target_canonical = fs::canonicalize(&target_path)
         .map_err(|error| command_error(format!("Skill location is not available: {}", error)))?;

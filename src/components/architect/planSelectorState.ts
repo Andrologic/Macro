@@ -16,6 +16,37 @@ export interface PlanSelectorRefreshState {
   mutationApplied: boolean;
 }
 
+export type PlanSelectorEmptyState = 'hidden' | 'empty' | 'outside-scope';
+
+export const computePlanSelectorEmptyState = (params: {
+  hasError: boolean;
+  isLoading: boolean;
+  hasLoadedPlans: boolean;
+  isWorkspaceMissing: boolean;
+  isReadOnlyOnlyScope: boolean;
+  displayedPlanCount: number;
+  catalogStatus: 'idle' | 'loading' | 'ready' | 'error';
+  isCatalogForCurrentScope: boolean;
+  catalogModernPlanCount: number;
+  catalogVisiblePlanCount: number;
+}): PlanSelectorEmptyState => {
+  if (
+    params.hasError ||
+    params.isLoading ||
+    !params.hasLoadedPlans ||
+    params.isWorkspaceMissing ||
+    params.isReadOnlyOnlyScope ||
+    params.displayedPlanCount > 0 ||
+    params.catalogStatus !== 'ready' ||
+    !params.isCatalogForCurrentScope ||
+    params.catalogVisiblePlanCount > 0
+  ) {
+    return 'hidden';
+  }
+
+  return params.catalogModernPlanCount > 0 ? 'outside-scope' : 'empty';
+};
+
 export const isPlanVisibleForSelection = (
   plan: ArchitectPlanSummary,
   scopedProjectIds: string[]

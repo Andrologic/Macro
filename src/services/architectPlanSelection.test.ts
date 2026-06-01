@@ -2,8 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import {
   compareArchitectPlanSelectionPriority,
   computeArchitectPlanResolutionState,
+  planMatchesArchitectScope,
 } from './architectPlanSelection';
-import type { ArchitectPlanStatus } from './architectPlanService';
+import type { ArchitectPlanReplica, ArchitectPlanStatus } from './architectPlanService';
 import { computePlanSelectorRefreshState } from '../components/architect/planSelectorState';
 
 const buildPlanSummary = (overrides: Partial<{
@@ -12,6 +13,8 @@ const buildPlanSummary = (overrides: Partial<{
   projectId: string;
   projectIds: string[];
   expectedProjectIds: string[];
+  availableProjectIds: string[];
+  replicas: ArchitectPlanReplica[];
   createdAt: string;
   updatedAt: string;
 }> = {}) => ({
@@ -27,6 +30,8 @@ const buildPlanSummary = (overrides: Partial<{
     overrides.expectedProjectIds ??
     overrides.projectIds ??
     [overrides.projectId ?? 'project-1'],
+  availableProjectIds: overrides.availableProjectIds,
+  replicas: overrides.replicas,
   nodeCount: 0,
   createdAt: overrides.createdAt ?? '2026-04-17T09:00:00.000Z',
   updatedAt: overrides.updatedAt ?? '2026-04-17T10:00:00.000Z',
@@ -117,5 +122,39 @@ describe('architectPlanSelection', () => {
     expect(
       compareArchitectPlanSelectionPriority(visibleNewest, visibleOlder),
     ).toBeLessThan(0);
+  });
+
+  it('matches a scoped project from the physical replica availability even when stored ids are stale', () => {
+    const planFromSelectedRepo = buildPlanSummary({
+      id: 'plan-from-selected-repo',
+      projectIds: ['project-stale'],
+      expectedProjectIds: ['project-stale'],
+      availableProjectIds: ['project-current'],
+    });
+
+    expect(
+      planMatchesArchitectScope(planFromSelectedRepo, ['project-current']),
+    ).toBe(true);
+  });
+
+  it('matches a scoped project from replica project ids when old plan metadata is stale', () => {
+    const planFromSelectedReplica = buildPlanSummary({
+      id: 'plan-from-selected-replica',
+      projectIds: ['project-stale'],
+      expectedProjectIds: ['project-stale'],
+      replicas: [
+        {
+          scopeKey: 'repo:/repos/current',
+          projectId: 'project-current',
+          repoPath: '/repos/current',
+          workspacePath: '/repos/current',
+          source: 'project',
+        },
+      ],
+    });
+
+    expect(
+      planMatchesArchitectScope(planFromSelectedReplica, ['project-current']),
+    ).toBe(true);
   });
 });

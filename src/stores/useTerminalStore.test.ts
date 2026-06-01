@@ -102,6 +102,7 @@ const tasks = buildTasks();
 
 const appStoreState = {
   mode: 'Implement',
+  standaloneProjects: [] as Array<(typeof projectGroups)[number]['projects'][number]>,
   projectGroups,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: 'project-1' as string | null,
@@ -296,8 +297,15 @@ const loadPreferenceMock = mock(
     actualLoadPreference(key as any)
 );
 const savePreferenceMock = mock(async () => undefined);
+type MockExecutionContext = {
+  projectId: string;
+  projectName: string;
+  taskId: string | null;
+  workspacePath: string;
+  workspacePathsByProjectId: Record<string, string>;
+};
 const resolveProjectExecutionContextMock = mock(
-  (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }) => ({
+  (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }): MockExecutionContext => ({
     projectId: params?.selectedProjectId ?? 'project-1',
     projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
     taskId: params?.selectedTaskId ?? null,
@@ -431,6 +439,8 @@ describe('useTerminalStore', () => {
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = 'project-1';
     appStoreState.selectedTaskId = 'task-1';
+    appStoreState.standaloneProjects = [];
+    appStoreState.projectGroups = projectGroups;
     taskStoreState.tasks = buildTasks();
 
     terminalListTabsMock.mockReset();
@@ -538,7 +548,7 @@ describe('useTerminalStore', () => {
       return actualLoadPreference(key as any);
     });
     resolveProjectExecutionContextMock.mockImplementation(
-      (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }) => ({
+      (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }): MockExecutionContext => ({
         projectId: params?.selectedProjectId ?? 'project-1',
         projectName: params?.selectedProjectId === 'project-2' ? 'API' : 'Web',
         taskId: params?.selectedTaskId ?? null,
@@ -589,6 +599,74 @@ describe('useTerminalStore', () => {
       cwd: 'C:/repos/web/.macro/worktrees/task-1',
     });
     expect(session.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('retargets stale standalone task project ids when creating a terminal session', async () => {
+    appStoreState.standaloneProjects = [
+      {
+        id: 'project-lplr-current',
+        name: 'lplr-app',
+        mountName: 'lplr-app',
+        path: 'C:/repos/lplr-app',
+        created_at: '2026-03-26T08:00:00.000Z',
+        status: 'active',
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      },
+    ];
+    appStoreState.projectGroups = [];
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-lplr-current';
+    appStoreState.selectedTaskId = 'task-stale';
+    taskStoreState.tasks = [
+      {
+        id: 'task-stale',
+        plan_id: '',
+        project_id: 'project-lplr-app-1780237886690',
+        project_ids: ['project-lplr-app-1780237886690'],
+        execution_targets: [
+          {
+            projectId: 'project-lplr-app-1780237886690',
+            branchName: 'feature/catalogue',
+            worktreeKey: 'stale-worktree',
+          },
+        ],
+        title: 'Standalone stale task',
+        description: '',
+        status: 'Pending',
+        dependencies: [],
+        estimated_changes: [],
+        task_source: 'standalone',
+        standalone_kind: 'manual_feature',
+        draft: false,
+      },
+    ];
+    resolveProjectExecutionContextMock.mockImplementation(
+      (params?: { selectedProjectId?: string | null; selectedTaskId?: string | null }): MockExecutionContext => ({
+        projectId: params?.selectedProjectId ?? 'project-lplr-current',
+        projectName: 'lplr-app',
+        taskId: params?.selectedTaskId ?? null,
+        workspacePath: 'C:/repos/lplr-app',
+        workspacePathsByProjectId: {
+          'project-lplr-current': 'C:/repos/lplr-app',
+        },
+      })
+    );
+
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().createSession({
+      projectId: 'project-lplr-app-1780237886690',
+    });
+
+    expect(terminalCreateSessionMock).toHaveBeenCalledWith({
+      projectId: 'project-lplr-current',
+      cwd: 'C:/repos/lplr-app',
+    });
   });
 
   it('resolves relative createSession cwd values from the task worktree', async () => {

@@ -431,6 +431,15 @@ const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
   "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
   "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
+const STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION =
+  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace, git, and terminal tools against the selected task repository/worktree. In Plan mode, inspect only and return a concrete plan.";
+const ARCHITECT_TASK_ONLY_TOOL_IDS = new Set([
+  "task_todo_get",
+  "task_todo_update",
+  "task_artifact_list",
+  "task_artifact_get",
+  "task_artifact_put",
+]);
 const COMPACTION_SUMMARY_SYSTEM_PROMPT =
   "Compact older conversation history for a programming agent into schema v3. Return ONLY valid JSON with keys " +
   '"currentObjective", "userInstructions", "decisions", "discoveries", "openQuestions", "activeFiles", "toolFacts", "knownErrors", "remainingWork", "summary". ' +
@@ -1693,6 +1702,67 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedTaskId ||
       null;
     return taskId ? taskState.getTaskById(taskId) : undefined;
+  };
+
+  const isStandaloneImplementTask = (
+    task: Pick<ImplementTask, "task_source"> | undefined | null,
+  ): task is ImplementTask => task?.task_source === "standalone";
+
+  const filterToolIdsForImplementTask = (
+    toolIds: string[],
+    task: ImplementTask | undefined,
+  ): string[] => {
+    if (!isStandaloneImplementTask(task)) {
+      return toolIds;
+    }
+    return toolIds.filter((toolId) => !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId));
+  };
+
+  const formatStandaloneArchitectToolUnavailable = (toolName: string): string =>
+    `${toolName} is unavailable for standalone tasks. Use the conversation, workspace tools, git, and terminal tools for this independent task instead.`;
+
+  const assertStandaloneTaskExecutionContextReady = (
+    task: ImplementTask | undefined,
+  ): void => {
+    if (!isStandaloneImplementTask(task)) {
+      return;
+    }
+    if (task.draft) {
+      throw buildSendError(
+        "This standalone task is still a draft. Send a first description so Macro can initialize its repository and branch before starting the agent.",
+      );
+    }
+
+    const projectIds = new Set(
+      [
+        ...(Array.isArray(task.project_ids) ? task.project_ids : []),
+        task.project_id ?? null,
+        ...(Array.isArray(task.execution_targets)
+          ? task.execution_targets
+              .map((target) => target.projectId)
+              .filter((projectId): projectId is string => Boolean(projectId))
+          : []),
+      ].filter((projectId): projectId is string => Boolean(projectId)),
+    );
+    const hasExecutionTargets =
+      Array.isArray(task.execution_targets) && task.execution_targets.length > 0;
+    const hasBranch = Boolean(task.branch_name?.trim());
+
+    if (projectIds.size === 0 || !hasBranch) {
+      throw buildSendError(
+        "This standalone task is missing its execution target, repository, or branch. Reopen the task or recreate it so Macro can initialize the worktree before contacting the agent.",
+      );
+    }
+    if (!hasExecutionTargets) {
+      devLogger.warn(
+        "Standalone task has no execution_targets; falling back to project/branch routing.",
+        {
+          taskId: task.id,
+          projectIds: Array.from(projectIds),
+          branchName: task.branch_name,
+        },
+      );
+    }
   };
 
   const canPromoteContextProjectsForTask = (
@@ -4790,10 +4860,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const taskState = useTaskStore.getState();
+    const executionContext = resolveConversationExecutionContext(conversationId);
+    const selectedTaskId = useAppStore.getState().selectedTaskId;
+    const currentTask = resolveConversationImplementTask(
+      conversationId,
+      executionContext,
+      selectedTaskId,
+    );
+    if (isStandaloneImplementTask(currentTask)) {
+      return formatStandaloneArchitectToolUnavailable(toolName);
+    }
+
     const target = await resolveTaskTodoTarget({
       args,
-      executionContext: resolveConversationExecutionContext(conversationId),
-      selectedTaskId: useAppStore.getState().selectedTaskId,
+      executionContext,
+      selectedTaskId,
       tasks: taskState.tasks,
       getArchitectPlan,
       mutating: toolName === "task_todo_update",
@@ -4843,10 +4924,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const taskState = useTaskStore.getState();
+    const executionContext = resolveConversationExecutionContext(conversationId);
+    const selectedTaskId = useAppStore.getState().selectedTaskId;
+    const currentTask = resolveConversationImplementTask(
+      conversationId,
+      executionContext,
+      selectedTaskId,
+    );
+    if (isStandaloneImplementTask(currentTask)) {
+      return formatStandaloneArchitectToolUnavailable(toolName);
+    }
+
     const target = await resolveTaskArtifactTarget({
       args,
-      executionContext: resolveConversationExecutionContext(conversationId),
-      selectedTaskId: useAppStore.getState().selectedTaskId,
+      executionContext,
+      selectedTaskId,
       tasks: taskState.tasks,
       getArchitectPlan,
       mutating: toolName === "task_artifact_put",
@@ -5966,6 +6058,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(internalAgentProfilePrompt);
     }
 
+    const implementContextTaskId =
+      executionContext.taskId ||
+      get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ||
+      appState.selectedTaskId ||
+      null;
+    const implementContextTask =
+      appMode === "Implement" && implementContextTaskId
+        ? useTaskStore.getState().getTaskById(implementContextTaskId)
+        : undefined;
+
     if (
       appMode === "Implement" &&
       agentType === "plan"
@@ -5992,6 +6094,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION);
     }
 
+    if (appMode === "Implement" && isStandaloneImplementTask(implementContextTask)) {
+      systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
+    }
+
     if (
       executionContext.groupName ||
       executionContext.projectName ||
@@ -6015,13 +6121,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    const implementContextTaskId =
-      executionContext.taskId ||
-      get().conversations.find((conversation) => conversation.id === conversationId)?.task_id ||
-      appState.selectedTaskId ||
-      null;
     if (appMode === "Implement" && implementContextTaskId) {
-      const task = useTaskStore.getState().getTaskById(implementContextTaskId);
+      const task = implementContextTask;
       if (task && task.task_source === "architect") {
         const taskTodoPresentation = resolvePlanNodeTodoPresentation(task);
         const taskTodos = taskTodoPresentation.todos;
@@ -7738,11 +7839,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskStatus,
       overrideProfile: params.internalAgentProfile,
     });
-    const allowedToolIds = await getAllowedToolIdsForCurrentMode(
+    const taskForToolScope = params.resolvedTaskId
+      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
+      : undefined;
+    const baseAllowedToolIds = await getAllowedToolIdsForCurrentMode(
       internalAgentProfile,
       params.modeAtSend,
       params.agentTypeAtSend,
     );
+    const allowedToolIds =
+      params.modeAtSend === "Implement"
+        ? filterToolIdsForImplementTask(baseAllowedToolIds, taskForToolScope)
+        : baseAllowedToolIds;
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
@@ -10855,6 +10963,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appState.activePlanContext?.targetBranch,
         );
         const architectPlanSwitch = appState.architectPlanSwitch;
+        const currentScopedProjectIds = getScopedProjectIds(
+          {
+            standaloneProjects: appState.standaloneProjects,
+            projectGroups: appState.projectGroups,
+          },
+          appState.selectedGroupId,
+          appState.selectedProjectId,
+        );
+        const architectSwitchSummaryHint =
+          architectPlanSwitch.targetPlanId === appState.activeArchitectPlanId
+            ? architectPlanSwitch.summaryHint
+            : null;
+        const activationScopedProjectIdsHint =
+          currentScopedProjectIds.length > 0
+            ? currentScopedProjectIds
+            : architectSwitchSummaryHint
+              ? getArchitectPlanVisibleProjectIds(architectSwitchSummaryHint)
+              : undefined;
         const sharedActivationPayload =
           appState.consumeArchitectPlanActivationPayload({
             planId: appState.activeArchitectPlanId,
@@ -10866,18 +10992,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             targetBranch,
             appState.activeArchitectPlanId,
             {
-              summaryHint:
-                architectPlanSwitch.targetPlanId ===
-                appState.activeArchitectPlanId
-                  ? architectPlanSwitch.summaryHint
-                  : null,
-              scopedProjectIdsHint:
-                architectPlanSwitch.targetPlanId ===
-                appState.activeArchitectPlanId
-                  ? architectPlanSwitch.summaryHint
-                    ? getArchitectPlanVisibleProjectIds(architectPlanSwitch.summaryHint)
-                    : undefined
-                  : undefined,
+              summaryHint: architectSwitchSummaryHint,
+              scopedProjectIdsHint: activationScopedProjectIdsHint,
             },
           ));
         const activationPayloadSource = sharedActivationPayload
@@ -10974,6 +11090,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               targetBranch,
               true,
               true,
+              {
+                scopedProjectIdsHint: currentScopedProjectIds,
+              },
             );
             if (!isCurrentRequest()) return modeFallback(null);
             hasSharedConversation = plansSnapshot.plans.some(
@@ -12664,6 +12783,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           taskForSend =
             (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
             taskForSend;
+          assertStandaloneTaskExecutionContextReady(taskForSend);
         }
 
         const userMessageCountBeforeSend = getOrderedConversationMessages(

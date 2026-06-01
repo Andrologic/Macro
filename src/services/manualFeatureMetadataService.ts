@@ -303,6 +303,10 @@ export const syncManualFeatureMetadataFromTask = async (
       });
     })
   );
+  await commitMetadataTargets(
+    workspacePaths,
+    `chore(@macro): update manual feature ${task.id}`,
+  );
 };
 
 export const removeManualFeatureMetadata = async (
@@ -335,8 +339,12 @@ export const removeManualFeatureMetadata = async (
         kind: 'manual_feature',
         entityId: task.id,
         label: task.id,
-        importance: 'structural',
+        importance: 'light',
       });
     })
+  );
+  await commitMetadataTargets(
+    workspacePaths,
+    `chore(@macro): delete manual feature ${task.id}`,
   );
 };

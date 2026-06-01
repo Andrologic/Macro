@@ -36,7 +36,6 @@ import {
   getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanVisibleForScope,
-  listArchitectPlans,
   planMatchesProjectId,
   resolvePlanProjectContextId,
   resolveTargetBranch,
@@ -85,7 +84,13 @@ import {
   reconcileRememberedProjects,
 } from "../services/projectRegistry";
 import { consolidateScopedBlankPlans } from "../services/architectAutoPlan";
-import { computeArchitectPlanResolutionState } from "../services/architectPlanSelection";
+import {
+  buildArchitectPlanCatalogScopeKey,
+  loadMacroProjectMetadataForSelection as loadMacroProjectMetadataCatalog,
+  type ArchitectPlanCatalogBranch,
+  type ArchitectPlanCatalogStatus,
+  type MacroProjectMetadataLoadResult,
+} from "../services/macroProjectMetadataLoader";
 import { flushMacroMetadata } from "../services/macroMetadataCoordinator";
 import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
@@ -118,14 +123,23 @@ const normalizeCodeOverflowMode = (
   value === "horizontal_scroll" ? "horizontal_scroll" : "wrap";
 
 const flushMacroMetadataForProjectGroupSwitch = async (
-  state: { projectGroups: ProjectGroup[]; selectedGroupId: string | null },
+  state: {
+    standaloneProjects: Project[];
+    projectGroups: ProjectGroup[];
+    selectedGroupId: string | null;
+    selectedProjectId: string | null;
+  },
 ): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable() || !state.selectedGroupId) return;
-  const workspacePaths =
-    state.projectGroups
-      .find((group: ProjectGroup) => group.id === state.selectedGroupId)
-      ?.projects.map((project: Project) => project.path)
-      .filter((path: string) => path.trim().length > 0) ?? [];
+  if (!tauriIpc.isTauriAvailable()) return;
+  const workspacePaths = state.selectedGroupId
+    ? state.projectGroups
+        .find((group: ProjectGroup) => group.id === state.selectedGroupId)
+        ?.projects.map((project: Project) => project.path)
+        .filter((path: string) => path.trim().length > 0) ?? []
+    : state.standaloneProjects
+        .filter((project) => project.id === state.selectedProjectId)
+        .map((project) => project.path)
+        .filter((path) => path.trim().length > 0);
   if (workspacePaths.length === 0) return;
   await flushMacroMetadata({
     trigger: "project_switch",
@@ -871,14 +885,29 @@ const activateArchitectPlanInStore = async (input: {
     });
   }
 
+  const currentScopedProjectIds =
+    input.options?.scopedProjectIdsHint ??
+    getScopedProjectIds(
+      {
+        standaloneProjects: appStore.standaloneProjects,
+        projectGroups: appStore.projectGroups,
+      },
+      appStore.selectedGroupId,
+      appStore.selectedProjectId,
+    );
+  const activationScopedProjectIdsHint =
+    currentScopedProjectIds.length > 0
+      ? currentScopedProjectIds
+      : input.options?.planSummaryHint
+        ? getArchitectPlanVisibleProjectIds(input.options.planSummaryHint)
+        : undefined;
+
   const activationPayload = await getArchitectPlanActivationPayload(
     targetBranch,
     input.planId,
     {
       summaryHint: input.options?.planSummaryHint ?? null,
-      scopedProjectIdsHint: input.options?.planSummaryHint
-        ? getArchitectPlanVisibleProjectIds(input.options.planSummaryHint)
-        : undefined,
+      scopedProjectIdsHint: activationScopedProjectIdsHint,
     }
   );
   if (
@@ -966,18 +995,20 @@ const activateArchitectPlanInStore = async (input: {
       },
   });
   const latestAppState = useAppStore.getState();
-  scheduleScopedBlankPlanConsolidation({
-    branchName: targetBranch,
-    scopedProjectIds: getScopedProjectIds(
-      {
-        standaloneProjects: latestAppState.standaloneProjects,
-        projectGroups: latestAppState.projectGroups,
-      },
-      latestAppState.selectedGroupId,
-      latestAppState.selectedProjectId,
-    ),
-    reason: "activate",
-  });
+  if (input.options?.consolidateBlankPlans !== false) {
+    scheduleScopedBlankPlanConsolidation({
+      branchName: targetBranch,
+      scopedProjectIds: getScopedProjectIds(
+        {
+          standaloneProjects: latestAppState.standaloneProjects,
+          projectGroups: latestAppState.projectGroups,
+        },
+        latestAppState.selectedGroupId,
+        latestAppState.selectedProjectId,
+      ),
+      reason: "activate",
+    });
+  }
   return plan;
 };
 
@@ -1002,96 +1033,6 @@ const persistResolvedArchitectPlanContext = async (params: {
   });
 };
 
-const resolveArchitectPlanForScope = async (input: {
-  groupId: string | null;
-  projectId: string | null;
-}): Promise<boolean> => {
-  const appState = useAppStore.getState();
-  const scopedProjectIds = getScopedProjectIds(
-    {
-      standaloneProjects: appState.standaloneProjects,
-      projectGroups: appState.projectGroups,
-    },
-    input.groupId,
-    input.projectId,
-  );
-  if (scopedProjectIds.length === 0) {
-    if (appState.activeArchitectPlanId) {
-      clearActiveArchitectPlanInStore();
-    }
-    return false;
-  }
-
-  const targetBranch = resolveTargetBranch(
-    appState.activePlanContext?.targetBranch || getGitFlowBaseBranch(),
-  );
-  const contextId = input.groupId || input.projectId;
-  const localContext = contextId
-    ? await localProjectContext.getLocalProjectContextState(contextId)
-    : null;
-  const plansIndex = await listArchitectPlans(targetBranch, true, true);
-  const resolution = computeArchitectPlanResolutionState({
-    plans: plansIndex.plans,
-    scopedProjectIds,
-    currentActivePlanId: appState.activeArchitectPlanId,
-    rememberedPlanId: localContext?.lastPlanId ?? null,
-  });
-  const currentPlanVisible =
-    appState.activeArchitectPlanId !== null &&
-    resolution.visiblePlans.some(
-      (plan) => plan.id === appState.activeArchitectPlanId,
-    );
-
-  if (!resolution.nextActivePlanId) {
-    if (appState.activeArchitectPlanId && !currentPlanVisible) {
-      clearActiveArchitectPlanInStore();
-    }
-    return false;
-  }
-
-  if (
-    resolution.nextActivePlanId === appState.activeArchitectPlanId &&
-    appState.activePlanContext?.id === resolution.nextActivePlanId
-  ) {
-    return true;
-  }
-
-  const resolvedPlan = await activateArchitectPlanInStore({
-    planId: resolution.nextActivePlanId,
-    options: {
-      targetBranch,
-      persistActiveSelection: false,
-      allowScopeSwitch: false,
-      planSummaryHint:
-        resolution.visiblePlans.find(
-          (plan) => plan.id === resolution.nextActivePlanId,
-        ) ?? null,
-    },
-  });
-
-  if (!resolvedPlan) {
-    if (!currentPlanVisible) {
-      clearActiveArchitectPlanInStore();
-    }
-    return false;
-  }
-
-  if (
-    contextId &&
-    resolution.nextActivePlanId !== appState.activeArchitectPlanId
-  ) {
-    await persistResolvedArchitectPlanContext({
-      contextId,
-      groupId: input.groupId,
-      focusProjectId: input.projectId,
-      planId: resolvedPlan.id,
-      localContext,
-    });
-  }
-
-  return true;
-};
-
 const ensureAutoPlanForSelection = async (input: {
   groupId: string | null;
   projectId: string | null;
@@ -1101,12 +1042,11 @@ const ensureAutoPlanForSelection = async (input: {
   }
 
   const appState = useAppStore.getState();
-  if (appState.mode !== "Architect") {
-    return;
-  }
-  if (await resolveArchitectPlanForScope(input)) {
-    return;
-  }
+  await useAppStore.getState().loadMacroProjectMetadataForSelection({
+    hydrateActivePlan: appState.mode === "Architect",
+    refreshTasks: true,
+    reason: "auto_plan",
+  });
 };
 
 const pruneLegacyPlaceholderWorkspaces = (groups: ProjectGroup[]): ProjectGroup[] => {
@@ -1203,6 +1143,14 @@ interface AppStore {
   activePlanContext: ArchitectPlanContext | null;
   architectPlanSwitch: ArchitectPlanSwitchState;
   pendingArchitectPlanActivationPayload: ArchitectPlanActivationPayload | null;
+  architectPlanCatalogByBranch: Record<string, ArchitectPlanCatalogBranch>;
+  architectPlanCatalogScopeKey: string | null;
+  architectPlanCatalogScopedProjectIds: string[];
+  architectPlanCatalogModernPlanCount: number;
+  architectPlanCatalogVisiblePlanCount: number;
+  visibleArchitectPlans: ArchitectPlanSummary[];
+  architectPlanCatalogStatus: ArchitectPlanCatalogStatus;
+  architectPlanCatalogError: string | null;
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   strategyMutationPreview: StrategyMutationPreview | null;
@@ -1291,6 +1239,12 @@ interface AppStore {
     planId: string,
     options?: ActivateArchitectPlanOptions,
   ) => Promise<boolean>;
+  loadMacroProjectMetadataForSelection: (options?: {
+    hydrateActivePlan?: boolean;
+    refreshTasks?: boolean;
+    includeArchivedInVisible?: boolean;
+    reason?: "boot" | "project_switch" | "selector" | "auto_plan" | "manual";
+  }) => Promise<MacroProjectMetadataLoadResult | null>;
   setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
@@ -1351,7 +1305,9 @@ interface ActivateArchitectPlanOptions {
   targetBranch?: string | null;
   persistActiveSelection?: boolean;
   allowScopeSwitch?: boolean;
+  consolidateBlankPlans?: boolean;
   planSummaryHint?: ArchitectPlanSummary | null;
+  scopedProjectIdsHint?: string[];
 }
 
 interface ProjectRegistrySnapshot {
@@ -1379,6 +1335,30 @@ const loadProjectRegistrySnapshot = async (params: {
       selectedProjectId: params.selectedProjectId,
     }),
   };
+};
+
+const collectArchitectBranchCandidatesForScope = (params: {
+  registry: ProjectRegistry;
+  scopedProjectIds: string[];
+  activePlanContext: ArchitectPlanContext | null;
+}): string[] => {
+  const scopedProjectIdSet = new Set(params.scopedProjectIds);
+  const scopedProjects = getAllProjectsFromRegistry(params.registry).filter(
+    (project) => scopedProjectIdSet.has(project.id),
+  );
+  return [
+    params.activePlanContext?.targetBranch,
+    ...(params.activePlanContext?.targetBranchesByProjectId
+      ? Object.values(params.activePlanContext.targetBranchesByProjectId)
+      : []),
+    ...scopedProjects.flatMap((project) => [
+      project.gitFlowSettings?.baseBranch,
+      project.gitFlowSettings?.mainBranch,
+    ]),
+  ].filter(
+    (branchName): branchName is string =>
+      typeof branchName === "string" && branchName.trim().length > 0,
+  );
 };
 
 const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
@@ -1453,6 +1433,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activePlanContext: null,
   architectPlanSwitch: idleArchitectPlanSwitchState(),
   pendingArchitectPlanActivationPayload: null,
+  architectPlanCatalogByBranch: {},
+  architectPlanCatalogScopeKey: null,
+  architectPlanCatalogScopedProjectIds: [],
+  architectPlanCatalogModernPlanCount: 0,
+  architectPlanCatalogVisiblePlanCount: 0,
+  visibleArchitectPlans: [],
+  architectPlanCatalogStatus: "idle",
+  architectPlanCatalogError: null,
   planNodes: [],
   predictedBranches: [],
   strategyMutationPreview: null,
@@ -1635,7 +1623,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isProjectSwitching: true, lastError: null });
 
     try {
-      if (previous.selectedGroupId !== nextGroupId) {
+      if (
+        previous.selectedGroupId !== nextGroupId ||
+        previous.selectedProjectId !== nextProjectId
+      ) {
         try {
           await flushMacroMetadataForProjectGroupSwitch(previous);
         } catch (error) {
@@ -1859,6 +1850,163 @@ export const useAppStore = create<AppStore>((set, get) => ({
       options,
     });
     return Boolean(plan);
+  },
+
+  loadMacroProjectMetadataForSelection: async (options = {}) => {
+    const state = get();
+    const registry = {
+      standaloneProjects: state.standaloneProjects,
+      projectGroups: state.projectGroups,
+    };
+    const scopedProjectIds = getScopedProjectIds(
+      registry,
+      state.selectedGroupId,
+      state.selectedProjectId,
+    );
+    const contextId = state.selectedGroupId || state.selectedProjectId;
+    const catalogScopeKey = buildArchitectPlanCatalogScopeKey({
+      selectedGroupId: state.selectedGroupId,
+      selectedProjectId: state.selectedProjectId,
+      scopedProjectIds,
+    });
+
+    if (!contextId || scopedProjectIds.length === 0) {
+      if (options.hydrateActivePlan !== false) {
+        clearActiveArchitectPlanInStore();
+      }
+      set({
+        architectPlanCatalogByBranch: {},
+        architectPlanCatalogScopeKey: catalogScopeKey,
+        architectPlanCatalogScopedProjectIds: scopedProjectIds,
+        architectPlanCatalogModernPlanCount: 0,
+        architectPlanCatalogVisiblePlanCount: 0,
+        visibleArchitectPlans: [],
+        architectPlanCatalogStatus: "ready",
+        architectPlanCatalogError: null,
+      });
+      if (options.refreshTasks) {
+        await useTaskStore.getState().refreshFromPlan();
+      }
+      return null;
+    }
+
+    set({
+      architectPlanCatalogStatus: "loading",
+      architectPlanCatalogError: null,
+      architectPlanCatalogScopeKey: catalogScopeKey,
+      architectPlanCatalogScopedProjectIds: scopedProjectIds,
+      architectPlanCatalogModernPlanCount: 0,
+      architectPlanCatalogVisiblePlanCount: 0,
+    });
+
+    try {
+      const localContext =
+        await localProjectContext.getLocalProjectContextState(contextId);
+      const result = await loadMacroProjectMetadataCatalog({
+        scopedProjectIds,
+        selectedGroupId: state.selectedGroupId,
+        selectedProjectId: state.selectedProjectId,
+        rememberedPlanId: localContext?.lastPlanId ?? null,
+        currentActivePlanId: state.activeArchitectPlanId,
+        currentTargetBranch: state.activePlanContext?.targetBranch ?? null,
+        candidateBranches: collectArchitectBranchCandidatesForScope({
+          registry,
+          scopedProjectIds,
+          activePlanContext: state.activePlanContext,
+        }),
+        includeArchivedInVisible: options.includeArchivedInVisible === true,
+      });
+      const catalogModernPlanCount = result.snapshot.branches.reduce(
+        (count, branch) =>
+          count + branch.plans.filter((plan) => plan.status !== "deleted").length,
+        0,
+      );
+
+      set({
+        architectPlanCatalogByBranch: result.snapshot.branchCatalogByBranch,
+        architectPlanCatalogScopeKey: catalogScopeKey,
+        architectPlanCatalogScopedProjectIds: result.snapshot.scopedProjectIds,
+        architectPlanCatalogModernPlanCount: catalogModernPlanCount,
+        architectPlanCatalogVisiblePlanCount: result.snapshot.visiblePlans.length,
+        visibleArchitectPlans: result.snapshot.visiblePlans,
+        architectPlanCatalogStatus: "ready",
+        architectPlanCatalogError: null,
+      });
+
+      if (options.hydrateActivePlan !== false) {
+        if (result.selectedPlan && result.selectedBranchName) {
+          const activatedPlan = await activateArchitectPlanInStore({
+            planId: result.selectedPlan.id,
+            options: {
+              targetBranch: result.selectedBranchName,
+              persistActiveSelection: false,
+              allowScopeSwitch: false,
+              consolidateBlankPlans: false,
+              planSummaryHint: result.selectedPlan,
+              scopedProjectIdsHint: scopedProjectIds,
+            },
+          });
+          if (activatedPlan) {
+            await persistResolvedArchitectPlanContext({
+              contextId,
+              groupId: state.selectedGroupId,
+              focusProjectId: state.selectedProjectId,
+              planId: activatedPlan.id,
+              localContext,
+            });
+          } else {
+            clearActiveArchitectPlanInStore();
+          }
+        } else {
+          clearActiveArchitectPlanInStore();
+        }
+      }
+
+      if (options.refreshTasks) {
+        await useTaskStore.getState().refreshFromPlan();
+      }
+
+      devLogger.info(
+        JSON.stringify({
+          event: "architect_metadata_selection_loaded",
+          at: new Date().toISOString(),
+          reason: options.reason ?? "manual",
+          selectedGroupId: state.selectedGroupId,
+          selectedProjectId: state.selectedProjectId,
+          scopedProjectIds,
+          scannedBranchNames: result.snapshot.scannedBranchNames,
+          scannedBranchCount: result.snapshot.scannedBranchNames.length,
+          planCount: catalogModernPlanCount,
+          visiblePlanCount: result.snapshot.visiblePlans.length,
+          visiblePlanIds: result.snapshot.visiblePlans.map((plan) => plan.id),
+          selectedPlanId: result.selectedPlan?.id ?? null,
+          selectionReason: result.selectionReason,
+        }),
+      );
+
+      return result;
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({
+        architectPlanCatalogByBranch: {},
+        architectPlanCatalogScopeKey: catalogScopeKey,
+        architectPlanCatalogScopedProjectIds: scopedProjectIds,
+        architectPlanCatalogModernPlanCount: 0,
+        architectPlanCatalogVisiblePlanCount: 0,
+        visibleArchitectPlans: [],
+        architectPlanCatalogStatus: "error",
+        architectPlanCatalogError: normalized.message,
+      });
+      devLogger.warn(
+        JSON.stringify({
+          event: "architect_metadata_selection_load_failed",
+          at: new Date().toISOString(),
+          reason: options.reason ?? "manual",
+          error: normalized.message,
+        }),
+      );
+      return null;
+    }
   },
 
   setActivePlanContext: (plan) =>
@@ -4470,9 +4618,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     try {
-      await ensureAutoPlanForSelection({
-        groupId: useAppStore.getState().selectedGroupId,
-        projectId: useAppStore.getState().selectedProjectId,
+      const current = useAppStore.getState();
+      await current.loadMacroProjectMetadataForSelection({
+        hydrateActivePlan: current.mode === "Architect",
+        refreshTasks: true,
+        reason: "boot",
       });
     } catch (error) {
       devLogger.info(

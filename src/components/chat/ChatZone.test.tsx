@@ -170,7 +170,7 @@ type MockChatState = {
 
 type AppStoreState = {
   mode: AppMode;
-  agentType: string;
+  agentType: 'build' | 'plan';
   setAgentType: ReturnType<typeof mock>;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
@@ -734,7 +734,7 @@ const buildProjectGroups = () => [
 const resetState = () => {
   appState = {
     mode: 'Chat',
-    agentType: 'default',
+    agentType: 'build',
     setAgentType: mock(() => undefined),
     selectedGroupId: 'group-1',
     selectedProjectId: null,
@@ -2651,8 +2651,8 @@ describe('ChatZone', () => {
     expect(manualButton).not.toBeNull();
     expect(manualButton?.disabled).toBe(true);
     expect(manualButton?.getAttribute('title')).toContain("plus d'historique");
-    expect(requireContainer().textContent).toContain('Action manuelle');
-    expect(requireContainer().textContent).toContain("plus d'historique");
+    expect(requireContainer().textContent).not.toContain('Action manuelle');
+    expect(requireContainer().textContent).not.toContain("plus d'historique");
     chatState.refreshConversationContextDiagnostics.mockClear();
 
     await act(async () => {
@@ -3394,7 +3394,7 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('Generate Strategy');
   });
 
-  it('prefills the Architect composer to identify needs after the first explanation', async () => {
+  it('sends the Architect identify-needs action after the first explanation', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     chatState.messages = [
@@ -3420,13 +3420,19 @@ describe('ChatZone', () => {
       button?.click();
     });
 
-    expect(composerEditorSetTextCalls.at(-1)).toContain('need_add');
-    expect(composerEditorSetTextCalls.at(-1)).toContain('question');
-    expect(composerEditorFocusCalls).toBeGreaterThan(0);
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(composerEditorSetTextCalls).toHaveLength(0);
+    expect(composerEditorFocusCalls).toBe(0);
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('need_add'),
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('question'),
+    });
   });
 
-  it('prefills the Architect composer to clarify non-validated needs', async () => {
+  it('sends the Architect clarify-needs action while keeping generation available', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     needsState.needs = [
@@ -3441,23 +3447,53 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
     });
 
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
+    const buttons = Array.from(requireContainer().querySelectorAll('button'));
+    const button = buttons.find((candidate) =>
       candidate.textContent?.includes('Clarify Needs')
     );
+    const generateButton = buttons.find((candidate) =>
+      candidate.textContent?.includes('Generate Strategy')
+    ) as HTMLButtonElement | undefined;
 
     expect(button).toBeDefined();
+    expect(generateButton).toBeDefined();
+    expect(generateButton?.disabled).toBe(false);
+    expect(generateButton?.title).toBe('Generate strategy from current needs');
+    expect(buttons.indexOf(button as HTMLButtonElement)).toBeLessThan(
+      buttons.indexOf(generateButton as HTMLButtonElement),
+    );
 
     await act(async () => {
       button?.click();
     });
 
-    expect(composerEditorSetTextCalls.at(-1)).toContain('need_update');
-    expect(composerEditorSetTextCalls.at(-1)).toContain('validated');
-    expect(composerEditorSetTextCalls.at(-1)).not.toContain('strategy_generate');
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(composerEditorSetTextCalls).toHaveLength(0);
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('need_update'),
+    });
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('validated'),
+    });
+    expect(chatState.sendMessage).not.toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('strategy_generate'),
+    });
+
+    chatState.sendMessage.mockClear();
+
+    await act(async () => {
+      generateButton?.click();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('call `strategy_generate`'),
+    });
   });
 
-  it('keeps an existing composer draft when preparing the next Architect step', async () => {
+  it('keeps an existing composer draft when sending an Architect action', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     chatState.messages = [
@@ -3483,9 +3519,57 @@ describe('ChatZone', () => {
 
     expect(composerEditorValue).toBe('Existing user draft');
     expect(composerEditorSetTextCalls).toHaveLength(0);
-    expect(composerEditorFocusCalls).toBeGreaterThan(0);
-    expect(notifyInfoMock).toHaveBeenCalledTimes(1);
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(composerEditorFocusCalls).toBe(0);
+    expect(notifyInfoMock).not.toHaveBeenCalled();
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining('need_add'),
+    });
+  });
+
+  it('renders Architect action prompts as compact action bubbles', async () => {
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-action-identify',
+        role: 'user',
+        content:
+          'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.',
+      }),
+    ];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const row = requireContainer().querySelector('#chat-message-msg-action-identify');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('[data-testid="architect-action-message"]')).not.toBeNull();
+    expect(row?.textContent).toContain('Identify Needs');
+    expect(row?.textContent).toContain(
+      'Ask Architect to inspect the codebase and structure the first needs'
+    );
+    expect(row?.textContent).not.toContain('need_add');
+    expect(row?.querySelector('[data-user-message-content="true"]')).toBeNull();
+  });
+
+  it('keeps normal user messages in the standard user bubble', async () => {
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-user-normal',
+        role: 'user',
+        content: 'I want to rebuild the onboarding flow.',
+      }),
+    ];
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const row = requireContainer().querySelector('#chat-message-msg-user-normal');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('[data-testid="architect-action-message"]')).toBeNull();
+    expect(row?.querySelector('[data-user-message-content="true"]')).not.toBeNull();
+    expect(row?.textContent).toContain('I want to rebuild the onboarding flow.');
   });
 
   it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
@@ -4039,6 +4123,42 @@ describe('ChatZone', () => {
     expect(composer).not.toBeNull();
     expect(composer?.disabled).toBe(false);
     expect(composer?.getAttribute('placeholder')).toBe('Type your message');
+  });
+
+  it('resets a newly selected standalone task to Build mode once', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      agentType: 'plan',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(appState.setAgentType).toHaveBeenCalledWith('build');
   });
 
   it('sends the first standalone task message directly from the composer', async () => {

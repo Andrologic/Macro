@@ -58,6 +58,28 @@ const REPEATED_TOOL_CALL_ABORT_RESULT =
   'Tool execution aborted: repeated identical tool call.';
 const HISTORICAL_TOOL_RESULT_MAX_CHARS = 1600;
 
+const formatToolExecutionError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === 'object') {
+    const maybeMessage = 'message' in error ? (error as { message?: unknown }).message : undefined;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
+      return maybeMessage;
+    }
+    const maybeError = 'error' in error ? (error as { error?: unknown }).error : undefined;
+    if (typeof maybeError === 'string' && maybeError.trim()) {
+      return maybeError;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
+};
+
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
 
@@ -2521,9 +2543,7 @@ const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
-                const toolResult = `Error executing tool ${toolName}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`;
+                const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
                   toolCallId,
@@ -3126,7 +3146,7 @@ const streamChatViaNativeToolCallingProvider = async (
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } catch (error) {
-          toolResult = `Error executing tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+          toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } finally {
@@ -4057,7 +4077,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } catch (e) {
-            toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
+            toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(e)}`;
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } finally {

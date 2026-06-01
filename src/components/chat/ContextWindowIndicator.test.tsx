@@ -5,7 +5,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import type {
   ConversationCompactionStatus,
   ConversationContextDiagnostics,
-  ManualCompactionResult,
 } from '../../stores/useChatStore';
 import {
   createTranslationMock,
@@ -193,19 +192,6 @@ const buildCompactionStatus = (
   },
   ...overrides,
 });
-
-const buildManualFeedback = (
-  overrides: Partial<ManualCompactionResult> = {},
-): ManualCompactionResult => ({
-  outcome: 'compacted',
-  updatedAt: '2026-05-10T00:02:00.000Z',
-  footprintBefore: buildDiagnostics().footprintBefore!,
-  footprintAfter: buildDiagnostics().footprintAfter!,
-  tokensSaved: 24_000,
-  upToMessageId: 'a1',
-  summarySource: 'model',
-  ...overrides,
-} as ManualCompactionResult);
 
 describe('ContextWindowIndicator', () => {
   let container: HTMLDivElement | null = null;
@@ -416,7 +402,7 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Payload');
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
 
     await act(async () => {
       document.body.dispatchEvent(
@@ -425,7 +411,7 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).not.toContain('Payload');
+    expect(document.body.textContent).not.toContain('Fenêtre de contexte');
   });
 
   it('keeps the popover open when interacting inside it', async () => {
@@ -451,7 +437,7 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Payload');
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
   });
 
   it('keeps the circular control on the primary color across status tones', async () => {
@@ -491,7 +477,7 @@ describe('ContextWindowIndicator', () => {
     expect(button?.getAttribute('class')).not.toContain('text-destructive');
   });
 
-  it('keeps previous metrics visible while a refresh is estimating', async () => {
+  it('keeps previous pressure visible while a refresh is estimating', async () => {
     await act(async () => {
       root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
       await flushRender();
@@ -520,11 +506,11 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.textContent).toContain('82%');
-    expect(document.body.textContent).toContain('42 messages · 6 sources');
+    expect(document.body.textContent).not.toContain('42 messages · 6 sources');
     expect(document.body.querySelector('[data-testid="context-window-refreshing"]')).toBeNull();
   });
 
-  it('does not reuse previous metrics for an estimating diagnostic from another conversation', async () => {
+  it('does not reuse previous pressure for an estimating diagnostic from another conversation', async () => {
     await act(async () => {
       root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
       await flushRender();
@@ -566,7 +552,8 @@ describe('ContextWindowIndicator', () => {
     });
 
     expect(document.body.textContent).toContain('Fenêtre de contexte');
-    expect(document.body.textContent).toContain('0 messages · 0 sources');
+    expect(document.body.textContent).toContain('0%');
+    expect(document.body.textContent).not.toContain('0 messages · 0 sources');
     expect(document.body.textContent).not.toContain('42 messages · 6 sources');
   });
 
@@ -604,7 +591,7 @@ describe('ContextWindowIndicator', () => {
     expect(document.body.textContent).not.toContain('Contexte disponible');
   });
 
-  it('does not reuse previous metrics for an estimating diagnostic from another model', async () => {
+  it('does not reuse previous pressure for an estimating diagnostic from another model', async () => {
     await act(async () => {
       root?.render(<ContextWindowIndicator diagnostics={buildDiagnostics()} />);
       await flushRender();
@@ -645,7 +632,8 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('1 messages · 0 sources');
+    expect(document.body.textContent).toContain('0%');
+    expect(document.body.textContent).not.toContain('1 messages · 0 sources');
     expect(document.body.textContent).not.toContain('42 messages · 6 sources');
   });
 
@@ -691,89 +679,14 @@ describe('ContextWindowIndicator', () => {
     expect(compactButton).not.toBeNull();
     expect(compactButton?.disabled).toBe(true);
     expect(compactButton?.getAttribute('title')).toBe(disabledReason);
-    expect(document.body.textContent).toContain('Action manuelle');
-    expect(document.body.textContent).toContain(disabledReason);
+    expect(document.body.textContent).not.toContain('Action manuelle');
+    expect(document.body.textContent).not.toContain(disabledReason);
 
     await act(async () => {
       compactButton?.click();
       await flushRender();
     });
 
-    expect(onCompactNow).not.toHaveBeenCalled();
-  });
-
-  it('shows the latest manual compaction feedback in the popover', async () => {
-    await act(async () => {
-      root?.render(
-        <ContextWindowIndicator
-          diagnostics={buildDiagnostics()}
-          manualCompactionFeedback={buildManualFeedback()}
-        />,
-      );
-      await flushRender();
-    });
-
-    await act(async () => {
-      document.body
-        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
-        ?.click();
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Dernier résultat');
-    expect(document.body.textContent).toContain('Checkpoint créé');
-    expect(document.body.textContent).toContain('24k tokens économisés');
-  });
-
-  it('keeps the below-threshold action greyed while showing a skipped result', async () => {
-    const onCompactNow = mock(() => undefined);
-    const disabledReason = 'Le contexte est trop léger pour un compactage utile.';
-    await act(async () => {
-      root?.render(
-        <ContextWindowIndicator
-          diagnostics={buildDiagnostics({
-            phase: 'idle',
-            ratio: 0.18,
-            usableRatio: 0.22,
-            footprintBefore: undefined,
-            footprintAfter: {
-              ...buildDiagnostics().footprintAfter!,
-              totalEstimatedTokens: 20_000,
-              serializedPayloadTokens: 18_000,
-              totalContextRatio: 0.18,
-              usableContextRatio: 0.22,
-              threshold: 'none',
-              reason: 'below_threshold',
-              isHardStop: false,
-            },
-          })}
-          manualCompactionFeedback={buildManualFeedback({
-            outcome: 'skipped',
-            reason: 'below_threshold',
-            userTurnCount: 3,
-            retainedTurnCount: 2,
-          } as Partial<ManualCompactionResult>)}
-          manualCompactionDisabledReason={disabledReason}
-          onCompactNow={onCompactNow}
-        />,
-      );
-      await flushRender();
-    });
-
-    await act(async () => {
-      document.body
-        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
-        ?.click();
-      await flushRender();
-    });
-
-    expect(document.body.textContent).toContain('Compactage ignoré');
-    expect(document.body.textContent).toContain('sous le seuil');
-    expect(document.body.textContent).toContain(disabledReason);
-    const compactButton = Array.from(document.body.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Rien à compacter'),
-    );
-    expect(compactButton?.disabled).toBe(true);
     expect(onCompactNow).not.toHaveBeenCalled();
   });
 
@@ -863,7 +776,7 @@ describe('ContextWindowIndicator', () => {
     ).toBe('64 100');
   });
 
-  it('shows detailed diagnostics and the manual compaction action', async () => {
+  it('shows simplified diagnostics and the manual compaction action', async () => {
     const onCompactNow = mock(() => undefined);
     await act(async () => {
       root?.render(
@@ -882,18 +795,23 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Payload');
-    expect(document.body.textContent).toContain('Limite modèle');
-    expect(document.body.textContent).toContain('Budget utile');
+    expect(document.body.textContent).toContain('Fenêtre de contexte');
+    expect(document.body.textContent).toContain('82%');
+    expect(document.body.textContent).toContain('opencode · kimi-k2.6');
+    expect(document.body.textContent).not.toContain('Payload');
+    expect(document.body.textContent).not.toContain('Limite modèle');
+    expect(document.body.textContent).not.toContain('Budget utile');
     expect(document.body.textContent).not.toContain('Réserve sortie');
     expect(document.body.textContent).not.toContain('reserved');
     expect(document.body.textContent).not.toContain('reserve');
-    expect(document.body.textContent).toContain('Marge');
-    expect(document.body.textContent).toContain('Source limite');
-    expect(document.body.textContent).toContain('Provider');
-    expect(document.body.textContent).toContain('Vérifiée');
-    expect(document.body.textContent).toContain('Contexte total');
-    expect(document.body.textContent).toContain('42 messages · 6 sources');
+    expect(document.body.textContent).not.toContain('Marge');
+    expect(document.body.textContent).not.toContain('Source limite');
+    expect(document.body.textContent).not.toContain('Vérifiée');
+    expect(document.body.textContent).not.toContain('Contexte total');
+    expect(document.body.textContent).not.toContain('Checkpoint');
+    expect(document.body.textContent).not.toContain('42 messages · 6 sources');
+    expect(document.body.textContent).toContain('Actualiser');
+    expect(document.body.textContent).toContain('Compacter maintenant');
     expect(document.body.textContent).not.toContain('Le fil a déjà été compacté');
 
     await act(async () => {
@@ -936,9 +854,8 @@ describe('ContextWindowIndicator', () => {
       await flushRender();
     });
 
-    expect(document.body.textContent).toContain('Limite estimée');
-    expect(document.body.textContent).toContain('Fallback Macro');
     expect(document.body.textContent).toContain('Limite estimée par Macro.');
     expect(document.body.textContent).not.toContain('Limite modèle');
+    expect(document.body.textContent).not.toContain('Fallback Macro');
   });
 });

@@ -281,6 +281,7 @@ pub struct WorkspaceArchitectListPlansRequestDto {
     pub branch_name: String,
     pub include_deleted: bool,
     pub include_archived: bool,
+    pub scoped_project_ids_hint: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
