@@ -11410,6 +11410,57 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().sendState).toBe('error');
   });
 
+  it('blocks standalone tasks before streaming when repository or branch metadata is missing', async () => {
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        task_source: 'standalone',
+        plan_id: '',
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        branch_name: '',
+        assigned_branch: '',
+        execution_targets: [],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Standalone export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Lance cette tâche indépendante.',
+        taskId: 'task-1',
+      })
+    ).rejects.toThrow('missing its execution target');
+
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
+  });
+
   it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
@@ -11528,6 +11579,207 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'end with a concrete implementation plan',
     );
+  });
+
+  it('exposes build tools but hides Architect task tools for standalone tasks', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        task_source: 'standalone',
+        plan_id: '',
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/standalone-export',
+            worktreeKey: 'standalone-export-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Standalone export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Implémente cette tâche indépendante.',
+      taskId: 'task-1',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    }>();
+
+    expect(streamOptions.allowedToolIds).toContain('terminal_create_session');
+    expect(streamOptions.allowedToolIds).toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).toContain('write');
+    expect(streamOptions.allowedToolIds).toContain('git_status');
+    expect(streamOptions.allowedToolIds).not.toContain('task_todo_get');
+    expect(streamOptions.allowedToolIds).not.toContain('task_todo_update');
+    expect(streamOptions.allowedToolIds).not.toContain('task_artifact_list');
+    expect(streamOptions.allowedToolIds).not.toContain('task_artifact_get');
+    expect(streamOptions.allowedToolIds).not.toContain('task_artifact_put');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'This is a standalone implementation task',
+    );
+    expect(String(streamOptions.messages[0]?.content)).not.toContain('[Task Todos]');
+  });
+
+  it('keeps standalone Plan mode read-only without Architect task tools', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Implement';
+    appState.agentType = 'plan';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        task_source: 'standalone',
+        plan_id: '',
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/standalone-export',
+            worktreeKey: 'standalone-export-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Standalone export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Analyse avant de coder.',
+      taskId: 'task-1',
+    });
+
+    const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
+      messages: Array<{ role: string; content: string }>;
+    }>();
+
+    expect(streamOptions.allowedToolIds).toContain('read');
+    expect(streamOptions.allowedToolIds).toContain('grep');
+    expect(streamOptions.allowedToolIds).toContain('git_diff');
+    expect(streamOptions.allowedToolIds).not.toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).not.toContain('write');
+    expect(streamOptions.allowedToolIds).not.toContain('task_todo_get');
+    expect(streamOptions.allowedToolIds).not.toContain('task_artifact_list');
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'Plan mode is read-only',
+    );
+    expect(String(streamOptions.messages[0]?.content)).toContain(
+      'This is a standalone implementation task',
+    );
+  });
+
+  it('returns a clear unavailable result for legacy Architect task tools on standalone tasks', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        task_source: 'standalone',
+        plan_id: '',
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/standalone-export',
+            worktreeKey: 'standalone-export-web',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Standalone export',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Implémente cette tâche indépendante.',
+      taskId: 'task-1',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const todoResult = await onToolCall('task_todo_get', {});
+    const artifactResult = await onToolCall('task_artifact_list', {});
+
+    expect(String(todoResult)).toContain('unavailable for standalone tasks');
+    expect(String(artifactResult)).toContain('unavailable for standalone tasks');
   });
 
   it('denies forced mutating tool calls during implement plan agent turns', async () => {

@@ -915,7 +915,8 @@ describe('architectAutoPlan', () => {
     expect(result.deletedPlanIds).toEqual(['release-older']);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans.map((plan) => plan.id).sort()).toEqual([hotfix.id, releaseWinner.id].sort());
+    expect(listed.plans.map((plan) => plan.id).sort()).toEqual([hotfix.id, releaseWinner.id, 'release-older'].sort());
+    expect(listed.plans.find((plan) => plan.id === 'release-older')?.status).toBe('deleted');
   });
 
   it('prefers the active blank draft over newer blank duplicates during explicit create', async () => {
@@ -950,8 +951,9 @@ describe('architectAutoPlan', () => {
     expect(ensured?.plan.id).toBe(activeBlank.id);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(1);
-    expect(listed.plans[0]?.id).toBe(activeBlank.id);
+    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans.find((plan) => plan.id === activeBlank.id)?.status).toBe('draft');
+    expect(listed.plans.find((plan) => plan.id === 'blank-plan-newer')?.status).toBe('deleted');
   });
 
   it('falls back to the most recent blank draft when no active blank is set', async () => {
@@ -985,11 +987,12 @@ describe('architectAutoPlan', () => {
     expect(ensured?.plan.id).toBe(newerBlank.id);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(1);
-    expect(listed.plans[0]?.id).toBe(newerBlank.id);
+    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans.find((plan) => plan.id === newerBlank.id)?.status).toBe('draft');
+    expect(listed.plans.find((plan) => plan.id === 'blank-plan-older')?.status).toBe('deleted');
   });
 
-  it('hard-deletes duplicate blank placeholders that share the same scope', async () => {
+  it('soft-deletes duplicate blank placeholders that share the same scope', async () => {
     const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } =
       createArchitectAutoPlanHarness();
     await createArchitectPlan({
@@ -1019,8 +1022,9 @@ describe('architectAutoPlan', () => {
     expect(result.deletedPlanIds).toEqual(['blank-plan-older']);
 
     const listed = await listArchitectPlans(branchName, true, true);
-    expect(listed.plans).toHaveLength(1);
-    expect(listed.plans[0]?.id).toBe(winner.id);
+    expect(listed.plans).toHaveLength(2);
+    expect(listed.plans.find((plan) => plan.id === winner.id)?.status).toBe('draft');
+    expect(listed.plans.find((plan) => plan.id === 'blank-plan-older')?.status).toBe('deleted');
   });
 
   it('returns new plan 2 as the next numbered placeholder after a single base label', () => {

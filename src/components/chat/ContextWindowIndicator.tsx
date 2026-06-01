@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type {
@@ -24,129 +24,10 @@ interface ContextWindowIndicatorProps {
 
 type TranslationFunction = ReturnType<typeof useTranslation>['t'];
 
+const POPOVER_EDGE_OFFSET = 8;
+
 const formatPercent = (value?: number): string =>
   `${Math.round(Math.max(0, value ?? 0) * 100)}%`;
-
-const formatNumber = (value?: number): string =>
-  typeof value === 'number' && Number.isFinite(value)
-    ? `${Math.round(value).toLocaleString()}`
-    : '0';
-
-const formatCompactTokens = (value?: number): string => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  const sign = value < 0 ? '-' : '';
-  const absolute = Math.abs(value);
-  if (absolute >= 1000) return `${sign}${Math.round(absolute / 1000).toLocaleString()}k`;
-  return Math.round(value).toLocaleString();
-};
-
-const getManualCompactionFeedbackLabel = (
-  t: TranslationFunction,
-  feedback?: ManualCompactionResult | null,
-): string | null => {
-  if (!feedback) return null;
-  if (feedback.outcome === 'compacted') {
-    return t('chat.contextWindow.manual.feedback.compactedLabel', 'Checkpoint created');
-  }
-  if (feedback.reason === 'not_enough_history') {
-    return t('chat.contextWindow.manual.feedback.notEnoughHistoryLabel', 'Nothing to compact');
-  }
-  if (feedback.reason === 'already_current') {
-    return t('chat.contextWindow.manual.feedback.alreadyCurrentLabel', 'Checkpoint up to date');
-  }
-  return t('chat.contextWindow.manual.feedback.skippedLabel', 'Compaction skipped');
-};
-
-const getManualCompactionFeedbackDetail = (
-  t: TranslationFunction,
-  feedback?: ManualCompactionResult | null,
-): string | null => {
-  if (!feedback) return null;
-  if (feedback.outcome === 'compacted') {
-    return t('chat.contextWindow.manual.feedback.compactedDetail', '{{tokens}} tokens saved', {
-      tokens: formatCompactTokens(feedback.tokensSaved),
-    });
-  }
-  switch (feedback.reason) {
-    case 'not_enough_history':
-      return t(
-        'chat.contextWindow.manual.feedback.notEnoughHistoryDetail',
-        '{{userTurns}} user turns, {{retainedTurns}} retained',
-        {
-          userTurns: feedback.userTurnCount,
-          retainedTurns: feedback.retainedTurnCount,
-        },
-      );
-    case 'already_current':
-      return t(
-        'chat.contextWindow.manual.feedback.alreadyCurrentDetail',
-        'The existing checkpoint already covers the current boundary',
-      );
-    case 'not_beneficial':
-      return t(
-        'chat.contextWindow.manual.feedback.notBeneficialDetail',
-        'The summary would not have reduced the payload',
-      );
-    case 'below_threshold':
-    default:
-      return t(
-        'chat.contextWindow.manual.feedback.belowThresholdDetail',
-        'Context is below the useful compaction threshold',
-      );
-  }
-};
-
-const getContextLimitLabel = (
-  t: TranslationFunction,
-  diagnostics?: ConversationContextDiagnostics,
-): string =>
-  diagnostics?.isContextLimitAuthoritative === false
-    ? t('chat.contextWindow.metrics.estimatedLimit', 'Estimated limit')
-    : t('chat.contextWindow.metrics.modelLimit', 'Model limit');
-
-const getContextLimitSourceLabel = (
-  t: TranslationFunction,
-  diagnostics?: ConversationContextDiagnostics,
-): string => {
-  switch (diagnostics?.contextLimitSource) {
-    case 'user_override':
-      return t('chat.contextWindow.limitSource.userOverride', 'User override');
-    case 'provider_metadata':
-      return t('chat.contextWindow.limitSource.providerMetadata', 'Provider');
-    case 'model_metadata':
-      return t('chat.contextWindow.limitSource.modelMetadata', 'Model');
-    case 'models_dev':
-      return 'Models.dev';
-    case 'provider_overflow_error':
-      return t('chat.contextWindow.limitSource.providerOverflowError', 'Provider error');
-    case 'macro_fallback':
-      return t('chat.contextWindow.limitSource.macroFallback', 'Macro fallback');
-    default:
-      return t('chat.contextWindow.limitSource.unknown', 'Unknown');
-  }
-};
-
-const getContextLimitConfidenceLabel = (
-  t: TranslationFunction,
-  diagnostics?: ConversationContextDiagnostics,
-): string => {
-  switch (diagnostics?.contextLimitConfidence) {
-    case 'configured':
-      return t('chat.contextWindow.confidence.configured', 'Configured');
-    case 'verified':
-      return t('chat.contextWindow.confidence.verified', 'Verified');
-    case 'catalog':
-      return t('chat.contextWindow.confidence.catalog', 'Catalog');
-    case 'learned':
-      return t('chat.contextWindow.confidence.learned', 'Learned');
-    case 'fallback':
-      return 'Fallback';
-    default:
-      return diagnostics?.isContextLimitAuthoritative === false
-        ? t('chat.contextWindow.confidence.low', 'Low')
-        : t('chat.contextWindow.confidence.standard', 'Standard');
-  }
-};
 
 const getContextLimitWarning = (
   t: TranslationFunction,
@@ -294,13 +175,16 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   activityLabel,
   canCompactNow = true,
   manualCompactionDisabledReason,
-  manualCompactionFeedback,
   onRefresh,
   onCompactNow,
 }) => {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [popoverPosition, setPopoverPosition] = useState<{
+    top: number;
+    right: number;
+  } | null>(null);
   const [lastStableDiagnostics, setLastStableDiagnostics] = useState<
     ConversationContextDiagnostics | undefined
   >(() =>
@@ -330,6 +214,42 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     document.addEventListener('pointerdown', handlePointerDown, true);
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, [isOpen]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const updatePopoverPosition = () => {
+      const container = containerRef.current;
+      const conversationPanel = container?.closest<HTMLElement>(
+        '[data-chat-conversation-panel]',
+      );
+      const conversationHeader = container?.closest<HTMLElement>(
+        '[data-chat-conversation-header]',
+      );
+
+      if (!conversationPanel || !conversationHeader) {
+        setPopoverPosition(null);
+        return;
+      }
+
+      const panelRect = conversationPanel.getBoundingClientRect();
+      const headerRect = conversationHeader.getBoundingClientRect();
+
+      setPopoverPosition({
+        top: Math.round(headerRect.bottom + POPOVER_EDGE_OFFSET),
+        right: Math.max(
+          POPOVER_EDGE_OFFSET,
+          Math.round(window.innerWidth - panelRect.right + POPOVER_EDGE_OFFSET),
+        ),
+      });
+    };
+
+    updatePopoverPosition();
+    window.addEventListener('resize', updatePopoverPosition);
+    return () => {
+      window.removeEventListener('resize', updatePopoverPosition);
     };
   }, [isOpen]);
 
@@ -387,9 +307,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     };
   }, [pressureRatio]);
 
-  const totalRatio = clampRatio(
-    effectiveDiagnostics?.ratio ?? compactionStatus?.footprintAfter?.totalContextRatio,
-  );
   const progress = Math.round(displayedPressureRatio * 100);
   const compactionWaveLength =
     progress > 0 ? Math.max(1, Math.min(18, progress * 0.35, progress)) : 0;
@@ -397,32 +314,17 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const compactingMaskId = `context-window-compacting-mask-${svgId}`;
   const footprint =
     effectiveDiagnostics?.footprintAfter ?? effectiveDiagnostics?.footprintBefore;
-  const remainingTokens = footprint
-    ? footprint.usableContextTokens - footprint.totalEstimatedTokens
-    : undefined;
-  const savedTokens =
-    effectiveDiagnostics?.footprintBefore && effectiveDiagnostics.footprintAfter
-      ? effectiveDiagnostics.footprintBefore.totalEstimatedTokens -
-        effectiveDiagnostics.footprintAfter.totalEstimatedTokens
-      : undefined;
-  const modelWindowTokens =
-    effectiveDiagnostics?.modelContextWindowTokens ??
-    footprint?.modelContextWindowTokens;
-  const contextLimitLabel = getContextLimitLabel(t, effectiveDiagnostics);
-  const contextLimitSourceLabel = getContextLimitSourceLabel(t, effectiveDiagnostics);
-  const contextLimitConfidenceLabel = getContextLimitConfidenceLabel(t, effectiveDiagnostics);
+  const progressWidth = Math.min(Math.max(displayedPressureRatio * 100, 0), 100);
+  const progressClassName =
+    tone.accentClassName === 'text-destructive'
+      ? 'bg-destructive'
+      : tone.accentClassName === 'text-amber-500'
+        ? 'bg-amber-500'
+        : 'bg-primary';
   const contextLimitWarning = getContextLimitWarning(t, effectiveDiagnostics);
   const modelWindowShrank =
     Boolean(effectiveDiagnostics?.modelContextWindowShrank) ||
     Boolean(footprint?.modelContextWindowShrank);
-  const checkpointLabel =
-    effectiveDiagnostics?.summaryFormatVersion
-      ? `v${effectiveDiagnostics.summaryFormatVersion}${
-          effectiveDiagnostics.summarySource
-            ? ` · ${effectiveDiagnostics.summarySource}`
-            : ''
-        }`
-      : t('chat.contextWindow.none', 'None');
   const statusLabel = activityLabel ??
     (isCompacting ? t('chat.contextWindow.status.compacting', 'Compacting') : toneLabel);
   const compactUnavailableReason =
@@ -440,8 +342,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     !isCompacting &&
     effectiveDiagnostics?.status !== 'error' &&
     !manualCompactionDisabledReason;
-  const manualFeedbackLabel = getManualCompactionFeedbackLabel(t, manualCompactionFeedback);
-  const manualFeedbackDetail = getManualCompactionFeedbackDetail(t, manualCompactionFeedback);
   const compactButtonLabel =
     isCompacting && activityLabel
       ? activityLabel
@@ -556,8 +456,21 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[320px] max-w-[calc(100vw-2rem)] rounded-lg border border-border/70 bg-popover p-3 text-popover-foreground shadow-xl">
-          <div className="flex items-start justify-between gap-3 border-b border-border/60 pb-2">
+        <div
+          className={cn(
+            'z-50 w-[280px] max-w-[calc(100vw-2rem)] rounded-lg border border-border/70 bg-popover p-3 text-popover-foreground shadow-xl',
+            popoverPosition ? 'fixed' : 'absolute right-0 top-full mt-2',
+          )}
+          style={
+            popoverPosition
+              ? {
+                  top: popoverPosition.top,
+                  right: popoverPosition.right,
+                }
+              : undefined
+          }
+        >
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className={cn('text-sm font-medium', tone.accentClassName)}>
                 {statusLabel}
@@ -574,10 +487,14 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               <p className="text-lg font-semibold tabular-nums">
                 {formatPercent(displayedPressureRatio)}
               </p>
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                {t('chat.contextWindow.usefulBudgetShort', 'useful budget')}
-              </p>
             </div>
+          </div>
+
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn('h-full rounded-full transition-[width] duration-500', progressClassName)}
+              style={{ width: `${progressWidth}%` }}
+            />
           </div>
 
           {effectiveDiagnostics?.error ? (
@@ -585,38 +502,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               {effectiveDiagnostics.error}
             </div>
           ) : null}
-
-          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <Metric
-              label={t('chat.contextWindow.metrics.payload', 'Payload')}
-              value={formatCompactTokens(footprint?.serializedPayloadTokens ?? footprint?.totalEstimatedTokens)}
-            />
-            <Metric label={contextLimitLabel} value={formatCompactTokens(modelWindowTokens)} />
-            <Metric
-              label={t('chat.contextWindow.metrics.usefulBudget', 'Useful budget')}
-              value={formatCompactTokens(footprint?.usableContextTokens)}
-            />
-            <Metric
-              label={t('chat.contextWindow.metrics.margin', 'Margin')}
-              value={formatCompactTokens(remainingTokens)}
-            />
-            <Metric
-              label={t('chat.contextWindow.metrics.limitSource', 'Limit source')}
-              value={contextLimitSourceLabel}
-            />
-            <Metric
-              label={t('chat.contextWindow.metrics.confidence', 'Confidence')}
-              value={contextLimitConfidenceLabel}
-            />
-            <Metric
-              label={t('chat.contextWindow.metrics.totalContext', 'Total context')}
-              value={formatPercent(totalRatio)}
-            />
-            <Metric
-              label={t('chat.contextWindow.metrics.checkpoint', 'Checkpoint')}
-              value={checkpointLabel}
-            />
-          </div>
 
           {contextLimitWarning ? (
             <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
@@ -632,61 +517,6 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
               )}
             </div>
           ) : null}
-
-          <section className="mt-3 space-y-2">
-            {manualCompactionDisabledReason && !isCompacting ? (
-              <div className="rounded-md border border-border/50 bg-muted/30 px-2 py-1.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">
-                    {t('chat.contextWindow.manual.action', 'Manual action')}
-                  </span>
-                  <span className="font-medium">
-                    {t('chat.contextWindow.compactButton.none', 'Nothing to compact')}
-                  </span>
-                </div>
-                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-                  {manualCompactionDisabledReason}
-                </p>
-              </div>
-            ) : null}
-            {manualFeedbackLabel ? (
-              <div className="rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">
-                    {t('chat.contextWindow.manual.latestResult', 'Latest result')}
-                  </span>
-                  <span className="font-medium">{manualFeedbackLabel}</span>
-                </div>
-                {manualFeedbackDetail ? (
-                  <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-                    {manualFeedbackDetail}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-            {effectiveDiagnostics?.footprintBefore && effectiveDiagnostics?.footprintAfter ? (
-              <div className="flex items-center justify-between rounded-md border border-border/50 bg-card/40 px-2 py-1.5 text-xs">
-                <span className="text-muted-foreground">
-                  {t('chat.contextWindow.compaction', 'Compaction')}
-                </span>
-                <span className="font-medium tabular-nums">
-                  {formatCompactTokens(effectiveDiagnostics.footprintBefore.totalEstimatedTokens)}
-                  {' → '}
-                  {formatCompactTokens(effectiveDiagnostics.footprintAfter.totalEstimatedTokens)}
-                  {typeof savedTokens === 'number' && savedTokens > 0
-                    ? ` (-${formatCompactTokens(savedTokens)})`
-                    : ''}
-                </span>
-              </div>
-            ) : null}
-          </section>
-
-          <p className="mt-3 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-            {t('chat.contextWindow.countSummary', '{{messages}} messages · {{sources}} sources', {
-              messages: formatNumber(effectiveDiagnostics?.counts.messages),
-              sources: formatNumber(effectiveDiagnostics?.counts.citations),
-            })}
-          </p>
 
           <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/60 pt-3">
             <button
@@ -720,12 +550,5 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     </div>
   );
 };
-
-const Metric: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-  <div className="rounded-md border border-border/50 bg-card/50 px-2 py-1.5">
-    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-    <p className="mt-0.5 font-medium tabular-nums">{value}</p>
-  </div>
-);
 
 export default ContextWindowIndicator;

@@ -540,7 +540,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     if (activePlanNeeds.some((need) => need.status !== 'validated')) {
       return t(
         'architect.noStrategyNeedsUnvalidatedDescription',
-        'Validate every need before generating the strategy.'
+        'Clarify needs if useful, or generate the strategy now.'
       );
     }
     return t(

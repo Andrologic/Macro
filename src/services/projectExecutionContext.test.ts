@@ -156,6 +156,69 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePath).toBe('/repos/solo-app');
   });
 
+  it('retargets a stale single-project task to the selected standalone project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'project-lplr-current',
+      name: 'lplr-app',
+      mountName: 'lplr-app',
+      path: '/repos/lplr-app',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [standaloneProject],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-stale',
+          project_id: 'project-lplr-app-1780237886690',
+          project_ids: ['project-lplr-app-1780237886690'],
+          assigned_branch: 'feature/catalogue',
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780237886690',
+              branchName: 'feature/catalogue',
+              worktreeKey: 'stale-worktree',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: 'project-lplr-current',
+      selectedTaskId: 'task-stale',
+    });
+
+    expect(context.projectId).toBe('project-lplr-current');
+    expect(context.projectIds).toEqual(['project-lplr-current']);
+    expect(context.actionableProjectIds).toEqual(['project-lplr-current']);
+    expect(context.workspacePath).toBe('/repos/lplr-app');
+  });
+
+  it('does not expose a truly unknown task project without a valid fallback', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [projects[0]],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-unknown',
+          project_id: 'missing-project',
+          project_ids: ['missing-project'],
+          assigned_branch: 'feature/missing',
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: null,
+      selectedTaskId: 'task-unknown',
+    });
+
+    expect(context.projectId).toBeNull();
+    expect(context.projectIds).toEqual([]);
+    expect(context.workspacePath).toBeNull();
+  });
+
   it('prefers task worktrees for targeted projects in implement mode', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({

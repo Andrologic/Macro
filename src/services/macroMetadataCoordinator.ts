@@ -56,7 +56,7 @@ interface MacroMetadataCoordinatorDeps {
   debounceMs?: number;
 }
 
-export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 15000;
+export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 0;
 
 const pendingMutations = new Map<string, PendingMacroMetadataMutation>();
 
@@ -171,6 +171,14 @@ export const recordMacroMetadataMutation = (
   };
 
   pendingMutations.set(workspacePath, next);
+
+  if (debounceMs <= 0) {
+    void flushMacroMetadata({
+      trigger: 'debounced_structural',
+      workspacePaths: [workspacePath],
+    }, deps);
+    return;
+  }
 
   next.timer = setTimeout(() => {
     void flushMacroMetadata({

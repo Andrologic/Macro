@@ -226,6 +226,7 @@ const taskStoreState = {
   }>,
   getTaskById: (_taskId: string) => undefined,
   activateTask: mock(async () => undefined),
+  refreshFromPlan: mock(async () => undefined),
 };
 
 const needsStoreState = {
@@ -429,6 +430,9 @@ const registerUseAppStoreMocks = async () => {
   const actualPreferences = await import(
     `../services/preferences.ts?use-app-store-preferences-test=${++importCounter}`
   );
+  const actualImplementTaskCatalog = await import(
+    `../services/implementTaskCatalog.ts?use-app-store-implement-task-catalog-test=${importCounter}`
+  );
 
   registerMockModulePair('./useChatStore', () => ({
     useChatStore: useChatStoreMock,
@@ -480,6 +484,7 @@ const registerUseAppStoreMocks = async () => {
     getArchitectPlan: getArchitectPlanMock,
     getArchitectPlanNeeds: getArchitectPlanNeedsMock,
     getGitFlowBaseBranch: () => 'develop',
+    listArchitectPlanTargetBranches: async () => ['develop'],
     getArchitectPlanProjectIds: collectPlanProjectIds,
     getArchitectPlanVisibleProjectIds: collectPlanProjectIds,
     getArchitectPlanTargetBranchesByProjectId:
@@ -509,11 +514,13 @@ const registerUseAppStoreMocks = async () => {
   }));
 
   registerMockModulePair('../services/implementTaskCatalog', () => ({
+    ...actualImplementTaskCatalog,
     taskMatchesProjectId: taskMatchesMockProjectId,
   }));
 
   registerMockModulePair('../services/tauriIpc', () => ({
     isTauriAvailable: () => tauriAvailable,
+    workspaceArchitectInvalidate: async () => undefined,
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
   }));
 
@@ -521,6 +528,7 @@ const registerUseAppStoreMocks = async () => {
     devLogger: {
       info: () => undefined,
       log: () => undefined,
+      warn: () => undefined,
     },
   }));
 };
@@ -589,6 +597,7 @@ describe('useAppStore architect plan resolution', () => {
     needsStoreState.hydrateNeedsForPlan.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
     taskStoreState.activateTask.mockClear();
+    taskStoreState.refreshFromPlan.mockClear();
     chatStoreState.reconcileProjectRegistry.mockClear();
     taskStoreState.tasks = [];
     chatStoreState.conversations = [];
@@ -631,6 +640,17 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(useAppStore.getState().activeArchitectPlanId).toBe('plan-newest');
     expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-newest');
+    expect(useAppStore.getState().architectPlanCatalogScopedProjectIds).toEqual([
+      'project-1',
+      'project-2',
+    ]);
+    expect(useAppStore.getState().architectPlanCatalogModernPlanCount).toBe(2);
+    expect(useAppStore.getState().architectPlanCatalogVisiblePlanCount).toBe(2);
+    expect(
+      useAppStore
+        .getState()
+        .visibleArchitectPlans.map((plan: { id: string }) => plan.id)
+    ).toEqual(['plan-newest', 'plan-older']);
 
     const selectorState = computePlanSelectorRefreshState({
       plans: Array.from(planById.values()).map(toPlanSummary),
@@ -675,8 +695,9 @@ describe('useAppStore architect plan resolution', () => {
     expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
       attemptPull: false,
     });
-    expect(useAppStore.getState().projectGroups).toHaveLength(1);
-    expect(useAppStore.getState().projectGroups[0]?.id).toBe('group-recovered');
+    expect(useAppStore.getState().projectGroups).toHaveLength(0);
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(1);
+    expect(useAppStore.getState().standaloneProjects[0]?.id).toBe('project-recovered');
     expect(useAppStore.getState().lastError).toBeNull();
   });
 
@@ -715,7 +736,7 @@ describe('useAppStore architect plan resolution', () => {
 
     await useAppStore.getState().debugResetProject('project-1');
 
-    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBe('project-2');
     expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
     expect(projectContexts.has('project-1')).toBe(false);
@@ -735,7 +756,7 @@ describe('useAppStore architect plan resolution', () => {
 
     await useAppStore.getState().debugResetProject('project-1');
 
-    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBe('project-2');
     expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
     expect(sessionContext?.selectedProjectId).toBe('project-2');

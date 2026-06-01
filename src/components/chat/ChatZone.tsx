@@ -24,7 +24,7 @@ import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { Icon } from '../ui/Icon';
+import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
@@ -123,7 +123,118 @@ type ArchitectStrategyProgressAction =
   | 'clarify-needs'
   | 'generate-strategy'
   | 'regenerate-strategy';
+interface ArchitectToolbarButton {
+  icon: IconName;
+  label: string;
+  title: string;
+}
+interface ArchitectButtonAction extends ArchitectToolbarButton {
+  id: ArchitectStrategyProgressAction;
+  fullPrompt: string;
+  displayDescription: string;
+}
 const MANUAL_COMPACTION_RETAINED_USER_TURNS = 2;
+
+type ChatTranslation = ReturnType<typeof useTranslation>['t'];
+
+const normalizeArchitectActionPrompt = (value: string): string =>
+  value.trim().replace(/\s+/g, ' ');
+
+const buildArchitectButtonActions = (t: ChatTranslation): Record<
+  ArchitectStrategyProgressAction,
+  ArchitectButtonAction
+> => ({
+  'identify-needs': {
+    id: 'identify-needs',
+    icon: 'sparkles',
+    label: t('architect.identifyNeeds', 'Identify Needs'),
+    title: t(
+      'architect.identifyNeedsHint',
+      'Ask Architect to inspect the codebase and structure the first needs'
+    ),
+    displayDescription: t(
+      'architect.identifyNeedsHint',
+      'Ask Architect to inspect the codebase and structure the first needs'
+    ),
+    fullPrompt: t(
+      'architect.identifyNeedsPrompt',
+      'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.'
+    ),
+  },
+  'clarify-needs': {
+    id: 'clarify-needs',
+    icon: 'message-circle-question',
+    label: t('architect.clarifyNeeds', 'Clarify Needs'),
+    title: t(
+      'architect.clarifyNeedsHint',
+      'Ask Architect to resolve open questions and validate the needs'
+    ),
+    displayDescription: t(
+      'architect.clarifyNeedsHint',
+      'Ask Architect to resolve open questions and validate the needs'
+    ),
+    fullPrompt: t(
+      'architect.clarifyNeedsPrompt',
+      'Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.'
+    ),
+  },
+  'generate-strategy': {
+    id: 'generate-strategy',
+    icon: 'sparkles',
+    label: t('architect.generateStrategy', 'Generate Strategy'),
+    title: t(
+      'architect.generateStrategyHint',
+      'Generate strategy from current needs'
+    ),
+    displayDescription: t(
+      'architect.generateStrategyHint',
+      'Generate strategy from current needs'
+    ),
+    fullPrompt: `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+  },
+  'regenerate-strategy': {
+    id: 'regenerate-strategy',
+    icon: 'refresh-cw',
+    label: t('architect.regenerateStrategy', 'Regenerate Strategy'),
+    title: t(
+      'architect.regenerateStrategyHint',
+      'Regenerate strategy from current needs'
+    ),
+    displayDescription: t(
+      'architect.regenerateStrategyHint',
+      'Regenerate strategy from current needs'
+    ),
+    fullPrompt: `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+  },
+});
+
+const resolveArchitectButtonActionFromContent = (
+  content: string,
+  t: ChatTranslation,
+): ArchitectButtonAction | null => {
+  const actions = buildArchitectButtonActions(t);
+  const normalizedContent = normalizeArchitectActionPrompt(content);
+  const exactMatch = Object.values(actions).find(
+    (action) => normalizeArchitectActionPrompt(action.fullPrompt) === normalizedContent,
+  );
+  if (exactMatch) return exactMatch;
+
+  if (
+    normalizedContent.startsWith(
+      'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate`',
+    )
+  ) {
+    return actions['generate-strategy'];
+  }
+  if (
+    normalizedContent.startsWith(
+      'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate`',
+    )
+  ) {
+    return actions['regenerate-strategy'];
+  }
+  return null;
+};
 
 const formatManualCompactionTokens = (value: number): string => {
   const rounded = Math.max(0, Math.round(value));
@@ -179,6 +290,7 @@ const ComposerFallbackStatus: React.FC = () => (
 
 const EMPTY_RENDER_MESSAGES: ChatMessage[] = [];
 const CHAT_TRANSCRIPT_ITEM_GAP = 24;
+const CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION = 16;
 const CHAT_COMPACTION_ROW_ESTIMATED_SIZE = 40;
 const CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION = CHAT_TRANSCRIPT_ITEM_GAP;
 const EMPTY_SESSION_COMPACTION_EVENTS: {
@@ -554,6 +666,27 @@ const SkillTurnFeedbackRow: React.FC<{
   );
 };
 
+const ArchitectActionMessage: React.FC<{ action: ArchitectButtonAction }> = ({ action }) => (
+  <div
+    data-testid="architect-action-message"
+    data-architect-action-id={action.id}
+    className="flex w-full items-center gap-3 py-0.5 text-xs text-muted-foreground"
+  >
+    <span className="h-px min-w-4 flex-1 bg-border/60" aria-hidden="true" />
+    <span className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-full border border-border/70 bg-background px-2.5 py-1.5 shadow-sm">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+        <Icon name={action.icon} size={12} />
+      </span>
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-foreground/90">{action.label}</span>
+        <span className="mx-1.5 text-muted-foreground/45">·</span>
+        <span className="text-muted-foreground">{action.displayDescription}</span>
+      </span>
+    </span>
+    <span className="h-px min-w-4 flex-1 bg-border/60" aria-hidden="true" />
+  </div>
+);
+
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
@@ -576,6 +709,11 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   const message = virtualMessage.item.message;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
+  const architectActionMessage =
+    message.role === 'user'
+      ? resolveArchitectButtonActionFromContent(message.content, t)
+      : null;
+  const isArchitectActionMessage = Boolean(architectActionMessage);
   const hasAssistantActivity =
     message.role === 'assistant' &&
     assistantActivity !== null;
@@ -603,7 +741,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         className={cn(
           'relative transition-all duration-200',
           message.role === 'user'
-            ? 'ml-auto mr-0 max-w-lg'
+            ? isArchitectActionMessage
+              ? 'mx-auto max-w-2xl'
+              : 'ml-auto mr-0 max-w-lg'
             : 'mr-auto ml-0 max-w-none'
         )}
       >
@@ -611,7 +751,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
-              ? isQuestionnaireResponseMessage
+              ? isQuestionnaireResponseMessage || isArchitectActionMessage
                 ? 'bg-transparent border-0'
                 : 'bg-muted/80 border border-border/50'
               : 'bg-transparent border-0',
@@ -621,6 +761,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 ? hasAssistantCompletionNotice
                   ? 'p-2 pb-10'
                   : 'p-2 pb-6'
+                : isArchitectActionMessage
+                  ? 'p-0'
                 : 'p-2 pb-9'
           )}
         >
@@ -657,6 +799,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
                 </>
+              ) : architectActionMessage ? (
+                <ArchitectActionMessage action={architectActionMessage} />
               ) : questionnaireResponseSummary ? (
                 <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (
@@ -665,7 +809,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   needsByTitle={needsByTitle}
                 />
               )}
-              {message.role === 'user' && !questionnaireResponseSummary && (
+              {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
@@ -693,7 +837,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'user' && !isEditing && (
+          {message.role === 'user' && !isEditing && !architectActionMessage && (
             <div className="absolute bottom-2 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -994,6 +1138,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
+  const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
@@ -1015,6 +1160,28 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+
+  useEffect(() => {
+    if (
+      mode !== 'Implement' ||
+      !selectedTask ||
+      selectedTask.task_source !== 'standalone'
+    ) {
+      if (selectedTask?.task_source !== 'standalone') {
+        standaloneTaskBuildResetRef.current = null;
+      }
+      return;
+    }
+
+    if (standaloneTaskBuildResetRef.current === selectedTask.id) {
+      return;
+    }
+
+    standaloneTaskBuildResetRef.current = selectedTask.id;
+    if (agentType !== 'build') {
+      setAgentType('build');
+    }
+  }, [agentType, mode, selectedTask, setAgentType]);
   const activeCompactionStatus = selectedConversationId
     ? conversationCompactionStatusById[selectedConversationId]
     : undefined;
@@ -1652,48 +1819,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isConversationPending ||
     isBusySending ||
     isStrategyMutationLocked;
-  const architectStrategyProgressButton = useMemo(() => {
+  const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
+  const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
     if (!architectStrategyProgressAction) return null;
-    switch (architectStrategyProgressAction) {
-      case 'identify-needs':
-        return {
-          icon: 'sparkles' as const,
-          label: t('architect.identifyNeeds', 'Identify Needs'),
-          title: t(
-            'architect.identifyNeedsHint',
-            'Ask Architect to inspect the codebase and structure the first needs'
-          ),
-        };
-      case 'clarify-needs':
-        return {
-          icon: 'message-circle-question' as const,
-          label: t('architect.clarifyNeeds', 'Clarify Needs'),
-          title: t(
-            'architect.clarifyNeedsHint',
-            'Ask Architect to resolve open questions and validate the needs'
-          ),
-        };
-      case 'regenerate-strategy':
-        return {
-          icon: 'refresh-cw' as const,
-          label: t('architect.regenerateStrategy', 'Regenerate Strategy'),
-          title: t(
-            'architect.regenerateStrategyHint',
-            'Regenerate strategy from current needs'
-          ),
-        };
-      case 'generate-strategy':
-      default:
-        return {
-          icon: 'sparkles' as const,
-          label: t('architect.generateStrategy', 'Generate Strategy'),
-          title: t(
-            'architect.generateStrategyHint',
-            'Generate strategy from validated needs'
-          ),
-        };
+    return architectButtonActions[architectStrategyProgressAction];
+  }, [architectButtonActions, architectStrategyProgressAction]);
+  const architectGenerateStrategyButton = useMemo<ArchitectToolbarButton | null>(() => {
+    if (mode !== 'Architect' || !activeArchitectPlanId || activePlanNeeds.length === 0) {
+      return null;
     }
-  }, [architectStrategyProgressAction, t]);
+    return hasExistingStrategy
+      ? architectButtonActions['regenerate-strategy']
+      : architectButtonActions['generate-strategy'];
+  }, [activeArchitectPlanId, activePlanNeeds.length, architectButtonActions, hasExistingStrategy, mode]);
+  const shouldShowSecondaryGenerateStrategyButton =
+    architectStrategyProgressAction === 'clarify-needs' && Boolean(architectGenerateStrategyButton);
+  const architectStrategyUnavailableTitle = isModeProjectWorkspaceMissing
+    ? workspaceState.kind === 'noProjectAvailable'
+      ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
+      : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+    : !activeArchitectPlanId
+      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
+      : isStrategyMutationLocked
+        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
+        : null;
+  const isArchitectGenerateStrategyDisabled =
+    isArchitectStrategyProgressDisabled || activePlanNeeds.length === 0;
+  const architectGenerateStrategyTitle =
+    architectStrategyUnavailableTitle ??
+    architectGenerateStrategyButton?.title;
 
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -1765,6 +1919,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         positionAdjustment: number;
       }>((state, item) => {
         const previousItem = transcriptItems[item.index - 1];
+        const isArchitectActionItem =
+          item.item.kind === 'message' &&
+          item.item.message.role === 'user' &&
+          Boolean(resolveArchitectButtonActionFromContent(item.item.message.content, t));
         const isCompactionItem =
           item.item.kind === 'compaction_boundary' ||
           item.item.kind === 'compaction_progress';
@@ -1774,11 +1932,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           previousItem.message.role === 'assistant'
             ? CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION
             : 0;
+        const architectActionTopGapAdjustment =
+          isArchitectActionItem && previousItem
+            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
+            : 0;
         const adjustmentBeforeRender =
-          state.positionAdjustment + assistantGapAdjustment;
+          state.positionAdjustment +
+          assistantGapAdjustment +
+          architectActionTopGapAdjustment;
         const nextItem = transcriptItems[item.index + 1];
-        const followingGapAdjustment =
+        const compactionFollowingGapAdjustment =
           isCompactionItem && nextItem ? CHAT_TRANSCRIPT_ITEM_GAP : 0;
+        const architectActionFollowingGapAdjustment =
+          isArchitectActionItem && nextItem
+            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
+            : 0;
         return {
           items: [
             ...state.items,
@@ -1787,33 +1955,54 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               start: item.start - adjustmentBeforeRender,
             },
           ],
-          positionAdjustment: adjustmentBeforeRender + followingGapAdjustment,
+          positionAdjustment:
+            adjustmentBeforeRender +
+            compactionFollowingGapAdjustment +
+            architectActionFollowingGapAdjustment,
         };
       }, { items: [], positionAdjustment: 0 }).items;
     },
-    [transcriptItems, virtualMessageItems]
+    [t, transcriptItems, virtualMessageItems]
   );
   const compactionGapAdjustment = useMemo(
     () =>
       transcriptItems.reduce((total, item, index) => {
-        if (item.kind !== 'compaction_boundary' && item.kind !== 'compaction_progress') {
-          return total;
+        let adjustment = total;
+        const isCompactionItem =
+          item.kind === 'compaction_boundary' || item.kind === 'compaction_progress';
+        const isArchitectActionItem =
+          item.kind === 'message' &&
+          item.message.role === 'user' &&
+          Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
+
+        if (isCompactionItem) {
+          const previousItem = transcriptItems[index - 1];
+          if (
+            previousItem?.kind === 'message' &&
+            previousItem.message.role === 'assistant'
+          ) {
+            adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+          }
+          if (index < transcriptItems.length - 1) {
+            adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
+          }
         }
 
-        let adjustment = total;
-        const previousItem = transcriptItems[index - 1];
         if (
-          previousItem?.kind === 'message' &&
-          previousItem.message.role === 'assistant'
+          isArchitectActionItem &&
+          index > 0
         ) {
-          adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
         }
-        if (index < transcriptItems.length - 1) {
-          adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
+        if (
+          isArchitectActionItem &&
+          index < transcriptItems.length - 1
+        ) {
+          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
         }
         return adjustment;
       }, 0),
-    [transcriptItems]
+    [t, transcriptItems]
   );
   const renderedMessageTotalSize =
     virtualMessageItems.length > 0
@@ -2139,90 +2328,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
-  const prefillArchitectProgressPrompt = useCallback((content: string) => {
-    const draftText =
-      composerEditorRef.current?.getTextContent() ?? inputValue;
-    const hasComposerDraft =
-      draftText.trim().length > 0 ||
-      composerImages.length > 0 ||
-      composerContextRefs.length > 0 ||
-      Boolean(composerEditSession);
-
-    if (hasComposerDraft) {
-      notify.info(t('architect.strategyProgressDraftTitle', 'Draft kept'), {
-        description: t(
-          'architect.strategyProgressDraftDescription',
-          'Send or clear the composer before Macro prepares the next Architect step.'
-        ),
-      });
-      requestAnimationFrame(() => {
-        composerEditorRef.current?.focus();
-      });
+  const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
+    if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
+    if (isStrategyMutationLocked) return;
+    if (
+      (actionId === 'generate-strategy' || actionId === 'regenerate-strategy') &&
+      activePlanNeeds.length === 0
+    ) {
       return;
     }
 
-    clearComposerContextRefs();
-    setComposerImages([]);
-    setInputValue(content);
-    resetPromptHistoryNavigation();
-    composerEditorRef.current?.setText(content);
-    requestAnimationFrame(() => {
-      composerEditorRef.current?.focus();
-    });
-  }, [
-    clearComposerContextRefs,
-    composerContextRefs.length,
-    composerEditSession,
-    composerImages.length,
-    inputValue,
-    resetPromptHistoryNavigation,
-    t,
-  ]);
-
-  const handleGenerateStrategy = async () => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
-    if (isStrategyMutationLocked) return;
-    if (!allActivePlanNeedsValidated) return;
-
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    const content = hasExistingStrategy
-      ? `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`
-      : `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`;
 
     try {
-      await sendMessage({ conversationId, content });
+      await sendMessage({
+        conversationId,
+        content: architectButtonActions[actionId].fullPrompt,
+      });
     } catch {
       // The store exposes the visible error state.
     }
   };
 
+  const handleGenerateStrategy = async () => {
+    await sendArchitectButtonAction(
+      hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy',
+    );
+  };
+
   const handleArchitectStrategyProgressAction = () => {
     if (!architectStrategyProgressAction) return;
-    if (
-      architectStrategyProgressAction === 'generate-strategy' ||
-      architectStrategyProgressAction === 'regenerate-strategy'
-    ) {
-      void handleGenerateStrategy();
-      return;
-    }
-
-    if (architectStrategyProgressAction === 'identify-needs') {
-      prefillArchitectProgressPrompt(
-        t(
-          'architect.identifyNeedsPrompt',
-          'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.'
-        )
-      );
-      return;
-    }
-
-    prefillArchitectProgressPrompt(
-      t(
-        'architect.clarifyNeedsPrompt',
-        'Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.'
-      )
-    );
+    void sendArchitectButtonAction(architectStrategyProgressAction);
   };
 
   const handleEditStart = (message: ChatMessage) => {
@@ -2435,11 +2572,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       data-tour-id="chat-surface"
     >
       {/* Main Chat Area */}
-      <div className="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden">
+      <div
+        className="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden"
+        data-chat-conversation-panel
+      >
         {/* Header */}
         <header
           className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30"
           data-tour-id="mode-context-header"
+          data-chat-conversation-header
         >
           <div className="flex items-center gap-3 min-w-0">
             {canShowImplementTaskTodoDropdown ? (
@@ -2742,33 +2883,53 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ModelDropdown />
                 <ReasoningDropdown />
               </div>
-              {mode === 'Architect' && architectStrategyProgressButton && (
-              <button
-                type="button"
-                onClick={handleArchitectStrategyProgressAction}
-                data-tour-id="architect-generate-strategy"
-                disabled={isArchitectStrategyProgressDisabled}
-                className={cn(
-                  'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                  isArchitectStrategyProgressDisabled
-                      ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
-                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
-                  )}
-                  title={
-                    isModeProjectWorkspaceMissing
-                      ? workspaceState.kind === 'noProjectAvailable'
-                        ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-                        : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-                      : !activeArchitectPlanId
-                      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
-                      : isStrategyMutationLocked
-                        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
-                        : architectStrategyProgressButton.title
-                  }
-                >
-                  <Icon name={architectStrategyProgressButton.icon} size={12} />
-                  {architectStrategyProgressButton.label}
-                </button>
+              {mode === 'Architect' &&
+                (architectStrategyProgressButton || shouldShowSecondaryGenerateStrategyButton) && (
+                  <div className="flex items-center gap-2">
+                    {architectStrategyProgressButton ? (
+                      <button
+                        type="button"
+                        onClick={handleArchitectStrategyProgressAction}
+                        data-tour-id={
+                          architectStrategyProgressAction === 'generate-strategy' ||
+                          architectStrategyProgressAction === 'regenerate-strategy'
+                            ? 'architect-generate-strategy'
+                            : 'architect-progress-action'
+                        }
+                        disabled={isArchitectStrategyProgressDisabled}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                          isArchitectStrategyProgressDisabled
+                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                        )}
+                        title={architectStrategyUnavailableTitle ?? architectStrategyProgressButton.title}
+                      >
+                        <Icon name={architectStrategyProgressButton.icon} size={12} />
+                        {architectStrategyProgressButton.label}
+                      </button>
+                    ) : null}
+                    {shouldShowSecondaryGenerateStrategyButton && architectGenerateStrategyButton ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleGenerateStrategy();
+                        }}
+                        data-tour-id="architect-generate-strategy"
+                        disabled={isArchitectGenerateStrategyDisabled}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                          isArchitectGenerateStrategyDisabled
+                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                        )}
+                        title={architectGenerateStrategyTitle ?? architectGenerateStrategyButton.title}
+                      >
+                        <Icon name={architectGenerateStrategyButton.icon} size={12} />
+                        {architectGenerateStrategyButton.label}
+                      </button>
+                    ) : null}
+                  </div>
               )}
             </div>
 

@@ -283,7 +283,7 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
         await deps.deleteArchitectPlan({
           branchName: params.branchName,
           planId: candidate.summary.id,
-          hardDelete: true,
+          hardDelete: false,
         });
         deletedPlanIds.push(candidate.summary.id);
       }

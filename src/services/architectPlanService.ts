@@ -632,15 +632,25 @@ const getArchitectPlanActivationSummarySignature = (
   ].join('|');
 };
 
+const getArchitectPlanActivationScopeSignature = (
+  scopedProjectIdsHint?: string[]
+): string | null => {
+  const normalizedProjectIds = normalizeArchitectPlanIdList(scopedProjectIdsHint)
+    .sort((left, right) => left.localeCompare(right));
+  return normalizedProjectIds.length > 0 ? normalizedProjectIds.join(',') : null;
+};
+
 const getArchitectPlanActivationCacheKey = (
   branchName: string,
   planId: string,
-  summarySignature?: string | null
+  summarySignature?: string | null,
+  scopeSignature?: string | null,
 ): string =>
   [
     normalizeBranchName(branchName),
     sanitizeId(planId),
     summarySignature || 'unknown',
+    scopeSignature || 'all',
   ].join('::');
 
 const loadCachedArchitectPlanValue = async <T>(params: {
@@ -689,9 +699,9 @@ const loadCachedArchitectPlanValue = async <T>(params: {
   return promise;
 };
 
-const invalidateArchitectPlanRuntimeCaches = (params?: {
-  branchName?: string;
-  planId?: string;
+export const clearArchitectPlanFrontendCaches = (params?: {
+  branchName?: string | null;
+  planId?: string | null;
 }): void => {
   const normalizedBranch = params?.branchName
     ? normalizeBranchName(params.branchName)
@@ -700,17 +710,10 @@ const invalidateArchitectPlanRuntimeCaches = (params?: {
   if (!normalizedBranch) {
     architectPlanIndexCache.clear();
     architectPlanActivationCache.clear();
-    if (tauriIpc.isTauriAvailable() && typeof tauriIpc.workspaceArchitectInvalidate === 'function') {
-      void tauriIpc.workspaceArchitectInvalidate().catch(() => undefined);
-    }
     return;
   }
 
   architectPlanIndexCache.delete(getArchitectPlanIndexCacheKey(normalizedBranch));
-  if (tauriIpc.isTauriAvailable() && typeof tauriIpc.workspaceArchitectInvalidate === 'function') {
-    void tauriIpc.workspaceArchitectInvalidate({ branchName: normalizedBranch }).catch(() => undefined);
-  }
-
   if (params?.planId) {
     const activationPrefix = `${normalizedBranch}::${sanitizeId(params.planId)}::`;
     for (const cacheKey of architectPlanActivationCache.keys()) {
@@ -726,6 +729,22 @@ const invalidateArchitectPlanRuntimeCaches = (params?: {
     if (cacheKey.startsWith(activationPrefix)) {
       architectPlanActivationCache.delete(cacheKey);
     }
+  }
+};
+
+const invalidateArchitectPlanRuntimeCaches = (params?: {
+  branchName?: string;
+  planId?: string;
+}): void => {
+  const normalizedBranch = params?.branchName
+    ? normalizeBranchName(params.branchName)
+    : null;
+
+  clearArchitectPlanFrontendCaches(params);
+  if (tauriIpc.isTauriAvailable() && typeof tauriIpc.workspaceArchitectInvalidate === 'function') {
+    void tauriIpc.workspaceArchitectInvalidate(
+      normalizedBranch ? { branchName: normalizedBranch } : undefined,
+    ).catch(() => undefined);
   }
 };
 
@@ -4074,7 +4093,8 @@ export const getArchitectPlanActivationPayload = async (
   const cacheKey = getArchitectPlanActivationCacheKey(
     normalizedBranch,
     planId,
-    getArchitectPlanActivationSummarySignature(options.summaryHint)
+    getArchitectPlanActivationSummarySignature(options.summaryHint),
+    getArchitectPlanActivationScopeSignature(options.scopedProjectIdsHint),
   );
 
   return await loadCachedArchitectPlanValue({
@@ -4175,6 +4195,17 @@ const commitMetadataScopes = async (
 
   const inferredKind = options?.mutationKind ?? inferMacroMutationKind(commitMessage);
   const structural = options?.structural ?? isStructuralMacroMutation(inferredKind);
+  if (structural) {
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: repoScopes.map((scope) => scope.workspacePath as string),
+      message: commitMessage,
+    }, {
+      tauri: resolvedDeps.tauri,
+    });
+    return;
+  }
+
   for (const scope of repoScopes) {
     recordMacroMetadataMutation({
       workspacePath: scope.workspacePath as string,
@@ -4343,19 +4374,29 @@ export const commitArchitectPlanMetadata = async (input: {
   });
 };
 
-export const listArchitectPlans = async (branchName: string, includeDeleted = false, includeArchived = false): Promise<{
+export interface ListArchitectPlansOptions {
+  scopedProjectIdsHint?: string[];
+}
+
+export const listArchitectPlans = async (
+  branchName: string,
+  includeDeleted = false,
+  includeArchived = false,
+  options: ListArchitectPlansOptions = {},
+): Promise<{
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
 }> => {
   const deps = resolveArchitectPlanServiceDependencies();
-  return listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps);
+  return listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps, options);
 };
 
 const listArchitectPlansWithDeps = async (
   branchName: string,
   includeDeleted = false,
   includeArchived = false,
-  deps: ResolvedArchitectPlanServiceDependencies
+  deps: ResolvedArchitectPlanServiceDependencies,
+  options: ListArchitectPlansOptions = {},
 ): Promise<{
   activePlanId: string | null;
   plans: ArchitectPlanSummary[];
@@ -4369,6 +4410,7 @@ const listArchitectPlansWithDeps = async (
         branchName: normalizedBranch,
         includeDeleted,
         includeArchived,
+        scopedProjectIdsHint: options.scopedProjectIdsHint,
       });
       return {
         activePlanId: runtimeList.activePlanId,
@@ -5749,14 +5791,25 @@ export const writeArchitectTaskExecution = async (params: {
     )
   );
 
+  const taskExecutionWorkspacePaths: string[] = [];
   for (const scope of dedupeScopes(replicaSet.expectedScopes)) {
     if (scope.source === 'local' || !scope.workspacePath) continue;
+    taskExecutionWorkspacePaths.push(scope.workspacePath);
     recordMacroMetadataMutation({
       workspacePath: scope.workspacePath,
       kind: 'task_metadata',
       entityId: params.execution.taskId,
       label: params.execution.taskId,
-      importance: 'structural',
+      importance: 'light',
+    }, {
+      tauri: deps.tauri,
+    });
+  }
+  if (taskExecutionWorkspacePaths.length > 0) {
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: taskExecutionWorkspacePaths,
+      message: `chore(@macro): update task metadata ${params.execution.taskId}`,
     }, {
       tauri: deps.tauri,
     });
@@ -5797,8 +5850,8 @@ export const createArchitectPlanService = (
   return {
     listArchitectPlanTargetBranches: () => listArchitectPlanTargetBranchesImpl(deps),
     commitArchitectPlanMetadata: (input) => commitArchitectPlanMetadata(input, deps),
-    listArchitectPlans: (branchName, includeDeleted, includeArchived) =>
-      listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps),
+    listArchitectPlans: (branchName, includeDeleted, includeArchived, options) =>
+      listArchitectPlansWithDeps(branchName, includeDeleted, includeArchived, deps, options),
     isArchitectPlanSlugAvailable: (params) => isArchitectPlanSlugAvailable(params, deps),
     getArchitectPlanActivationPayload: (branchName, planId, options) =>
       getArchitectPlanActivationPayload(branchName, planId, options, deps),

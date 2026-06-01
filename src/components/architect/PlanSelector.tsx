@@ -59,11 +59,11 @@ import {
 import { toServiceError } from '../../services/contracts/errors';
 import { planKindIconName } from '../../services/planKindPresentation';
 import {
-  consolidateScopedBlankPlans,
   ensureScopedBlankPlan,
 } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
+  computePlanSelectorEmptyState,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
@@ -75,6 +75,7 @@ import {
 } from './planSelectorEvents';
 import { useChatStore } from '../../stores/useChatStore';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
+import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 
 interface PlanSelectorProps {
   className?: string;
@@ -204,6 +205,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setPredictedBranches,
     setActivePlanContext,
     activateArchitectPlan,
+    loadMacroProjectMetadataForSelection,
+    architectPlanCatalogScopeKey,
+    architectPlanCatalogModernPlanCount,
+    architectPlanCatalogVisiblePlanCount,
+    visibleArchitectPlans,
+    architectPlanCatalogStatus,
   } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [plans, setPlans] = useState<ArchitectPlanSummary[]>([]);
@@ -219,7 +226,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [hasLoadedPlans, setHasLoadedPlans] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
-  const blankConsolidationPromiseRef = useRef<Promise<void> | null>(null);
   const loadPlansRequestIdRef = useRef(0);
   const activationRequestIdRef = useRef(0);
   const selectorAsyncContextRef = useRef<PlanSelectorAsyncContext | null>(null);
@@ -247,6 +253,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     () => getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
     [projectRegistry, selectedGroupId, selectedProjectId]
   );
+  const currentCatalogScopeKey = useMemo(
+    () =>
+      buildArchitectPlanCatalogScopeKey({
+        selectedGroupId,
+        selectedProjectId,
+        scopedProjectIds,
+      }),
+    [scopedProjectIds, selectedGroupId, selectedProjectId]
+  );
+  const isPlanCatalogForCurrentScope = architectPlanCatalogScopeKey === currentCatalogScopeKey;
   const selectorAsyncContext = useMemo<PlanSelectorAsyncContext>(
     () => ({
       targetBranch,
@@ -328,6 +344,33 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
     return activePlan ? getArchitectPlanKind(activePlan) : null;
   }, [activePlan, activePlanContext, activePlanId]);
+  const planSelectorEmptyState = useMemo(
+    () =>
+      computePlanSelectorEmptyState({
+        hasError: Boolean(error),
+        isLoading,
+        hasLoadedPlans,
+        isWorkspaceMissing,
+        isReadOnlyOnlyScope,
+        displayedPlanCount: plans.length,
+        catalogStatus: architectPlanCatalogStatus,
+        isCatalogForCurrentScope: isPlanCatalogForCurrentScope,
+        catalogModernPlanCount: architectPlanCatalogModernPlanCount,
+        catalogVisiblePlanCount: architectPlanCatalogVisiblePlanCount,
+      }),
+    [
+      architectPlanCatalogModernPlanCount,
+      architectPlanCatalogStatus,
+      architectPlanCatalogVisiblePlanCount,
+      error,
+      hasLoadedPlans,
+      isLoading,
+      isPlanCatalogForCurrentScope,
+      isReadOnlyOnlyScope,
+      isWorkspaceMissing,
+      plans.length,
+    ]
+  );
   const displayedActivePlanKindLabel = displayedActivePlanKind
     ? displayedActivePlanKind === 'feature'
       ? t('architect.planSelector.kindFeature', 'Feature')
@@ -429,7 +472,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       await useTaskStore.getState().refreshFromPlan();
     }
 
-    const refreshed = await listArchitectPlans(targetBranch, true, true);
+    const refreshed = await listArchitectPlans(targetBranch, true, true, {
+      scopedProjectIdsHint: scopedProjectIds,
+    });
     const refreshState = computePlanSelectorRefreshState({
       plans: refreshed.plans,
       scopedProjectIds,
@@ -487,44 +532,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsLoading(true);
     setError(null);
     try {
-      const fullResult = await listArchitectPlans(targetBranch, true, true);
+      const result = await loadMacroProjectMetadataForSelection({
+        hydrateActivePlan: hydrateActive,
+        refreshTasks: false,
+        includeArchivedInVisible: showArchived,
+        reason: 'selector',
+      });
       if (!isCurrentLoadRequest(requestId, requestContext)) {
         return;
       }
-      const refreshState = computePlanSelectorRefreshState({
-        plans: fullResult.plans,
-        scopedProjectIds,
-        showArchived,
-        preferredActivePlanId: activeArchitectPlanId || fullResult.activePlanId,
-        currentActivePlanId: activePlanId || activeArchitectPlanId,
-      });
-      setPlans(refreshState.visiblePlans);
-      setActivePlanId(refreshState.nextActivePlanId);
+      const visiblePlans = result?.snapshot.visiblePlans ?? [];
+      const nextActivePlanId = result?.selectedPlan?.id ?? null;
+      setPlans(visiblePlans);
+      setActivePlanId(nextActivePlanId);
 
-      if (hydrateActive && !refreshState.nextActivePlanId) {
+      if (hydrateActive && !nextActivePlanId) {
         clearActivePlanSelection();
-      }
-
-      if (
-        scopedProjectIds.length > 0 &&
-        !blankConsolidationPromiseRef.current
-      ) {
-        blankConsolidationPromiseRef.current = consolidateScopedBlankPlans({
-          branchName: targetBranch,
-          scopedProjectIds,
-        })
-          .then(async (result) => {
-            if (
-              result.deletedPlanIds.length > 0 &&
-              isCurrentLoadRequest(requestId, requestContext)
-            ) {
-              await loadPlans(false);
-            }
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            blankConsolidationPromiseRef.current = null;
-          });
       }
     } catch (loadError) {
       if (!isCurrentLoadRequest(requestId, requestContext)) {
@@ -1035,6 +1058,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [selectedGroupId, selectedProjectId, showArchived]);
 
   useEffect(() => {
+    if (architectPlanCatalogStatus !== 'ready' || !isPlanCatalogForCurrentScope) {
+      return;
+    }
+
+    setPlans((current) => {
+      const currentKey = current.map((plan) => `${plan.id}:${plan.status}:${plan.updatedAt}`).join('|');
+      const nextKey = visibleArchitectPlans.map((plan) => `${plan.id}:${plan.status}:${plan.updatedAt}`).join('|');
+      return currentKey === nextKey ? current : visibleArchitectPlans;
+    });
+  }, [
+    architectPlanCatalogStatus,
+    isPlanCatalogForCurrentScope,
+    visibleArchitectPlans,
+  ]);
+
+  useEffect(() => {
     const nextActivePlanId = activePlanContext?.id ?? activeArchitectPlanId;
     setActivePlanId((current) => (current === nextActivePlanId ? current : nextActivePlanId));
   }, [activeArchitectPlanId, activePlanContext]);
@@ -1295,9 +1334,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
               </div>
             )}
 
-            {!error && !isLoading && !isWorkspaceMissing && !isReadOnlyOnlyScope && plans.length === 0 && (
+            {planSelectorEmptyState !== 'hidden' && (
               <div className="px-2 py-6 text-xs text-muted-foreground text-center">
-                {t('architect.planSelector.empty', 'No plans yet.')}
+                {planSelectorEmptyState === 'outside-scope'
+                  ? t(
+                      'architect.planSelector.emptyOutsideScope',
+                      'Plans exist in @macro but do not match the selected project.'
+                    )
+                  : t('architect.planSelector.empty', 'No plans yet.')}
               </div>
             )}
 

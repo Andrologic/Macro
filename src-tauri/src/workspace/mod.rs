@@ -14,13 +14,12 @@ use git2::{
 use metadata::{
     CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
     ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto, PlanDto,
-    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto,
-    ProjectAccessMigrationSummaryDto, ProjectDto, ProjectGitFlowDetectionDto,
-    ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
-    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
-    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
-    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
+    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
+    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
+    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use regex::Regex;
 use serde_json::Value;
@@ -93,7 +92,10 @@ fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
 }
 
-fn count_registry_projects(standalone_projects: &[ProjectDto], groups: &[ProjectGroupDto]) -> usize {
+fn count_registry_projects(
+    standalone_projects: &[ProjectDto],
+    groups: &[ProjectGroupDto],
+) -> usize {
     standalone_projects.len() + count_projects(groups)
 }
 
@@ -2132,15 +2134,14 @@ pub async fn create_new_project_repo(
     let setup_result: Result<()> = (|| {
         let mut opts = RepositoryInitOptions::new();
         opts.initial_head("main");
-        let repo = Repository::init_opts(&project_path, &opts).map_err(|error| {
-            BackendError::Git {
+        let repo =
+            Repository::init_opts(&project_path, &opts).map_err(|error| BackendError::Git {
                 message: format!(
                     "Failed to initialize git repository at {}: {}",
                     project_path.display(),
                     error
                 ),
-            }
-        })?;
+            })?;
         create_initial_commit(&repo)?;
         Ok(())
     })();
@@ -2160,8 +2161,10 @@ pub async fn create_new_project_repo(
 
     match create_project(workspace_path, metadata_root, create_request).await {
         Ok(project) => {
-            let detection =
-                detect_project_git_flow_internal(workspace_path, Some(project_path_string.as_str()));
+            let detection = detect_project_git_flow_internal(
+                workspace_path,
+                Some(project_path_string.as_str()),
+            );
             Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
         }
         Err(error) => rollback_created_new_repo(&project_path, error).await,
@@ -2299,7 +2302,11 @@ pub async fn create_project_group(
 
     let mut unique_project_ids = Vec::new();
     let mut seen = HashSet::new();
-    for project_id in project_ids.iter().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    for project_id in project_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         if seen.insert(project_id.to_string()) {
             unique_project_ids.push(project_id.to_string());
         }
@@ -2328,7 +2335,8 @@ pub async fn create_project_group(
     });
 
     let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "create_project_group").await?;
+        persist_sanitized_state(workspace_path, metadata_root, state, "create_project_group")
+            .await?;
     Ok(sanitized_state.project_groups)
 }
 
@@ -2343,13 +2351,22 @@ pub async fn move_project_to_group(
     let target_group_id = group_id.map(str::trim).filter(|value| !value.is_empty());
 
     if current_group_id.as_deref() == target_group_id {
-        let (sanitized_state, _) =
-            persist_sanitized_state(workspace_path, metadata_root, state, "move_project_to_group").await?;
+        let (sanitized_state, _) = persist_sanitized_state(
+            workspace_path,
+            metadata_root,
+            state,
+            "move_project_to_group",
+        )
+        .await?;
         return Ok(sanitized_state.project_groups);
     }
 
     if let Some(target_group_id) = target_group_id {
-        if !state.project_groups.iter().any(|group| group.id == target_group_id) {
+        if !state
+            .project_groups
+            .iter()
+            .any(|group| group.id == target_group_id)
+        {
             return Err(BackendError::Validation(format!(
                 "Unknown project group id: {}",
                 target_group_id
@@ -2373,8 +2390,13 @@ pub async fn move_project_to_group(
         state.standalone_projects.push(project);
     }
 
-    let (sanitized_state, _) =
-        persist_sanitized_state(workspace_path, metadata_root, state, "move_project_to_group").await?;
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "move_project_to_group",
+    )
+    .await?;
     Ok(sanitized_state.project_groups)
 }
 
@@ -3157,7 +3179,12 @@ fn collect_valid_project_ids_from_state(state: &WorkspaceState) -> HashSet<Strin
     state
         .standalone_projects
         .iter()
-        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .map(|project| project.id.clone())
         .collect()
 }
@@ -3166,7 +3193,12 @@ fn collect_actionable_project_ids_from_state(state: &WorkspaceState) -> HashSet<
     state
         .standalone_projects
         .iter()
-        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .filter(|project| !project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
@@ -3176,7 +3208,12 @@ fn collect_read_only_project_ids_from_state(state: &WorkspaceState) -> HashSet<S
     state
         .standalone_projects
         .iter()
-        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .filter(|project| project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
@@ -4070,7 +4107,8 @@ fn sanitize_project_entry(
         &project.path,
         Some(&project.git_flow_settings),
     );
-    let git_detection = detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
+    let git_detection =
+        detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
     if git_flow_settings != project.git_flow_settings {
         repair_report.git_flow_settings_auto_updated += 1;
     }
@@ -5073,7 +5111,11 @@ fn take_project_from_registry(state: &mut WorkspaceState, project_id: &str) -> O
 
     let mut removed_project = None;
     for group in state.project_groups.iter_mut() {
-        if let Some(index) = group.projects.iter().position(|project| project.id == project_id) {
+        if let Some(index) = group
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+        {
             removed_project = Some(group.projects.remove(index));
             break;
         }
@@ -5230,7 +5272,12 @@ fn find_project_by_id_in_state<'a>(
     state
         .standalone_projects
         .iter()
-        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
 }
 
@@ -5257,7 +5304,12 @@ fn find_group_id_for_project(state: &WorkspaceState, project_id: &str) -> Option
     state
         .project_groups
         .iter()
-        .find(|group| group.projects.iter().any(|project| project.id == project_id))
+        .find(|group| {
+            group
+                .projects
+                .iter()
+                .any(|project| project.id == project_id)
+        })
         .map(|group| group.id.clone())
 }
 

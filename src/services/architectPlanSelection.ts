@@ -1,5 +1,8 @@
 import type { ArchitectPlanSummary } from './architectPlanService';
-import { getArchitectPlanVisibleProjectIdsFromScope } from './architectPlanScope';
+import {
+  getArchitectPlanVisibleProjectIdsFromScope,
+  normalizeArchitectPlanIdList,
+} from './architectPlanScope';
 
 export interface ArchitectPlanResolutionState {
   visiblePlans: ArchitectPlanSummary[];
@@ -64,7 +67,12 @@ export const computeArchitectPlanResolutionState = (params: {
 export const planMatchesArchitectScope = (
   plan: Pick<
     ArchitectPlanSummary,
-    'projectId' | 'projectIds' | 'expectedProjectIds' | 'contextProjectIds'
+    | 'projectId'
+    | 'projectIds'
+    | 'expectedProjectIds'
+    | 'contextProjectIds'
+    | 'availableProjectIds'
+    | 'replicas'
   >,
   scopedProjectIds: string[]
 ): boolean => {
@@ -72,9 +80,13 @@ export const planMatchesArchitectScope = (
     return true;
   }
 
-  const planProjectIds = getArchitectPlanVisibleProjectIdsFromScope(plan, {
-    useExpectedAsActionableFallback: true,
-  });
+  const planProjectIds = normalizeArchitectPlanIdList(
+    getArchitectPlanVisibleProjectIdsFromScope(plan, {
+      useExpectedAsActionableFallback: true,
+    }),
+    plan.availableProjectIds,
+    plan.replicas?.map((replica) => replica.projectId)
+  );
   if (planProjectIds.length === 0) {
     return false;
   }
