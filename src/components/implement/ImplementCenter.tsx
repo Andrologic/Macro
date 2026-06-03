@@ -5,7 +5,7 @@ import { PanelResizer } from '../layout/PanelResizer';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
-import { useTerminalStore } from '../../stores/useTerminalStore';
+import { isVisibleTerminalTab, useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
@@ -83,7 +83,8 @@ export const ImplementCenter: React.FC = () => {
               (tab): tab is NonNullable<typeof tab> =>
                 Boolean(tab) &&
                 tab.taskId === terminalScope.taskId &&
-                tab.projectId === terminalScope.projectId
+                tab.projectId === terminalScope.projectId &&
+                isVisibleTerminalTab(tab)
             )
         : [],
     [tabOrder, tabs, terminalScope]

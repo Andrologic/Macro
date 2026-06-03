@@ -29,6 +29,7 @@ import {
   providerHasAuthSession,
   providerHasUsableCredentials,
 } from '../services/providerCredentials';
+import { devLogger } from '../utils/devLogger';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -65,6 +66,12 @@ const sortModelsByName = (models: AIModel[]): AIModel[] =>
   [...models].sort((left, right) =>
     (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
   );
+
+type ProviderModelRefreshReason = 'boot' | 'provider_selection' | 'manual';
+
+const MODEL_REFRESH_SELECTION_COOLDOWN_MS = 5 * 60 * 1000;
+const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
+const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
 
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
 const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
@@ -632,6 +639,10 @@ interface ProviderStore {
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   loadProviderModels: (providerId: string) => Promise<AIModel[]>;
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
+  refreshModelsForProviderIfNeeded: (
+    providerId: string,
+    reason: ProviderModelRefreshReason
+  ) => Promise<AIModel[]>;
   refreshLoadedModelContextCatalog: (providerId?: string) => Promise<void>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
@@ -767,6 +778,60 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     return state.getAvailableReasoningEfforts(state.selectedProviderId, state.selectedModelId).length > 0;
   },
 
+  refreshModelsForProviderIfNeeded: async (providerId, reason) => {
+    const provider = get().providerConfigs.find((candidate) => candidate.id === providerId);
+    if (!provider || !providerHasCredentials(provider)) {
+      devLogger.debug('[providers] skipped model refresh: unavailable provider', {
+        providerId,
+        reason,
+      });
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    const inFlight = modelRefreshInFlightByProviderId.get(providerId);
+    if (inFlight) {
+      devLogger.debug('[providers] reusing in-flight model refresh', {
+        providerId,
+        reason,
+      });
+      return inFlight;
+    }
+
+    const now = Date.now();
+    const lastStartedAt = lastModelRefreshStartedAtByProviderId.get(providerId) ?? 0;
+    if (
+      reason === 'provider_selection' &&
+      lastStartedAt > 0 &&
+      now - lastStartedAt < MODEL_REFRESH_SELECTION_COOLDOWN_MS
+    ) {
+      devLogger.debug('[providers] skipped model refresh: cooldown', {
+        providerId,
+        reason,
+        remainingMs: MODEL_REFRESH_SELECTION_COOLDOWN_MS - (now - lastStartedAt),
+      });
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    lastModelRefreshStartedAtByProviderId.set(providerId, now);
+    devLogger.debug('[providers] refreshing models', { providerId, reason });
+    const refreshPromise = get()
+      .scanModelsForProvider(providerId)
+      .catch((error) => {
+        devLogger.warn('[providers] model refresh failed', {
+          providerId,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return get().modelsByProvider[providerId] || [];
+      })
+      .finally(() => {
+        modelRefreshInFlightByProviderId.delete(providerId);
+      });
+
+    modelRefreshInFlightByProviderId.set(providerId, refreshPromise);
+    return refreshPromise;
+  },
+
   refreshLoadedModelContextCatalog: async (providerId?: string) => {
     await refreshModelContextCatalog();
 
@@ -834,7 +899,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const { loadProviderConfigs, loadProviderModels, testConnection } = get();
     await loadProviderConfigs();
 
-    const { providerConfigs } = get();
+    const { providerConfigs, selectedProviderId } = get();
 
     const connectivityChecks: Array<Promise<unknown>> = [];
 
@@ -843,6 +908,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const models = get().modelsByProvider[provider.id] || [];
 
       if (!provider.isEnabled) {
+        continue;
+      }
+
+      if (provider.id === selectedProviderId) {
+        connectivityChecks.push(get().refreshModelsForProviderIfNeeded(provider.id, 'boot'));
         continue;
       }
 
@@ -856,7 +926,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         continue;
       }
 
-      connectivityChecks.push(models.length === 0 ? get().scanModelsForProvider(provider.id) : testConnection(provider.id));
+      connectivityChecks.push(
+        models.length === 0
+          ? get().refreshModelsForProviderIfNeeded(provider.id, 'boot')
+          : testConnection(provider.id)
+      );
     }
 
     void Promise.allSettled(connectivityChecks);
@@ -1972,6 +2046,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId: resolvedModelId,
       selectedReasoningEffort,
     });
+    void get().refreshModelsForProviderIfNeeded(providerId, 'boot');
 
     return {
       providerId,
@@ -1991,9 +2066,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedReasoningEffort: providerId === selectedProviderId ? get().selectedReasoningEffort : null,
     });
 
-    if ((get().modelsByProvider[providerId] || []).length === 0) {
-      loadProviderModels(providerId);
-    }
+    void (async () => {
+      if ((get().modelsByProvider[providerId] || []).length === 0) {
+        await loadProviderModels(providerId);
+      }
+      await get().refreshModelsForProviderIfNeeded(providerId, 'provider_selection');
+    })();
   },
 
   selectModel: (modelId: string) => {

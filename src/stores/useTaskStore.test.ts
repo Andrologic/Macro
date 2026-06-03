@@ -129,6 +129,25 @@ const startTaskCommandTabMock = mock(async () => ({
 }));
 const interruptTabMock = mock(async () => undefined);
 const closeTabMock = mock(async () => undefined);
+const runWorktreeSetupCommandMock = mock(async () => ({
+  exitCode: 0,
+  failed: false,
+  tabId: 'setup-tab-1',
+}));
+let taskProjectCommandRegistryMock = {
+  version: 3,
+  commandsByProjectPath: {
+    '/repos/web': {
+      projectId: 'project-1',
+      projectName: 'Project One',
+      projectPath: '/repos/web',
+      command: 'npm test',
+      worktreeSetupCommand: '',
+      openTerminalOnRun: true,
+      updatedAt: '2026-06-03T10:00:00.000Z',
+    },
+  },
+};
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
@@ -240,23 +259,21 @@ mock.module('./useTerminalStore', () => ({
 }));
 
 mock.module('../services/taskProjectCommands', () => ({
-  loadTaskProjectCommandRegistry: mock(async () => ({
-    version: 2,
-    commandsByProjectPath: {
-      '/repos/web': {
-        projectId: 'project-1',
-        projectName: 'Project One',
-        projectPath: '/repos/web',
-        command: 'npm test',
-        openTerminalOnRun: true,
-        updatedAt: '2026-06-03T10:00:00.000Z',
-      },
-    },
-  })),
+  loadTaskProjectCommandRegistry: mock(async () => taskProjectCommandRegistryMock),
+  normalizeTaskProjectCommandPath: (value: string): string =>
+    value.trim().replace(/\\/g, '/').replace(/\/+$/, ''),
   getTaskProjectCommand: (registry: {
     commandsByProjectPath: Record<string, { command: string; openTerminalOnRun: boolean }>;
   }, projectPath: string | null | undefined) =>
-    projectPath ? registry.commandsByProjectPath[projectPath] ?? null : null,
+    projectPath
+      ? registry.commandsByProjectPath[
+          projectPath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+        ] ?? null
+      : null,
+}));
+
+mock.module('../services/worktreeSetupCommands', () => ({
+  runWorktreeSetupCommand: runWorktreeSetupCommandMock,
 }));
 
 mock.module('./useChatStore', () => ({
@@ -305,6 +322,21 @@ const flushPromises = async () => {
 
 beforeEach(() => {
   installTauriRuntimeMock();
+  runWorktreeSetupCommandMock.mockClear();
+  taskProjectCommandRegistryMock = {
+    version: 3,
+    commandsByProjectPath: {
+      '/repos/web': {
+        projectId: 'project-1',
+        projectName: 'Project One',
+        projectPath: '/repos/web',
+        command: 'npm test',
+        worktreeSetupCommand: '',
+        openTerminalOnRun: true,
+        updatedAt: '2026-06-03T10:00:00.000Z',
+      },
+    },
+  };
 });
 
 afterEach(() => {
@@ -1712,11 +1744,75 @@ describe('useTaskStore task command terminal lifecycle', () => {
         command: 'npm test',
       })
     );
+    expect(runWorktreeSetupCommandMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().taskCommandRuns['task-1']).toMatchObject({
       status: 'running',
       activeTabId: 'terminal-tab-1',
       currentProjectId: 'project-1',
     });
+  });
+
+  it('runs the configured worktree setup command before launching task commands', async () => {
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: 'bun install',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        taskTitle: 'Run app',
+        projectId: 'project-1',
+        projectName: 'project-1',
+        repoPath: '/repos/web',
+        worktreePath: '/repos/web/.macro/worktrees/task-1',
+        command: 'bun install',
+      })
+    );
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npm test',
+      })
+    );
   });
 
   it('clears the active command run when its terminal tab is closed', async () => {

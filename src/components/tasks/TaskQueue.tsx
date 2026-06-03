@@ -682,6 +682,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       projectName: string;
       projectPath: string;
       command: string;
+      worktreeSetupCommand: string;
       openTerminalOnRun: boolean;
     }>;
   } | null>(null);
@@ -1230,6 +1231,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         projectName: project.name,
         projectPath: project.path,
         command: getTaskProjectCommand(registry, project.path)?.command || '',
+        worktreeSetupCommand:
+          getTaskProjectCommand(registry, project.path)?.worktreeSetupCommand || '',
         openTerminalOnRun:
           getTaskProjectCommand(registry, project.path)?.openTerminalOnRun ?? true,
       })),
@@ -1988,6 +1991,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           projectGroupName={taskCommandModal.groupName}
           projects={taskCommandModal.projects}
           isSubmitting={isSavingTaskCommands}
+          requireRunCommand={taskCommandModal.autoRunAfterSave}
           onClose={() => {
             if (!isSavingTaskCommands) {
               setTaskCommandModal(null);

@@ -3219,7 +3219,7 @@ export async function terminalCreateTab(params: {
 }
 
 export async function terminalStartCommandTab(params: {
-  kind: "manual" | "task";
+  kind: "manual" | "task" | "worktree_setup";
   projectId: string;
   cwd?: string | null;
   title: string;
