@@ -1,5 +1,5 @@
 import type { PlanNode, PredictedBranch, Project, ProjectGroup, TaskExecutionTarget } from '../types';
-import { getAllProjects } from './globalProjects';
+import { getAllProjects, getScopedProjectIds } from './globalProjects';
 import { toBranchWorktreeKey } from './implementTaskDerivation';
 
 type ProjectReplicaRef = {
@@ -32,6 +32,13 @@ export type TaskExecutionScopeRef = {
 export type ProjectExecutionReconciliationScope = {
   scopedProjectIds?: string[] | null;
   knownProjectIds: string[];
+};
+
+export type ProjectSelectionReconciliationScope = {
+  standaloneProjects?: Project[];
+  projectGroups: ProjectGroup[];
+  selectedGroupId?: string | null;
+  selectedProjectId?: string | null;
 };
 
 export const normalizeExecutionProjectIds = (
@@ -289,3 +296,27 @@ export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
     execution_targets: executionTargets,
   };
 };
+
+export const getProjectSelectionScopedProjectIds = (
+  scope: ProjectSelectionReconciliationScope
+): string[] =>
+  getScopedProjectIds(
+    {
+      standaloneProjects: scope.standaloneProjects ?? [],
+      projectGroups: scope.projectGroups,
+    },
+    scope.selectedGroupId ?? null,
+    scope.selectedProjectId ?? null
+  );
+
+export const retargetTaskForProjectSelection = <TTask extends TaskExecutionScopeRef>(
+  task: TTask,
+  scope: ProjectSelectionReconciliationScope
+): TTask =>
+  retargetTaskForExecution(task, {
+    scopedProjectIds: getProjectSelectionScopedProjectIds(scope),
+    knownProjectIds: collectKnownProjectIds({
+      standaloneProjects: scope.standaloneProjects ?? [],
+      projectGroups: scope.projectGroups,
+    }),
+  });

@@ -56,6 +56,7 @@ import {
   type ImplementTaskPlanSummary,
 } from '../services/implementTaskCatalog';
 import { getScopedProjectIds } from '../services/globalProjects';
+import { retargetTaskForProjectSelection } from '../services/projectIdentityReconciliation';
 import {
   commitManualFeatureMetadata,
   removeManualFeatureMetadata,
@@ -171,6 +172,18 @@ const canUseTaskCommandRuntime = (): boolean =>
 const normalizeBranchName = (value?: string): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || 'work';
+};
+
+const retargetTaskForCurrentAppScope = <TTask extends CatalogedImplementTask>(
+  task: TTask
+): TTask => {
+  const appState = useAppStore.getState();
+  return retargetTaskForProjectSelection(task, {
+    standaloneProjects: appState.standaloneProjects,
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+  });
 };
 
 const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[] => {
@@ -411,24 +424,27 @@ const resolveTaskRepositoryPath = (
 
 const getExecutionTargetsWithRepoPaths = (
   task: CatalogedImplementTask
-): Array<TaskExecutionTarget & { repoPath: string }> =>
-  getExecutionTargets(task)
+): Array<TaskExecutionTarget & { repoPath: string }> => {
+  const executionTask = retargetTaskForCurrentAppScope(task);
+  return getExecutionTargets(executionTask)
     .map((target) => {
       const repoPath = resolveTaskRepositoryPath(target.projectId, target.repoPath);
       return repoPath ? { ...target, repoPath } : null;
     })
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
+};
 
 const findActiveTasksSharingExecutionBranch = (
   task: CatalogedImplementTask,
   tasks: CatalogedImplementTask[]
 ): CatalogedImplementTask[] => {
-  if (task.task_source !== 'architect') {
+  const executionTask = retargetTaskForCurrentAppScope(task);
+  if (executionTask.task_source !== 'architect') {
     return [];
   }
 
   const targetKeys = new Set(
-    getExecutionTargets(task).map(
+    getExecutionTargets(executionTask).map(
       (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
     )
   );
@@ -437,12 +453,13 @@ const findActiveTasksSharingExecutionBranch = (
   }
 
   return tasks.filter((candidate) => {
-    if (candidate.id === task.id) return false;
+    const executionCandidate = retargetTaskForCurrentAppScope(candidate);
+    if (executionCandidate.id === executionTask.id) return false;
     if (candidate.task_source !== 'architect') return false;
-    if (candidate.plan_id !== task.plan_id) return false;
+    if (candidate.plan_id !== executionTask.plan_id) return false;
     if (candidate.archived_at || candidate.status === 'Completed') return false;
 
-    return getExecutionTargets(candidate).some((target) =>
+    return getExecutionTargets(executionCandidate).some((target) =>
       targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
     );
   });
@@ -459,7 +476,9 @@ const assertArchitectTaskBranchIsExclusive = (
 
   const sharedBranches = Array.from(
     new Set(
-      getExecutionTargets(task).map((target) => normalizeBranchName(target.branchName))
+      getExecutionTargets(retargetTaskForCurrentAppScope(task)).map((target) =>
+        normalizeBranchName(target.branchName)
+      )
     )
   ).join(', ');
   const taskTitles = sharingTasks.map((candidate) => candidate.title).join(', ');
@@ -1331,7 +1350,12 @@ const applyPredictedBranchLifecycle = (
   if (!targetTask) return predictedBranches;
 
   const taskStatuses = new Map(tasks.map((task) => [task.id, task.id === taskId ? nextStatus : task.status]));
-  const targetKeys = new Set(getExecutionTargets(targetTask).map((target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`));
+  const targetExecutionTask = retargetTaskForCurrentAppScope(targetTask);
+  const targetKeys = new Set(
+    getExecutionTargets(targetExecutionTask).map((target) =>
+      `${target.projectId}::${normalizeBranchName(target.branchName)}`
+    )
+  );
 
   return predictedBranches.map((branch) => {
     const branchKey = `${branch.projectId}::${normalizeBranchName(branch.name)}`;
@@ -1348,7 +1372,7 @@ const applyPredictedBranchLifecycle = (
     }
 
     const branchTasks = tasks.filter((task) =>
-      getExecutionTargets(task).some(
+      getExecutionTargets(retargetTaskForCurrentAppScope(task)).some(
         (target) => target.projectId === branch.projectId && normalizeBranchName(target.branchName) === normalizeBranchName(branch.name)
       )
     );
@@ -1392,7 +1416,8 @@ const ensureTaskExecutionTargetsReady = async (
   preparedTargets: PreparedTaskExecutionTarget[];
 }> => {
   const appState = useAppStore.getState();
-  const executionTargets = getExecutionTargets(task);
+  const executionTask = retargetTaskForCurrentAppScope(task);
+  const executionTargets = getExecutionTargets(executionTask);
   if (executionTargets.length === 0) {
     throw toServiceError(
       tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
@@ -1405,7 +1430,7 @@ const ensureTaskExecutionTargetsReady = async (
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
 
   for (const target of executionTargets) {
-    const worktreePath = await ensureTargetWorktreePath(task, target, branchWorktrees);
+    const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
 
     createdWorktrees[target.worktreeKey] = worktreePath;
 
@@ -1514,6 +1539,7 @@ interface TaskStore {
   requestTaskChanges: (taskId: string) => Promise<void>;
   runTaskCommands: (taskId: string) => Promise<TaskCommandRunResult | null>;
   cancelTaskCommands: (taskId: string) => Promise<void>;
+  handleTaskCommandTerminalClosed: (tabId: string) => void;
   loadMergeWorkflowReview: (taskId: string, options?: { force?: boolean }) => Promise<MergeWorkflowRuntimeState | null>;
   runMergeWorkflow: (taskId: string, options?: CompleteTaskOptions) => Promise<void>;
   resolveMergeWorkflowAutomatically: (
@@ -2367,9 +2393,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    const preferredTarget = getPreferredExecutionTarget(task, appState.selectedProjectId);
-    const primaryTarget = preferredTarget || getPrimaryExecutionTarget(task);
-    const branchName = primaryTarget?.branchName || task.assigned_branch;
+    const executionTask = retargetTaskForCurrentAppScope(task);
+    const preferredTarget = getPreferredExecutionTarget(executionTask, appState.selectedProjectId);
+    const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
+    const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
     const knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
       : null;
@@ -2397,8 +2424,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     const projectPath = primaryTarget?.projectId
       ? appState.getProjectById(primaryTarget.projectId)?.path ?? null
-      : task.project_id
-        ? appState.getProjectById(task.project_id)?.path ?? null
+      : executionTask.project_id
+        ? appState.getProjectById(executionTask.project_id)?.path ?? null
       : null;
 
     set({
@@ -2517,7 +2544,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
       }
 
-      const removedWorktreeKeys = getExecutionTargets(existingTask).map((target) => target.worktreeKey);
+      const removedWorktreeKeys = executionTargets.map((target) => target.worktreeKey);
       set((state) => ({
         ...updateTaskRuntimeAfterCleanup(state, existingTask, removedWorktreeKeys),
         missingBaseBranchIssue: null,
@@ -2708,7 +2735,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
       }
 
-      const removedKeys = new Set(getExecutionTargets(task).map((target) => target.worktreeKey));
+      const removedKeys = new Set(executionTargets.map((target) => target.worktreeKey));
       const removedPaths = new Set(
         Array.from(removedKeys)
           .map((key) => get().branchWorktrees[key])
@@ -2853,7 +2880,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
       }
 
-      const removedKeys = new Set(getExecutionTargets(task).map((target) => target.worktreeKey));
+      const removedKeys = new Set(executionTargets.map((target) => target.worktreeKey));
       const removedPaths = new Set(
         Array.from(removedKeys)
           .map((key) => get().branchWorktrees[key])
@@ -3215,6 +3242,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     set({ lastError: null });
+    let keepCommandRunVisible = false;
 
     try {
       const registry = await loadTaskProjectCommandRegistry();
@@ -3286,23 +3314,20 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           return null;
         }
 
-        const tab = await terminalStore.ensureTaskTab({
+        const displayMetadata = buildTerminalDisplayMetadata({
+          projectLabel:
+            useAppStore.getState().getProjectById(target.projectId)?.mountName ||
+            target.projectName,
+          taskLabel: task.title,
+        });
+        const tab = await terminalStore.startTaskCommandTab({
           taskId,
           projectId: target.projectId,
           cwd: target.worktreePath,
-          title: buildTerminalDisplayMetadata({
-            projectLabel:
-              useAppStore.getState().getProjectById(target.projectId)?.mountName ||
-              target.projectName,
-            taskLabel: task.title,
-          }).title,
+          title: displayMetadata.title,
+          command: commandEntry.command,
           reveal: commandEntry.openTerminalOnRun,
-          promptContext: buildTerminalDisplayMetadata({
-            projectLabel:
-              useAppStore.getState().getProjectById(target.projectId)?.mountName ||
-              target.projectName,
-            taskLabel: task.title,
-          }).promptContext,
+          promptContext: displayMetadata.promptContext,
         });
 
         set((state) => ({
@@ -3324,11 +3349,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           },
         }));
 
-        const result = await terminalStore.executeCommand({
-          tabId: tab.id,
-          command: commandEntry.command,
-          reveal: commandEntry.openTerminalOnRun,
-        });
+        completedCount += 1;
 
         const nextRun = get().taskCommandRuns[taskId];
         if (nextRun?.status === 'cancelling') {
@@ -3339,33 +3360,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             currentProjectName: target.projectName,
           };
         }
-
-        if (result.lastExitCode !== 0) {
-          const summary = (result.snapshot || '')
-            .trim()
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .slice(-1)[0];
-          set({
-            lastError: summary
-              ? tTask(
-                  'implement.taskCommandRunFailedWithOutput',
-                  'Command failed for {{project}}: {{summary}}',
-                  { project: target.projectName, summary }
-                )
-              : tTask(
-                  'implement.taskCommandRunFailed',
-                  'Command failed for {{project}}.',
-                  { project: target.projectName }
-                ),
-          });
-          return null;
-        }
-
-        completedCount += 1;
       }
 
+      keepCommandRunVisible = true;
       return {
         status: 'completed',
         completedCount,
@@ -3386,6 +3383,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     } finally {
       set((state) => {
         if (!state.taskCommandRuns[taskId]) {
+          return state;
+        }
+
+        if (keepCommandRunVisible && state.taskCommandRuns[taskId].status === 'running') {
           return state;
         }
 
@@ -3413,14 +3414,55 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }));
 
     if (!runState.activeTabId) {
+      set((state) => {
+        if (!state.taskCommandRuns[taskId]) {
+          return state;
+        }
+        const nextRuns = { ...state.taskCommandRuns };
+        delete nextRuns[taskId];
+        return { taskCommandRuns: nextRuns };
+      });
       return;
     }
 
     try {
-      await useTerminalStore.getState().interruptTab(runState.activeTabId);
-    } catch {
-      // Ignore interrupt failures here; the pending command will still settle or the tab stays interactive.
+      await useTerminalStore.getState().closeTab(runState.activeTabId);
+      get().handleTaskCommandTerminalClosed(runState.activeTabId);
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set((state) => {
+        if (!state.taskCommandRuns[taskId]) {
+          return { lastError: normalized.message };
+        }
+
+        return {
+          lastError: normalized.message,
+          taskCommandRuns: {
+            ...state.taskCommandRuns,
+            [taskId]: {
+              ...state.taskCommandRuns[taskId],
+              status: 'running',
+            },
+          },
+        };
+      });
     }
+  },
+
+  handleTaskCommandTerminalClosed: (tabId) => {
+    set((state) => {
+      const taskId = Object.entries(state.taskCommandRuns).find(
+        ([, runState]) => runState.activeTabId === tabId
+      )?.[0];
+
+      if (!taskId) {
+        return state;
+      }
+
+      const nextRuns = { ...state.taskCommandRuns };
+      delete nextRuns[taskId];
+      return { taskCommandRuns: nextRuns };
+    });
   },
 
   loadMergeWorkflowReview: async (taskId, options) => {
@@ -3820,7 +3862,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         );
       }
 
-      const executionTargets = getExecutionTargets(task);
+      const executionTask = retargetTaskForCurrentAppScope(task);
+      const executionTargets = getExecutionTargets(executionTask);
       if (executionTargets.length === 0) {
         throw new Error(
           tTask(

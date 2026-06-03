@@ -106,6 +106,29 @@ const workspaceUpdateStandaloneTaskStatusMock = mock(
   }
 );
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
+const startTaskCommandTabMock = mock(async () => ({
+  id: 'terminal-tab-1',
+  kind: 'task',
+  taskId: 'task-1',
+  projectId: 'project-1',
+  projectName: 'Project One',
+  mountName: 'project-one',
+  workspacePath: '/repos/web/.macro/worktrees/task-1',
+  cwd: '/repos/web/.macro/worktrees/task-1',
+  title: 'Project One - Task 1',
+  status: 'running',
+  snapshot: 'npm test\r\n',
+  lastCommand: 'npm test',
+  lastExitCode: null,
+  hasLiveSession: true,
+  isRestored: false,
+  outputSequence: 1,
+  hasUnreadOutput: false,
+  createdAt: '2026-06-03T10:00:00.000Z',
+  updatedAt: '2026-06-03T10:00:00.000Z',
+}));
+const interruptTabMock = mock(async () => undefined);
+const closeTabMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
@@ -209,8 +232,31 @@ mock.module('./useTerminalStore', () => ({
   useTerminalStore: {
     getState: () => ({
       syncTerminalDisplayMetadata: syncTerminalDisplayMetadataMock,
+      startTaskCommandTab: startTaskCommandTabMock,
+      interruptTab: interruptTabMock,
+      closeTab: closeTabMock,
     }),
   },
+}));
+
+mock.module('../services/taskProjectCommands', () => ({
+  loadTaskProjectCommandRegistry: mock(async () => ({
+    version: 2,
+    commandsByProjectPath: {
+      '/repos/web': {
+        projectId: 'project-1',
+        projectName: 'Project One',
+        projectPath: '/repos/web',
+        command: 'npm test',
+        openTerminalOnRun: true,
+        updatedAt: '2026-06-03T10:00:00.000Z',
+      },
+    },
+  })),
+  getTaskProjectCommand: (registry: {
+    commandsByProjectPath: Record<string, { command: string; openTerminalOnRun: boolean }>;
+  }, projectPath: string | null | undefined) =>
+    projectPath ? registry.commandsByProjectPath[projectPath] ?? null : null,
 }));
 
 mock.module('./useChatStore', () => ({
@@ -1617,5 +1663,118 @@ describe('useTaskStore remote runtime guards', () => {
         process.env.VITE_BACKEND_TRANSPORT = previousTransport;
       }
     }
+  });
+});
+
+describe('useTaskStore task command terminal lifecycle', () => {
+  it('keeps the command run visible after launching a task terminal', async () => {
+    startTaskCommandTabMock.mockClear();
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      completedCount: 1,
+      totalCount: 1,
+    });
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        projectId: 'project-1',
+        cwd: '/repos/web/.macro/worktrees/task-1',
+        command: 'npm test',
+      })
+    );
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toMatchObject({
+      status: 'running',
+      activeTabId: 'terminal-tab-1',
+      currentProjectId: 'project-1',
+    });
+  });
+
+  it('clears the active command run when its terminal tab is closed', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      taskCommandRuns: {
+        'task-1': {
+          taskId: 'task-1',
+          status: 'running',
+          currentProjectId: 'project-1',
+          currentProjectName: 'Web',
+          activeTabId: 'terminal-tab-1',
+          startedAt: '2026-06-03T10:00:00.000Z',
+        },
+        'task-2': {
+          taskId: 'task-2',
+          status: 'running',
+          currentProjectId: 'project-2',
+          currentProjectName: 'API',
+          activeTabId: 'terminal-tab-2',
+          startedAt: '2026-06-03T10:01:00.000Z',
+        },
+      },
+    });
+
+    useTaskStore.getState().handleTaskCommandTerminalClosed('terminal-tab-1');
+
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
+    expect(useTaskStore.getState().taskCommandRuns['task-2']).toMatchObject({
+      activeTabId: 'terminal-tab-2',
+      currentProjectId: 'project-2',
+    });
+  });
+
+  it('closes the associated terminal tab when cancelling a task command run', async () => {
+    closeTabMock.mockClear();
+    interruptTabMock.mockClear();
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      taskCommandRuns: {
+        'task-1': {
+          taskId: 'task-1',
+          status: 'running',
+          currentProjectId: 'project-1',
+          currentProjectName: 'Web',
+          activeTabId: 'terminal-tab-1',
+          startedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+      lastError: null,
+    });
+
+    await useTaskStore.getState().cancelTaskCommands('task-1');
+
+    expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-1');
+    expect(interruptTabMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
 });

@@ -19,6 +19,7 @@ const MAX_DETACHED_RUNTIME_SESSIONS = 6;
 type WriteOperation =
   | { type: 'write'; data: string }
   | { type: 'reset'; snapshot: string };
+type SnapshotSyncResult = 'none' | 'write' | 'reset';
 
 type RuntimeHandlers = {
   onInput: (input: string) => void;
@@ -32,8 +33,10 @@ type RuntimeSession = {
   fitAddon: FitAddon;
   mount: HTMLDivElement;
   host: HTMLDivElement | null;
+  isOpened: boolean;
   resizeObserver: ResizeObserver | null;
   lastSnapshot: string;
+  lastReportedSize: { cols: number; rows: number } | null;
   hasLiveSession: boolean;
   handlers: RuntimeHandlers;
   writeQueue: WriteOperation[];
@@ -43,6 +46,7 @@ type RuntimeSession = {
   linkProviderDisposable: { dispose: () => void } | null;
   lastTouchedAt: number;
   themeSignature: string;
+  lastFitFailureKey: string | null;
   windowResizeListener: () => void;
   visibilityChangeListener: () => void;
 };
@@ -64,9 +68,13 @@ export interface TerminalRuntimeSyncParams extends RuntimeHandlers {
 
 const runtimeSessions = new Map<string, RuntimeSession>();
 
-const canFitTerminal = (terminal: Terminal, container: HTMLDivElement): boolean => {
-  if (!container.isConnected || container.clientWidth <= 0 || container.clientHeight <= 0) {
-    return false;
+const getTerminalFitBlocker = (terminal: Terminal, container: HTMLDivElement): string | null => {
+  if (!container.isConnected) {
+    return 'host_disconnected';
+  }
+
+  if (container.clientWidth <= 0 || container.clientHeight <= 0) {
+    return 'host_zero_size';
   }
 
   const core = terminal as Terminal & {
@@ -80,14 +88,14 @@ const canFitTerminal = (terminal: Terminal, container: HTMLDivElement): boolean 
   const renderService = core._core?._renderService;
 
   if (!renderService) {
-    return false;
+    return 'renderer_unavailable';
   }
 
   if (typeof renderService.hasRenderer === 'function') {
-    return renderService.hasRenderer();
+    return renderService.hasRenderer() ? null : 'renderer_not_ready';
   }
 
-  return Boolean(renderService._renderer?.value);
+  return renderService._renderer?.value ? null : 'renderer_not_ready';
 };
 
 const getWindowsPtyOptions = (): { backend: 'conpty' } | undefined => {
@@ -111,7 +119,7 @@ const buildTerminalOptions = (
   const terminalOptions: ITerminalOptions & { rescaleOverlappingGlyphs?: boolean } = {
     fontFamily: 'JetBrains Mono, monospace',
     fontSize: 12,
-    lineHeight: 1.1,
+    lineHeight: 1.2,
     cursorBlink: true,
     cursorInactiveStyle: 'outline',
     disableStdin: !hasLiveSession,
@@ -140,14 +148,15 @@ const buildTerminalOptions = (
   return terminalOptions as ITerminalOptions;
 };
 
-const applyTerminalTheme = (session: RuntimeSession, theme?: Theme | null) => {
+const applyTerminalTheme = (session: RuntimeSession, theme?: Theme | null): boolean => {
   const signature = getTerminalThemeSignature(theme);
   if (session.themeSignature === signature) {
-    return;
+    return false;
   }
 
   session.terminal.options.theme = buildTerminalTheme(theme);
   session.themeSignature = signature;
+  return true;
 };
 
 const clearFitTimers = (session: RuntimeSession) => {
@@ -168,40 +177,62 @@ const clearWriteTimers = (session: RuntimeSession) => {
   }
 };
 
+const refreshTerminal = (session: RuntimeSession) => {
+  if (!session.isOpened || session.terminal.rows <= 0) {
+    return;
+  }
+
+  try {
+    session.terminal.refresh(0, session.terminal.rows - 1);
+  } catch {
+    // xterm can briefly reject refreshes while its renderer is being recreated.
+  }
+};
+
+const writeAndRefresh = (session: RuntimeSession, data: string) => {
+  if (!data) {
+    refreshTerminal(session);
+    return;
+  }
+
+  session.terminal.write(data, () => {
+    refreshTerminal(session);
+  });
+};
+
 const flushWriteQueue = (session: RuntimeSession) => {
   session.writeFrameId = null;
-  if (session.writeQueue.length === 0) {
+  if (!session.isOpened || session.writeQueue.length === 0) {
     return;
   }
 
   const operations = session.writeQueue.splice(0, session.writeQueue.length);
+  let resetSnapshot: string | null = null;
   let bufferedWrite = '';
   for (const operation of operations) {
     if (operation.type === 'reset') {
-      if (bufferedWrite) {
-        session.terminal.write(bufferedWrite);
-        bufferedWrite = '';
-      }
-      session.terminal.reset();
-      if (operation.snapshot) {
-        session.terminal.write(operation.snapshot);
-      }
+      resetSnapshot = operation.snapshot;
+      bufferedWrite = '';
       continue;
     }
 
     bufferedWrite += operation.data;
   }
 
+  if (resetSnapshot !== null) {
+    session.terminal.reset();
+    session.terminal.clear();
+    writeAndRefresh(session, resetSnapshot + bufferedWrite);
+    return;
+  }
+
   if (bufferedWrite) {
-    session.terminal.write(bufferedWrite);
+    writeAndRefresh(session, bufferedWrite);
   }
 };
 
-const queueWriteOperation = (session: RuntimeSession, operation: WriteOperation) => {
-  session.writeQueue.push(operation);
-  session.lastTouchedAt = Date.now();
-
-  if (session.writeFrameId !== null) {
+const scheduleWriteFlush = (session: RuntimeSession) => {
+  if (!session.isOpened || session.writeFrameId !== null) {
     return;
   }
 
@@ -210,17 +241,54 @@ const queueWriteOperation = (session: RuntimeSession, operation: WriteOperation)
   });
 };
 
+const queueWriteOperation = (session: RuntimeSession, operation: WriteOperation) => {
+  session.writeQueue.push(operation);
+  session.lastTouchedAt = Date.now();
+  scheduleWriteFlush(session);
+};
+
+const logFitFailure = (session: RuntimeSession, reason: string) => {
+  if (!import.meta.env?.DEV) {
+    return;
+  }
+
+  const host = session.host;
+  const key = `${reason}:${host?.clientWidth ?? 0}x${host?.clientHeight ?? 0}`;
+  if (session.lastFitFailureKey === key) {
+    return;
+  }
+
+  session.lastFitFailureKey = key;
+  console.debug('[terminal_runtime_fit_skipped]', {
+    tabId: session.tabId,
+    reason,
+    hostWidth: host?.clientWidth ?? 0,
+    hostHeight: host?.clientHeight ?? 0,
+  });
+};
+
 const scheduleFit = (session: RuntimeSession, attempt = 0) => {
+  if (!session.host) {
+    return;
+  }
+
   clearFitTimers(session);
   session.fitFrameId = window.requestAnimationFrame(() => {
     session.fitFrameId = null;
 
-    if (!session.host || !canFitTerminal(session.terminal, session.host)) {
+    if (!session.host) {
+      return;
+    }
+
+    const fitBlocker = getTerminalFitBlocker(session.terminal, session.host);
+    if (fitBlocker) {
       if (attempt < FIT_RETRY_LIMIT) {
         session.fitRetryTimeoutId = window.setTimeout(
           () => scheduleFit(session, attempt + 1),
           FIT_RETRY_DELAY_MS
         );
+      } else {
+        logFitFailure(session, fitBlocker);
       }
       return;
     }
@@ -228,14 +296,29 @@ const scheduleFit = (session: RuntimeSession, attempt = 0) => {
     try {
       session.fitAddon.fit();
       if (session.terminal.cols > 0 && session.terminal.rows > 0) {
-        session.handlers.onResize(session.terminal.cols, session.terminal.rows);
+        const nextSize = {
+          cols: session.terminal.cols,
+          rows: session.terminal.rows,
+        };
+        const sizeChanged =
+          !session.lastReportedSize ||
+          session.lastReportedSize.cols !== nextSize.cols ||
+          session.lastReportedSize.rows !== nextSize.rows;
+        session.lastReportedSize = nextSize;
+        if (sizeChanged) {
+          session.handlers.onResize(nextSize.cols, nextSize.rows);
+        }
       }
+      session.lastFitFailureKey = null;
+      refreshTerminal(session);
     } catch {
       if (attempt < FIT_RETRY_LIMIT) {
         session.fitRetryTimeoutId = window.setTimeout(
           () => scheduleFit(session, attempt + 1),
           FIT_RETRY_DELAY_MS
         );
+      } else {
+        logFitFailure(session, 'fit_failed');
       }
     }
   });
@@ -255,33 +338,54 @@ const connectResizeObserver = (session: RuntimeSession, hostElement: HTMLDivElem
   session.resizeObserver = resizeObserver;
 };
 
-const syncSnapshot = (session: RuntimeSession, snapshot: string) => {
+const syncSnapshot = (session: RuntimeSession, snapshot: string): SnapshotSyncResult => {
   if (snapshot === session.lastSnapshot) {
-    return;
+    return 'none';
   }
 
+  let result: SnapshotSyncResult = 'none';
   if (snapshot.startsWith(session.lastSnapshot)) {
     const delta = snapshot.slice(session.lastSnapshot.length);
     if (delta) {
       queueWriteOperation(session, { type: 'write', data: delta });
+      result = 'write';
     }
   } else {
     queueWriteOperation(session, { type: 'reset', snapshot });
+    result = 'reset';
   }
 
   session.lastSnapshot = snapshot;
+  return result;
 };
 
-const updateSessionState = (session: RuntimeSession, params: TerminalRuntimeSyncParams) => {
+const updateSessionState = (
+  session: RuntimeSession,
+  params: TerminalRuntimeSyncParams,
+  options: { syncSnapshot?: boolean } = {}
+): { themeChanged: boolean; snapshotResult: SnapshotSyncResult } => {
   session.handlers = {
     onInput: params.onInput,
     onResize: params.onResize,
+    onClear: params.onClear,
   };
   session.hasLiveSession = params.hasLiveSession;
   session.terminal.options.disableStdin = !params.hasLiveSession;
-  applyTerminalTheme(session, params.theme);
-  syncSnapshot(session, params.snapshot);
+  const themeChanged = applyTerminalTheme(session, params.theme);
+  const snapshotResult =
+    options.syncSnapshot === false ? 'none' : syncSnapshot(session, params.snapshot);
   session.lastTouchedAt = Date.now();
+  return { themeChanged, snapshotResult };
+};
+
+const ensureTerminalOpened = (session: RuntimeSession) => {
+  if (session.isOpened) {
+    return;
+  }
+
+  session.terminal.open(session.mount);
+  session.isOpened = true;
+  scheduleWriteFlush(session);
 };
 
 const createRuntimeSession = (tabId: string): RuntimeSession => {
@@ -300,7 +404,6 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
       });
     })
   );
-  terminal.open(mount);
 
   let session: RuntimeSession;
   session = {
@@ -309,8 +412,10 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
     fitAddon,
     mount,
     host: null,
+    isOpened: false,
     resizeObserver: null,
     lastSnapshot: '',
+    lastReportedSize: null,
     hasLiveSession: false,
     handlers: {
       onInput: () => undefined,
@@ -323,6 +428,7 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
     linkProviderDisposable,
     lastTouchedAt: Date.now(),
     themeSignature: getTerminalThemeSignature(),
+    lastFitFailureKey: null,
     windowResizeListener: () => {
       scheduleFit(session);
     },
@@ -342,6 +448,12 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
   });
   window.addEventListener('resize', session.windowResizeListener);
   document.addEventListener('visibilitychange', session.visibilityChangeListener);
+  void document.fonts?.ready
+    .then(() => {
+      scheduleFit(session);
+      refreshTerminal(session);
+    })
+    .catch(() => undefined);
 
   return session;
 };
@@ -399,7 +511,7 @@ const getOrCreateRuntimeSession = (tabId: string): RuntimeSession => {
 export const terminalRuntime = {
   attachTab(params: TerminalRuntimeAttachParams) {
     const session = getOrCreateRuntimeSession(params.tabId);
-    updateSessionState(session, params);
+    updateSessionState(session, params, { syncSnapshot: false });
 
     if (session.host !== params.hostElement) {
       if (session.host && session.mount.parentElement === session.host) {
@@ -410,7 +522,9 @@ export const terminalRuntime = {
       connectResizeObserver(session, params.hostElement);
     }
 
+    ensureTerminalOpened(session);
     scheduleFit(session);
+    syncSnapshot(session, params.snapshot);
     session.terminal.focus();
   },
 
@@ -440,12 +554,21 @@ export const terminalRuntime = {
       return;
     }
 
-    updateSessionState(session, params);
+    const previousSnapshot = session.lastSnapshot;
+    const { themeChanged } = updateSessionState(session, params, { syncSnapshot: false });
+    const willResetSnapshot =
+      params.snapshot !== previousSnapshot && !params.snapshot.startsWith(previousSnapshot);
+    if (themeChanged || willResetSnapshot) {
+      scheduleFit(session);
+    }
+    syncSnapshot(session, params.snapshot);
   },
 
   setTheme(theme?: Theme | null) {
     for (const session of runtimeSessions.values()) {
-      applyTerminalTheme(session, theme);
+      if (applyTerminalTheme(session, theme)) {
+        scheduleFit(session);
+      }
     }
   },
 
@@ -456,7 +579,9 @@ export const terminalRuntime = {
     }
 
     session.lastTouchedAt = Date.now();
-    session.terminal.focus();
+    if (session.isOpened) {
+      session.terminal.focus();
+    }
   },
 
   resizeTab(tabId: string) {

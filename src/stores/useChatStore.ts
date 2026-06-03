@@ -185,6 +185,7 @@ import {
 import {
   renderStandaloneFeatureBranchName,
 } from "../services/architectGitNaming";
+import { retargetTaskForProjectSelection } from "../services/projectIdentityReconciliation";
 import { provisionPlanBranches } from "../services/architectGitFlowService";
 import {
   applyStrategyMutationPreview,
@@ -1330,6 +1331,22 @@ const taskMatchesScopedProjectIds = (
   scopedProjectIds.length === 0 ||
   scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId));
 
+const retargetImplementTaskForSelection = (
+  task: ImplementTask,
+  params: {
+    standaloneProjects?: Project[];
+    projectGroups: ProjectGroup[];
+    selectedGroupId?: string | null;
+    selectedProjectId?: string | null;
+  },
+): ImplementTask =>
+  retargetTaskForProjectSelection(task, {
+    standaloneProjects: params.standaloneProjects ?? [],
+    projectGroups: params.projectGroups,
+    selectedGroupId: params.selectedGroupId,
+    selectedProjectId: params.selectedProjectId,
+  });
+
 export const resolveImplementTaskForContext = ({
   selectedTaskId,
   tasks,
@@ -1347,9 +1364,24 @@ export const resolveImplementTaskForContext = ({
     selectedGroupId,
     selectedProjectId,
   );
-  const eligibleTasks = tasks.filter((task) =>
-    !task.archived_at && taskMatchesScopedProjectIds(task, scopedProjectIds)
-  );
+  const eligibleTasks = tasks.filter((task) => {
+    if (task.archived_at) {
+      return false;
+    }
+    if (taskMatchesScopedProjectIds(task, scopedProjectIds)) {
+      return true;
+    }
+    if (task.task_source !== "standalone" && task.id !== selectedTaskId) {
+      return false;
+    }
+    const executionTask = retargetImplementTaskForSelection(task, {
+      standaloneProjects,
+      projectGroups,
+      selectedGroupId,
+      selectedProjectId,
+    });
+    return taskMatchesScopedProjectIds(executionTask, scopedProjectIds);
+  });
   const findEligibleTask = (taskId?: string | null): ImplementTask | null =>
     taskId
       ? eligibleTasks.find((task) => task.id === taskId) ?? null
@@ -1727,7 +1759,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!isStandaloneImplementTask(task)) {
       return;
     }
-    if (task.draft) {
+    const appState = useAppStore.getState();
+    const executionTask = retargetImplementTaskForSelection(task, {
+      standaloneProjects: appState.standaloneProjects,
+      projectGroups: appState.projectGroups,
+      selectedGroupId: appState.selectedGroupId,
+      selectedProjectId: appState.selectedProjectId,
+    });
+    if (executionTask.draft) {
       throw buildSendError(
         "This standalone task is still a draft. Send a first description so Macro can initialize its repository and branch before starting the agent.",
       );
@@ -1735,18 +1774,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const projectIds = new Set(
       [
-        ...(Array.isArray(task.project_ids) ? task.project_ids : []),
-        task.project_id ?? null,
-        ...(Array.isArray(task.execution_targets)
-          ? task.execution_targets
+        ...(Array.isArray(executionTask.project_ids) ? executionTask.project_ids : []),
+        executionTask.project_id ?? null,
+        ...(Array.isArray(executionTask.execution_targets)
+          ? executionTask.execution_targets
               .map((target) => target.projectId)
               .filter((projectId): projectId is string => Boolean(projectId))
           : []),
       ].filter((projectId): projectId is string => Boolean(projectId)),
     );
     const hasExecutionTargets =
-      Array.isArray(task.execution_targets) && task.execution_targets.length > 0;
-    const hasBranch = Boolean(task.branch_name?.trim());
+      Array.isArray(executionTask.execution_targets) && executionTask.execution_targets.length > 0;
+    const hasBranch = Boolean(executionTask.branch_name?.trim());
 
     if (projectIds.size === 0 || !hasBranch) {
       throw buildSendError(
@@ -1757,9 +1796,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       devLogger.warn(
         "Standalone task has no execution_targets; falling back to project/branch routing.",
         {
-          taskId: task.id,
+          taskId: executionTask.id,
           projectIds: Array.from(projectIds),
-          branchName: task.branch_name,
+          branchName: executionTask.branch_name,
         },
       );
     }
@@ -7298,9 +7337,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
     const appState = useAppStore.getState();
+    const executionTask = retargetImplementTaskForSelection(task, {
+      standaloneProjects: appState.standaloneProjects,
+      projectGroups: appState.projectGroups,
+      selectedGroupId: appState.selectedGroupId,
+      selectedProjectId: appState.selectedProjectId,
+    });
     const projectIds = Array.from(
       new Set(
-        [...(task.project_ids || []), task.project_id].filter(
+        [...(executionTask.project_ids || []), executionTask.project_id].filter(
           (projectId): projectId is string =>
             typeof projectId === "string" && projectId.trim().length > 0,
         ),
@@ -11246,8 +11291,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (mode === "Implement" && selectedTaskId) {
       const task = useTaskStore.getState().getTaskById(selectedTaskId);
+      const executionTask = task
+        ? retargetImplementTaskForSelection(task, {
+            standaloneProjects: appState.standaloneProjects,
+            projectGroups: appState.projectGroups,
+            selectedGroupId,
+            selectedProjectId,
+          })
+        : null;
       const projectId =
-        task?.project_id ??
+        executionTask?.project_id ??
         getFocusedProjectForGroup(
           appState.projectGroups,
           selectedGroupId,
@@ -11907,13 +11960,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return true;
     },
 
-    createConversation: async (title, taskId, projectId, groupId) =>
-      createConversationRecord({
+    createConversation: async (title, taskId, projectId, groupId) => {
+      const appState = useAppStore.getState();
+      const task = taskId ? useTaskStore.getState().getTaskById(taskId) : null;
+      const executionTask = task
+        ? retargetImplementTaskForSelection(task, {
+            standaloneProjects: appState.standaloneProjects,
+            projectGroups: appState.projectGroups,
+            selectedGroupId: appState.selectedGroupId,
+            selectedProjectId: appState.selectedProjectId,
+          })
+        : null;
+
+      return createConversationRecord({
         title,
         taskId,
-        projectId,
+        projectId: executionTask?.project_id ?? projectId,
         groupId,
-      }),
+      });
+    },
 
     beginArchitectPlanSwitch: (params) => {
       beginArchitectPlanSwitchSelection(params);

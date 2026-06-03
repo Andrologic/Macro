@@ -40,6 +40,7 @@ export interface TerminalTab {
   lastExitCode: number | null;
   hasLiveSession: boolean;
   isRestored: boolean;
+  outputSequence: number;
   hasUnreadOutput: boolean;
   createdAt: string;
   updatedAt: string;
@@ -116,6 +117,15 @@ interface TerminalStore extends TerminalVisibilityState {
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
   }) => Promise<TerminalTab>;
+  startTaskCommandTab: (params: {
+    taskId: string;
+    projectId: string;
+    cwd: string;
+    title: string;
+    command: string;
+    reveal: boolean;
+    promptContext?: tauriIpc.TerminalPromptContextInput | null;
+  }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
   executeCommand: (params: {
@@ -138,26 +148,33 @@ const clampPanelHeight = (height: number): number =>
 const mapTabDto = (
   dto: tauriIpc.TerminalTabDto,
   existing?: TerminalTab | null
-): TerminalTab => ({
-  id: dto.id,
-  kind: dto.kind === 'task' ? 'task' : 'manual',
-  taskId: dto.task_id ?? null,
-  projectId: dto.project_id,
-  projectName: dto.project_name,
-  mountName: dto.mount_name,
-  workspacePath: dto.workspace_path,
-  cwd: dto.cwd,
-  title: dto.title,
-  status: dto.status,
-  snapshot: dto.snapshot,
-  lastCommand: dto.last_command ?? null,
-  lastExitCode: dto.last_exit_code ?? null,
-  hasLiveSession: dto.has_live_session,
-  isRestored: dto.is_restored,
-  hasUnreadOutput: existing?.hasUnreadOutput ?? false,
-  createdAt: dto.created_at,
-  updatedAt: dto.updated_at,
-});
+): TerminalTab => {
+  const outputSequence = dto.output_sequence ?? 0;
+  const existingSequence = existing?.outputSequence ?? 0;
+  const keepExistingSnapshot = Boolean(existing) && outputSequence < existingSequence;
+
+  return {
+    id: dto.id,
+    kind: dto.kind === 'task' ? 'task' : 'manual',
+    taskId: dto.task_id ?? null,
+    projectId: dto.project_id,
+    projectName: dto.project_name,
+    mountName: dto.mount_name,
+    workspacePath: dto.workspace_path,
+    cwd: dto.cwd,
+    title: dto.title,
+    status: dto.status,
+    snapshot: keepExistingSnapshot ? existing!.snapshot : dto.snapshot,
+    lastCommand: dto.last_command ?? null,
+    lastExitCode: dto.last_exit_code ?? null,
+    hasLiveSession: dto.has_live_session,
+    isRestored: dto.is_restored,
+    outputSequence: Math.max(outputSequence, existingSequence),
+    hasUnreadOutput: existing?.hasUnreadOutput ?? false,
+    createdAt: dto.created_at,
+    updatedAt: keepExistingSnapshot ? existing!.updatedAt : dto.updated_at,
+  };
+};
 
 const syncTabOrder = (
   currentOrder: string[],
@@ -195,6 +212,9 @@ const persistActiveTabId = (tabId: string | null) => {
 const persistPanelHeight = (height: number) => {
   void savePreference(PREF_KEYS.TERMINAL_PANEL_HEIGHT, height);
 };
+
+const isLiveTaskCommandTabStatus = (status: string): boolean =>
+  status === 'running' || status === 'interrupting';
 
 const normalizeLastManualProjectIdByTaskId = (value: unknown): LastManualProjectIdByTaskId => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -778,6 +798,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           if (!existing) {
             return;
           }
+          if ((payload.sequence ?? 0) < existing.outputSequence) {
+            return;
+          }
 
           if (!changed) {
             tabs = { ...tabs };
@@ -787,6 +810,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           tabs[existing.id] = {
             ...existing,
             snapshot: payload.snapshot,
+            outputSequence: Math.max(payload.sequence ?? 0, existing.outputSequence),
             updatedAt: payload.updated_at,
             hasUnreadOutput: state.panelOpen && activeVisibleTabId === existing.id ? false : true,
           };
@@ -813,7 +837,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     };
 
     const queueOutputEvent = (payload: tauriIpc.TerminalOutputEvent) => {
-      pendingOutputEvents[payload.tab_id] = payload;
+      const existing = pendingOutputEvents[payload.tab_id];
+      if (!existing || (payload.sequence ?? 0) >= (existing.sequence ?? 0)) {
+        pendingOutputEvents[payload.tab_id] = payload;
+      }
 
       if (outputFlushTimer !== null) {
         return;
@@ -837,8 +864,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         const existing = get().tabs[event.payload.id];
         const nextTab = mapTabDto(event.payload, existing);
         upsertTab(nextTab, {});
+        if (nextTab.kind === 'task' && !isLiveTaskCommandTabStatus(nextTab.status)) {
+          useTaskStore.getState().handleTaskCommandTerminalClosed(nextTab.id);
+        }
       }),
       listen<{ tab_id: string }>('terminal:closed', (event) => {
+        useTaskStore.getState().handleTaskCommandTerminalClosed(event.payload.tab_id);
         removeTabLocally(event.payload.tab_id);
       }),
     ]);
@@ -1215,9 +1246,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
 
     ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal, promptContext }) => {
       await get().initialize();
-      assertProjectSupportsTerminal(projectId);
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
       const existing = Object.values(get().tabs).find(
-        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === projectId
+        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
       );
       const dto = existing
         ? existing.hasLiveSession
@@ -1225,7 +1257,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           : await tauriIpc.terminalReconnectTab(existing.id)
         : await tauriIpc.terminalCreateTab({
             kind: 'task',
-            projectId,
+            projectId: resolvedProjectId,
             cwd,
             title,
             taskId,
@@ -1233,6 +1265,24 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           });
 
       const tab = mapTabDto(dto, existing);
+      upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+      return tab;
+    },
+
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+      await get().initialize();
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
+      const dto = await tauriIpc.terminalStartCommandTab({
+        kind: 'task',
+        projectId: resolvedProjectId,
+        cwd,
+        title,
+        taskId,
+        promptContext: promptContext ?? null,
+        command,
+      });
+      const tab = mapTabDto(dto);
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
@@ -1351,7 +1401,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     closeTab: async (tabId) => {
+      const existingTab = get().tabs[tabId] ?? null;
       await tauriIpc.terminalCloseTab(tabId);
+      if (existingTab?.kind === 'task') {
+        useTaskStore.getState().handleTaskCommandTerminalClosed(tabId);
+      }
       removeTabLocally(tabId);
     },
   };

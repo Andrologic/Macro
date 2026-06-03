@@ -474,6 +474,7 @@ pub fn run() {
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,
             commands::terminal::terminal_create_tab,
+            commands::terminal::terminal_start_command_tab,
             commands::terminal::terminal_reconnect_tab,
             commands::terminal::terminal_read_tab,
             commands::terminal::terminal_update_tab_metadata,

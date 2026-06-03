@@ -30,7 +30,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
   const reconnectTab = useTerminalStore((state) => state.reconnectTab);
   const writeInput = useTerminalStore((state) => state.writeInput);
   const resizeTab = useTerminalStore((state) => state.resizeTab);
-  const interruptTab = useTerminalStore((state) => state.interruptTab);
   const clearTab = useTerminalStore((state) => state.clearTab);
   const closeTab = useTerminalStore((state) => state.closeTab);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
@@ -464,16 +463,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
             aria-label={t('terminal.clear', 'Clear terminal')}
           >
             <Icon name="trash" size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => runAction(() => interruptTab(activeTab.id))}
-            disabled={!activeTab.hasLiveSession}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-            title={t('terminal.interrupt', 'Interrupt terminal')}
-            aria-label={t('terminal.interrupt', 'Interrupt terminal')}
-          >
-            <Icon name="circle-x" size={14} />
           </button>
           <TerminalTargetSplitButton
             variant="icon"

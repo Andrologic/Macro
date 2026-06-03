@@ -6,9 +6,9 @@ import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
 import { initializeI18n } from "./i18n";
 import { installFrontendDiagnostics } from "./services/frontendDiagnostics";
 import { isDevelopmentBuild } from "./utils/devLogger";
+import "xterm/css/xterm.css";
 import "./index.css";
 import "./styles/highlight.css";
-import "xterm/css/xterm.css";
 
 const installBenignTauriReloadWarningFilter = (): void => {
   if (!import.meta.env.DEV || typeof window === "undefined") {
