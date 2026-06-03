@@ -1169,6 +1169,15 @@ pub async fn list_projects(
     Ok(state.project_groups)
 }
 
+pub async fn get_project_by_id(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+) -> Result<Option<ProjectDto>> {
+    let state = load_or_default_state(workspace_path, metadata_root).await?;
+    Ok(find_project_by_id_in_state(&state, project_id).cloned())
+}
+
 pub async fn list_tasks(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -5368,6 +5377,74 @@ mod tests {
                 dependencies: Vec::new(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_finds_standalone_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let standalone_project = make_project("project-standalone", "apps/standalone");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![standalone_project],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Grouped".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-grouped", "apps/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-standalone")
+            .await
+            .expect("lookup standalone project")
+            .expect("standalone project");
+
+        assert_eq!(found.id, "project-standalone");
+        assert_eq!(found.path, "apps/standalone");
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_finds_group_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project("project-standalone", "apps/standalone")],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Grouped".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-grouped", "apps/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-grouped")
+            .await
+            .expect("lookup grouped project")
+            .expect("grouped project");
+
+        assert_eq!(found.id, "project-grouped");
+        assert_eq!(found.path, "apps/grouped");
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_returns_none_for_unknown_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project("project-standalone", "apps/standalone")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-missing")
+            .await
+            .expect("lookup missing project");
+
+        assert!(found.is_none());
     }
 
     fn init_git_repo(path: &Path, initial_head: &str, extra_branches: &[&str]) -> Repository {

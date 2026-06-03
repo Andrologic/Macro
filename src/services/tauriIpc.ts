@@ -1128,6 +1128,7 @@ export interface TerminalTabDto {
   last_exit_code: number | null;
   has_live_session: boolean;
   is_restored: boolean;
+  output_sequence: number;
   created_at: string;
   updated_at: string;
 }
@@ -1142,6 +1143,7 @@ export interface TerminalOutputEvent {
   tab_id: string;
   data: string;
   snapshot: string;
+  sequence: number;
   updated_at: string;
 }
 
@@ -3213,6 +3215,26 @@ export async function terminalCreateTab(params: {
     title: params.title,
     taskId: params.taskId ?? null,
     promptContext: params.promptContext ?? null,
+  });
+}
+
+export async function terminalStartCommandTab(params: {
+  kind: "manual" | "task";
+  projectId: string;
+  cwd?: string | null;
+  title: string;
+  taskId?: string | null;
+  promptContext?: TerminalPromptContextInput | null;
+  command: string;
+}): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>("terminal_start_command_tab", {
+    kind: params.kind,
+    projectId: params.projectId,
+    cwd: params.cwd ?? null,
+    title: params.title,
+    taskId: params.taskId ?? null,
+    promptContext: params.promptContext ?? null,
+    command: params.command,
   });
 }
 

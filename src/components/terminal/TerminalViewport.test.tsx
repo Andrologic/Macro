@@ -60,6 +60,7 @@ const buildTab = (overrides: Partial<TerminalTab> = {}): TerminalTab => ({
   lastExitCode: null,
   hasLiveSession: true,
   isRestored: false,
+  outputSequence: 0,
   hasUnreadOutput: false,
   createdAt: '2026-05-08T10:00:00.000Z',
   updatedAt: '2026-05-08T10:00:00.000Z',

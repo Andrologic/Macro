@@ -79,6 +79,7 @@ import {
   isTooManyOpenFilesMessage,
   noteTooManyOpenFilesBackoff,
 } from '../../services/resourcePressureBackoff';
+import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 
 interface TaskQueueProps {
   className?: string;
@@ -974,6 +975,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () => getScopedProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
+  const retargetTaskForCurrentScope = useCallback(
+    (task: ImplementTask): ImplementTask =>
+      retargetTaskForProjectSelection(task, {
+        standaloneProjects,
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
+  );
   const scopedActionableProjectIds = useMemo(
     () => getScopedActionableProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
@@ -1146,10 +1157,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const getTaskCommandProjectIds = (task: ImplementTask): string[] => {
+    const executionTask = retargetTaskForCurrentScope(task);
     const ids = [
-      ...(task.execution_targets?.map((target) => target.projectId) || []),
-      ...(task.project_ids || []),
-      task.project_id,
+      ...(executionTask.execution_targets?.map((target) => target.projectId) || []),
+      ...(executionTask.project_ids || []),
+      executionTask.project_id,
     ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 
     return Array.from(new Set(ids));
@@ -1197,10 +1209,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const buildTaskCommandModalState = async (task: ImplementTask) => {
+    const executionTask = retargetTaskForCurrentScope(task);
     const registry = await loadTaskProjectCommandRegistry();
-    const taskProjectIds = getTaskCommandProjectIds(task);
+    const taskProjectIds = getTaskCommandProjectIds(executionTask);
     const taskGroup =
-      getProjectGroupByProjectId(projectGroups, task.project_id) ||
+      getProjectGroupByProjectId(projectGroups, executionTask.project_id) ||
       getProjectGroupByProjectId(projectGroups, taskProjectIds[0] || null);
     const modalProjectsSource =
       taskGroup?.projects ||
@@ -1209,7 +1222,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
 
     return {
-      taskId: task.id,
+      taskId: executionTask.id,
       groupName: taskGroup?.name || t('project.projectSettings', 'Paramètres du projet'),
       requiredProjectIds: taskProjectIds,
       projects: modalProjectsSource.map((project) => ({
@@ -1634,14 +1647,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [selectedTaskId, tasks]
   );
+  const selectedTaskForErrorScope = useMemo(
+    () => selectedTaskForError ? retargetTaskForCurrentScope(selectedTaskForError) : null,
+    [retargetTaskForCurrentScope, selectedTaskForError]
+  );
   const taskErrorPresentation = useMemo(
     () =>
       taskError
         ? presentServiceError(taskError, {
-            projectId: selectedTaskForError?.project_id ?? selectedProjectId,
+            projectId: selectedTaskForErrorScope?.project_id ?? selectedProjectId,
           })
         : null,
-    [selectedProjectId, selectedTaskForError?.project_id, taskError]
+    [selectedProjectId, selectedTaskForErrorScope?.project_id, taskError]
   );
   const taskErrorActionLabel =
     taskErrorPresentation?.primaryAction === 'open_project_settings' ||
@@ -1652,7 +1669,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       : t('common.retry', 'Retry');
   const handleTaskErrorAction = useCallback(() => {
     if (!taskErrorPresentation) return;
-    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
     if (
       (taskErrorPresentation.primaryAction === 'open_project_settings' ||
         taskErrorPresentation.primaryAction === 'configure_git') &&
@@ -1670,6 +1687,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     openProjectGitFlowModal,
     selectedProjectId,
     selectedTaskForError,
+    selectedTaskForErrorScope?.project_id,
     setSelectedProject,
     taskErrorPresentation,
   ]);
@@ -1692,7 +1710,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const description = [taskErrorPresentation.body, nextStep]
       .filter((value): value is string => Boolean(value?.trim()))
       .join('\n\n');
-    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
     const canOpenProjectSettings =
       (taskErrorPresentation.primaryAction === 'open_project_settings' ||
         taskErrorPresentation.primaryAction === 'configure_git') &&
@@ -1760,6 +1778,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     openProjectGitFlowModal,
     selectedProjectId,
     selectedTaskForError,
+    selectedTaskForErrorScope?.project_id,
     setSelectedProject,
     t,
     taskError,

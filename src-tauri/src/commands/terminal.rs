@@ -60,6 +60,7 @@ pub struct TerminalTabDto {
     pub last_exit_code: Option<i32>,
     pub has_live_session: bool,
     pub is_restored: bool,
+    pub output_sequence: u64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -69,6 +70,7 @@ struct TerminalOutputEvent {
     tab_id: String,
     data: String,
     snapshot: String,
+    sequence: u64,
     updated_at: String,
 }
 
@@ -106,11 +108,30 @@ struct LiveTerminalRuntime {
     pending_command: Option<PendingCommand>,
     pending_output: String,
     output_flush_scheduled: bool,
+    shell_kind: ManagedShellKind,
+    mode: LiveTerminalMode,
+    output_sequence: u64,
 }
 
 struct PendingCommand {
     marker_prefix: String,
+    echoed_command: Option<String>,
+    visible_command: String,
     completion_tx: Option<oneshot::Sender<i32>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedShellKind {
+    Posix,
+    Fish,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    PowerShell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveTerminalMode {
+    InteractiveShell,
+    CommandProcess,
 }
 
 #[cfg(not(windows))]
@@ -213,7 +234,11 @@ fn append_snapshot(existing: &mut String, chunk: &str) {
     }
 }
 
-fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> TerminalTabDto {
+fn terminal_tab_to_dto(
+    record: &TerminalTabRecord,
+    has_live_session: bool,
+    output_sequence: u64,
+) -> TerminalTabDto {
     TerminalTabDto {
         id: record.id.clone(),
         kind: record.kind.clone(),
@@ -234,9 +259,14 @@ fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> Term
         last_exit_code: record.last_exit_code,
         has_live_session,
         is_restored: !has_live_session,
+        output_sequence,
         created_at: record.created_at.clone(),
         updated_at: record.updated_at.clone(),
     }
+}
+
+fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> TerminalTabDto {
+    terminal_tab_to_dto(record, has_live_session, 0)
 }
 
 async fn load_db_pool(pool: &State<'_, DbPool>) -> CommandResult<sqlx::SqlitePool> {
@@ -298,14 +328,9 @@ async fn resolve_project_target(
     metadata_root: &Path,
     project_id: &str,
 ) -> CommandResult<ProjectTerminalTarget> {
-    let groups = workspace::list_projects(workspace_path, metadata_root)
+    let project = workspace::get_project_by_id(workspace_path, metadata_root, project_id)
         .await
-        .map_err(|error| command_error(error.to_string()))?;
-
-    let project = groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+        .map_err(|error| command_error(error.to_string()))?
         .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
 
     if project.is_read_only {
@@ -319,8 +344,8 @@ async fn resolve_project_target(
         canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?;
 
     Ok(ProjectTerminalTarget {
-        project_name: project.name.clone(),
-        mount_name: project.mount_name.clone(),
+        project_name: project.name,
+        mount_name: project.mount_name,
         workspace_path,
     })
 }
@@ -392,18 +417,134 @@ fn build_terminal_record(
     }
 }
 
-fn reader_holdback_len(marker_prefix: &str) -> usize {
-    marker_prefix.len() + 16
+fn marker_in_progress_start(buffer: &str, marker_prefix: &str) -> Option<usize> {
+    if let Some(start) = buffer.rfind(marker_prefix) {
+        let suffix = &buffer[start + marker_prefix.len()..];
+        if suffix.is_empty()
+            || suffix.chars().all(|character| character.is_ascii_digit())
+            || "__".starts_with(suffix)
+        {
+            return Some(start);
+        }
+    }
+
+    let max_suffix_len = buffer.len().min(marker_prefix.len().saturating_sub(1));
+    for suffix_len in (1..=max_suffix_len).rev() {
+        let suffix_start = buffer.len() - suffix_len;
+        if buffer.is_char_boundary(suffix_start)
+            && marker_prefix.starts_with(&buffer[suffix_start..])
+        {
+            return Some(suffix_start);
+        }
+    }
+
+    None
 }
 
 fn parse_command_marker(buffer: &str, marker_prefix: &str) -> Option<(usize, usize, i32)> {
-    let start = buffer.find(marker_prefix)?;
-    let after_start = start + marker_prefix.len();
-    let suffix = &buffer[after_start..];
-    let end_rel = suffix.find("__")?;
-    let exit_code = suffix[..end_rel].parse::<i32>().ok()?;
-    let end = after_start + end_rel + 2;
-    Some((start, end, exit_code))
+    let mut search_start = 0;
+    while let Some(relative_start) = buffer[search_start..].find(marker_prefix) {
+        let start = search_start + relative_start;
+        let after_start = start + marker_prefix.len();
+        let suffix = &buffer[after_start..];
+        let Some(end_rel) = suffix.find("__") else {
+            return None;
+        };
+
+        if let Ok(exit_code) = suffix[..end_rel].parse::<i32>() {
+            let end = after_start + end_rel + 2;
+            return Some((start, end, exit_code));
+        }
+
+        search_start = after_start;
+    }
+
+    None
+}
+
+fn command_echo_variants(command: &str) -> Vec<String> {
+    let crlf_command = command.replace('\n', "\r\n");
+    if crlf_command == command {
+        vec![command.to_string()]
+    } else {
+        vec![command.to_string(), crlf_command]
+    }
+}
+
+enum PendingEchoStrip {
+    Incomplete,
+    Ready(String),
+}
+
+fn strip_pending_command_echo(buffer: &str, echoed_command: &str) -> PendingEchoStrip {
+    let variants = command_echo_variants(echoed_command);
+    for variant in &variants {
+        if buffer.starts_with(variant) {
+            return PendingEchoStrip::Ready(buffer[variant.len()..].to_string());
+        }
+
+        if let Some(index) = buffer.find(variant) {
+            if index <= 32 {
+                return PendingEchoStrip::Ready(buffer[index + variant.len()..].to_string());
+            }
+        }
+    }
+
+    if variants.iter().any(|variant| variant.starts_with(buffer)) {
+        return PendingEchoStrip::Incomplete;
+    }
+
+    PendingEchoStrip::Ready(buffer.to_string())
+}
+
+struct PendingOutputExtraction {
+    visible_output: String,
+    scan_buffer: String,
+    completed_exit_code: Option<i32>,
+}
+
+fn extract_pending_visible_output(
+    scan_buffer: &str,
+    chunk: &str,
+    pending: &mut PendingCommand,
+) -> PendingOutputExtraction {
+    debug_assert!(!pending.visible_command.trim().is_empty());
+    let mut combined = format!("{}{}", scan_buffer, chunk);
+
+    if let Some(echoed_command) = pending.echoed_command.as_deref() {
+        match strip_pending_command_echo(&combined, echoed_command) {
+            PendingEchoStrip::Incomplete => {
+                return PendingOutputExtraction {
+                    visible_output: String::new(),
+                    scan_buffer: combined,
+                    completed_exit_code: None,
+                };
+            }
+            PendingEchoStrip::Ready(stripped) => {
+                pending.echoed_command = None;
+                combined = stripped;
+            }
+        }
+    }
+
+    if let Some((start, end, exit_code)) = parse_command_marker(&combined, &pending.marker_prefix) {
+        let mut visible_output = String::new();
+        visible_output.push_str(&combined[..start]);
+        visible_output.push_str(&combined[end..]);
+        return PendingOutputExtraction {
+            visible_output,
+            scan_buffer: String::new(),
+            completed_exit_code: Some(exit_code),
+        };
+    }
+
+    let split_at =
+        marker_in_progress_start(&combined, &pending.marker_prefix).unwrap_or(combined.len());
+    PendingOutputExtraction {
+        visible_output: combined[..split_at].to_string(),
+        scan_buffer: combined[split_at..].to_string(),
+        completed_exit_code: None,
+    }
 }
 
 fn terminal_env_value_from<F>(name: &str, fallback: &str, read_env: &F) -> String
@@ -668,29 +809,120 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
 }
 
 #[cfg(not(windows))]
-fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
+fn managed_shell_kind_from_unix(shell: &UnixShellSpec) -> ManagedShellKind {
+    match shell.kind {
+        UnixShellKind::Fish => ManagedShellKind::Fish,
+        UnixShellKind::Bash | UnixShellKind::Zsh | UnixShellKind::Posix | UnixShellKind::Other => {
+            ManagedShellKind::Posix
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedShellKind) {
     let shell = resolve_unix_shell();
     let mut command = CommandBuilder::new(&shell.path);
     command.cwd(Path::new(&record.cwd));
     apply_terminal_environment(&mut command, &record.cwd, Some(&shell.path));
     apply_unix_shell_args_and_prompt(&mut command, &shell, &render_terminal_prompt(record));
-    command
+    let shell_kind = managed_shell_kind_from_unix(&shell);
+    (command, shell_kind)
 }
 
 #[cfg(windows)]
-fn build_managed_command(command: &str, marker_prefix: &str) -> String {
+fn powershell_double_quote_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '`' => escaped.push_str("``"),
+            '"' => escaped.push_str("`\""),
+            '$' => escaped.push_str("`$"),
+            '\r' => escaped.push_str("`r"),
+            '\n' => escaped.push_str("`n"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+#[cfg(windows)]
+fn build_managed_command(command: &str, marker_prefix: &str, _: ManagedShellKind) -> String {
     format!(
-        "& {{\r\n{}\r\n$__macroExit = if ($LASTEXITCODE -ne $null) {{ [int]$LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}\r\nWrite-Output \"{}$($__macroExit)__\"\r\n}}\r\n",
-        command, marker_prefix
+        "Invoke-Expression \"{}\"; $__m = if ($LASTEXITCODE -ne $null) {{ [int]$LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output (\"{}\" + $__m + \"__\")\r\n",
+        powershell_double_quote_escape(command),
+        powershell_double_quote_escape(marker_prefix)
     )
 }
 
+#[cfg(windows)]
+fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> CommandBuilder {
+    let mut command = CommandBuilder::new("powershell");
+    command.arg("-NoLogo");
+    command.arg("-NoProfile");
+    command.arg("-Command");
+    command.arg(command_text);
+    command.cwd(Path::new(&record.cwd));
+    apply_terminal_environment(&mut command, &record.cwd, None);
+    command
+}
+
 #[cfg(not(windows))]
-fn build_managed_command(command: &str, marker_prefix: &str) -> String {
-    format!(
-        "{{\n{}\n}}\n__macro_exit=$?\nprintf '{}%s__\\n' \"$__macro_exit\"\n",
-        command, marker_prefix
-    )
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(not(windows))]
+fn shell_printf_b_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => {}
+            _ => escaped.push(character),
+        }
+    }
+    shell_single_quote(&escaped)
+}
+
+#[cfg(not(windows))]
+fn build_managed_command(
+    command: &str,
+    marker_prefix: &str,
+    shell_kind: ManagedShellKind,
+) -> String {
+    let command_literal = shell_printf_b_literal(command);
+    let marker_literal = shell_single_quote(marker_prefix);
+
+    match shell_kind {
+        ManagedShellKind::Fish => format!(
+            "eval (printf '%b' {}); set __m $status; printf '%s%s__\\n' {} $__m\n",
+            command_literal, marker_literal
+        ),
+        ManagedShellKind::Posix | ManagedShellKind::PowerShell => format!(
+            "eval \"$(printf '%b' {})\"; __m=$?; printf '%s%s__\\n' {} \"$__m\"\n",
+            command_literal, marker_literal
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> CommandBuilder {
+    let shell = resolve_unix_shell();
+    let mut command = CommandBuilder::new(&shell.path);
+    match shell.kind {
+        UnixShellKind::Bash | UnixShellKind::Zsh => {
+            command.arg("-lc");
+            command.arg(command_text);
+        }
+        UnixShellKind::Fish | UnixShellKind::Posix | UnixShellKind::Other => {
+            command.arg("-c");
+            command.arg(command_text);
+        }
+    }
+    command.cwd(Path::new(&record.cwd));
+    apply_terminal_environment(&mut command, &record.cwd, Some(&shell.path));
+    command
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -804,7 +1036,19 @@ fn emit_tab_update(app_handle: &AppHandle, record: &TerminalTabRecord, has_live_
     let _ = app_handle.emit("terminal:tab", stored_tab_to_dto(record, has_live_session));
 }
 
-fn emit_output(app_handle: &AppHandle, record: &TerminalTabRecord, data: String) {
+fn emit_tab_update_with_sequence(
+    app_handle: &AppHandle,
+    record: &TerminalTabRecord,
+    has_live_session: bool,
+    output_sequence: u64,
+) {
+    let _ = app_handle.emit(
+        "terminal:tab",
+        terminal_tab_to_dto(record, has_live_session, output_sequence),
+    );
+}
+
+fn emit_output(app_handle: &AppHandle, record: &TerminalTabRecord, data: String, sequence: u64) {
     if data.is_empty() {
         return;
     }
@@ -815,6 +1059,7 @@ fn emit_output(app_handle: &AppHandle, record: &TerminalTabRecord, data: String)
             tab_id: record.id.clone(),
             data,
             snapshot: record.snapshot.clone(),
+            sequence,
             updated_at: record.updated_at.clone(),
         },
     );
@@ -822,7 +1067,7 @@ fn emit_output(app_handle: &AppHandle, record: &TerminalTabRecord, data: String)
 
 fn take_pending_output_batch(
     runtime: &mut LiveTerminalRuntime,
-) -> Option<(String, TerminalTabRecord)> {
+) -> Option<(String, TerminalTabRecord, u64)> {
     runtime.output_flush_scheduled = false;
     if runtime.pending_output.is_empty() {
         return None;
@@ -831,6 +1076,7 @@ fn take_pending_output_batch(
     Some((
         std::mem::take(&mut runtime.pending_output),
         runtime.record.clone(),
+        runtime.output_sequence,
     ))
 }
 
@@ -844,8 +1090,8 @@ async fn flush_live_output(
         take_pending_output_batch(&mut runtime_guard)
     };
 
-    if let Some((data, record)) = maybe_batch {
-        emit_output(&app_handle, &record, data);
+    if let Some((data, record, sequence)) = maybe_batch {
+        emit_output(&app_handle, &record, data, sequence);
         persist_terminal_tab_record(db_pool, record).await;
     }
 }
@@ -862,6 +1108,21 @@ fn schedule_live_output_flush(
         }
         flush_live_output(app_handle, db_pool, runtime).await;
     });
+}
+
+fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
+    let Ok(mut guard) = child.lock() else {
+        return 1;
+    };
+
+    match guard.try_wait() {
+        Ok(Some(status)) => status.exit_code() as i32,
+        Ok(None) => guard
+            .wait()
+            .map(|status| status.exit_code() as i32)
+            .unwrap_or(1),
+        Err(_) => 1,
+    }
 }
 
 fn spawn_reader_task(
@@ -919,23 +1180,18 @@ fn handle_live_output(
     let mut visible_output = String::new();
     let mut completed_exit_code: Option<i32> = None;
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let (record, should_schedule_output_flush, should_force_output_flush) = {
+    let (record, output_sequence, should_schedule_output_flush, should_force_output_flush) = {
         let mut runtime_guard = runtime.blocking_lock();
         if let Some(mut pending) = runtime_guard.pending_command.take() {
-            let combined = format!("{}{}", runtime_guard.scan_buffer, chunk);
-            if let Some((start, end, exit_code)) =
-                parse_command_marker(&combined, &pending.marker_prefix)
-            {
-                visible_output.push_str(&combined[..start]);
-                visible_output.push_str(&combined[end..]);
-                runtime_guard.scan_buffer.clear();
+            let extraction =
+                extract_pending_visible_output(&runtime_guard.scan_buffer, &chunk, &mut pending);
+            visible_output.push_str(&extraction.visible_output);
+            runtime_guard.scan_buffer = extraction.scan_buffer;
+
+            if let Some(exit_code) = extraction.completed_exit_code {
                 completed_exit_code = Some(exit_code);
                 completion_tx = pending.completion_tx.take();
             } else {
-                let holdback = reader_holdback_len(&pending.marker_prefix);
-                let split_at = combined.len().saturating_sub(holdback);
-                visible_output.push_str(&combined[..split_at]);
-                runtime_guard.scan_buffer = combined[split_at..].to_string();
                 runtime_guard.pending_command = Some(pending);
             }
         } else {
@@ -947,6 +1203,7 @@ fn handle_live_output(
         if !visible_output.is_empty() {
             append_snapshot(&mut runtime_guard.record.snapshot, &visible_output);
             runtime_guard.pending_output.push_str(&visible_output);
+            runtime_guard.output_sequence = runtime_guard.output_sequence.saturating_add(1);
             runtime_guard.record.updated_at = current_timestamp();
         }
 
@@ -965,6 +1222,7 @@ fn handle_live_output(
 
         (
             runtime_guard.record.clone(),
+            runtime_guard.output_sequence,
             should_schedule_output_flush,
             should_force_output_flush,
         )
@@ -982,7 +1240,7 @@ fn handle_live_output(
     }
 
     if completed_exit_code.is_some() {
-        emit_tab_update(&app_handle, &record, true);
+        emit_tab_update_with_sequence(&app_handle, &record, true, output_sequence);
     }
 
     if completed_exit_code.is_some() && visible_output.is_empty() {
@@ -1004,17 +1262,45 @@ fn handle_live_disconnect(
     tab_id: String,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) {
-    {
+    let live_session = {
         let mut live_tabs = terminal_store.live_tabs.blocking_lock();
-        live_tabs.remove(&tab_id);
-    }
+        live_tabs.remove(&tab_id)
+    };
+
+    let is_command_process = {
+        let runtime_guard = runtime.blocking_lock();
+        runtime_guard.mode == LiveTerminalMode::CommandProcess
+    };
+
+    let command_exit_code = if is_command_process {
+        live_session
+            .as_ref()
+            .map(|session| wait_for_child_exit_code(&session.child))
+    } else {
+        None
+    };
 
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let (pending_output_batch, maybe_record) = {
+    let (pending_output_batch, maybe_record, output_sequence) = {
         let mut runtime_guard = runtime.blocking_lock();
         let pending_output_batch = take_pending_output_batch(&mut runtime_guard);
         if runtime_guard.record.status == "closed" {
-            (pending_output_batch, None)
+            (pending_output_batch, None, runtime_guard.output_sequence)
+        } else if runtime_guard.mode == LiveTerminalMode::CommandProcess {
+            let exit_code = command_exit_code.unwrap_or(1);
+            runtime_guard.pending_command = None;
+            runtime_guard.record.status = if exit_code == 0 {
+                "completed".to_string()
+            } else {
+                "failed".to_string()
+            };
+            runtime_guard.record.last_exit_code = Some(exit_code);
+            runtime_guard.record.updated_at = current_timestamp();
+            (
+                pending_output_batch,
+                Some(runtime_guard.record.clone()),
+                runtime_guard.output_sequence,
+            )
         } else {
             if let Some(pending) = runtime_guard.pending_command.as_mut() {
                 completion_tx = pending.completion_tx.take();
@@ -1022,16 +1308,20 @@ fn handle_live_disconnect(
             runtime_guard.pending_command = None;
             runtime_guard.record.status = "disconnected".to_string();
             runtime_guard.record.updated_at = current_timestamp();
-            (pending_output_batch, Some(runtime_guard.record.clone()))
+            (
+                pending_output_batch,
+                Some(runtime_guard.record.clone()),
+                runtime_guard.output_sequence,
+            )
         }
     };
 
-    if let Some((data, record)) = pending_output_batch {
-        emit_output(&app_handle, &record, data);
+    if let Some((data, record, sequence)) = pending_output_batch {
+        emit_output(&app_handle, &record, data, sequence);
     }
 
     if let Some(record) = maybe_record {
-        emit_tab_update(&app_handle, &record, false);
+        emit_tab_update_with_sequence(&app_handle, &record, false, output_sequence);
         let record_for_persist = record.clone();
         tauri::async_runtime::spawn(async move {
             persist_terminal_tab_record(db_pool, record_for_persist).await;
@@ -1078,7 +1368,10 @@ async fn spawn_live_tab(
         .openpty(pty_size(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS))
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
-    let shell_command = build_shell_command(&record);
+    #[cfg(windows)]
+    let (shell_command, shell_kind) = (build_shell_command(&record), ManagedShellKind::PowerShell);
+    #[cfg(not(windows))]
+    let (shell_command, shell_kind) = build_shell_command(&record);
     let child = pair
         .slave
         .spawn_command(shell_command)
@@ -1103,6 +1396,9 @@ async fn spawn_live_tab(
         pending_command: None,
         pending_output: String::new(),
         output_flush_scheduled: false,
+        shell_kind,
+        mode: LiveTerminalMode::InteractiveShell,
+        output_sequence: 0,
     }));
 
     let session = LiveTerminalSession {
@@ -1129,6 +1425,90 @@ async fn spawn_live_tab(
     );
 
     Ok(stored_tab_to_dto(&record, true))
+}
+
+async fn spawn_command_tab(
+    app_handle: AppHandle,
+    db_pool: DbPool,
+    terminal_store: &State<'_, TerminalSessionStore>,
+    mut record: TerminalTabRecord,
+    command_text: String,
+) -> CommandResult<TerminalTabDto> {
+    let existing = {
+        let live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs
+            .get(&record.id)
+            .map(|session| session.runtime.clone())
+    };
+    if let Some(runtime) = existing {
+        let guard = runtime.lock().await;
+        return Ok(terminal_tab_to_dto(
+            &guard.record,
+            true,
+            guard.output_sequence,
+        ));
+    }
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(pty_size(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS))
+        .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
+
+    let process_command = build_command_process(&record, &command_text);
+    let child = pair
+        .slave
+        .spawn_command(process_command)
+        .map_err(|error| command_error(format!("Failed to launch terminal command: {}", error)))?;
+    drop(pair.slave);
+
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| command_error(format!("Failed to open terminal writer: {}", error)))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| command_error(format!("Failed to open terminal reader: {}", error)))?;
+
+    record.status = "running".to_string();
+    record.updated_at = current_timestamp();
+    let output_sequence = if record.snapshot.is_empty() { 0 } else { 1 };
+
+    let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+        record: record.clone(),
+        scan_buffer: String::new(),
+        pending_command: None,
+        pending_output: String::new(),
+        output_flush_scheduled: false,
+        shell_kind: ManagedShellKind::Posix,
+        mode: LiveTerminalMode::CommandProcess,
+        output_sequence,
+    }));
+
+    let session = LiveTerminalSession {
+        child: Arc::new(StdMutex::new(child)),
+        writer: Arc::new(StdMutex::new(writer)),
+        master: Arc::new(StdMutex::new(pair.master)),
+        runtime: runtime.clone(),
+    };
+
+    {
+        let mut live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs.insert(record.id.clone(), session);
+    }
+
+    emit_tab_update_with_sequence(&app_handle, &record, true, output_sequence);
+    persist_terminal_tab_record(db_pool.clone(), record.clone()).await;
+    spawn_reader_task(
+        app_handle,
+        db_pool,
+        terminal_store.inner().clone(),
+        record.id.clone(),
+        runtime,
+        reader,
+    );
+
+    Ok(terminal_tab_to_dto(&record, true, output_sequence))
 }
 
 async fn get_persisted_tab_record(
@@ -1238,6 +1618,62 @@ pub async fn terminal_create_tab(
         .map_err(|error| command_error(error.to_string()))?;
 
     spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn terminal_start_command_tab(
+    app_handle: AppHandle,
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
+    terminal_store: State<'_, TerminalSessionStore>,
+    kind: String,
+    project_id: String,
+    cwd: Option<String>,
+    title: String,
+    task_id: Option<String>,
+    prompt_context: Option<TerminalPromptContext>,
+    command: String,
+) -> CommandResult<TerminalTabDto> {
+    let trimmed_command = command.trim();
+    if trimmed_command.is_empty() {
+        return Err(command_error("Command cannot be empty"));
+    }
+
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+    let session_cwd =
+        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
+    let mut record = build_terminal_record(
+        kind.trim(),
+        project_id,
+        task_id,
+        title.trim().to_string(),
+        prompt_context,
+        project,
+        session_cwd,
+    );
+    record.status = "running".to_string();
+    record.last_command = Some(trimmed_command.to_string());
+    record.snapshot = format!("{}\r\n", trimmed_command);
+    record.updated_at = current_timestamp();
+
+    let db_pool = load_db_pool(&pool).await?;
+    repository::upsert_terminal_tab(&db_pool, &record)
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+
+    spawn_command_tab(
+        app_handle,
+        pool.inner().clone(),
+        &terminal_store,
+        record,
+        trimmed_command.to_string(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1399,9 +1835,13 @@ pub async fn terminal_execute_command(
 
     let command_id = Uuid::new_v4().to_string();
     let marker_prefix = format!("__MACRO_CMD_DONE__{}__", command_id);
-    let wrapped_command = build_managed_command(trimmed_command, &marker_prefix);
+    let shell_kind = {
+        let runtime_guard = runtime.lock().await;
+        runtime_guard.shell_kind
+    };
+    let wrapped_command = build_managed_command(trimmed_command, &marker_prefix, shell_kind);
     let db_pool_state = pool.inner().clone();
-    let completion_rx = {
+    let (completion_rx, should_flush_visible_command) = {
         let mut runtime_guard = runtime.lock().await;
         if runtime_guard.pending_command.is_some() {
             return Err(command_error(
@@ -1410,11 +1850,23 @@ pub async fn terminal_execute_command(
         }
 
         let (completion_tx, completion_rx) = oneshot::channel();
+        let visible_command_output = format!("{}\r\n", trimmed_command);
         runtime_guard.record.status = "running".to_string();
         runtime_guard.record.last_command = Some(trimmed_command.to_string());
         runtime_guard.record.updated_at = current_timestamp();
+        append_snapshot(&mut runtime_guard.record.snapshot, &visible_command_output);
+        runtime_guard
+            .pending_output
+            .push_str(&visible_command_output);
+        runtime_guard.output_sequence = runtime_guard.output_sequence.saturating_add(1);
+        let should_flush_visible_command = !runtime_guard.output_flush_scheduled;
+        if should_flush_visible_command {
+            runtime_guard.output_flush_scheduled = true;
+        }
         runtime_guard.pending_command = Some(PendingCommand {
             marker_prefix: marker_prefix.clone(),
+            echoed_command: Some(wrapped_command.clone()),
+            visible_command: trimmed_command.to_string(),
             completion_tx: Some(completion_tx),
         });
         emit_tab_update(&app_handle, &runtime_guard.record, true);
@@ -1423,8 +1875,17 @@ pub async fn terminal_execute_command(
         tauri::async_runtime::spawn(async move {
             persist_terminal_tab_record(db_pool, record_for_persist).await;
         });
-        completion_rx
+        (completion_rx, should_flush_visible_command)
     };
+
+    if should_flush_visible_command {
+        schedule_live_output_flush(
+            app_handle.clone(),
+            db_pool_state.clone(),
+            runtime.clone(),
+            true,
+        );
+    }
 
     let write_result = {
         let wrapped_command = wrapped_command.clone();
@@ -1499,6 +1960,25 @@ pub async fn terminal_interrupt(
     let db_pool_state = pool.inner().clone();
     let maybe_completion = {
         let mut runtime_guard = runtime.lock().await;
+        if runtime_guard.mode == LiveTerminalMode::CommandProcess {
+            runtime_guard.record.status = "interrupting".to_string();
+            runtime_guard.record.updated_at = current_timestamp();
+            let dto =
+                terminal_tab_to_dto(&runtime_guard.record, true, runtime_guard.output_sequence);
+            emit_tab_update_with_sequence(
+                &app_handle,
+                &runtime_guard.record,
+                true,
+                runtime_guard.output_sequence,
+            );
+            let record_for_persist = runtime_guard.record.clone();
+            let db_pool = db_pool_state.clone();
+            tauri::async_runtime::spawn(async move {
+                persist_terminal_tab_record(db_pool, record_for_persist).await;
+            });
+            return Ok(dto);
+        }
+
         let completion = runtime_guard
             .pending_command
             .as_mut()
@@ -1539,8 +2019,14 @@ pub async fn terminal_clear_tab(
     } {
         let mut runtime_guard = runtime.lock().await;
         runtime_guard.record.snapshot.clear();
+        runtime_guard.output_sequence = runtime_guard.output_sequence.saturating_add(1);
         runtime_guard.record.updated_at = current_timestamp();
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
+        emit_tab_update_with_sequence(
+            &app_handle,
+            &runtime_guard.record,
+            true,
+            runtime_guard.output_sequence,
+        );
         let record_for_persist = runtime_guard.record.clone();
         let db_pool = pool.inner().clone();
         tauri::async_runtime::spawn(async move {
@@ -1576,6 +2062,15 @@ pub async fn terminal_close_tab(
     };
 
     if let Some(session) = live_session {
+        let (is_command_process, task_id, project_id) = {
+            let runtime_guard = session.runtime.lock().await;
+            (
+                runtime_guard.mode == LiveTerminalMode::CommandProcess,
+                runtime_guard.record.task_id.clone(),
+                runtime_guard.record.project_id.clone(),
+            )
+        };
+
         {
             let mut runtime_guard = session.runtime.lock().await;
             runtime_guard.record.status = "closed".to_string();
@@ -1588,8 +2083,24 @@ pub async fn terminal_close_tab(
             runtime_guard.pending_command = None;
         }
 
+        if is_command_process {
+            tracing::debug!(
+                action = "terminal_command_process_closed_by_user",
+                tab_id = %tab_id,
+                task_id = task_id.as_deref().unwrap_or(""),
+                project_id = %project_id,
+                status = "closed_by_user"
+            );
+        }
+
+        let writer = session.writer.clone();
         let child = session.child.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(mut guard) = writer.lock() {
+                let _ = guard.write_all(&[3]);
+                let _ = guard.flush();
+            }
+
             if let Ok(mut guard) = child.lock() {
                 let _ = guard.kill();
             }
@@ -2092,5 +2603,112 @@ mod tests {
             r#"function fish_prompt; printf "%s" "api \"\$HOME\" > "; end"#
         );
         assert!(config.env.is_empty());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn managed_unix_command_is_single_line() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let wrapper = build_managed_command(
+            "flutter install; flutter run -d macos",
+            marker,
+            ManagedShellKind::Posix,
+        );
+
+        assert_eq!(wrapper.matches('\n').count(), 1);
+        assert!(wrapper.ends_with('\n'));
+        assert!(!wrapper.contains("{\n"));
+        assert!(!wrapper.contains("}\n"));
+        assert!(!wrapper.contains("__macro_exit"));
+        assert!(wrapper.contains("eval"));
+        assert!(wrapper.contains(marker));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn managed_unix_command_escapes_quotes_and_newlines() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let command = "printf 'a b'; echo \"x\"\necho second";
+        let wrapper = build_managed_command(command, marker, ManagedShellKind::Posix);
+
+        assert_eq!(wrapper.matches('\n').count(), 1);
+        assert!(wrapper.contains("\\n"));
+        assert!(!wrapper.contains("echo \"x\"\necho second"));
+        assert!(wrapper.contains("'\\''a b'\\''"));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn pending_output_strips_echoed_wrapper_before_marker_parsing() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let wrapper = build_managed_command("echo ok", marker, ManagedShellKind::Posix);
+        let echoed_wrapper = wrapper.replace('\n', "\r\n");
+        let mut pending = PendingCommand {
+            marker_prefix: marker.to_string(),
+            echoed_command: Some(wrapper),
+            visible_command: "echo ok".to_string(),
+            completion_tx: None,
+        };
+        let chunk = format!("{echoed_wrapper}real output\r\n{marker}0__\r\n> ");
+
+        let extraction = extract_pending_visible_output("", &chunk, &mut pending);
+
+        assert_eq!(extraction.completed_exit_code, Some(0));
+        assert!(extraction.visible_output.contains("real output"));
+        assert!(!extraction.visible_output.contains(marker));
+        assert!(!extraction.visible_output.contains("printf"));
+        assert!(pending.echoed_command.is_none());
+    }
+
+    #[test]
+    fn pending_output_holds_split_marker_without_leaking_it() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let mut pending = PendingCommand {
+            marker_prefix: marker.to_string(),
+            echoed_command: None,
+            visible_command: "echo ok".to_string(),
+            completion_tx: None,
+        };
+
+        let first =
+            extract_pending_visible_output("", &format!("real output\n{marker}"), &mut pending);
+        assert_eq!(first.completed_exit_code, None);
+        assert!(!first.visible_output.contains(marker));
+        assert!(!first.scan_buffer.is_empty());
+
+        let second = extract_pending_visible_output(&first.scan_buffer, "0__\n> ", &mut pending);
+        assert_eq!(second.completed_exit_code, Some(0));
+        assert!(!second.visible_output.contains(marker));
+        assert!(
+            format!("{}{}", first.visible_output, second.visible_output).contains("real output")
+        );
+    }
+
+    #[test]
+    fn pending_output_does_not_hold_interactive_prompts() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let mut pending = PendingCommand {
+            marker_prefix: marker.to_string(),
+            echoed_command: None,
+            visible_command: "flutter install; flutter run -d macos".to_string(),
+            completion_tx: None,
+        };
+        let prompt = "Please choose one (or \"q\" to quit): ";
+
+        let extraction = extract_pending_visible_output("", prompt, &mut pending);
+
+        assert_eq!(extraction.visible_output, prompt);
+        assert!(extraction.scan_buffer.is_empty());
+        assert_eq!(extraction.completed_exit_code, None);
+    }
+
+    #[test]
+    fn command_marker_parser_skips_non_exit_marker_echoes() {
+        let marker = "__MACRO_CMD_DONE__test__";
+        let buffer = format!("printf '{}%s__\\n'\nreal\n{}7__", marker, marker);
+
+        let parsed = parse_command_marker(&buffer, marker);
+
+        assert_eq!(parsed.map(|(_, _, exit_code)| exit_code), Some(7));
     }
 }

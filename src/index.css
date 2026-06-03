@@ -570,22 +570,25 @@
     color: rgb(var(--foreground));
   }
 
+  .macro-terminal-runtime {
+    height: 100%;
+    width: 100%;
+  }
+
   .macro-terminal-shell .xterm {
     height: 100%;
+    width: 100%;
     padding: 0;
     background: rgb(var(--background));
     color: rgb(var(--foreground));
   }
 
-  .macro-terminal-shell .xterm-screen,
-  .macro-terminal-shell .xterm-viewport {
-    height: 100% !important;
-    width: 100% !important;
-    background: rgb(var(--background)) !important;
+  .macro-terminal-shell .xterm-screen {
     color: rgb(var(--foreground));
   }
 
   .macro-terminal-shell .xterm-viewport {
+    background: rgb(var(--background)) !important;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
   }

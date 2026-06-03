@@ -16,6 +16,7 @@ type TerminalTabDto = {
   last_exit_code: number | null;
   has_live_session: boolean;
   is_restored: boolean;
+  output_sequence: number;
   created_at: string;
   updated_at: string;
 };
@@ -131,6 +132,7 @@ const taskStoreState = {
     'task-1-api': 'C:/repos/api/.macro/worktrees/task-1',
     'task-2-api': 'C:/repos/api/.macro/worktrees/task-2',
   } as Record<string, string>,
+  handleTaskCommandTerminalClosed: mock(() => undefined),
 };
 
 const eventHandlers: Record<string, ((event: { payload: any }) => void) | undefined> = {};
@@ -151,6 +153,7 @@ const buildManualTabDto = (overrides: Partial<TerminalTabDto> = {}): TerminalTab
   last_exit_code: null,
   has_live_session: true,
   is_restored: false,
+  output_sequence: 0,
   created_at: '2026-03-26T09:00:00.000Z',
   updated_at: '2026-03-26T09:05:00.000Z',
   ...overrides,
@@ -172,6 +175,7 @@ const buildTaskTabDto = (overrides: Partial<TerminalTabDto> = {}): TerminalTabDt
   last_exit_code: 0,
   has_live_session: false,
   is_restored: true,
+  output_sequence: 0,
   created_at: '2026-03-26T09:00:00.000Z',
   updated_at: '2026-03-26T09:05:00.000Z',
   ...overrides,
@@ -214,8 +218,43 @@ const terminalCreateTabMock = mock(
     last_exit_code: null,
     has_live_session: true,
     is_restored: false,
+    output_sequence: 0,
     created_at: '2026-03-26T10:00:00.000Z',
     updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
+const terminalStartCommandTabMock = mock(
+  async (params: {
+    kind?: string;
+    projectId?: string;
+    cwd?: string | null;
+    title?: string;
+    taskId?: string | null;
+    command: string;
+    promptContext?: {
+      projectLabel?: string | null;
+      taskLabel?: string | null;
+      branchLabel?: string | null;
+    } | null;
+  }): Promise<TerminalTabDto> => ({
+    ...buildTaskTabDto({
+      id: `task-command-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+      task_id: params.taskId ?? null,
+      project_id: params.projectId ?? 'project-1',
+      project_name: params.projectId === 'project-2' ? 'API' : 'Web',
+      mount_name: params.projectId === 'project-2' ? 'api' : 'web',
+      workspace_path:
+        params.cwd ?? (params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web'),
+      cwd: params.cwd ?? (params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web'),
+      title: params.title ?? 'Task command',
+      status: 'running',
+      snapshot: `${params.command}\r\n`,
+      last_command: params.command,
+      last_exit_code: null,
+      has_live_session: true,
+      is_restored: false,
+      output_sequence: 1,
+    }),
   })
 );
 const terminalReconnectTabMock = mock(async (tabId: string): Promise<TerminalTabDto> => ({
@@ -267,6 +306,7 @@ const terminalClearTabMock = mock(async (tabId: string): Promise<TerminalTabDto>
     snapshot: '',
   })
 );
+const terminalCloseTabMock = mock(async () => undefined);
 const terminalCreateSessionMock = mock(
   async (params: {
     projectId: string;
@@ -334,11 +374,13 @@ const registerUseTerminalStoreMocks = async (counter: number) => {
     terminalCreateSession: terminalCreateSessionMock,
     terminalListTabs: terminalListTabsMock,
     terminalCreateTab: terminalCreateTabMock,
+    terminalStartCommandTab: terminalStartCommandTabMock,
     terminalReconnectTab: terminalReconnectTabMock,
     terminalReadTab: terminalReadTabMock,
     terminalUpdateTabMetadata: terminalUpdateTabMetadataMock,
     terminalInterrupt: terminalInterruptMock,
     terminalClearTab: terminalClearTabMock,
+    terminalCloseTab: terminalCloseTabMock,
   }));
 
   mock.module('../services/preferences', () => ({
@@ -442,15 +484,18 @@ describe('useTerminalStore', () => {
     appStoreState.standaloneProjects = [];
     appStoreState.projectGroups = projectGroups;
     taskStoreState.tasks = buildTasks();
+    taskStoreState.handleTaskCommandTerminalClosed.mockClear();
 
     terminalListTabsMock.mockReset();
     terminalCreateSessionMock.mockReset();
     terminalCreateTabMock.mockReset();
+    terminalStartCommandTabMock.mockReset();
     terminalReconnectTabMock.mockReset();
     terminalReadTabMock.mockReset();
     terminalUpdateTabMetadataMock.mockReset();
     terminalInterruptMock.mockReset();
     terminalClearTabMock.mockReset();
+    terminalCloseTabMock.mockReset();
     loadPreferenceMock.mockReset();
     savePreferenceMock.mockReset();
     resolveProjectExecutionContextMock.mockReset();
@@ -513,9 +558,43 @@ describe('useTerminalStore', () => {
         last_exit_code: null,
         has_live_session: true,
         is_restored: false,
+        output_sequence: 0,
         created_at: '2026-03-26T10:00:00.000Z',
         updated_at: '2026-03-26T10:00:00.000Z',
       })
+    );
+    terminalStartCommandTabMock.mockImplementation(
+      async (params: {
+        kind?: string;
+        projectId?: string;
+        cwd?: string | null;
+        title?: string;
+        taskId?: string | null;
+        command: string;
+        promptContext?: {
+          projectLabel?: string | null;
+          taskLabel?: string | null;
+          branchLabel?: string | null;
+        } | null;
+      }) =>
+        buildTaskTabDto({
+          id: `task-command-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+          task_id: params.taskId ?? null,
+          project_id: params.projectId ?? 'project-1',
+          project_name: params.projectId === 'project-2' ? 'API' : 'Web',
+          mount_name: params.projectId === 'project-2' ? 'api' : 'web',
+          workspace_path:
+            params.cwd ?? (params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web'),
+          cwd: params.cwd ?? (params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web'),
+          title: params.title ?? 'Task command',
+          status: 'running',
+          snapshot: `${params.command}\r\n`,
+          last_command: params.command,
+          last_exit_code: null,
+          has_live_session: true,
+          is_restored: false,
+          output_sequence: 1,
+        })
     );
     terminalReconnectTabMock.mockImplementation(async (tabId: string) => ({
       ...buildManualTabDto({ id: tabId }),
@@ -873,6 +952,101 @@ describe('useTerminalStore', () => {
     );
   });
 
+  it('starts task command tabs through the command-backed Tauri path', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const tab = await useTerminalStore.getState().startTaskCommandTab({
+      taskId: 'task-1',
+      projectId: 'project-2',
+      cwd: 'C:/repos/api/.macro/worktrees/task-1',
+      title: 'Task 1 API',
+      command: 'flutter install; flutter run -d macos',
+      reveal: true,
+      promptContext: {
+        projectLabel: 'api',
+        taskLabel: 'Refactor compiler',
+        branchLabel: null,
+      },
+    });
+
+    expect(terminalStartCommandTabMock).toHaveBeenCalledWith({
+      kind: 'task',
+      projectId: 'project-2',
+      cwd: 'C:/repos/api/.macro/worktrees/task-1',
+      title: 'Task 1 API',
+      taskId: 'task-1',
+      command: 'flutter install; flutter run -d macos',
+      promptContext: {
+        projectLabel: 'api',
+        taskLabel: 'Refactor compiler',
+        branchLabel: null,
+      },
+    });
+    expect(terminalCreateTabMock).not.toHaveBeenCalled();
+    expect(tab.status).toBe('running');
+    expect(tab.snapshot).toBe('flutter install; flutter run -d macos\r\n');
+    expect(tab.outputSequence).toBe(1);
+    expect(useTerminalStore.getState().activeTabId).toBe(tab.id);
+  });
+
+  it('retargets stale standalone task project ids before creating task tabs', async () => {
+    const standaloneProject = {
+      id: 'project-lplr-current',
+      name: 'LPLR App',
+      mountName: 'lplr-app',
+      path: 'C:/repos/lplr-app',
+      created_at: '2026-03-26T08:00:00.000Z',
+      status: 'active',
+      metadata: {
+        description: '',
+        tags: [],
+        team_members: [],
+        api_contracts: [],
+        dependencies: [],
+      },
+    };
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = standaloneProject.id;
+    appStoreState.standaloneProjects = [standaloneProject];
+    appStoreState.selectedTaskId = 'task-stale';
+    taskStoreState.tasks = [
+      {
+        ...buildTasks()[0],
+        id: 'task-stale',
+        project_id: 'project-lplr-app-1780237886690',
+        project_ids: ['project-lplr-app-1780237886690'],
+        execution_targets: [
+          {
+            projectId: 'project-lplr-app-1780237886690',
+            branchName: 'feature/catalogue',
+            worktreeKey: 'project-lplr-app-1780237886690::feature/catalogue',
+          },
+        ],
+        task_source: 'standalone',
+        standalone_kind: 'manual_feature',
+      },
+    ];
+
+    const { useTerminalStore } = await loadTerminalStore();
+
+    await useTerminalStore.getState().ensureTaskTab({
+      taskId: 'task-stale',
+      projectId: 'project-lplr-app-1780237886690',
+      cwd: 'C:/repos/lplr-app/.macro/worktrees/feature-catalogue',
+      title: 'Catalogue',
+      reveal: true,
+      promptContext: null,
+    });
+
+    expect(terminalCreateTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'task',
+        taskId: 'task-stale',
+        projectId: 'project-lplr-current',
+      })
+    );
+  });
+
   it('blocks manual terminals for uninitialized manual drafts', async () => {
     taskStoreState.tasks = [
       {
@@ -959,5 +1133,55 @@ describe('useTerminalStore', () => {
     expect(tab.snapshot).toBe('');
     expect(useTerminalStore.getState().tabs[tabId]?.snapshot).toBe('');
     expect(useTerminalStore.getState().tabs[tabId]?.hasUnreadOutput).toBe(false);
+  });
+
+  it('closes task command tabs through Tauri and clears the associated task command run', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const tab = await useTerminalStore.getState().startTaskCommandTab({
+      taskId: 'task-1',
+      projectId: 'project-1',
+      cwd: 'C:/repos/web/.macro/worktrees/task-1',
+      title: 'Task 1 Web',
+      command: 'bun test',
+      reveal: true,
+      promptContext: null,
+    });
+
+    await useTerminalStore.getState().closeTab(tab.id);
+
+    expect(terminalCloseTabMock).toHaveBeenCalledWith(tab.id);
+    expect(taskStoreState.handleTaskCommandTerminalClosed).toHaveBeenCalledWith(tab.id);
+    expect(useTerminalStore.getState().tabs[tab.id]).toBeUndefined();
+    expect(useTerminalStore.getState().panelOpen).toBe(false);
+  });
+
+  it('clears task command runs when command tabs finish', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+
+    const tab = await useTerminalStore.getState().startTaskCommandTab({
+      taskId: 'task-1',
+      projectId: 'project-1',
+      cwd: 'C:/repos/web/.macro/worktrees/task-1',
+      title: 'Task 1 Web',
+      command: 'bun test',
+      reveal: true,
+      promptContext: null,
+    });
+
+    eventHandlers['terminal:tab']?.({
+      payload: buildTaskTabDto({
+        id: tab.id,
+        task_id: 'task-1',
+        project_id: 'project-1',
+        status: 'completed',
+        has_live_session: false,
+        last_exit_code: 0,
+        output_sequence: tab.outputSequence + 1,
+      }),
+    });
+
+    expect(taskStoreState.handleTaskCommandTerminalClosed).toHaveBeenCalledWith(tab.id);
   });
 });

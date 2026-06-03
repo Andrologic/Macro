@@ -19,6 +19,7 @@ type MockTerminalTab = {
   lastExitCode: number | null;
   hasLiveSession: boolean;
   isRestored: boolean;
+  outputSequence: number;
   hasUnreadOutput: boolean;
   createdAt: string;
   updatedAt: string;
@@ -40,6 +41,7 @@ const buildTab = (overrides: Partial<MockTerminalTab> = {}): MockTerminalTab => 
   lastExitCode: null,
   hasLiveSession: true,
   isRestored: false,
+  outputSequence: 0,
   hasUnreadOutput: false,
   createdAt: '2026-05-08T10:00:00.000Z',
   updatedAt: '2026-05-08T10:00:00.000Z',
@@ -202,7 +204,7 @@ describe('TerminalPanel', () => {
     container = null;
   });
 
-  it('wires clear and interrupt actions for live terminal tabs', async () => {
+  it('wires clear action and hides interrupt action for live terminal tabs', async () => {
     await act(async () => {
       root?.render(<TerminalPanel />);
       await flushRender();
@@ -211,24 +213,22 @@ describe('TerminalPanel', () => {
     const clearButton = container?.querySelector<HTMLButtonElement>(
       'button[aria-label="Clear terminal"]'
     );
-    const interruptButton = container?.querySelector<HTMLButtonElement>(
-      'button[aria-label="Interrupt terminal"]'
-    );
 
     expect(clearButton?.disabled).toBe(false);
-    expect(interruptButton?.disabled).toBe(false);
+    expect(
+      container?.querySelector<HTMLButtonElement>('button[aria-label="Interrupt terminal"]')
+    ).toBeNull();
 
     await act(async () => {
       clearButton?.click();
-      interruptButton?.click();
       await flushRender();
     });
 
     expect(terminalState.clearTab).toHaveBeenCalledWith('terminal-tab-1');
-    expect(terminalState.interruptTab).toHaveBeenCalledWith('terminal-tab-1');
+    expect(terminalState.interruptTab).not.toHaveBeenCalled();
   });
 
-  it('disables clear and interrupt actions for restored terminal tabs', async () => {
+  it('disables clear action for restored terminal tabs', async () => {
     terminalState.tabs = {
       'terminal-tab-1': buildTab({ hasLiveSession: false, isRestored: true }),
     };
@@ -243,8 +243,7 @@ describe('TerminalPanel', () => {
     ).toBe(true);
     expect(
       container?.querySelector<HTMLButtonElement>('button[aria-label="Interrupt terminal"]')
-        ?.disabled
-    ).toBe(true);
+    ).toBeNull();
   });
 
   it('passes Ctrl-L clear requests from the viewport to the store', async () => {

@@ -115,15 +115,11 @@ async fn resolve_project_repo_path(
     project_id: &str,
 ) -> Result<String, BackendError> {
     let metadata_root = resolve_metadata_root_for_workspace(state)?;
-    let groups = workspace::list_projects(&state.workspace_path, &metadata_root).await?;
-
-    let project = groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+    let project = workspace::get_project_by_id(&state.workspace_path, &metadata_root, project_id)
+        .await?
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
 
-    Ok(project.path.clone())
+    Ok(project.path)
 }
 
 fn authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {

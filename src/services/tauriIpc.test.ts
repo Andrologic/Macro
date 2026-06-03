@@ -732,6 +732,19 @@ describe("tauriIpc executeWorkspaceTool", () => {
       title: "Build · API",
       taskId: "task-1",
     });
+    await tauriIpc.terminalStartCommandTab({
+      kind: "task",
+      projectId: "project-1",
+      cwd: "C:/dev/worktree",
+      title: "Build · API",
+      taskId: "task-1",
+      command: "bun test",
+      promptContext: {
+        projectLabel: "api",
+        taskLabel: "Refactor parser",
+        branchLabel: null,
+      },
+    });
     await tauriIpc.terminalReconnectTab("tab-1");
     await tauriIpc.terminalReadTab("tab-1");
     await tauriIpc.terminalUpdateTabMetadata({
@@ -763,6 +776,22 @@ describe("tauriIpc executeWorkspaceTool", () => {
           title: "Build · API",
           taskId: "task-1",
           promptContext: null,
+        },
+      },
+      {
+        command: "terminal_start_command_tab",
+        payload: {
+          kind: "task",
+          projectId: "project-1",
+          cwd: "C:/dev/worktree",
+          title: "Build · API",
+          taskId: "task-1",
+          promptContext: {
+            projectLabel: "api",
+            taskLabel: "Refactor parser",
+            branchLabel: null,
+          },
+          command: "bun test",
         },
       },
       {
