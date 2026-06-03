@@ -238,7 +238,8 @@ const terminalStartCommandTabMock = mock(
     } | null;
   }): Promise<TerminalTabDto> => ({
     ...buildTaskTabDto({
-      id: `task-command-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+      id: `${params.kind === 'worktree_setup' ? 'setup' : 'task-command'}-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+      kind: params.kind === 'worktree_setup' ? 'worktree_setup' : 'task',
       task_id: params.taskId ?? null,
       project_id: params.projectId ?? 'project-1',
       project_name: params.projectId === 'project-2' ? 'API' : 'Web',
@@ -578,7 +579,8 @@ describe('useTerminalStore', () => {
         } | null;
       }) =>
         buildTaskTabDto({
-          id: `task-command-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+          id: `${params.kind === 'worktree_setup' ? 'setup' : 'task-command'}-tab-${params.taskId || 'none'}-${params.projectId || 'project-1'}`,
+          kind: params.kind === 'worktree_setup' ? 'worktree_setup' : 'task',
           task_id: params.taskId ?? null,
           project_id: params.projectId ?? 'project-1',
           project_name: params.projectId === 'project-2' ? 'API' : 'Web',
@@ -987,6 +989,64 @@ describe('useTerminalStore', () => {
     expect(tab.snapshot).toBe('flutter install; flutter run -d macos\r\n');
     expect(tab.outputSequence).toBe(1);
     expect(useTerminalStore.getState().activeTabId).toBe(tab.id);
+  });
+
+  it('keeps successful worktree setup tabs hidden from the visible terminal scope', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const tab = await useTerminalStore.getState().startWorktreeSetupCommandTab({
+      taskId: 'task-1',
+      projectId: 'project-1',
+      cwd: 'C:/repos/web/.macro/worktrees/task-1',
+      title: 'Setup - Web',
+      command: 'bun install',
+      promptContext: null,
+    });
+
+    expect(terminalStartCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'worktree_setup',
+        projectId: 'project-1',
+        command: 'bun install',
+      })
+    );
+    expect(tab.purpose).toBe('worktree_setup');
+    expect(useTerminalStore.getState().getVisibleTabsForScope()).toEqual([]);
+    expect(useTerminalStore.getState().hasAnyTabForTask('task-1')).toBe(false);
+  });
+
+  it('reveals failed worktree setup tabs in the visible terminal scope', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+
+    const tab = await useTerminalStore.getState().startWorktreeSetupCommandTab({
+      taskId: 'task-1',
+      projectId: 'project-1',
+      cwd: 'C:/repos/web/.macro/worktrees/task-1',
+      title: 'Setup - Web',
+      command: 'bun install',
+      promptContext: null,
+    });
+
+    eventHandlers['terminal:tab']?.({
+      payload: buildTaskTabDto({
+        id: tab.id,
+        kind: 'worktree_setup',
+        task_id: 'task-1',
+        project_id: 'project-1',
+        status: 'failed',
+        has_live_session: false,
+        last_exit_code: 1,
+        output_sequence: tab.outputSequence + 1,
+      }),
+    });
+
+    expect(
+      useTerminalStore
+        .getState()
+        .getVisibleTabsForScope()
+        .map((candidate: { id: string }) => candidate.id)
+    ).toEqual([tab.id]);
   });
 
   it('retargets stale standalone task project ids before creating task tabs', async () => {

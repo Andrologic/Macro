@@ -47,6 +47,7 @@ const macroLightTheme: Theme = {
 const buildTab = (overrides: Partial<TerminalTab> = {}): TerminalTab => ({
   id: 'terminal-tab-1',
   kind: 'manual',
+  purpose: 'manual',
   taskId: 'task-1',
   projectId: 'project-1',
   projectName: 'Web',

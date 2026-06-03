@@ -27,6 +27,7 @@ const DB_READY_DELAY_MS = 200;
 export interface TerminalTab {
   id: string;
   kind: 'manual' | 'task';
+  purpose: 'manual' | 'task_command' | 'worktree_setup';
   taskId: string | null;
   projectId: string;
   projectName: string;
@@ -126,6 +127,14 @@ interface TerminalStore extends TerminalVisibilityState {
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
   }) => Promise<TerminalTab>;
+  startWorktreeSetupCommandTab: (params: {
+    taskId: string;
+    projectId: string;
+    cwd: string;
+    title: string;
+    command: string;
+    promptContext?: tauriIpc.TerminalPromptContextInput | null;
+  }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
   executeCommand: (params: {
@@ -155,7 +164,13 @@ const mapTabDto = (
 
   return {
     id: dto.id,
-    kind: dto.kind === 'task' ? 'task' : 'manual',
+    kind: dto.kind === 'manual' ? 'manual' : 'task',
+    purpose:
+      dto.kind === 'worktree_setup'
+        ? 'worktree_setup'
+        : dto.kind === 'task'
+          ? 'task_command'
+          : 'manual',
     taskId: dto.task_id ?? null,
     projectId: dto.project_id,
     projectName: dto.project_name,
@@ -175,6 +190,19 @@ const mapTabDto = (
     updatedAt: keepExistingSnapshot ? existing!.updatedAt : dto.updated_at,
   };
 };
+
+const isFailedTerminalStatus = (status: string): boolean =>
+  status === 'failed' || status === 'error';
+
+const hasFailedTerminalExitCode = (exitCode: number | null): boolean =>
+  typeof exitCode === 'number' && exitCode !== 0;
+
+export const isVisibleTerminalTab = (
+  tab: Pick<TerminalTab, 'purpose' | 'status' | 'lastExitCode'>
+): boolean =>
+  tab.purpose !== 'worktree_setup' ||
+  isFailedTerminalStatus(tab.status) ||
+  hasFailedTerminalExitCode(tab.lastExitCode);
 
 const syncTabOrder = (
   currentOrder: string[],
@@ -539,7 +567,9 @@ const getTabsForTaskFromState = (
   taskId: string | null
 ): TerminalTab[] =>
   taskId
-    ? getOrderedTabs(state.tabs, state.tabOrder).filter((tab) => tab.taskId === taskId)
+    ? getOrderedTabs(state.tabs, state.tabOrder).filter(
+        (tab) => tab.taskId === taskId && isVisibleTerminalTab(tab)
+      )
     : [];
 
 const getVisibleTabsForScopeFromState = (
@@ -551,7 +581,7 @@ const getVisibleTabsForScopeFromState = (
   }
 
   return getTabsForTaskFromState(state, scope.taskId).filter(
-    (tab) => tab.projectId === scope.projectId
+    (tab) => tab.projectId === scope.projectId && isVisibleTerminalTab(tab)
   );
 };
 
@@ -1287,6 +1317,24 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+      await get().initialize();
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
+      const dto = await tauriIpc.terminalStartCommandTab({
+        kind: 'worktree_setup',
+        projectId: resolvedProjectId,
+        cwd,
+        title,
+        taskId,
+        promptContext: promptContext ?? null,
+        command,
+      });
+      const tab = mapTabDto(dto);
+      upsertTab(tab, {});
+      return tab;
+    },
+
     syncTerminalDisplayMetadata: async (params) => {
       await get().initialize();
 
@@ -1300,6 +1348,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       const orderedTabs = getOrderedTabs(get().tabs, get().tabOrder);
       const tabsToSync = orderedTabs.filter((tab) => {
         if (!tab.taskId) {
+          return false;
+        }
+        if (tab.purpose === 'worktree_setup') {
           return false;
         }
 

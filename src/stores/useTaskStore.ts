@@ -106,6 +106,7 @@ import {
   loadTaskProjectCommandRegistry,
 } from '../services/taskProjectCommands';
 import { buildTerminalDisplayMetadata } from '../services/terminalDisplayMetadata';
+import { runWorktreeSetupCommand } from '../services/worktreeSetupCommands';
 import type { InternalAgentProfile } from '../services/internalAgentProfile';
 import {
   loadPlanFinalizationMergeWorkflowRuntime,
@@ -113,6 +114,7 @@ import {
   sendMergeWorkflowConflictPrompt,
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
+import { notify } from '../components/ui/toastService';
 import { devLogger } from '../utils/devLogger';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -1428,6 +1430,7 @@ const ensureTaskExecutionTargetsReady = async (
 
   const createdWorktrees: Record<string, string> = {};
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
+  const commandRegistry = await loadTaskProjectCommandRegistry();
 
   for (const target of executionTargets) {
     const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
@@ -1442,6 +1445,45 @@ const ensureTaskExecutionTargetsReady = async (
           taskId: task.id,
         })
       );
+    }
+
+    const setupCommand =
+      getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
+    if (setupCommand) {
+      try {
+        const setupResult = await runWorktreeSetupCommand({
+          taskId: executionTask.id,
+          taskTitle: executionTask.title,
+          projectId: target.projectId,
+          projectName: project?.name ?? target.projectId,
+          repoPath,
+          worktreePath,
+          command: setupCommand,
+        });
+        if (setupResult.failed) {
+          notify.warning(
+            tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+              project: project?.name ?? target.projectId,
+            }),
+            {
+              description: tTask(
+                'implement.worktreeSetupFailedDescription',
+                'Macro will continue. The setup terminal was opened for review.'
+              ),
+            }
+          );
+        }
+      } catch (error) {
+        const normalized = toServiceError(error);
+        notify.warning(
+          tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+            project: project?.name ?? target.projectId,
+          }),
+          {
+            description: normalized.message,
+          }
+        );
+      }
     }
 
     preparedTargets.push({
