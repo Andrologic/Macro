@@ -231,6 +231,11 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
           />
         </div>
         <span className="text-sm text-foreground truncate">{project.name}</span>
+        {project.pathKind === 'wsl' && project.wslDistro && (
+          <span className="rounded-full border border-border bg-muted/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            WSL: {project.wslDistro}
+          </span>
+        )}
         {project.isReadOnly && (
           <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
             Read-only

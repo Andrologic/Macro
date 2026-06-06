@@ -2,6 +2,7 @@ use crate::commands::{command_error, CommandResult, DbPool};
 use crate::core::process::background_tokio_command;
 use crate::db::{models::TerminalTabRecord, repository};
 use crate::git::GitState;
+use crate::project_path::{join_wsl_path, parse_wsl_unc_path, wsl_unc_path, WslProjectPath};
 use crate::workspace;
 use crate::WorkspaceMetadataRoot;
 use chrono::Utc;
@@ -277,6 +278,12 @@ async fn resolve_metadata_root(
     workspace_path: PathBuf,
     git_state: GitState,
 ) -> CommandResult<PathBuf> {
+    if parse_wsl_unc_path(&workspace_path.to_string_lossy()).is_some() {
+        return Err(command_error(
+            "Macro metadata-scoped terminals are not yet available for WSL projects.",
+        ));
+    }
+
     let workspace_path_for_fallback = workspace_path.clone();
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
@@ -340,8 +347,11 @@ async fn resolve_project_target(
         )));
     }
 
-    let workspace_path =
-        canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?;
+    let workspace_path = if let Some(wsl_path) = parse_wsl_unc_path(&project.path) {
+        PathBuf::from(wsl_path.unc_path)
+    } else {
+        canonicalize_existing_dir(&resolve_project_path(workspace_path, &project.path))?
+    };
 
     Ok(ProjectTerminalTarget {
         project_name: project.name,
@@ -354,11 +364,59 @@ fn is_within(root: &Path, candidate: &Path) -> bool {
     candidate.starts_with(root)
 }
 
+fn linux_path_is_same_or_child(root: &str, candidate: &str) -> bool {
+    let root = root.trim_end_matches('/');
+    candidate == root
+        || candidate
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn resolve_wsl_session_cwd(
+    project_root: &WslProjectPath,
+    cwd: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let Some(raw_cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(PathBuf::from(project_root.unc_path.clone()));
+    };
+
+    if let Some(requested_wsl_path) = parse_wsl_unc_path(raw_cwd) {
+        if requested_wsl_path.distro != project_root.distro {
+            return Err(command_error(format!(
+                "cwd WSL must remain in distribution {}: {}",
+                project_root.distro, raw_cwd
+            )));
+        }
+        return Ok(PathBuf::from(requested_wsl_path.unc_path));
+    }
+
+    if raw_cwd.replace('\\', "/").starts_with('/') {
+        let unc_path = wsl_unc_path(&project_root.distro, raw_cwd);
+        return Ok(PathBuf::from(unc_path));
+    }
+
+    let joined =
+        join_wsl_path(project_root, raw_cwd).map_err(|error| command_error(error.to_string()))?;
+    if !linux_path_is_same_or_child(&project_root.linux_path, &joined.linux_path) {
+        return Err(command_error(format!(
+            "cwd must remain inside the selected WSL project: {}",
+            raw_cwd
+        )));
+    }
+
+    Ok(PathBuf::from(joined.unc_path))
+}
+
 fn resolve_session_cwd(
     project_root: &Path,
     cwd: Option<&str>,
     git_state: &GitState,
 ) -> CommandResult<PathBuf> {
+    let project_root_string = project_root.to_string_lossy();
+    if let Some(wsl_project_root) = parse_wsl_unc_path(&project_root_string) {
+        return resolve_wsl_session_cwd(&wsl_project_root, cwd);
+    }
+
     let canonical_project_root = canonicalize_existing_dir(project_root)?;
     let Some(raw_cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(canonical_project_root);
@@ -792,7 +850,24 @@ fn apply_unix_shell_args_and_prompt(
 }
 
 #[cfg(windows)]
-fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
+fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedShellKind) {
+    if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
+        let mut command = CommandBuilder::new("wsl.exe");
+        command.arg("-d");
+        command.arg(wsl_path.distro);
+        command.arg("--cd");
+        command.arg(wsl_path.linux_path);
+        command.arg("--");
+        command.arg("/bin/sh");
+        command.arg("-lc");
+        command.arg("if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi");
+        command.env("TERM", DEFAULT_TERM);
+        command.env("COLORTERM", DEFAULT_COLORTERM);
+        command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
+        command.env("MACRO_TERMINAL_CWD", &record.cwd);
+        return (command, ManagedShellKind::Posix);
+    }
+
     let mut command = CommandBuilder::new("powershell");
     command.arg("-NoLogo");
     command.arg("-NoProfile");
@@ -805,7 +880,7 @@ fn build_shell_command(record: &TerminalTabRecord) -> CommandBuilder {
     apply_terminal_environment(&mut command, &record.cwd, None);
     command.env("MACRO_TERMINAL_CWD", &record.cwd);
     command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
-    command
+    (command, ManagedShellKind::PowerShell)
 }
 
 #[cfg(not(windows))]
@@ -846,16 +921,54 @@ fn powershell_double_quote_escape(value: &str) -> String {
 }
 
 #[cfg(windows)]
-fn build_managed_command(command: &str, marker_prefix: &str, _: ManagedShellKind) -> String {
-    format!(
-        "Invoke-Expression \"{}\"; $__m = if ($LASTEXITCODE -ne $null) {{ [int]$LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output (\"{}\" + $__m + \"__\")\r\n",
-        powershell_double_quote_escape(command),
-        powershell_double_quote_escape(marker_prefix)
-    )
+fn build_managed_command(
+    command: &str,
+    marker_prefix: &str,
+    shell_kind: ManagedShellKind,
+) -> String {
+    match shell_kind {
+        ManagedShellKind::Posix => {
+            let command_literal = shell_printf_b_literal(command);
+            let marker_literal = shell_single_quote(marker_prefix);
+            format!(
+                "eval \"$(printf '%b' {})\"; __m=$?; printf '%s%s__\\n' {} \"$__m\"\n",
+                command_literal, marker_literal
+            )
+        }
+        ManagedShellKind::Fish => {
+            let command_literal = shell_printf_b_literal(command);
+            let marker_literal = shell_single_quote(marker_prefix);
+            format!(
+                "eval (printf '%b' {}); set __m $status; printf '%s%s__\\n' {} $__m\n",
+                command_literal, marker_literal
+            )
+        }
+        ManagedShellKind::PowerShell => format!(
+            "Invoke-Expression \"{}\"; $__m = if ($LASTEXITCODE -ne $null) {{ [int]$LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output (\"{}\" + $__m + \"__\")\r\n",
+            powershell_double_quote_escape(command),
+            powershell_double_quote_escape(marker_prefix)
+        ),
+    }
 }
 
 #[cfg(windows)]
 fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> CommandBuilder {
+    if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
+        let mut command = CommandBuilder::new("wsl.exe");
+        command.arg("-d");
+        command.arg(wsl_path.distro);
+        command.arg("--cd");
+        command.arg(wsl_path.linux_path);
+        command.arg("--");
+        command.arg("/bin/sh");
+        command.arg("-lc");
+        command.arg(command_text);
+        command.env("TERM", DEFAULT_TERM);
+        command.env("COLORTERM", DEFAULT_COLORTERM);
+        command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
+        return command;
+    }
+
     let mut command = CommandBuilder::new("powershell");
     command.arg("-NoLogo");
     command.arg("-NoProfile");
@@ -866,12 +979,10 @@ fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> Comm
     command
 }
 
-#[cfg(not(windows))]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(not(windows))]
 fn shell_printf_b_literal(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -1369,7 +1480,7 @@ async fn spawn_live_tab(
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
     #[cfg(windows)]
-    let (shell_command, shell_kind) = (build_shell_command(&record), ManagedShellKind::PowerShell);
+    let (shell_command, shell_kind) = build_shell_command(&record);
     #[cfg(not(windows))]
     let (shell_command, shell_kind) = build_shell_command(&record);
     let child = pair

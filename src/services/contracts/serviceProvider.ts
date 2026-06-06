@@ -77,9 +77,11 @@ export interface ServiceProvider {
     groupName?: string | null;
     path?: string;
     gitFlowSettings?: ProjectGitFlowSettings;
+    requestId?: string | null;
   }) => Promise<ProjectDto>;
   previewProjectGitSetup: (data: {
     path?: string;
+    requestId?: string | null;
   }) => Promise<ProjectGitFlowDetection>;
   createProjectWithGitSetup: (data: {
     name: string;
@@ -92,6 +94,7 @@ export interface ServiceProvider {
     expectedRepoRootPath?: string | null;
     expectedSetupState: ProjectGitFlowDetection['setupState'];
     expectedRecommendedActionSequence: ProjectGitSetupAction[];
+    requestId?: string | null;
   }) => Promise<ProjectGitSetupCommitResult>;
   createNewProjectRepo: (data: {
     repoName: string;
@@ -100,7 +103,9 @@ export interface ServiceProvider {
     groupId: string | null;
     groupName?: string | null;
     gitFlowSettings?: ProjectGitFlowSettings;
+    requestId?: string | null;
   }) => Promise<ProjectGitSetupCommitResult>;
+  cancelProjectOperation: (requestId: string) => Promise<boolean>;
   importGitRepo: (data: {
     gitUrl: string;
     projectName: string;

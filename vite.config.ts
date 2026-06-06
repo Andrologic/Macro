@@ -355,7 +355,7 @@ const manualAppChunk = (id: string): string | undefined => {
 };
 
 const manualChunk = (id: string): string | undefined =>
-  manualVendorChunk(id) ?? manualAppChunk(id);
+  manualVendorChunk(id);
 
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {
@@ -407,6 +407,7 @@ export default defineConfig(({ command }) => {
   }
 
   return {
+    base: command === "build" ? "./" : "/",
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },

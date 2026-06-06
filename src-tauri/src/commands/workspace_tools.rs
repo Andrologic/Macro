@@ -680,13 +680,15 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let absolute_path =
                 resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
             let display_path = virtual_path_for_mount(mount, &relative_path);
-            let metadata = tokio::fs::metadata(&absolute_path).await.map_err(|error| {
-                command_error(format!(
-                    "Failed to inspect {} before delete: {}",
-                    display_path, error
-                ))
-            })?;
-            if metadata.is_dir() {
+            let metadata = fs::stat_internal(&workspace, relative_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before delete: {}",
+                        display_path, error
+                    ))
+                })?;
+            if metadata.kind == "directory" {
                 return Ok(Some(format!(
                     "Cannot delete directory with delete tool: {}. Only files are supported.",
                     display_path
@@ -700,7 +702,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             } else {
                 current.content.lines().count()
             };
-            tokio::fs::remove_file(&absolute_path)
+            fs::delete_path_internal(&workspace, relative_path.clone(), Some(false))
                 .await
                 .map_err(|error| {
                     command_error(format!("Failed to delete {}: {}", display_path, error))
@@ -776,7 +778,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                         let absolute_path =
                             resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
                         let display_path = virtual_path_for_mount(mount, &relative_path);
-                        if tokio::fs::try_exists(&absolute_path)
+                        if fs::exists_internal(&workspace, relative_path.clone())
                             .await
                             .map_err(|error| {
                                 command_error(format!(

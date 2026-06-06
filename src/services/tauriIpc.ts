@@ -2363,13 +2363,21 @@ export async function workspaceArchitectInvalidate(params?: {
 
 export async function workspacePreviewProjectGitSetup(params: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> {
   return invoke<ProjectGitFlowDetection>(
     "workspace_preview_project_git_setup",
     {
       path: params.path ?? null,
+      requestId: params.requestId ?? null,
     },
   );
+}
+
+export async function workspaceCancelProjectOperation(
+  requestId: string,
+): Promise<boolean> {
+  return invoke<boolean>("workspace_cancel_project_operation", { requestId });
 }
 
 export async function workspaceCreateProjectWithGitSetup(params: {
@@ -2383,6 +2391,7 @@ export async function workspaceCreateProjectWithGitSetup(params: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection["setupState"];
   expectedRecommendedActionSequence: ProjectGitSetupAction[];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> {
   return invoke<ProjectGitSetupCommitResult>(
     "workspace_create_project_with_git_setup",
@@ -2398,6 +2407,7 @@ export async function workspaceCreateProjectWithGitSetup(params: {
       expectedSetupState: params.expectedSetupState,
       expectedRecommendedActionSequence:
         params.expectedRecommendedActionSequence,
+      requestId: params.requestId ?? null,
     },
   );
 }
@@ -2437,6 +2447,7 @@ export async function workspaceCreateProject(params: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  requestId?: string | null;
 }): Promise<Project> {
   return invoke<Project>("workspace_create_project", {
     name: params.name,
@@ -2445,6 +2456,7 @@ export async function workspaceCreateProject(params: {
     groupName: params.groupName ?? null,
     path: params.path ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    requestId: params.requestId ?? null,
   });
 }
 
@@ -2455,6 +2467,7 @@ export async function workspaceCreateNewProjectRepo(params: {
   groupId?: string | null;
   groupName?: string | null;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> {
   return invoke<ProjectGitSetupCommitResult>("workspace_create_new_project_repo", {
     repoName: params.repoName,
@@ -2463,6 +2476,7 @@ export async function workspaceCreateNewProjectRepo(params: {
     groupId: params.groupId ?? null,
     groupName: params.groupName ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    requestId: params.requestId ?? null,
   });
 }
 

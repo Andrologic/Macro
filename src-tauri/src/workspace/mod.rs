@@ -2,11 +2,13 @@ pub mod architect;
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::background_command;
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::GitWorktreeRecord;
 use crate::git::repo::get_status_options;
 use crate::git::MACRO_BRANCH_NAME;
 use crate::git::{detect_preferred_git_flow_branches, GitState};
+pub use crate::project_path::parse_wsl_unc_path;
+use crate::project_path::{wsl_unc_path, ProjectPathKind, WslProjectPath};
 use chrono::Utc;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
@@ -27,7 +29,10 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs;
+use tokio::sync::watch;
+use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
@@ -53,6 +58,8 @@ const GIT_SETUP_ACTION_INITIALIZE_REPO: &str = "initialize_repo";
 const GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT: &str = "create_initial_commit";
 const GIT_SETUP_ACTION_CREATE_DEVELOP: &str = "create_develop";
 const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
+const PROJECT_GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
 const ACCESS_BLOCK_LAST_ACTIONABLE_PLAN: &str = "last_actionable_plan";
@@ -113,6 +120,32 @@ fn absolutize_path(path: &Path) -> PathBuf {
     };
 
     std::fs::canonicalize(&candidate).unwrap_or(candidate)
+}
+
+fn classify_project_path(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> Option<ProjectPathKind> {
+    let project_path = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        return Some(ProjectPathKind::Wsl(wsl_path));
+    }
+    Some(ProjectPathKind::Windows(resolve_project_path(
+        workspace_path,
+        project_path,
+    )))
+}
+
+fn ensure_not_cancelled(cancel_rx: Option<&watch::Receiver<bool>>) -> Result<()> {
+    if cancel_rx.map(|rx| *rx.borrow()).unwrap_or(false) {
+        Err(BackendError::Validation(
+            "Project operation cancelled.".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn normalize_repo_resolution(
@@ -347,7 +380,10 @@ fn should_apply_auto_detected_base_branch(
 }
 
 fn repo_has_initial_commit(repo: &Repository) -> bool {
-    repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
+    repo.head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .is_some()
 }
 
 fn recommended_git_setup_actions(detection: &ProjectGitFlowDetectionDto) -> Vec<String> {
@@ -406,6 +442,47 @@ fn project_is_read_only(project: &ProjectDto) -> bool {
     project.user_read_only || project.git_setup_state != PROJECT_GIT_SETUP_READY
 }
 
+fn enrich_project_location(mut project: ProjectDto) -> ProjectDto {
+    if let Some(wsl_path) = parse_wsl_unc_path(&project.path) {
+        project.path_kind = "wsl".to_string();
+        project.wsl_distro = Some(wsl_path.distro);
+        project.wsl_linux_path = Some(wsl_path.linux_path);
+    } else {
+        project.path_kind = "windows".to_string();
+        project.wsl_distro = None;
+        project.wsl_linux_path = None;
+    }
+    project
+}
+
+fn strip_project_location(mut project: ProjectDto) -> ProjectDto {
+    project.path_kind = "windows".to_string();
+    project.wsl_distro = None;
+    project.wsl_linux_path = None;
+    project
+}
+
+fn strip_workspace_project_locations(mut state: WorkspaceState) -> WorkspaceState {
+    state.standalone_projects = state
+        .standalone_projects
+        .into_iter()
+        .map(strip_project_location)
+        .collect();
+    state.project_groups = state
+        .project_groups
+        .into_iter()
+        .map(|mut group| {
+            group.projects = group
+                .projects
+                .into_iter()
+                .map(strip_project_location)
+                .collect();
+            group
+        })
+        .collect();
+    state
+}
+
 fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> ProjectDto {
     project.git_setup_state = git_setup_state.to_string();
     project.is_read_only = project_is_read_only(&ProjectDto {
@@ -414,7 +491,7 @@ fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> P
     });
     project.read_only_reason =
         derive_project_read_only_reason(project.user_read_only, git_setup_state);
-    project
+    enrich_project_location(project)
 }
 
 fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
@@ -435,6 +512,296 @@ fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
         initial_commit_risk_flags: Vec::new(),
         recommended_action_sequence: Vec::new(),
     }
+}
+
+fn project_operation_cancelled_error() -> BackendError {
+    BackendError::Validation("Project operation cancelled.".to_string())
+}
+
+fn wsl_git_unavailable_error(distro: &str, stderr: &str) -> BackendError {
+    let detail = stderr.trim();
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", detail)
+    };
+    BackendError::Git {
+        message: format!(
+            "Git is not available in WSL distribution '{}'. Install Git in WSL, then try again.{}",
+            distro, suffix
+        ),
+    }
+}
+
+async fn wait_for_wsl_command(
+    mut command: tokio::process::Command,
+    timeout_duration: Duration,
+    mut cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    command.kill_on_drop(true);
+    let child = command.spawn().map_err(|error| BackendError::Git {
+        message: format!("Failed to start WSL command: {}", error),
+    })?;
+
+    let wait_future = child.wait_with_output();
+    tokio::pin!(wait_future);
+
+    if let Some(cancel_rx) = cancel_rx.as_mut() {
+        tokio::select! {
+            result = timeout(timeout_duration, &mut wait_future) => {
+                result.map_err(|_| BackendError::Git {
+                    message: "Git detection timed out. Check WSL or add the project as read-only.".to_string(),
+                })?.map_err(|error| BackendError::Git {
+                    message: format!("Failed to run WSL command: {}", error),
+                })
+            }
+            _ = cancel_rx.changed() => {
+                Err(project_operation_cancelled_error())
+            }
+        }
+    } else {
+        timeout(timeout_duration, &mut wait_future)
+            .await
+            .map_err(|_| BackendError::Git {
+                message:
+                    "Git detection timed out. Check WSL or add the project as read-only."
+                        .to_string(),
+            })?
+            .map_err(|error| BackendError::Git {
+                message: format!("Failed to run WSL command: {}", error),
+            })
+    }
+}
+
+async fn run_wsl_git(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("git")
+        .arg("-C")
+        .arg(&wsl_path.linux_path);
+    for arg in args {
+        command.arg(arg);
+    }
+    wait_for_wsl_command(command, timeout_duration, cancel_rx).await
+}
+
+fn output_stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn output_stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+async fn run_wsl_git_required(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<String> {
+    let output = run_wsl_git(wsl_path, args, PROJECT_GIT_PROBE_TIMEOUT, cancel_rx).await?;
+    if output.status.success() {
+        Ok(output_stdout(&output))
+    } else {
+        Err(wsl_git_unavailable_error(
+            &wsl_path.distro,
+            &output_stderr(&output),
+        ))
+    }
+}
+
+async fn run_wsl_git_optional(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<Option<String>> {
+    let output = run_wsl_git(wsl_path, args, PROJECT_GIT_PROBE_TIMEOUT, cancel_rx).await?;
+    if output.status.success() {
+        Ok(Some(output_stdout(&output)))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn collect_initial_commit_preview_for_wsl_path(
+    wsl_path: &WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<InitialCommitPreview> {
+    let script = format!(
+        "cd \"$1\" 2>/dev/null || exit 0; find . -path './.git' -prune -o -type f -print | sed 's#^./##' | head -n {}",
+        INITIAL_COMMIT_PREVIEW_LIMIT
+    );
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("sh")
+        .arg("-lc")
+        .arg(script)
+        .arg("macro-wsl-preview")
+        .arg(&wsl_path.linux_path);
+    let output = wait_for_wsl_command(command, PROJECT_WSL_PREVIEW_TIMEOUT, cancel_rx).await?;
+    if !output.status.success() {
+        return Ok(InitialCommitPreview::default());
+    }
+
+    let mut risk_flags = HashSet::new();
+    let paths = output_stdout(&output)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .inspect(|path| collect_initial_commit_risk_flags(path, &mut risk_flags))
+        .collect::<Vec<_>>();
+    let mut risk_flags = risk_flags.into_iter().collect::<Vec<_>>();
+    risk_flags.sort();
+
+    Ok(InitialCommitPreview {
+        total_count: paths.len(),
+        paths,
+        risk_flags,
+    })
+}
+
+async fn detect_wsl_project_git_flow(
+    wsl_path: &WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    let inside = run_wsl_git_required(
+        wsl_path,
+        &["rev-parse", "--is-inside-work-tree"],
+        cancel_rx.clone(),
+    )
+    .await;
+
+    if inside.is_err() {
+        let preview = collect_initial_commit_preview_for_wsl_path(wsl_path, cancel_rx.clone())
+            .await
+            .unwrap_or_default();
+        let probe = ProjectGitProbe {
+            requested_path: PathBuf::from(format!(
+                r"\\wsl.localhost\{}\{}",
+                wsl_path.distro,
+                wsl_path
+                    .linux_path
+                    .trim_start_matches('/')
+                    .replace('/', "\\")
+            )),
+            repo: None,
+            resolved_repo_root_path: Some(PathBuf::from(format!(
+                r"\\wsl.localhost\{}\{}",
+                wsl_path.distro,
+                wsl_path
+                    .linux_path
+                    .trim_start_matches('/')
+                    .replace('/', "\\")
+            ))),
+            repo_resolution: GIT_RESOLUTION_NEW_LOCAL_REPO,
+        };
+        return Ok(build_project_git_flow_detection(
+            &probe, None, false, preview,
+        ));
+    }
+
+    let repo_root = run_wsl_git_required(
+        wsl_path,
+        &["rev-parse", "--show-toplevel"],
+        cancel_rx.clone(),
+    )
+    .await?;
+    let has_initial_commit = run_wsl_git_optional(
+        wsl_path,
+        &["rev-parse", "--verify", "HEAD"],
+        cancel_rx.clone(),
+    )
+    .await?
+    .is_some();
+    let current_branch = run_wsl_git_optional(
+        wsl_path,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        cancel_rx.clone(),
+    )
+    .await?;
+    let branches_output = run_wsl_git_optional(
+        wsl_path,
+        &["branch", "--format=%(refname:short)"],
+        cancel_rx.clone(),
+    )
+    .await?
+    .unwrap_or_default();
+    let branches = branches_output
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let suggested_main = ["main", "master"]
+        .iter()
+        .find(|candidate| branches.iter().any(|branch| branch == **candidate))
+        .map(|value| (*value).to_string())
+        .or_else(|| current_branch.clone())
+        .or_else(|| branches.first().cloned())
+        .unwrap_or_else(|| "main".to_string());
+    let suggested_base = ["develop", "dev"]
+        .iter()
+        .find(|candidate| branches.iter().any(|branch| branch == **candidate))
+        .map(|value| (*value).to_string())
+        .unwrap_or_else(|| suggested_main.clone());
+    let requires_confirmation = !["main", "master"].contains(&suggested_main.as_str())
+        && suggested_base == suggested_main
+        && has_initial_commit;
+    let setup_state = if !has_initial_commit {
+        PROJECT_GIT_DETECTION_UNBORN
+    } else if requires_confirmation {
+        PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION
+    } else {
+        PROJECT_GIT_DETECTION_READY
+    };
+    let initial_commit_preview = if has_initial_commit {
+        InitialCommitPreview::default()
+    } else {
+        collect_initial_commit_preview_for_wsl_path(wsl_path, cancel_rx.clone())
+            .await
+            .unwrap_or_default()
+    };
+
+    let mut detection = ProjectGitFlowDetectionDto {
+        repo_detected: true,
+        branches,
+        current_branch: current_branch.clone(),
+        suggested_main_branch: Some(suggested_main.clone()),
+        suggested_base_branch: Some(suggested_base),
+        suggested_commit_branch: current_branch.or(Some(suggested_main)),
+        requires_confirmation,
+        setup_state: setup_state.to_string(),
+        has_initial_commit,
+        resolved_repo_root_path: Some(format!(
+            r"\\wsl.localhost\{}\{}",
+            wsl_path.distro,
+            repo_root.trim_start_matches('/').replace('/', "\\")
+        )),
+        repo_resolution: normalize_repo_resolution(
+            Path::new(&wsl_path.linux_path),
+            Some(Path::new(&repo_root)),
+            true,
+        )
+        .to_string(),
+        initial_commit_preview_paths: initial_commit_preview.paths,
+        initial_commit_preview_count: initial_commit_preview.total_count,
+        initial_commit_risk_flags: initial_commit_preview.risk_flags,
+        recommended_action_sequence: Vec::new(),
+    };
+    detection.recommended_action_sequence = recommended_git_setup_actions(&detection);
+    Ok(detection)
 }
 
 fn build_project_git_flow_detection(
@@ -568,6 +935,24 @@ pub fn detect_project_git_flow(
     detect_project_git_flow_internal(workspace_path, project_path)
 }
 
+async fn detect_project_git_flow_for_add(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    match classify_project_path(workspace_path, project_path) {
+        Some(ProjectPathKind::Wsl(wsl_path)) => {
+            detect_wsl_project_git_flow(&wsl_path, cancel_rx).await
+        }
+        Some(ProjectPathKind::Windows(_)) => Ok(detect_project_git_flow_internal(
+            workspace_path,
+            project_path,
+        )),
+        None => Ok(empty_git_flow_detection()),
+    }
+}
+
 fn resolve_repo_workdir(repo: &Repository, fallback: &Path) -> PathBuf {
     let workdir = repo
         .workdir()
@@ -666,6 +1051,14 @@ pub fn preview_project_git_setup(
     detect_project_git_flow_internal(workspace_path, project_path)
 }
 
+pub async fn preview_project_git_setup_async(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    detect_project_git_flow_for_add(workspace_path, project_path, cancel_rx).await
+}
+
 fn normalize_git_setup_actions(actions: &[String]) -> Vec<String> {
     actions
         .iter()
@@ -682,15 +1075,17 @@ fn git_setup_actions_are_prefix(requested: &[String], recommended: &[String]) ->
             .all(|(requested_action, recommended_action)| requested_action == recommended_action)
 }
 
-fn validate_project_git_setup_commit(
+async fn validate_project_git_setup_commit(
     workspace_path: &Path,
     project_path: &str,
     requested_actions: &[String],
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<ProjectGitFlowDetectionDto> {
-    let detection = detect_project_git_flow_internal(workspace_path, Some(project_path));
+    let detection =
+        detect_project_git_flow_for_add(workspace_path, Some(project_path), cancel_rx).await?;
     let normalized_requested_actions = normalize_git_setup_actions(requested_actions);
     let normalized_expected_recommended_actions =
         normalize_git_setup_actions(expected_recommended_action_sequence);
@@ -904,6 +1299,59 @@ fn apply_git_setup_action(
     Ok(())
 }
 
+async fn apply_wsl_git_setup_action(
+    wsl_path: &WslProjectPath,
+    detection: &ProjectGitFlowDetectionDto,
+    action: &str,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<()> {
+    let script = match action {
+        GIT_SETUP_ACTION_INITIALIZE_REPO => {
+            r#"if [ ! -d "$1/.git" ]; then git -C "$1" init -b main; fi"#
+        }
+        GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT => {
+            r#"git -C "$1" config user.name >/dev/null 2>&1 || git -C "$1" config user.name Macro
+git -C "$1" config user.email >/dev/null 2>&1 || git -C "$1" config user.email macro@local
+git -C "$1" add -A
+git -C "$1" diff --cached --quiet && git -C "$1" commit --allow-empty -m "chore(git): initialize repository" || git -C "$1" commit -m "chore(git): initialize repository""#
+        }
+        GIT_SETUP_ACTION_CREATE_DEVELOP => "",
+        _ => {
+            return Err(BackendError::Validation(format!(
+                "Unsupported project Git setup action: {}",
+                action
+            )));
+        }
+    };
+
+    let script = if action == GIT_SETUP_ACTION_CREATE_DEVELOP {
+        let source_branch = detection
+            .suggested_main_branch
+            .clone()
+            .or_else(|| detection.suggested_commit_branch.clone())
+            .or_else(|| detection.current_branch.clone())
+            .unwrap_or_else(|| "main".to_string());
+        format!(
+            r#"git -C "$1" show-ref --verify --quiet refs/heads/develop || git -C "$1" branch develop "{}""#,
+            source_branch.replace('"', "\\\"")
+        )
+    } else {
+        script.to_string()
+    };
+
+    let output = run_wsl_shell(wsl_path, &script, Duration::from_secs(12), cancel_rx).await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(BackendError::Git {
+            message: format!(
+                "Failed to apply WSL Git setup action: {}",
+                output_stderr(&output)
+            ),
+        })
+    }
+}
+
 async fn execute_project_git_setup_commit<T, F, Fut>(
     workspace_path: &Path,
     project_path: &str,
@@ -911,6 +1359,7 @@ async fn execute_project_git_setup_commit<T, F, Fut>(
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
     persist_operation: F,
 ) -> Result<(T, ProjectGitFlowDetectionDto)>
 where
@@ -926,6 +1375,7 @@ where
         expected_repo_root_path = ?expected_repo_root_path
     );
 
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     let detection = validate_project_git_setup_commit(
         workspace_path,
         project_path,
@@ -933,28 +1383,44 @@ where
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
-    )?;
-
-    if !normalized_actions.is_empty() {
-        let resolved_project_path = resolve_project_path(workspace_path, project_path);
-        ensure_project_directory(&resolved_project_path, "project_git_setup").await?;
-    }
+        cancel_rx.clone(),
+    )
+    .await?;
 
     let mut rollback_steps = Vec::new();
-    for action in normalized_actions.iter() {
-        apply_git_setup_action(
+    if !normalized_actions.is_empty() {
+        ensure_project_directory_for_add(
             workspace_path,
             project_path,
-            &detection,
-            action,
-            &mut rollback_steps,
-        )?;
+            "project_git_setup",
+            cancel_rx.clone(),
+        )
+        .await?;
+    }
+
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        for action in normalized_actions.iter() {
+            ensure_not_cancelled(cancel_rx.as_ref())?;
+            apply_wsl_git_setup_action(&wsl_path, &detection, action, cancel_rx.clone()).await?;
+        }
+    } else {
+        for action in normalized_actions.iter() {
+            ensure_not_cancelled(cancel_rx.as_ref())?;
+            apply_git_setup_action(
+                workspace_path,
+                project_path,
+                &detection,
+                action,
+                &mut rollback_steps,
+            )?;
+        }
     }
 
     match persist_operation().await {
         Ok(result) => {
             let next_detection =
-                detect_project_git_flow_internal(workspace_path, Some(project_path));
+                detect_project_git_flow_for_add(workspace_path, Some(project_path), cancel_rx)
+                    .await?;
             tracing::info!(
                 action = "git_setup_commit_succeeded",
                 project_path = %project_path,
@@ -1001,6 +1467,7 @@ pub async fn create_project_with_git_setup(
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<metadata::ProjectGitSetupCommitResultDto> {
     let project_path = request.path.clone().ok_or_else(|| {
         BackendError::Validation(
@@ -1014,7 +1481,8 @@ pub async fn create_project_with_git_setup(
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
-        || create_project(workspace_path, metadata_root, request),
+        cancel_rx.clone(),
+        || create_project_with_cancel(workspace_path, metadata_root, request, cancel_rx.clone()),
     )
     .await?;
 
@@ -1057,6 +1525,7 @@ pub async fn update_project_git_flow_with_setup(
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
+        None,
         || update_project_git_flow(workspace_path, metadata_root, project_id, git_flow_settings),
     )
     .await?;
@@ -1086,6 +1555,45 @@ fn auto_detect_project_git_flow_settings(
 ) -> ProjectGitFlowSettingsDto {
     let mut normalized = normalize_project_git_flow_settings(settings);
     let detected = detect_project_git_flow_internal(workspace_path, Some(project_path));
+    if !detected.repo_detected || !detected.has_initial_commit || detected.requires_confirmation {
+        return normalized;
+    }
+
+    if should_auto_update_project_main_branch(&normalized.main_branch) {
+        if let Some(main_branch) = detected
+            .suggested_main_branch
+            .clone()
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            normalized.main_branch = main_branch;
+        }
+    }
+
+    if should_auto_update_project_base_branch(&normalized.base_branch) {
+        if let Some(base_branch) = detected
+            .suggested_base_branch
+            .clone()
+            .or_else(|| detected.suggested_main_branch.clone())
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            if should_apply_auto_detected_base_branch(
+                &normalized.base_branch,
+                &base_branch,
+                detected.suggested_main_branch.as_deref(),
+            ) {
+                normalized.base_branch = base_branch;
+            }
+        }
+    }
+
+    normalized
+}
+
+fn auto_detect_project_git_flow_settings_from_detection(
+    settings: Option<&ProjectGitFlowSettingsDto>,
+    detected: &ProjectGitFlowDetectionDto,
+) -> ProjectGitFlowSettingsDto {
+    let mut normalized = normalize_project_git_flow_settings(settings);
     if !detected.repo_detected || !detected.has_initial_commit || detected.requires_confirmation {
         return normalized;
     }
@@ -1967,6 +2475,38 @@ async fn ensure_project_directory(project_path: &Path, operation: &str) -> Resul
     Ok(())
 }
 
+async fn ensure_project_directory_for_add(
+    workspace_path: &Path,
+    project_path: &str,
+    operation: &str,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<()> {
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        let output = run_wsl_shell(
+            &wsl_path,
+            r#"test -d "$1""#,
+            PROJECT_GIT_PROBE_TIMEOUT,
+            cancel_rx,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(BackendError::FilesystemNotFound {
+            message: format!(
+                "Project path {} for {} was not found.",
+                project_path, operation
+            ),
+        });
+    }
+
+    ensure_project_directory(
+        &resolve_project_path(workspace_path, project_path),
+        operation,
+    )
+    .await
+}
+
 fn normalize_new_repo_folder_name(folder_name: &str) -> Result<String> {
     let trimmed = folder_name.trim();
     if trimmed.is_empty()
@@ -2046,6 +2586,16 @@ pub async fn create_project(
     metadata_root: &Path,
     request: CreateProjectRequest,
 ) -> Result<ProjectDto> {
+    create_project_with_cancel(workspace_path, metadata_root, request, None).await
+}
+
+pub async fn create_project_with_cancel(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateProjectRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -2061,13 +2611,16 @@ pub async fn create_project(
         request.group_name.as_deref(),
         &request.name,
     )?;
-    let project = build_project(
+    let project = build_project_for_add(
         &request.name,
         &request.description,
         request.path.as_deref(),
         workspace_path,
         request.git_flow_settings.as_ref(),
-    );
+        cancel_rx.clone(),
+    )
+    .await?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     ensure_unique_project_name_in_target(
         &state,
         request.group_id.as_deref(),
@@ -2077,7 +2630,14 @@ pub async fn create_project(
 
     let project_path = resolve_project_path(workspace_path, &project.path);
     ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
-    ensure_project_directory(&project_path, "create_project").await?;
+    ensure_project_directory_for_add(
+        workspace_path,
+        &project.path,
+        "create_project",
+        cancel_rx.clone(),
+    )
+    .await?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
 
     insert_project_into_registry(
         &mut state,
@@ -2108,6 +2668,27 @@ pub async fn create_new_project_repo(
     metadata_root: &Path,
     request: CreateNewProjectRepoRequest,
 ) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    create_new_project_repo_with_cancel(workspace_path, metadata_root, request, None).await
+}
+
+pub async fn create_new_project_repo_with_cancel(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    if let Some(wsl_parent) = parse_wsl_unc_path(&request.parent_path) {
+        return create_new_wsl_project_repo(
+            workspace_path,
+            metadata_root,
+            request,
+            wsl_parent,
+            cancel_rx,
+        )
+        .await;
+    }
+
     let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
     let parent_path = resolve_project_path(workspace_path, &request.parent_path);
     let project_path = absolutize_path(&parent_path.join(folder_name));
@@ -2130,6 +2711,7 @@ pub async fn create_new_project_repo(
     ensure_new_repo_parent_path(&parent_path)?;
     ensure_new_repo_target_available(&project_path)?;
 
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     fs::create_dir_all(&project_path)
         .await
         .map_err(|error| BackendError::Filesystem {
@@ -2140,6 +2722,7 @@ pub async fn create_new_project_repo(
             ),
         })?;
 
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     let setup_result: Result<()> = (|| {
         let mut opts = RepositoryInitOptions::new();
         opts.initial_head("main");
@@ -2170,13 +2753,163 @@ pub async fn create_new_project_repo(
 
     match create_project(workspace_path, metadata_root, create_request).await {
         Ok(project) => {
-            let detection = detect_project_git_flow_internal(
+            let detection = detect_project_git_flow_for_add(
                 workspace_path,
                 Some(project_path_string.as_str()),
-            );
+                cancel_rx,
+            )
+            .await?;
             Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
         }
         Err(error) => rollback_created_new_repo(&project_path, error).await,
+    }
+}
+
+async fn run_wsl_shell(
+    wsl_path: &WslProjectPath,
+    script: &str,
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("sh")
+        .arg("-lc")
+        .arg(script)
+        .arg("macro-wsl-command")
+        .arg(&wsl_path.linux_path);
+    wait_for_wsl_command(command, timeout_duration, cancel_rx).await
+}
+
+async fn create_new_wsl_project_repo(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+    parent_wsl_path: WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
+    let project_linux_path = format!(
+        "{}/{}",
+        parent_wsl_path.linux_path.trim_end_matches('/'),
+        folder_name
+    );
+    let project_path_string = wsl_unc_path(&parent_wsl_path.distro, &project_linux_path);
+    let project_wsl_path = WslProjectPath {
+        distro: parent_wsl_path.distro.clone(),
+        linux_path: project_linux_path,
+        original_path: project_path_string.clone(),
+        unc_path: project_path_string.clone(),
+    };
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    ensure_valid_project_group_target(
+        &state.project_groups,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_name_in_target(
+        &state,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_path_in_state(&state, workspace_path, Path::new(&project_path_string))?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+
+    let create_script = r#"set -e
+parent="$1"
+project="$parent"
+if [ -e "$project" ]; then
+  if [ "$(find "$project" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
+    echo "target exists and is not empty" >&2
+    exit 17
+  fi
+else
+  mkdir -p "$project"
+fi
+git -C "$project" init -b main
+git -C "$project" config user.name >/dev/null 2>&1 || git -C "$project" config user.name Macro
+git -C "$project" config user.email >/dev/null 2>&1 || git -C "$project" config user.email macro@local
+git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
+"#;
+    let output = match run_wsl_shell(
+        &project_wsl_path,
+        create_script,
+        Duration::from_secs(12),
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = run_wsl_shell(
+                &project_wsl_path,
+                r#"rm -rf "$1/.git""#,
+                PROJECT_GIT_PROBE_TIMEOUT,
+                None,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if !output.status.success() {
+        let _ = run_wsl_shell(
+            &project_wsl_path,
+            r#"rm -rf "$1/.git""#,
+            PROJECT_GIT_PROBE_TIMEOUT,
+            None,
+        )
+        .await;
+        return Err(BackendError::Git {
+            message: format!(
+                "Failed to initialize WSL git repository: {}",
+                output_stderr(&output)
+            ),
+        });
+    }
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+
+    let create_request = CreateProjectRequest {
+        name: request.repo_name,
+        description: String::new(),
+        group_id: request.group_id,
+        group_name: request.group_name,
+        path: Some(project_path_string.clone()),
+        git_flow_settings: request.git_flow_settings,
+    };
+
+    match create_project_with_cancel(
+        workspace_path,
+        metadata_root,
+        create_request,
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(project) => {
+            let detection = detect_project_git_flow_for_add(
+                workspace_path,
+                Some(project_path_string.as_str()),
+                cancel_rx,
+            )
+            .await?;
+            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+        }
+        Err(error) => {
+            let _ = run_wsl_shell(
+                &project_wsl_path,
+                r#"rm -rf "$1/.git""#,
+                PROJECT_GIT_PROBE_TIMEOUT,
+                None,
+            )
+            .await;
+            Err(error)
+        }
     }
 }
 
@@ -3549,8 +4282,9 @@ fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()
         ),
     })?;
 
+    let durable_state = strip_workspace_project_locations(state.clone());
     let serialized =
-        serde_json::to_string_pretty(state).map_err(|error| BackendError::Internal {
+        serde_json::to_string_pretty(&durable_state).map_err(|error| BackendError::Internal {
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
 
@@ -4111,6 +4845,9 @@ fn sanitize_project_entry(
     }
 
     seen_paths.insert(normalized_key);
+    if parse_wsl_unc_path(&project.path).is_some() {
+        return Some(enrich_project_location(project));
+    }
     let git_flow_settings = auto_detect_project_git_flow_settings(
         workspace_path,
         &project.path,
@@ -4553,8 +5290,9 @@ async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<
             ),
         })?;
 
+    let durable_state = strip_workspace_project_locations(state.clone());
     let serialized =
-        serde_json::to_string_pretty(state).map_err(|error| BackendError::Internal {
+        serde_json::to_string_pretty(&durable_state).map_err(|error| BackendError::Internal {
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
 
@@ -4614,6 +5352,9 @@ fn build_project(
             git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
             is_read_only: false,
             read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
             metadata: ProjectMetadataDto {
                 description: description.to_string(),
                 tags: Vec::new(),
@@ -4624,6 +5365,66 @@ fn build_project(
         },
         derive_git_setup_state(&git_detection),
     )
+}
+
+async fn build_project_for_add(
+    name: &str,
+    description: &str,
+    path: Option<&str>,
+    workspace_path: &Path,
+    git_flow_settings: Option<&ProjectGitFlowSettingsDto>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectDto> {
+    let now = Utc::now().to_rfc3339();
+    let slug = slugify(name);
+    let id = format!("project-{}-{}", slug, Utc::now().timestamp_millis());
+    let project_path = path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("projects/{}", slug));
+
+    let project_name = name.trim();
+    let normalized_name = if project_name.is_empty() {
+        workspace_path
+            .file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or("Project")
+            .to_string()
+    } else {
+        project_name.to_string()
+    };
+    let git_detection =
+        detect_project_git_flow_for_add(workspace_path, Some(project_path.as_str()), cancel_rx)
+            .await?;
+    let detected_git_flow_settings =
+        auto_detect_project_git_flow_settings_from_detection(git_flow_settings, &git_detection);
+
+    Ok(normalize_project_access(
+        ProjectDto {
+            id: id.clone(),
+            name: normalized_name,
+            mount_name: derive_project_mount_name(&project_path, name, &id),
+            path: project_path,
+            created_at: now,
+            status: "active".to_string(),
+            git_flow_settings: detected_git_flow_settings,
+            user_read_only: false,
+            git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+            is_read_only: false,
+            read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
+            metadata: ProjectMetadataDto {
+                description: description.to_string(),
+                tags: Vec::new(),
+                team_members: Vec::new(),
+                api_contracts: Vec::new(),
+                dependencies: Vec::new(),
+            },
+        },
+        derive_git_setup_state(&git_detection),
+    ))
 }
 
 fn normalize_project_git_flow_settings(
@@ -5346,6 +6147,23 @@ mod tests {
     use std::fs as stdfs;
     use tempfile::TempDir;
 
+    #[test]
+    fn parse_wsl_unc_path_supports_wsl_dollar_prefix() {
+        let parsed = parse_wsl_unc_path(r"\\wsl$\Ubuntu\home\oscar\repo").expect("parse wsl path");
+
+        assert_eq!(parsed.distro, "Ubuntu");
+        assert_eq!(parsed.linux_path, "/home/oscar/repo");
+    }
+
+    #[test]
+    fn parse_wsl_unc_path_supports_wsl_localhost_prefix() {
+        let parsed = parse_wsl_unc_path(r"\\wsl.localhost\Debian\var\www\app")
+            .expect("parse wsl localhost path");
+
+        assert_eq!(parsed.distro, "Debian");
+        assert_eq!(parsed.linux_path, "/var/www/app");
+    }
+
     fn make_project(id: &str, path: &str) -> ProjectDto {
         ProjectDto {
             id: id.to_string(),
@@ -5369,6 +6187,9 @@ mod tests {
             git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
             is_read_only: false,
             read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
             metadata: ProjectMetadataDto {
                 description: String::new(),
                 tags: Vec::new(),
@@ -6509,6 +7330,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async {
                 Err::<(), BackendError>(BackendError::Validation(
                     "persist failed on purpose".to_string(),
@@ -6539,6 +7361,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async {
                 Err::<(), BackendError>(BackendError::Validation(
                     "persist failed on purpose".to_string(),
@@ -6570,6 +7393,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async { Ok(()) },
         )
         .await;

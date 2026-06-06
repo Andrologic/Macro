@@ -990,6 +990,8 @@
     "addExistingRepoToGlobalProject": "プロジェクトを追加",
     "addSubproject": "プロジェクトを追加",
     "saving": "保存中...",
+    "cancellingAddProject": "キャンセル中...",
+    "detectingWslGit": "WSL Git を検出中...",
     "initGitTitle": "Git を初期化しますか？",
     "initialCommitTitle": "初回コミットを作成しますか？",
     "createDevelopTitle": "develop を作成しますか？",

@@ -4,6 +4,7 @@ import type { SupportedLanguage } from '../i18n/languages';
 import type { IconName } from '../components/ui/Icon';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
+export type ProjectPathKind = 'windows' | 'wsl';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
 export type TaskStatus =
   | 'Pending'
@@ -534,6 +535,9 @@ export interface Project {
   name: string;
   mountName: string;
   path: string;
+  pathKind?: ProjectPathKind;
+  wslDistro?: string | null;
+  wslLinuxPath?: string | null;
   created_at: string;
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;

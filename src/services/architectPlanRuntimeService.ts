@@ -3,6 +3,7 @@ import { getGitFlowBaseBranch, resolveTargetBranch, type ArchitectPlanRecord } f
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import type { PersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
+import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
@@ -134,7 +135,7 @@ const resolveRuntimeWorkspacePaths = async (params: {
     }
   }
 
-  return unique([...(params.repoPaths || []), ...projectPaths, activeRoot]);
+  return filterNonWslProjectPaths(unique([...(params.repoPaths || []), ...projectPaths, activeRoot]));
 };
 
 export const readArchitectPlanRuntime = async (params: {

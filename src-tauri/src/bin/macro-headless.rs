@@ -14,6 +14,7 @@ use macro_lib::core::tool_policy::{
     get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult,
 };
 use macro_lib::git::GitState;
+use macro_lib::project_path::parse_wsl_unc_path;
 use macro_lib::workspace;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -91,6 +92,12 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
 }
 
 fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf, BackendError> {
+    if parse_wsl_unc_path(&state.workspace_path.to_string_lossy()).is_some() {
+        return Err(BackendError::Git {
+            message: "Macro metadata is not yet available for WSL projects.".to_string(),
+        });
+    }
+
     match state
         .git_state
         .resolve_macro_metadata_root(&state.workspace_path)

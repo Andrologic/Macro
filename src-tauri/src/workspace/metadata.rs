@@ -613,6 +613,14 @@ fn default_project_git_bugfix_branch_template() -> String {
     "bugfix/{bugfixSlug}".to_string()
 }
 
+fn default_project_path_kind() -> String {
+    "windows".to_string()
+}
+
+fn is_default_project_path_kind(value: &String) -> bool {
+    value == "windows"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDto {
     pub id: String,
@@ -632,6 +640,20 @@ pub struct ProjectDto {
     pub is_read_only: bool,
     #[serde(default, rename = "readOnlyReason")]
     pub read_only_reason: Option<String>,
+    #[serde(
+        default = "default_project_path_kind",
+        rename = "pathKind",
+        skip_serializing_if = "is_default_project_path_kind"
+    )]
+    pub path_kind: String,
+    #[serde(default, rename = "wslDistro", skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
+    #[serde(
+        default,
+        rename = "wslLinuxPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub wsl_linux_path: Option<String>,
     pub metadata: ProjectMetadataDto,
 }
 

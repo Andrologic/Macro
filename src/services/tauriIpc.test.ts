@@ -416,6 +416,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           groupId: "group-1",
           groupName: "Suite",
           path: "C:/dev/web",
+          requestId: null,
         },
       },
       {
@@ -543,6 +544,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
         command: "workspace_preview_project_git_setup",
         payload: {
           path: "C:/dev/web",
+          requestId: null,
         },
       },
       {
@@ -561,6 +563,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             "initialize_repo",
             "create_initial_commit",
           ],
+          requestId: null,
         },
       },
       {
@@ -572,6 +575,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           groupId: "group-1",
           groupName: "Suite",
           gitFlowSettings: null,
+          requestId: null,
         },
       },
       {
