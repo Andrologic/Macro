@@ -114,8 +114,20 @@ export const resolveMaxOutputTokens = (outputTokens?: number | null): number => 
 };
 
 export const resolveDefaultReservedTokens = (
-  outputTokens?: number | null
-): number => Math.min(COMPACTION_BUFFER, resolveMaxOutputTokens(outputTokens));
+  outputTokens?: number | null,
+  contextTokens?: number | null,
+): number => {
+  const normalizedOutputTokens = toPositiveInteger(outputTokens);
+  if (normalizedOutputTokens) {
+    return Math.min(COMPACTION_BUFFER, resolveMaxOutputTokens(normalizedOutputTokens));
+  }
+
+  const normalizedContextTokens = toPositiveInteger(contextTokens);
+  const proportionalReserve = normalizedContextTokens
+    ? Math.max(1, Math.floor(normalizedContextTokens * 0.25))
+    : OUTPUT_TOKEN_MAX;
+  return Math.min(COMPACTION_BUFFER, OUTPUT_TOKEN_MAX, proportionalReserve);
+};
 
 export const resolveModelContextLimits = (
   params: ResolveModelContextLimitsParams
@@ -180,21 +192,24 @@ export const resolveUsableContextTokens = (params: {
 } => {
   const contextTokens = Math.max(1, Math.trunc(params.contextTokens || 1));
   const inputTokens = toPositiveInteger(params.inputTokens);
-  const maxOutputTokens = resolveMaxOutputTokens(params.outputTokens);
+  const outputTokens = toPositiveInteger(params.outputTokens);
+  const maxOutputTokens = resolveMaxOutputTokens(outputTokens);
   const explicitReservedTokens =
     typeof params.explicitReservedTokens === 'number' &&
     Number.isFinite(params.explicitReservedTokens) &&
     params.explicitReservedTokens >= 0
       ? Math.trunc(params.explicitReservedTokens)
       : null;
+  const defaultReservedTokens = resolveDefaultReservedTokens(outputTokens, contextTokens);
   const reservedTokens = Math.min(
     contextTokens - 1,
     Math.max(
       0,
-      explicitReservedTokens ?? resolveDefaultReservedTokens(params.outputTokens)
+      explicitReservedTokens ?? defaultReservedTokens
     )
   );
-  const outputReserveTokens = explicitReservedTokens ?? maxOutputTokens;
+  const outputReserveTokens = explicitReservedTokens ??
+    (outputTokens ? maxOutputTokens : defaultReservedTokens);
   const rawUsable = inputTokens
     ? inputTokens - reservedTokens
     : contextTokens - outputReserveTokens;

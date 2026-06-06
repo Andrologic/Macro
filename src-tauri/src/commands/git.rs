@@ -492,12 +492,14 @@ fn resolve_target_branch(repo: &Repository, branch: Option<String>) -> Result<St
 fn resolve_macro_worktree(
     git_state: &GitState,
     workspace_root: &Path,
-) -> Result<(PathBuf, Repository)> {
+) -> Result<(PathBuf, Repository, bool)> {
     let repo = git_state.open_repo(workspace_root)?;
     let repo = repo.lock().map_err(|_| BackendError::Internal {
         message: "Failed to lock repository".to_string(),
     })?;
-    let worktree_path = git_state.ensure_macro_metadata_worktree(&repo)?;
+    let ensured = git_state.ensure_macro_metadata_worktree_with_status(&repo)?;
+    let worktree_path = ensured.worktree_path;
+    let repaired_after_move = ensured.repaired_after_move;
     drop(repo);
 
     let worktree_repo = Repository::open(&worktree_path).map_err(|e| BackendError::Git {
@@ -508,7 +510,7 @@ fn resolve_macro_worktree(
         ),
     })?;
 
-    Ok((worktree_path, worktree_repo))
+    Ok((worktree_path, worktree_repo, repaired_after_move))
 }
 
 fn resolve_macro_workspace_path(
@@ -4375,13 +4377,21 @@ pub async fn macro_branch_ensure(
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, repaired_after_move) =
+            resolve_macro_worktree(&git_state, &workspace)?;
         build_macro_sync_dto(
             &worktree_repo,
             &worktree_path,
             false,
             None,
-            Some("Metadata branch ensured".to_string()),
+            Some(
+                if repaired_after_move {
+                    "Metadata worktree repaired after project move."
+                } else {
+                    "Metadata branch ensured"
+                }
+                .to_string(),
+            ),
             None,
         )
     })
@@ -4403,8 +4413,17 @@ pub async fn macro_branch_status(
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
-        build_macro_sync_dto(&worktree_repo, &worktree_path, false, None, None, None)
+        let (worktree_path, worktree_repo, repaired_after_move) =
+            resolve_macro_worktree(&git_state, &workspace)?;
+        build_macro_sync_dto(
+            &worktree_repo,
+            &worktree_path,
+            false,
+            None,
+            repaired_after_move
+                .then(|| "Metadata worktree repaired after project move.".to_string()),
+            None,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -4429,7 +4448,7 @@ pub async fn macro_branch_commit_if_dirty(
         .to_string();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
 
         let add_output = run_git_command(
             &worktree_path,
@@ -4558,7 +4577,7 @@ pub async fn macro_branch_push(
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let push_output = run_git_command(
             &worktree_path,
             &[
@@ -4635,7 +4654,7 @@ pub async fn macro_branch_pull(
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let pull_output = run_git_command(
             &worktree_path,
             &[

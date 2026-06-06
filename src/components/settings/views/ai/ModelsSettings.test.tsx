@@ -48,6 +48,8 @@ const loadModelsSettings = async () => {
       addManualModel: mock(async () => undefined),
       updateManualModel: mock(async () => undefined),
       deleteManualModel: mock(async () => undefined),
+      resetProviderModelContextOverflowLimit: mock(async () => undefined),
+      setProviderModelContextWindowOverride: mock(async () => undefined),
       updateProviderSettings: mock(async () => undefined),
       scanModelsForProvider: mock(async () => []),
       getAvailableReasoningEfforts: () => [],
@@ -275,5 +277,29 @@ describe('ModelsSettings metadata model config', () => {
       modelId: 'model-a',
       reasoningEffort: 'high',
     });
+  });
+
+  it('shows compact context window metadata for models', async () => {
+    modelsByProvider = {
+      'provider-a': [
+        model('provider-a', 'model-a', {
+          contextWindowTokens: 32_768,
+          contextWindowSource: 'user_override',
+        }),
+      ],
+      'provider-b': [model('provider-b', 'model-b')],
+    };
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain('Context');
+    expect(container!.textContent).toContain('33k');
+    expect(container!.textContent).toContain('Set');
+    expect(container!.textContent).toContain('Edit');
   });
 });

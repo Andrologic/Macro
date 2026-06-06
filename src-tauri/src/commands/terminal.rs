@@ -2392,13 +2392,91 @@ pub async fn terminal_kill(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::metadata::{
+        ProjectDto, ProjectGitFlowSettingsDto, ProjectMetadataDto, WorkspaceState,
+    };
+    use git2::{Repository, Signature};
     use std::collections::HashMap;
+    use std::fs;
+    use tempfile::TempDir;
 
     fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
         entries
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    fn terminal_test_project(id: &str, path: &str) -> ProjectDto {
+        ProjectDto {
+            id: id.to_string(),
+            name: id.to_string(),
+            mount_name: id.to_string(),
+            path: path.to_string(),
+            git_flow_settings: ProjectGitFlowSettingsDto {
+                base_branch: "main".to_string(),
+                main_branch: "main".to_string(),
+                completion_merge_policy: "merge_commit".to_string(),
+                plan_branch_template: "plan/{planSlug}".to_string(),
+                feature_branch_template: "feature/{planSlug}/{featureSlug}".to_string(),
+                standalone_feature_branch_template: "feature/{featureSlug}".to_string(),
+                release_branch_template: "release/{releaseSlug}".to_string(),
+                hotfix_branch_template: "hotfix/{hotfixSlug}".to_string(),
+                bugfix_branch_template: "bugfix/{bugfixSlug}".to_string(),
+            },
+            created_at: "2026-06-05T00:00:00.000Z".to_string(),
+            status: "active".to_string(),
+            user_read_only: false,
+            git_setup_state: "ready".to_string(),
+            is_read_only: false,
+            read_only_reason: None,
+            metadata: ProjectMetadataDto {
+                description: String::new(),
+                tags: Vec::new(),
+                team_members: Vec::new(),
+                api_contracts: Vec::new(),
+                dependencies: Vec::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_project_target_accepts_standalone_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_dir = temp.path().join("octan_sales");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let repo = Repository::init(&project_dir).expect("git repo");
+        fs::write(project_dir.join("README.md"), "ready\n").expect("readme");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        let signature = Signature::now("Macro Test", "macro@example.test").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Initial commit",
+            &tree,
+            &[],
+        )
+        .expect("initial commit");
+        let state = WorkspaceState {
+            standalone_projects: vec![terminal_test_project("project-octan-sales", "octan_sales")],
+            ..WorkspaceState::default()
+        };
+        fs::write(
+            temp.path().join("workspace.json"),
+            serde_json::to_vec_pretty(&state).expect("serialize state"),
+        )
+        .expect("write workspace state");
+
+        let target = resolve_project_target(temp.path(), temp.path(), "project-octan-sales")
+            .await
+            .expect("standalone project target");
+
+        assert_eq!(target.project_name, "project-octan-sales");
+        assert_eq!(target.workspace_path, project_dir.canonicalize().unwrap());
     }
 
     #[test]

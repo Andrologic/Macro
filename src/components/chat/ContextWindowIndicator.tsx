@@ -51,6 +51,26 @@ const getContextLimitWarning = (
   return null;
 };
 
+const getContextLimitSourceLabel = (
+  t: TranslationFunction,
+  diagnostics?: ConversationContextDiagnostics,
+): string | null => {
+  switch (diagnostics?.contextLimitSource) {
+    case 'user_override':
+      return t('chat.contextWindow.source.userOverride', 'User set');
+    case 'provider_metadata':
+    case 'model_metadata':
+    case 'models_dev':
+      return null;
+    case 'provider_overflow_error':
+      return t('chat.contextWindow.source.providerOverflow', 'Learned from error');
+    case 'macro_fallback':
+      return t('chat.contextWindow.source.estimated', 'Estimated');
+    default:
+      return null;
+  }
+};
+
 const clampRatio = (value?: number): number =>
   typeof value === 'number' && Number.isFinite(value)
     ? Math.min(Math.max(value, 0), 1)
@@ -322,6 +342,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
         ? 'bg-amber-500'
         : 'bg-primary';
   const contextLimitWarning = getContextLimitWarning(t, effectiveDiagnostics);
+  const contextLimitSourceLabel = getContextLimitSourceLabel(t, effectiveDiagnostics);
   const modelWindowShrank =
     Boolean(effectiveDiagnostics?.modelContextWindowShrank) ||
     Boolean(footprint?.modelContextWindowShrank);
@@ -482,6 +503,11 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 {effectiveDiagnostics?.modelId ??
                   t('chat.contextWindow.modelFallback', 'No model selected')}
               </p>
+              {contextLimitSourceLabel ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {contextLimitSourceLabel}
+                </p>
+              ) : null}
             </div>
             <div className="text-right">
               <p className="text-lg font-semibold tabular-nums">

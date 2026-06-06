@@ -26,7 +26,7 @@ import {
   saveMetadataModelConfig,
   subscribeMetadataModelConfig,
 } from '../../../../services/metadataModelPreference';
-import type { ReasoningEffort } from '../../../../types';
+import type { AIModel, ReasoningEffort } from '../../../../types';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -71,6 +71,24 @@ const getManualModelMenuPosition = (
   return { top, left };
 };
 
+const formatContextWindowTokens = (tokens?: number): string | null => {
+  if (!tokens || !Number.isFinite(tokens)) return null;
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(1)).toLocaleString()}m`;
+  }
+  if (tokens >= 1_000) {
+    return `${Math.round(tokens / 1_000).toLocaleString()}k`;
+  }
+  return tokens.toLocaleString();
+};
+
+const parseContextWindowInput = (value: string): number | null => {
+  const normalized = value.replace(/[,_\s]/g, '');
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+};
+
 export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
   const {
@@ -83,6 +101,7 @@ export const ModelsSettings: React.FC = () => {
     updateManualModel,
     deleteManualModel,
     resetProviderModelContextOverflowLimit,
+    setProviderModelContextWindowOverride,
     updateProviderSettings,
     scanModelsForProvider,
     getAvailableReasoningEfforts,
@@ -105,8 +124,17 @@ export const ModelsSettings: React.FC = () => {
   } | null>(null);
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
+  const [contextWindowEditor, setContextWindowEditor] = useState<{
+    providerId: string;
+    modelId: string;
+    label: string;
+    currentTokens?: number;
+    source?: string;
+  } | null>(null);
+  const [contextWindowInput, setContextWindowInput] = useState('');
   const [isSavingManualModel, setIsSavingManualModel] = useState(false);
   const [isDeletingManualModel, setIsDeletingManualModel] = useState(false);
+  const [isSavingContextWindow, setIsSavingContextWindow] = useState(false);
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -139,6 +167,22 @@ export const ModelsSettings: React.FC = () => {
   );
   const isEditingManualModel =
     manualModelEditor !== null && manualModelEditor.originalModelId !== null;
+  const getContextWindowSourceLabel = (source?: AIModel['contextWindowSource']): string => {
+    switch (source) {
+      case 'user_override':
+        return t('models.contextWindowSourceUser', 'Set');
+      case 'provider_metadata':
+      case 'model_metadata':
+        return t('models.contextWindowSourceProvider', 'Provider');
+      case 'models_dev':
+        return t('models.contextWindowSourceCatalog', 'Catalog');
+      case 'provider_overflow_error':
+        return t('models.contextWindowSourceLearned', 'Learned');
+      case 'macro_fallback':
+      default:
+        return t('models.contextWindowSourceEstimated', 'Estimated');
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -196,6 +240,25 @@ export const ModelsSettings: React.FC = () => {
     setManualModelId(model.id);
     setManualModelName(model.name === model.id ? '' : model.name);
     setActiveManualModelActions(null);
+  };
+
+  const closeContextWindowEditor = () => {
+    setContextWindowEditor(null);
+    setContextWindowInput('');
+  };
+
+  const openContextWindowEditor = (
+    providerId: string,
+    model: AIModel,
+  ) => {
+    setContextWindowEditor({
+      providerId,
+      modelId: model.id,
+      label: model.name || model.id,
+      currentTokens: model.contextWindowTokens,
+      source: model.contextWindowSource,
+    });
+    setContextWindowInput(model.contextWindowTokens ? String(model.contextWindowTokens) : '');
   };
 
   useEffect(() => {
@@ -554,6 +617,31 @@ export const ModelsSettings: React.FC = () => {
                           <div className="text-xs text-muted-foreground mt-0.5 font-mono">
                             {model.id}
                           </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <span>
+                              {t('models.contextWindowLabel', 'Context')}:{' '}
+                              <span className="font-medium text-foreground">
+                                {formatContextWindowTokens(model.contextWindowTokens) ??
+                                  t('models.contextWindowUnknown', 'Estimated')}
+                              </span>
+                            </span>
+                            <span className="rounded border border-border/60 px-1.5 py-0.5">
+                              {getContextWindowSourceLabel(model.contextWindowSource)}
+                            </span>
+                            <button
+                              type="button"
+                              className="rounded px-1.5 py-0.5 text-primary transition-colors hover:bg-primary/10"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                openContextWindowEditor(provider.id, model);
+                              }}
+                            >
+                              {model.contextWindowSource === 'user_override'
+                                ? t('models.contextWindowEdit', 'Edit')
+                                : t('models.contextWindowSet', 'Set')}
+                            </button>
+                          </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
                           <Switch
@@ -788,6 +876,123 @@ export const ModelsSettings: React.FC = () => {
               >
                 {isEditingManualModel ? t('common.save', 'Save') : t('models.addModel', 'Add Model')}
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contextWindowEditor && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="mb-0 flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
+              <div className="min-w-0">
+                <h4 className="text-base font-semibold">
+                  {t('models.contextWindowTitle', 'Context window')}
+                </h4>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {contextWindowEditor.label}
+                </p>
+              </div>
+              <button
+                className="p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-colors"
+                onClick={closeContextWindowEditor}
+                title={t('common.close', 'Close')}
+                disabled={isSavingContextWindow}
+              >
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">
+                  {t('models.contextWindowTokens', 'Context tokens')}
+                </label>
+                <Input
+                  value={contextWindowInput}
+                  onChange={(event) => setContextWindowInput(event.target.value)}
+                  placeholder={t('models.contextWindowPlaceholder', 'e.g. 32768')}
+                  inputMode="numeric"
+                  className="font-mono text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-4">
+              <div>
+                {contextWindowEditor.source === 'user_override' && (
+                  <Button
+                    variant="ghost"
+                    onClick={async () => {
+                      if (isSavingContextWindow) return;
+                      setIsSavingContextWindow(true);
+                      try {
+                        await setProviderModelContextWindowOverride(
+                          contextWindowEditor.providerId,
+                          contextWindowEditor.modelId,
+                          null,
+                        );
+                        notify.success(
+                          t('models.contextWindowResetSuccess', 'Context window reset')
+                        );
+                        closeContextWindowEditor();
+                      } catch (error) {
+                        notify.error(
+                          getErrorMessage(
+                            error,
+                            t('models.contextWindowResetFailed', 'Failed to reset context window')
+                          )
+                        );
+                      } finally {
+                        setIsSavingContextWindow(false);
+                      }
+                    }}
+                    disabled={isSavingContextWindow}
+                  >
+                    {t('models.contextWindowReset', 'Reset')}
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  onClick={closeContextWindowEditor}
+                  disabled={isSavingContextWindow}
+                >
+                  {t('common.cancel', 'Cancel')}
+                </Button>
+                <Button
+                  isLoading={isSavingContextWindow}
+                  onClick={async () => {
+                    const tokens = parseContextWindowInput(contextWindowInput);
+                    if (!tokens) return;
+                    setIsSavingContextWindow(true);
+                    try {
+                      await setProviderModelContextWindowOverride(
+                        contextWindowEditor.providerId,
+                        contextWindowEditor.modelId,
+                        tokens,
+                      );
+                      notify.success(
+                        t('models.contextWindowSaved', 'Context window saved')
+                      );
+                      closeContextWindowEditor();
+                    } catch (error) {
+                      notify.error(
+                        getErrorMessage(
+                          error,
+                          t('models.contextWindowSaveFailed', 'Failed to save context window')
+                        )
+                      );
+                    } finally {
+                      setIsSavingContextWindow(false);
+                    }
+                  }}
+                  disabled={!parseContextWindowInput(contextWindowInput)}
+                >
+                  {t('common.save', 'Save')}
+                </Button>
+              </div>
             </div>
           </div>
         </div>

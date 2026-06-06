@@ -18,19 +18,28 @@ use metadata::{
     ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
     ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
     WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
-    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState,
-    WorkspaceTaskCatalogDto, WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceProjectRegistryReconcileReportDto,
+    WorkspaceProjectRegistryReconcileSkippedDto,
+    WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+    WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
+    WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tokio::fs;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
+const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
+const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
+const MACRO_BRANCHES_METADATA_DIR: &str = "branches";
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const AUTO_DETECTED_MAIN_BRANCH_NAMES: &[&str] = &["main", "master"];
 const AUTO_DETECTED_BASE_BRANCH_NAMES: &[&str] = &["develop", "dev", "main", "master"];
@@ -44,6 +53,8 @@ const PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION: &str = "needs_branch_conf
 const READ_ONLY_REASON_MANUAL: &str = "manual";
 const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
 const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
+
+static KNOWN_PARENT_REGISTRY_REPAIR_ATTEMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
 const GIT_RESOLUTION_NONE: &str = "none";
 const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
@@ -3540,6 +3551,331 @@ fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     Ok(Some(state))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ManualFeatureMetadataSnapshot {
+    id: String,
+    conversation_id: Option<String>,
+    draft: bool,
+    title: String,
+    description: String,
+    status: String,
+    feature_slug: Option<String>,
+    branch_name: Option<String>,
+    archived_at: Option<String>,
+    archive_reason: Option<String>,
+    merged_at: Option<String>,
+    base_branch: String,
+    project_ids: Vec<String>,
+    context_project_ids: Vec<String>,
+    execution_targets: Vec<WorkspaceTaskExecutionTargetDto>,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+fn normalize_manual_feature_timestamp(value: Option<String>, fallback: &str) -> String {
+    value
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn manual_feature_snapshot_to_dto(
+    snapshot: ManualFeatureMetadataSnapshot,
+) -> Option<ManualFeatureDto> {
+    let id = snapshot.id.trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+
+    let fallback_timestamp = Utc::now().to_rfc3339();
+    let updated_at = normalize_manual_feature_timestamp(snapshot.updated_at, &fallback_timestamp);
+    let created_at = normalize_manual_feature_timestamp(snapshot.created_at, &updated_at);
+    let base_branch = snapshot.base_branch.trim().to_string();
+
+    Some(ManualFeatureDto {
+        id: id.clone(),
+        conversation_id: snapshot
+            .conversation_id
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default(),
+        draft: snapshot.draft,
+        title: if snapshot.title.trim().is_empty() {
+            id.clone()
+        } else {
+            snapshot.title.trim().to_string()
+        },
+        description: snapshot.description,
+        status: if snapshot.status.trim().is_empty() {
+            "Pending".to_string()
+        } else {
+            snapshot.status.trim().to_string()
+        },
+        feature_slug: snapshot
+            .feature_slug
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        branch_name: snapshot
+            .branch_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        archived_at: snapshot.archived_at,
+        archive_reason: snapshot.archive_reason,
+        merged_at: snapshot.merged_at,
+        base_branch: if base_branch.is_empty() {
+            "main".to_string()
+        } else {
+            base_branch
+        },
+        project_ids: snapshot.project_ids,
+        context_project_ids: snapshot.context_project_ids,
+        execution_targets: snapshot.execution_targets,
+        merge_workflow: snapshot.merge_workflow,
+        created_at,
+        updated_at,
+    })
+}
+
+fn load_manual_features_from_metadata_root_sync(metadata_root: &Path) -> Vec<ManualFeatureDto> {
+    let manual_features_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR);
+    let Ok(entries) = std::fs::read_dir(&manual_features_root) else {
+        return Vec::new();
+    };
+
+    let mut features = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let metadata_file = entry.path().join(MANUAL_FEATURE_METADATA_FILE);
+        let Ok(content) = std::fs::read_to_string(&metadata_file) else {
+            continue;
+        };
+        let snapshot = match serde_json::from_str::<ManualFeatureMetadataSnapshot>(&content) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(
+                    action = "manual_feature_metadata_snapshot_ignored",
+                    path = %metadata_file.display(),
+                    error = %error,
+                    "Ignored an invalid manual feature metadata snapshot while loading @macro."
+                );
+                continue;
+            }
+        };
+        if let Some(feature) = manual_feature_snapshot_to_dto(snapshot) {
+            features.push(feature);
+        }
+    }
+
+    features.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    features
+}
+
+fn merge_manual_feature_snapshots_from_metadata_root(
+    state: &mut WorkspaceState,
+    metadata_root: &Path,
+) -> usize {
+    let mut known_ids = state
+        .manual_features
+        .iter()
+        .map(|feature| feature.id.clone())
+        .collect::<HashSet<_>>();
+    let recovered_features = load_manual_features_from_metadata_root_sync(metadata_root);
+    let mut added = 0;
+
+    for feature in recovered_features {
+        if known_ids.insert(feature.id.clone()) {
+            state.manual_features.push(feature);
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        state
+            .manual_features
+            .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        tracing::info!(
+            action = "manual_feature_metadata_snapshots_loaded",
+            added,
+            metadata_root = %metadata_root.display(),
+            "Loaded manual feature snapshots directly from @macro metadata."
+        );
+    }
+
+    added
+}
+
+fn collect_project_ids_from_json_value(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "projectId",
+                "project_id",
+                "expectedProjectIds",
+                "projectIds",
+                "project_ids",
+                "availableProjectIds",
+            ] {
+                if let Some(nested) = map.get(key) {
+                    collect_project_ids_from_json_value(nested, output);
+                }
+            }
+            if let Some(replicas) = map.get("replicas") {
+                collect_project_ids_from_json_value(replicas, output);
+            }
+            if let Some(participants) = map.get("participants") {
+                collect_project_ids_from_json_value(participants, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_project_ids_from_json_value(item, output);
+            }
+        }
+        Value::String(value) => {
+            let candidate = value.trim();
+            if candidate.starts_with("project-") {
+                output.push(candidate.to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_project_ids_from_json_file(path: &Path, output: &mut Vec<String>) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return;
+    };
+    collect_project_ids_from_json_value(&value, output);
+}
+
+fn infer_project_id_from_macro_metadata_root_sync(metadata_root: &Path) -> Option<String> {
+    let mut project_ids = Vec::new();
+
+    let manual_features_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR);
+    if let Ok(entries) = std::fs::read_dir(&manual_features_root) {
+        for entry in entries.flatten() {
+            let metadata_file = entry.path().join(MANUAL_FEATURE_METADATA_FILE);
+            collect_project_ids_from_json_file(&metadata_file, &mut project_ids);
+        }
+    }
+
+    let branches_root = metadata_root.join(MACRO_BRANCHES_METADATA_DIR);
+    if let Ok(branches) = std::fs::read_dir(&branches_root) {
+        for branch in branches.flatten() {
+            let plans_root = branch.path().join("plans");
+            collect_project_ids_from_json_file(&plans_root.join("index.json"), &mut project_ids);
+            let Ok(plans) = std::fs::read_dir(&plans_root) else {
+                continue;
+            };
+            for plan in plans.flatten() {
+                let plan_path = plan.path();
+                if !plan_path.is_dir() {
+                    continue;
+                }
+                collect_project_ids_from_json_file(
+                    &plan_path.join("manifest.json"),
+                    &mut project_ids,
+                );
+                collect_project_ids_from_json_file(&plan_path.join("plan.json"), &mut project_ids);
+            }
+        }
+    }
+
+    project_ids
+        .into_iter()
+        .map(|project_id| project_id.trim().to_string())
+        .find(|project_id| !project_id.is_empty())
+}
+
+fn fallback_recovered_project_id(workspace_path: &Path) -> String {
+    let slug = workspace_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(slugify_mount_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "project".to_string());
+    format!("project-{slug}-recovered")
+}
+
+fn build_recovered_standalone_project_from_workspace_path(
+    workspace_path: &Path,
+    metadata_root: &Path,
+) -> Option<ProjectDto> {
+    if !workspace_path.join(".git").exists() {
+        return None;
+    }
+    let project_path = absolutize_path(workspace_path);
+    let project_name = project_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Recovered project")
+        .to_string();
+    let project_id = infer_project_id_from_macro_metadata_root_sync(metadata_root)
+        .unwrap_or_else(|| fallback_recovered_project_id(&project_path));
+    let now = Utc::now().to_rfc3339();
+
+    Some(ProjectDto {
+        id: project_id.clone(),
+        name: project_name.clone(),
+        mount_name: derive_project_mount_name(
+            project_path.to_string_lossy().as_ref(),
+            &project_name,
+            &project_id,
+        ),
+        path: project_path.to_string_lossy().to_string(),
+        git_flow_settings: ProjectGitFlowSettingsDto::default(),
+        created_at: now,
+        status: "active".to_string(),
+        user_read_only: false,
+        git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+        is_read_only: false,
+        read_only_reason: None,
+        metadata: ProjectMetadataDto {
+            description: String::new(),
+            tags: Vec::new(),
+            team_members: Vec::new(),
+            api_contracts: Vec::new(),
+            dependencies: Vec::new(),
+        },
+    })
+}
+
+fn recover_physical_workspace_project_if_missing(
+    state: &mut WorkspaceState,
+    workspace_path: &Path,
+    metadata_root: &Path,
+) -> bool {
+    if count_registry_projects(&state.standalone_projects, &state.project_groups) > 0 {
+        return false;
+    }
+    let Some(project) =
+        build_recovered_standalone_project_from_workspace_path(workspace_path, metadata_root)
+    else {
+        return false;
+    };
+    tracing::info!(
+        action = "physical_workspace_project_recovered",
+        project_id = %project.id,
+        project_path = %project.path,
+        metadata_root = %metadata_root.display(),
+        "Recovered the selected physical Git repository as a standalone project at runtime."
+    );
+    state.standalone_projects.push(project);
+    true
+}
+
 fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
         message: format!(
@@ -3574,14 +3910,23 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
 
     let raw_state = state.clone();
     let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    let mut loaded_state = if repair_report.has_destructive_repairs() {
+        raw_state
+    } else {
+        if repair_report.has_repairs() {
+            persist_state_sync(metadata_root, &sanitized_state)?;
+        }
+        sanitized_state
+    };
+
+    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
+
     if repair_report.has_destructive_repairs() {
-        return Ok(Some(raw_state));
-    }
-    if repair_report.has_repairs() {
-        persist_state_sync(metadata_root, &sanitized_state)?;
+        return Ok(Some(loaded_state));
     }
 
-    Ok(Some(sanitized_state))
+    Ok(Some(loaded_state))
 }
 
 fn metadata_statuses(repo: &Repository) -> Result<(bool, bool)> {
@@ -3820,6 +4165,432 @@ fn reconstruct_workspace_state_from_hints(
     state
 }
 
+fn hint_project_id_is_recoverable(project_id: &str) -> bool {
+    let trimmed = project_id.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("session-project-")
+}
+
+fn project_macro_metadata_root_is_usable(project_path: &Path) -> bool {
+    if let Ok(repo) = Repository::open(project_path) {
+        if crate::git::repair_existing_macro_metadata_worktree(&repo)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return true;
+        }
+    }
+    if crate::git::find_existing_macro_metadata_worktree_root(project_path).is_some() {
+        return true;
+    }
+
+    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
+    legacy_root.exists() && Repository::open(legacy_root).is_ok()
+}
+
+fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> {
+    if let Ok(repo) = Repository::open(project_path) {
+        if let Some(result) = crate::git::repair_existing_macro_metadata_worktree(&repo)
+            .ok()
+            .flatten()
+        {
+            return Some(result.worktree_path);
+        }
+    }
+    if let Some(worktree_path) =
+        crate::git::find_existing_macro_metadata_worktree_root(project_path)
+    {
+        return Some(worktree_path);
+    }
+
+    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
+    if legacy_root.exists() && Repository::open(&legacy_root).is_ok() {
+        return Some(legacy_root);
+    }
+
+    None
+}
+
+fn collect_project_registry_parent_dirs(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for project in state.standalone_projects.iter().chain(
+        state
+            .project_groups
+            .iter()
+            .flat_map(|group| group.projects.iter()),
+    ) {
+        let resolved_path = resolve_project_path(workspace_path, &project.path);
+        let Some(parent) = resolved_path.parent() else {
+            continue;
+        };
+        if !parent.is_dir() {
+            continue;
+        }
+        let key = normalized_path_key(parent);
+        if !key.is_empty() && seen.insert(key) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn collect_known_project_path_keys(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+) -> HashSet<String> {
+    state
+        .standalone_projects
+        .iter()
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .filter_map(|project| {
+            let key = normalized_path_key(&resolve_project_path(workspace_path, &project.path));
+            if key.is_empty() {
+                None
+            } else {
+                Some(key)
+            }
+        })
+        .collect()
+}
+
+fn push_project_ids_from_json_value(value: &Value, ids: &mut Vec<String>) {
+    if let Some(project_id) = value.get("projectId").and_then(Value::as_str) {
+        ids.push(project_id.to_string());
+    }
+    for key in [
+        "projectIds",
+        "expectedProjectIds",
+        "contextProjectIds",
+        "availableProjectIds",
+    ] {
+        if let Some(values) = value.get(key).and_then(Value::as_array) {
+            ids.extend(
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string),
+            );
+        }
+    }
+    if let Some(map) = value
+        .get("targetBranchesByProjectId")
+        .and_then(Value::as_object)
+    {
+        ids.extend(map.keys().cloned());
+    }
+    if let Some(participants) = value.get("participants").and_then(Value::as_array) {
+        ids.extend(participants.iter().filter_map(|participant| {
+            participant
+                .get("projectId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        }));
+    }
+    if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
+        for node in nodes {
+            push_project_ids_from_json_value(node, ids);
+        }
+    }
+    if let Some(branches) = value.get("predictedBranches").and_then(Value::as_array) {
+        for branch in branches {
+            push_project_ids_from_json_value(branch, ids);
+        }
+    }
+}
+
+fn collect_macro_metadata_project_ids(metadata_root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    let branches_root = metadata_root.join("branches");
+    let Ok(branches) = std::fs::read_dir(branches_root) else {
+        return ids;
+    };
+
+    for branch in branches.flatten() {
+        let plans_root = branch.path().join("plans");
+        let Ok(plans) = std::fs::read_dir(plans_root) else {
+            continue;
+        };
+        for plan in plans.flatten() {
+            let plan_path = plan.path();
+            if !plan_path.is_dir() {
+                continue;
+            }
+            for file_name in ["manifest.json", "plan.json"] {
+                let path = plan_path.join(file_name);
+                let Ok(content) = std::fs::read_to_string(path) else {
+                    continue;
+                };
+                let Ok(value) = serde_json::from_str::<Value>(&content) else {
+                    continue;
+                };
+                push_project_ids_from_json_value(&value, &mut ids);
+            }
+        }
+    }
+
+    ids
+}
+
+fn choose_recovery_project_id(ids: Vec<String>) -> Option<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for id in ids {
+        let trimmed = id.trim();
+        if !hint_project_id_is_recoverable(trimmed) {
+            continue;
+        }
+        *counts.entry(trimmed.to_string()).or_insert(0) += 1;
+    }
+    let mut ranked = counts.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ranked.into_iter().map(|(id, _)| id).next()
+}
+
+fn discover_project_registry_recovery_hints_from_known_parent_dirs(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+    max_children_per_root: usize,
+) -> Vec<WorkspaceMetadataRecoveryHintDto> {
+    let known_paths = collect_known_project_path_keys(workspace_path, state);
+    let mut seen_candidate_paths = HashSet::new();
+    let mut hints = Vec::new();
+    let roots = collect_project_registry_parent_dirs(workspace_path, state);
+    let mut scanned_child_count = 0usize;
+    let mut known_path_count = 0usize;
+    let mut duplicate_candidate_count = 0usize;
+    let mut metadata_repo_count = 0usize;
+    let mut missing_project_id_count = 0usize;
+
+    for root in &roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten().take(max_children_per_root) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            scanned_child_count += 1;
+            let candidate_path = entry.path();
+            let normalized_path = normalized_path_key(&candidate_path);
+            if normalized_path.is_empty() {
+                continue;
+            }
+            if known_paths.contains(&normalized_path) {
+                known_path_count += 1;
+                continue;
+            }
+            if !seen_candidate_paths.insert(normalized_path) {
+                duplicate_candidate_count += 1;
+                continue;
+            }
+            let Some(metadata_root) = resolve_existing_macro_metadata_root(&candidate_path) else {
+                continue;
+            };
+            metadata_repo_count += 1;
+            let Some(project_id) =
+                choose_recovery_project_id(collect_macro_metadata_project_ids(&metadata_root))
+            else {
+                missing_project_id_count += 1;
+                continue;
+            };
+            let name = candidate_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Recovered project")
+                .to_string();
+            hints.push(WorkspaceMetadataRecoveryHintDto {
+                project_id,
+                group_id: None,
+                name,
+                path: candidate_path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    tracing::info!(
+        action = "project_registry_known_parent_discovery_scanned",
+        root_count = roots.len(),
+        known_path_count = known_paths.len(),
+        scanned_child_count,
+        skipped_known_path_count = known_path_count,
+        skipped_duplicate_candidate_count = duplicate_candidate_count,
+        metadata_repo_count,
+        missing_project_id_count,
+        hint_count = hints.len(),
+        max_children_per_root,
+        "Scanned known project parent directories for recoverable @macro repositories."
+    );
+
+    hints
+}
+
+fn push_registry_reconcile_skip(
+    report: &mut WorkspaceProjectRegistryReconcileReportDto,
+    hint: &WorkspaceMetadataRecoveryHintDto,
+    reason: &str,
+) {
+    report
+        .skipped_projects
+        .push(WorkspaceProjectRegistryReconcileSkippedDto {
+            project_id: if hint.project_id.trim().is_empty() {
+                None
+            } else {
+                Some(hint.project_id.trim().to_string())
+            },
+            path: hint.path.trim().to_string(),
+            reason: reason.to_string(),
+        });
+}
+
+pub async fn reconcile_project_registry_from_hints(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let mut report = WorkspaceProjectRegistryReconcileReportDto {
+        status: "unchanged".to_string(),
+        ..WorkspaceProjectRegistryReconcileReportDto::default()
+    };
+    let mut state = load_raw_state(metadata_root).await?.unwrap_or_default();
+    let mut seen_paths = HashSet::new();
+    let mut known_project_ids = HashSet::new();
+
+    for project in state.standalone_projects.iter().chain(
+        state
+            .project_groups
+            .iter()
+            .flat_map(|group| group.projects.iter()),
+    ) {
+        known_project_ids.insert(project.id.trim().to_string());
+        let resolved_path = resolve_project_path(workspace_path, &project.path);
+        let normalized_path = normalized_path_key(&resolved_path);
+        if !normalized_path.trim().is_empty() {
+            seen_paths.insert(normalized_path);
+        }
+    }
+
+    for hint in request.projects {
+        let raw_path = hint.path.trim();
+        let project_id = hint.project_id.trim();
+        if raw_path.is_empty() {
+            push_registry_reconcile_skip(&mut report, &hint, "missing_path");
+            continue;
+        }
+        if !hint_project_id_is_recoverable(project_id) {
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_project_id");
+            continue;
+        }
+        if known_project_ids.contains(project_id) {
+            push_registry_reconcile_skip(&mut report, &hint, "duplicate_project_id");
+            continue;
+        }
+
+        let resolved_path = resolve_project_path(workspace_path, raw_path);
+        let normalized_path = normalized_path_key(&resolved_path);
+        if normalized_path.trim().is_empty() || !resolved_path.is_dir() {
+            report.invalid_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_path");
+            continue;
+        }
+        if seen_paths.contains(&normalized_path) {
+            report.duplicate_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "duplicate_path");
+            continue;
+        }
+        if Repository::open(&resolved_path).is_err() && !resolved_path.join(".git").exists() {
+            report.invalid_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_git_repo");
+            continue;
+        }
+        if !project_macro_metadata_root_is_usable(&resolved_path) {
+            push_registry_reconcile_skip(&mut report, &hint, "missing_or_invalid_macro_metadata");
+            continue;
+        }
+
+        let project_name = project_name_from_hint(&hint, &resolved_path);
+        let mut project = build_project(&project_name, "", Some(raw_path), workspace_path, None);
+        project.id = project_id.to_string();
+        project.name = project_name;
+        project.mount_name = derive_project_mount_name(&project.path, &project.name, &project.id);
+
+        known_project_ids.insert(project.id.clone());
+        seen_paths.insert(normalized_path);
+        report.added_projects.push(project.clone());
+        state.standalone_projects.push(project);
+    }
+
+    if !report.added_projects.is_empty() {
+        state.version = state.version.max(WorkspaceState::default().version);
+        persist_state(metadata_root, &state).await?;
+        report.status = "reconciled".to_string();
+        tracing::warn!(
+            action = "project_registry_reconciled_from_hints",
+            added_project_count = report.added_projects.len(),
+            skipped_project_count = report.skipped_projects.len(),
+            duplicate_path_count = report.duplicate_paths.len(),
+            invalid_path_count = report.invalid_paths.len(),
+            "Workspace registry was repaired additively from remembered project hints."
+        );
+    }
+
+    Ok(report)
+}
+
+pub async fn reconcile_project_registry_from_known_parent_dirs(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let state = load_raw_state(metadata_root).await?.unwrap_or_default();
+    let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
+    let projects = discover_project_registry_recovery_hints_from_known_parent_dirs(
+        workspace_path,
+        &state,
+        max_children_per_root,
+    );
+
+    if projects.is_empty() {
+        tracing::info!(
+            action = "project_registry_reconcile_known_parent_dirs_unchanged",
+            max_children_per_root,
+            "No recoverable @macro sibling repositories were discovered for registry repair."
+        );
+        return Ok(WorkspaceProjectRegistryReconcileReportDto {
+            status: "unchanged".to_string(),
+            ..WorkspaceProjectRegistryReconcileReportDto::default()
+        });
+    }
+
+    let report = reconcile_project_registry_from_hints(
+        workspace_path,
+        metadata_root,
+        WorkspaceReconcileProjectRegistryFromHintsRequestDto { projects },
+    )
+    .await?;
+    tracing::warn!(
+        action = "project_registry_reconcile_known_parent_dirs_completed",
+        added_project_count = report.added_projects.len(),
+        skipped_project_count = report.skipped_projects.len(),
+        duplicate_path_count = report.duplicate_paths.len(),
+        invalid_path_count = report.invalid_paths.len(),
+        status = %report.status,
+        "Workspace registry repair from known parent directories completed."
+    );
+    Ok(report)
+}
+
 fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<String> {
     match (
         base.filter(|value| !value.trim().is_empty()),
@@ -3996,6 +4767,78 @@ pub async fn recover_missing_metadata(
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
 
+async fn repair_project_registry_from_known_parent_dirs_once(
+    workspace_path: &Path,
+    metadata_root: &Path,
+) {
+    let raw_state = match load_raw_state(metadata_root).await {
+        Ok(Some(state)) => state,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                action = "project_registry_known_parent_repair_state_load_failed",
+                metadata_root = %metadata_root.display(),
+                error = %error,
+                "Could not inspect workspace state before additive project registry repair."
+            );
+            return;
+        }
+    };
+
+    if collect_project_registry_parent_dirs(workspace_path, &raw_state).is_empty() {
+        return;
+    }
+
+    let key = normalized_path_key(metadata_root);
+    let attempts = KNOWN_PARENT_REGISTRY_REPAIR_ATTEMPTS.get_or_init(|| Mutex::new(HashSet::new()));
+    match attempts.lock() {
+        Ok(mut seen) => {
+            if !seen.insert(key.clone()) {
+                return;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                action = "project_registry_known_parent_repair_cache_poisoned",
+                error = %error,
+                "Continuing without the known-parent registry repair once-cache."
+            );
+        }
+    }
+
+    match reconcile_project_registry_from_known_parent_dirs(
+        workspace_path,
+        metadata_root,
+        WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto::default(),
+    )
+    .await
+    {
+        Ok(report) if !report.added_projects.is_empty() => {
+            tracing::warn!(
+                action = "project_registry_known_parent_repair_once_added_projects",
+                metadata_root = %metadata_root.display(),
+                added_project_count = report.added_projects.len(),
+                skipped_project_count = report.skipped_projects.len(),
+                duplicate_path_count = report.duplicate_paths.len(),
+                invalid_path_count = report.invalid_paths.len(),
+                "Workspace state load repaired missing projects additively from known parent directories."
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            if let Ok(mut seen) = attempts.lock() {
+                seen.remove(&key);
+            }
+            tracing::warn!(
+                action = "project_registry_known_parent_repair_once_failed",
+                metadata_root = %metadata_root.display(),
+                error = %error,
+                "Workspace state load could not run additive known-parent project registry repair."
+            );
+        }
+    }
+}
+
 async fn load_or_create_state(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -4017,10 +4860,15 @@ async fn load_or_default_state(
         return Ok(state);
     }
 
-    Ok(WorkspaceState::default())
+    let mut state = WorkspaceState::default();
+    merge_manual_feature_snapshots_from_metadata_root(&mut state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut state, workspace_path, metadata_root);
+    Ok(state)
 }
 
 async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
+    repair_project_registry_from_known_parent_dirs_once(workspace_path, metadata_root).await;
+
     let Some(state) = load_raw_state(metadata_root).await? else {
         return Ok(None);
     };
@@ -4052,13 +4900,24 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
                 reason = "destructive_repairs_during_load",
                 "Workspace metadata repairs were ignored because a simple load must not remove projects or task metadata."
             );
-            return Ok(Some(raw_state));
+            let mut loaded_state = raw_state;
+            merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+            recover_physical_workspace_project_if_missing(
+                &mut loaded_state,
+                workspace_path,
+                metadata_root,
+            );
+            return Ok(Some(loaded_state));
         } else {
             persist_state(metadata_root, &sanitized_state).await?;
         }
     }
 
-    Ok(Some(sanitized_state))
+    let mut loaded_state = sanitized_state;
+    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
+
+    Ok(Some(loaded_state))
 }
 
 async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
@@ -6392,6 +7251,501 @@ mod tests {
         assert_eq!(reconstructed.standalone_projects.len(), 1);
         assert_eq!(reconstructed.standalone_projects[0].id, "project-web");
         assert_eq!(reconstructed.standalone_projects[0].name, "Web");
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_adds_missing_standalone_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("octan_sales");
+        let _project_repo = init_git_repo(&project_path, "main", &[]);
+        let _project_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: Vec::new(),
+            project_groups: vec![ProjectGroupDto {
+                id: "group-existing".to_string(),
+                name: "Existing".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-existing", "apps/existing")],
+            }],
+            current_plan: Some(PlanDto {
+                id: "legacy-plan".to_string(),
+                description: "Keep me".to_string(),
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+                status: "Draft".to_string(),
+                project_ids: vec!["project-existing".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: Vec::new(),
+                predicted_git_trees: HashMap::new(),
+            }),
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: project_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert_eq!(report.status, "reconciled");
+        assert_eq!(report.added_projects.len(), 1);
+        assert_eq!(
+            report.added_projects[0].id,
+            "project-octan-sales-1780653766405"
+        );
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(
+            repaired.standalone_projects[0].id,
+            "project-octan-sales-1780653766405"
+        );
+        assert_eq!(repaired.project_groups.len(), 1);
+        assert_eq!(
+            repaired.current_plan.as_ref().map(|plan| plan.id.as_str()),
+            Some("legacy-plan")
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_repairs_metadata_worktree_after_project_rename()
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let original_path = temp.path().join("lplr-app");
+        let renamed_path = temp.path().join("octan_sales");
+
+        {
+            let _project_repo = init_git_repo(&original_path, "main", &[]);
+            let project_metadata_root = GitState::new()
+                .resolve_macro_metadata_root(&original_path)
+                .expect("project metadata root");
+            stdfs::write(project_metadata_root.join("plan.txt"), "kept metadata")
+                .expect("write metadata file");
+            assert!(Repository::open(&project_metadata_root).is_ok());
+        }
+
+        stdfs::rename(&original_path, &renamed_path).expect("rename project");
+        persist_state_sync(&metadata_root, &WorkspaceState::default())
+            .expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: renamed_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired_metadata_root = renamed_path
+            .join(".git")
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME);
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert_eq!(report.status, "reconciled");
+        assert_eq!(report.added_projects.len(), 1);
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert!(Repository::open(&repaired_metadata_root).is_ok());
+        assert_eq!(
+            stdfs::read_to_string(repaired_metadata_root.join("plan.txt"))
+                .expect("read metadata file"),
+            "kept metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_known_parent_dirs_discovers_missing_macro_repo() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let known_path = parent.join("sysml-drone-demo");
+        let missing_path = parent.join("octan_sales");
+        let _known_repo = init_git_repo(&known_path, "main", &[]);
+        let missing_repo = init_git_repo(&missing_path, "main", &[]);
+        let missing_git_config = missing_repo.path().join("config");
+        let missing_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&missing_path)
+            .expect("missing project metadata root");
+        {
+            use std::io::Write as _;
+            let mut config = stdfs::OpenOptions::new()
+                .append(true)
+                .open(&missing_git_config)
+                .expect("open missing repo config");
+            writeln!(
+                config,
+                "\n[extensions]\n\trelativeWorktrees = true\n\tworktreeConfig = true"
+            )
+            .expect("write relative worktree extension");
+        }
+        let plan_dir = missing_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "participants": [{
+                    "projectId": "project-lplr-app-1780329499166",
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-sysml".to_string(),
+                    name: "sysml".to_string(),
+                    is_open: true,
+                    projects: vec![make_project(
+                        "project-sysml",
+                        known_path.to_string_lossy().as_ref(),
+                    )],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_known_parent_dirs(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
+                max_children_per_root: Some(50),
+            },
+        )
+        .await
+        .expect("discover missing macro repo");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert_eq!(report.status, "reconciled");
+        assert_eq!(report.added_projects.len(), 1);
+        assert_eq!(
+            report.added_projects[0].id,
+            "project-lplr-app-1780329499166"
+        );
+        assert_eq!(report.added_projects[0].name, "octan_sales");
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(
+            repaired.standalone_projects[0].id,
+            "project-lplr-app-1780329499166"
+        );
+        assert_eq!(repaired.project_groups.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_recovers_manual_features_from_macro_metadata_without_workspace_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".git").join("macro-metadata-worktree");
+        let feature_dir = metadata_root
+            .join(MANUAL_FEATURES_METADATA_DIR)
+            .join("manual-feature-1");
+        stdfs::create_dir_all(&feature_dir).expect("create manual feature dir");
+        stdfs::write(
+            feature_dir.join(MANUAL_FEATURE_METADATA_FILE),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "id": "manual-feature-1",
+                "title": "Recovered independent task",
+                "description": "Loaded from physical @macro metadata.",
+                "status": "InProgress",
+                "draft": false,
+                "featureSlug": "recovered-independent-task",
+                "branchName": "feature/recovered-independent-task",
+                "baseBranch": "develop",
+                "conversationId": "conversation-1",
+                "projectIds": ["project-old"],
+                "executionTargets": [{
+                    "projectId": "project-old",
+                    "branchName": "feature/recovered-independent-task",
+                    "targetBranchName": "develop",
+                    "worktreeKey": "branch-project-old-feature-recovered",
+                    "repoPath": "/old/path"
+                }],
+                "updatedAt": "2026-06-05T07:52:40.707Z"
+            })
+            .to_string(),
+        )
+        .expect("write manual feature snapshot");
+
+        let catalog = list_tasks(temp.path(), &metadata_root)
+            .await
+            .expect("recover manual feature task catalog");
+
+        assert_eq!(catalog.tasks.len(), 1);
+        assert_eq!(catalog.source, "fallback");
+        assert!(catalog.has_standalone_tasks);
+        assert_eq!(catalog.tasks[0]["id"], "manual-feature-1");
+        assert_eq!(catalog.tasks[0]["standalone_kind"], "manual_feature");
+        assert_eq!(catalog.tasks[0]["conversation_id"], "conversation-1");
+        assert_eq!(
+            catalog.tasks[0]["execution_targets"][0]["projectId"],
+            "project-old"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_recovers_selected_physical_repo_as_standalone_project_without_workspace_state(
+    ) {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("octan_sales");
+        let _repo = init_git_repo(&project_path, "main", &[]);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let stale_project_id = "project-lplr-app-1780329499166";
+        let plan_id = "1780299051043";
+        let plan_dir = metadata_root
+            .join(MACRO_BRANCHES_METADATA_DIR)
+            .join("main")
+            .join("plans")
+            .join(plan_id);
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            metadata_root
+                .join(MACRO_BRANCHES_METADATA_DIR)
+                .join("main")
+                .join("plans")
+                .join("index.json"),
+            serde_json::json!({
+                "version": 3,
+                "activePlanId": plan_id,
+                "plans": [{
+                    "id": plan_id,
+                    "slug": "refonte-catalogue-produit",
+                    "title": "Refonte catalogue produit",
+                    "label": "Refonte catalogue produit",
+                    "description": "Plan from physical @macro metadata.",
+                    "status": "draft",
+                    "targetBranch": "main",
+                    "projectId": stale_project_id,
+                    "projectIds": [stale_project_id],
+                    "expectedProjectIds": [stale_project_id],
+                    "createdAt": "2026-06-05T00:00:00.000Z",
+                    "updatedAt": "2026-06-05T00:00:00.000Z",
+                    "nodeCount": 1
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write plan index");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": plan_id,
+                "targetBranch": "main",
+                "expectedProjectIds": [stale_project_id],
+                "participants": [{
+                    "projectId": stale_project_id,
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let bootstrap = get_bootstrap(&project_path, &metadata_root)
+            .await
+            .expect("bootstrap from physical repo");
+
+        assert_eq!(bootstrap.project_groups.len(), 0);
+        assert_eq!(bootstrap.standalone_projects.len(), 1);
+        assert_eq!(bootstrap.standalone_projects[0].id, stale_project_id);
+        assert_eq!(bootstrap.standalone_projects[0].name, "octan_sales");
+        assert_eq!(
+            bootstrap.standalone_projects[0].path,
+            absolutize_path(&project_path).to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_repairs_missing_sibling_macro_repo_before_returning_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let known_path = parent.join("sysml-drone-demo");
+        let missing_path = parent.join("octan_sales");
+        let _known_repo = init_git_repo(&known_path, "main", &[]);
+        let _missing_repo = init_git_repo(&missing_path, "main", &[]);
+        let missing_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&missing_path)
+            .expect("missing project metadata root");
+        let plan_dir = missing_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "participants": [{
+                    "projectId": "project-lplr-app-1780329499166",
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-sysml".to_string(),
+                    name: "sysml".to_string(),
+                    is_open: true,
+                    projects: vec![make_project(
+                        "project-sysml",
+                        known_path.to_string_lossy().as_ref(),
+                    )],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        let bootstrap = get_bootstrap(temp.path(), &metadata_root)
+            .await
+            .expect("bootstrap repairs registry");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert!(bootstrap
+            .standalone_projects
+            .iter()
+            .any(|project| project.id == "project-lplr-app-1780329499166"
+                && project.name == "octan_sales"));
+        assert!(repaired
+            .standalone_projects
+            .iter()
+            .any(|project| project.id == "project-lplr-app-1780329499166"
+                && project.name == "octan_sales"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_does_not_duplicate_existing_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("octan_sales");
+        let _project_repo = init_git_repo(&project_path, "main", &[]);
+        let _project_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project(
+                "project-existing",
+                project_path.to_string_lossy().as_ref(),
+            )],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: project_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("state");
+
+        assert_eq!(report.status, "unchanged");
+        assert!(report.added_projects.is_empty());
+        assert_eq!(
+            report.duplicate_paths,
+            vec![project_path.to_string_lossy().to_string()]
+        );
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(repaired.standalone_projects[0].id, "project-existing");
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_ignores_invalid_paths() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        persist_state_sync(&metadata_root, &WorkspaceState::default())
+            .expect("persist workspace state");
+        let missing_path = temp.path().join("missing");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-missing".to_string(),
+                    group_id: None,
+                    name: "Missing".to_string(),
+                    path: missing_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let state = load_raw_state_sync(&metadata_root)
+            .expect("read state")
+            .expect("state");
+
+        assert_eq!(report.status, "unchanged");
+        assert!(report.added_projects.is_empty());
+        assert_eq!(
+            report.invalid_paths,
+            vec![missing_path.to_string_lossy().to_string()]
+        );
+        assert!(state.standalone_projects.is_empty());
     }
 
     #[tokio::test]
