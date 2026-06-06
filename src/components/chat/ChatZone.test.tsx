@@ -187,6 +187,7 @@ type ProviderState = {
   selectedProviderId: string | null;
   selectedModelId: string | null;
   selectedSupportsNativeToolCalling: () => boolean;
+  ensureSelectedModelContextMetadata: ReturnType<typeof mock>;
 };
 
 type NeedsState = {
@@ -818,6 +819,7 @@ const resetState = () => {
     selectedProviderId: 'provider-1',
     selectedModelId: 'model-1',
     selectedSupportsNativeToolCalling: () => true,
+    ensureSelectedModelContextMetadata: mock(async () => []),
   };
 
   needsState = {

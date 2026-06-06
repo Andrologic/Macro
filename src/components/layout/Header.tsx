@@ -323,14 +323,14 @@ export function Header({
                 <button
                   onClick={() => setProjectNavigatorOpen(true)}
                   className={cn(
-                    'macro-titlebar-action flex items-center gap-2 rounded-md px-2.5 py-1.5',
+                    'macro-titlebar-action flex h-8 items-center gap-2 rounded-md px-2.5',
                     'hover:bg-accent transition-colors text-sm',
                     'min-w-[80px] max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] xl:max-w-[320px]'
                   )}
                   data-tauri-drag-region="false"
                   data-tour-id="project-picker"
                 >
-                  <Icon name={projectPickerIcon} size={14} className="text-muted-foreground shrink-0" />
+                  <Icon name={projectPickerIcon} size={15} className="text-muted-foreground shrink-0" />
                   <span className="inline-flex min-w-0 items-center truncate leading-none text-foreground">
                     {projectName || t('header.selectProject')}
                   </span>

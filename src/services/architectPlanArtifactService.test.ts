@@ -4,16 +4,19 @@ import type { CatalogedImplementTask } from './implementTaskCatalog';
 import {
   getPlanArtifactContentPath,
   getPlanArtifactIndexPath,
+  listPlanArtifactOverview,
   listVisibleTaskArtifactReviewEntries,
   normalizeArtifactContracts,
   putTaskArtifact,
   readPlanTaskArtifactIndex,
   readVisibleTaskArtifactDiff,
+  resolveTaskArtifactTarget,
   resolveVisiblePlanTaskIds,
   unvalidateVisibleTaskArtifact,
   validateVisibleTaskArtifact,
 } from './architectPlanArtifactService';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
+import { useAppStore } from '../stores/useAppStore';
 
 const createPlan = (): Pick<ArchitectPlanRecord, 'nodes'> => ({
   nodes: [
@@ -57,6 +60,14 @@ const createPlan = (): Pick<ArchitectPlanRecord, 'nodes'> => ({
 
 const visibleIds = (params: Parameters<typeof resolveVisiblePlanTaskIds>[0]) =>
   [...resolveVisiblePlanTaskIds(params)].sort();
+
+const emptyProjectMetadata = {
+  description: '',
+  tags: [],
+  team_members: [],
+  api_contracts: [],
+  dependencies: [],
+};
 
 describe('architectPlanArtifactService visibility', () => {
   it('includes the current task, direct parents, and grandparents', () => {
@@ -182,6 +193,11 @@ describe('architectPlanArtifactService reviews and versions', () => {
       }
       if (command === 'fs_read_file') {
         const path = String(payload?.path || '');
+        const workspacePath = String(payload?.workspacePath || '');
+        const scopedPath = `${workspacePath}::${path}`;
+        if (files.has(scopedPath)) {
+          return { content: files.get(scopedPath) };
+        }
         if (!files.has(path)) {
           throw new Error(`missing ${path}`);
         }
@@ -197,6 +213,12 @@ describe('architectPlanArtifactService reviews and versions', () => {
 
   afterEach(() => {
     removeTauriRuntimeMock();
+    useAppStore.setState({
+      standaloneProjects: [],
+      projectGroups: [],
+      selectedProjectId: null,
+      selectedGroupId: null,
+    });
   });
 
   const seedParentArtifact = () => {
@@ -312,5 +334,207 @@ describe('architectPlanArtifactService reviews and versions', () => {
       task: apiTask,
     });
     expect(entries.find((entry) => entry.artifact.id === 'audit-findings')?.hasPendingReview).toBe(true);
+  });
+
+  it('lists produced and still-expected artifacts for a whole plan', async () => {
+    const indexPath = getPlanArtifactIndexPath(branchName, plan.id);
+    const contentPath = getPlanArtifactContentPath(
+      branchName,
+      plan.id,
+      'api',
+      'api-contract',
+      'markdown',
+    );
+    files.set(contentPath, '# API\n');
+    files.set(indexPath, `${JSON.stringify({
+      schemaVersion: 1,
+      planId: plan.id,
+      updatedAt: '2026-05-26T00:00:00.000Z',
+      artifacts: [
+        {
+          id: 'api-contract',
+          planId: plan.id,
+          taskId: 'api',
+          kind: 'contract',
+          title: 'API contract',
+          summary: 'Produced contract',
+          contentType: 'markdown',
+          path: contentPath,
+          contentHash: 'api',
+          createdAt: '2026-05-26T00:00:00.000Z',
+          updatedAt: '2026-05-26T00:00:00.000Z',
+          createdBy: 'agent',
+          contractId: 'api-contract',
+        },
+      ],
+      reviews: [
+        {
+          artifactId: 'api-contract',
+          taskId: 'api',
+          validatedAt: '2026-05-26T00:01:00.000Z',
+        },
+      ],
+    }, null, 2)}\n`);
+
+    const overview = await listPlanArtifactOverview({
+      branchName,
+      plan: {
+        ...plan,
+        nodes: [
+          {
+            id: 'api',
+            title: 'API',
+            artifactContracts: [
+              {
+                id: 'api-contract',
+                title: 'API contract',
+                kind: 'contract',
+              },
+            ],
+          },
+          {
+            id: 'ui',
+            title: 'UI',
+            artifactContracts: [
+              {
+                id: 'ui-map',
+                title: 'UI map',
+                kind: 'diagram',
+              },
+            ],
+          },
+        ],
+      } as unknown as ArchitectPlanRecord,
+    });
+
+    expect(overview.entries.map((entry) => entry.artifact.id)).toEqual(['api-contract']);
+    expect(overview.entries[0]?.hasValidatedReview).toBe(true);
+    expect(overview.expected.map((item) => item.contract.id)).toEqual(['ui-map']);
+    expect(overview.expected[0]?.taskTitle).toBe('UI');
+  });
+
+  it('loads plan artifacts from the restored standalone project when persisted project ids are stale', async () => {
+    useAppStore.setState({
+      standaloneProjects: [
+        {
+          id: 'project-octan-sales',
+          name: 'octan_sales',
+          mountName: 'octan_sales',
+          path: '/repos/octan_sales',
+          created_at: '2026-06-05T00:00:00.000Z',
+          status: 'active',
+          metadata: emptyProjectMetadata,
+        },
+      ],
+      projectGroups: [],
+      selectedProjectId: 'project-octan-sales',
+      selectedGroupId: null,
+    });
+
+    const indexPath = getPlanArtifactIndexPath(branchName, plan.id);
+    files.set(`/repos/octan_sales::${indexPath}`, `${JSON.stringify({
+      schemaVersion: 1,
+      planId: plan.id,
+      updatedAt: '2026-06-05T00:00:00.000Z',
+      artifacts: [
+        {
+          id: 'migration-map',
+          planId: plan.id,
+          taskId: 'api',
+          kind: 'map',
+          title: 'Migration map',
+          summary: 'Physical artifact from @macro',
+          contentType: 'markdown',
+          path: getPlanArtifactContentPath(
+            branchName,
+            plan.id,
+            'api',
+            'migration-map',
+            'markdown',
+          ),
+          contentHash: 'map',
+          createdAt: '2026-06-05T00:00:00.000Z',
+          updatedAt: '2026-06-05T00:00:00.000Z',
+          createdBy: 'agent',
+        },
+      ],
+      reviews: [],
+    }, null, 2)}\n`);
+
+    const overview = await listPlanArtifactOverview({
+      branchName,
+      plan: {
+        ...plan,
+        projectId: 'project-lplr-app-old',
+        projectIds: ['project-lplr-app-old'],
+        availableProjectIds: ['project-octan-sales'],
+        nodes: [
+          {
+            id: 'api',
+            title: 'API',
+            artifactContracts: [],
+          },
+        ],
+      } as unknown as ArchitectPlanRecord,
+    });
+
+    expect(overview.entries.map((entry) => entry.artifact.id)).toEqual(['migration-map']);
+  });
+
+  it('retargets raw artifact tool plans to the current standalone project at runtime', async () => {
+    useAppStore.setState({
+      standaloneProjects: [
+        {
+          id: 'project-octan-sales',
+          name: 'octan_sales',
+          mountName: 'octan_sales',
+          path: '/repos/octan_sales',
+          created_at: '2026-06-05T00:00:00.000Z',
+          status: 'active',
+          metadata: emptyProjectMetadata,
+        },
+      ],
+      projectGroups: [],
+      selectedProjectId: 'project-octan-sales',
+      selectedGroupId: null,
+    });
+
+    const target = await resolveTaskArtifactTarget({
+      args: { task_id: 'api' },
+      executionContext: {
+        taskId: 'api',
+      } as never,
+      selectedTaskId: 'api',
+      tasks: [
+        {
+          id: 'api',
+          title: 'API',
+          task_source: 'architect',
+          plan_id: plan.id,
+          plan_storage_branch: branchName,
+          project_id: 'project-lplr-app-old',
+          project_ids: ['project-lplr-app-old'],
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-old',
+              branchName,
+              baseBranchName: 'main',
+              targetBranchName: branchName,
+              worktreeKey: 'old',
+            },
+          ],
+        },
+      ] as unknown as CatalogedImplementTask[],
+      getArchitectPlan: async () =>
+        ({
+          ...plan,
+          projectId: 'project-lplr-app-old',
+          projectIds: ['project-lplr-app-old'],
+          availableProjectIds: ['project-octan-sales'],
+        }) as ArchitectPlanRecord,
+    });
+
+    expect(target.plan.projectId).toBe('project-octan-sales');
+    expect(target.plan.projectIds).toEqual(['project-octan-sales']);
   });
 });

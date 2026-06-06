@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { ArtifactDiffModal as ArtifactDiffModalComponent } from './ArtifactDiffModal';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
 import type {
+  PlanArtifactExpectedOverviewItem,
   VisiblePlanTaskArtifactDiff,
   VisiblePlanTaskArtifactReviewEntry,
 } from '../../services/architectPlanArtifactService';
@@ -12,6 +13,7 @@ import type { CatalogedImplementTask } from '../../services/implementTaskCatalog
 let ArtifactDiffModal!: typeof ArtifactDiffModalComponent;
 let importCounter = 0;
 let readDiffMock: ReturnType<typeof mock>;
+let readPlanDiffMock: ReturnType<typeof mock>;
 let putArtifactMock: ReturnType<typeof mock>;
 
 const translationMock = {
@@ -63,6 +65,7 @@ const loadArtifactDiffModal = async () => {
   }));
 
   mock.module('../../services/architectPlanArtifactService', () => ({
+    readPlanArtifactDiff: (...args: unknown[]) => readPlanDiffMock(...args),
     readVisibleTaskArtifactDiff: (...args: unknown[]) => readDiffMock(...args),
     putTaskArtifact: (...args: unknown[]) => putArtifactMock(...args),
   }));
@@ -101,7 +104,7 @@ const ownMarkdownArtifact: VisiblePlanTaskArtifactDiff['artifact'] = {
   id: 'api-contract',
   planId: 'plan-1',
   taskId: 'task-1',
-  kind: 'contract',
+  kind: 'technical-kind',
   title: 'API contract',
   summary: 'API summary',
   contentType: 'markdown',
@@ -134,8 +137,11 @@ const jsonArtifact: VisiblePlanTaskArtifactDiff['artifact'] = {
 };
 
 const renderModal = async (params: {
-  artifactId: string;
+  artifactId: string | null;
   entries: VisiblePlanTaskArtifactReviewEntry[];
+  expectedItems?: PlanArtifactExpectedOverviewItem[];
+  context?: 'review' | 'readOnly';
+  task?: CatalogedImplementTask | null;
   onArtifactSaved?: ReturnType<typeof mock>;
 }) => {
   const container = document.createElement('div');
@@ -148,9 +154,11 @@ const renderModal = async (params: {
       <ArtifactDiffModal
         branchName="main"
         plan={plan}
-        task={task}
+        task={params.task === undefined ? task : params.task}
         entries={params.entries}
+        expectedItems={params.expectedItems}
         artifactId={params.artifactId}
+        context={params.context}
         onSelectArtifact={mock(() => undefined)}
         onValidate={mock(async () => undefined)}
         onUnvalidate={mock(async () => undefined)}
@@ -200,6 +208,13 @@ describe('ArtifactDiffModal', () => {
       previousContent: '',
       status: 'added',
     }));
+    readPlanDiffMock = mock(async () => ({
+      artifact: ownMarkdownArtifact,
+      content: '# API contract\n\nInitial body',
+      previousArtifact: null,
+      previousContent: '',
+      status: 'added',
+    }));
     putArtifactMock = mock(async () => ownMarkdownArtifact);
     await loadArtifactDiffModal();
   });
@@ -222,6 +237,11 @@ describe('ArtifactDiffModal', () => {
       entries: [buildEntry(ownMarkdownArtifact)],
     }));
 
+    const selectedArtifactButton = document.body.querySelector<HTMLButtonElement>('button[title="API contract"]');
+    expect(selectedArtifactButton?.disabled).toBe(false);
+    expect(selectedArtifactButton?.getAttribute('aria-current')).toBe('true');
+    expect(selectedArtifactButton?.textContent).toContain('API summary');
+    expect(selectedArtifactButton?.textContent).not.toContain('technical-kind');
     expect(document.body.querySelector('[data-artifact-markdown-preview="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain('# API contract');
     expect(document.body.querySelector('[data-testid="artifact-code-editor"]')).toBeNull();
@@ -233,7 +253,7 @@ describe('ArtifactDiffModal', () => {
 
     const editor = document.body.querySelector('[data-testid="artifact-code-editor"]') as HTMLTextAreaElement | null;
     expect(editor).not.toBeNull();
-    expect(editor?.getAttribute('data-editable')).toBe('true');
+    expect(editor?.getAttribute('data-editable')).toBe('false');
     expect(editor?.value).toContain('Initial body');
   });
 
@@ -245,6 +265,10 @@ describe('ArtifactDiffModal', () => {
       onArtifactSaved,
     }));
 
+    await act(async () => {
+      findButton('Edit')?.click();
+      await flushRender();
+    });
     await act(async () => {
       findButton('Code')?.click();
       await flushRender();
@@ -305,6 +329,10 @@ describe('ArtifactDiffModal', () => {
     }));
 
     await act(async () => {
+      findButton('Edit')?.click();
+      await flushRender();
+    });
+    await act(async () => {
       findButton('Code')?.click();
       await flushRender();
     });
@@ -349,5 +377,124 @@ describe('ArtifactDiffModal', () => {
     const editor = document.body.querySelector('[data-testid="artifact-code-editor"]') as HTMLTextAreaElement | null;
     expect(editor).not.toBeNull();
     expect(editor?.value).toContain('"ok": true');
+  });
+
+  it('hides edit and review actions in read-only context', async () => {
+    ({ container, root } = await renderModal({
+      artifactId: ownMarkdownArtifact.id,
+      entries: [buildEntry(ownMarkdownArtifact)],
+      context: 'readOnly',
+      task: null,
+    }));
+
+    expect(readPlanDiffMock).toHaveBeenCalledTimes(1);
+    expect(findButton('Edit')).toBeUndefined();
+    expect(findButton('Validate artifact')).toBeUndefined();
+    expect(findButton('Save')).toBeUndefined();
+    expect(document.body.textContent).not.toContain('This artifact is stored in @macro.');
+  });
+
+  it('hides review status indicators in read-only context', async () => {
+    ({ container, root } = await renderModal({
+      artifactId: ownMarkdownArtifact.id,
+      entries: [
+        {
+          ...buildEntry(ownMarkdownArtifact),
+          review: {
+            artifactId: ownMarkdownArtifact.id,
+            taskId: task.id,
+            validatedAt: '2026-01-01T00:00:00.000Z',
+            validatedBy: 'user',
+          },
+          hasPendingReview: false,
+          hasValidatedReview: true,
+        },
+      ],
+      context: 'readOnly',
+      task: null,
+    }));
+
+    expect(document.body.textContent).not.toContain('Validated');
+    expect(document.body.querySelector('[data-pending-validation-indicator="true"]')).toBeNull();
+  });
+
+  it('keeps review status indicators visible in review context', async () => {
+    ({ container, root } = await renderModal({
+      artifactId: ownMarkdownArtifact.id,
+      entries: [
+        {
+          ...buildEntry(ownMarkdownArtifact),
+          review: {
+            artifactId: ownMarkdownArtifact.id,
+            taskId: task.id,
+            validatedAt: '2026-01-01T00:00:00.000Z',
+            validatedBy: 'user',
+          },
+          hasPendingReview: false,
+          hasValidatedReview: true,
+        },
+      ],
+    }));
+
+    expect(document.body.textContent).toContain('Validated');
+    expect(findButton('Unvalidate')).not.toBeUndefined();
+  });
+
+  it('shows expected placeholders when no artifact has been produced yet', async () => {
+    ({ container, root } = await renderModal({
+      artifactId: null,
+      entries: [],
+      expectedItems: [
+        {
+          id: 'task-1:api-contract',
+          taskId: 'task-1',
+          taskTitle: 'Current task',
+          contract: {
+            id: 'api-contract',
+            title: 'API contract',
+            kind: 'contract',
+            required: true,
+          },
+        },
+      ],
+      context: 'readOnly',
+      task: null,
+    }));
+
+    expect(readDiffMock).not.toHaveBeenCalled();
+    expect(readPlanDiffMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('No produced artifacts yet.');
+    expect(document.body.textContent).toContain('Produced artifacts will open here.');
+    expect(document.body.textContent).toContain('API contract');
+    expect(document.body.textContent).toContain('Expected');
+    expect(document.body.querySelector('[title="API contract"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain('{{count}} expected');
+  });
+
+  it('counts only produced artifacts in the modal sidebar summary', async () => {
+    ({ container, root } = await renderModal({
+      artifactId: ownMarkdownArtifact.id,
+      entries: [buildEntry(ownMarkdownArtifact)],
+      expectedItems: [
+        {
+          id: 'task-1:api-contract',
+          taskId: 'task-1',
+          taskTitle: 'Current task',
+          contract: {
+            id: 'api-contract',
+            title: 'API contract',
+            kind: 'contract',
+            required: true,
+          },
+        },
+      ],
+      context: 'readOnly',
+      task: null,
+    }));
+
+    expect(document.body.textContent).toContain('{{count}} produced');
+    expect(document.body.textContent).not.toContain('{{count}} expected');
+    expect(document.body.textContent).toContain('Expected');
+    expect(document.body.textContent).toContain('API contract');
   });
 });

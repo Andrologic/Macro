@@ -75,6 +75,7 @@ import {
   getScopedProjectIds,
 } from "../services/globalProjects";
 import {
+  countProjectsInProjectRegistry,
   countProjectsInRegistry,
   formatProjectRegistryRepairSummary,
   normalizeProjectRegistry,
@@ -83,6 +84,10 @@ import {
   resolveCanonicalProjectGroup,
   reconcileRememberedProjects,
 } from "../services/projectRegistry";
+import {
+  collectKnownProjectIds,
+  retargetPlanForExecution,
+} from "../services/projectIdentityReconciliation";
 import { consolidateScopedBlankPlans } from "../services/architectAutoPlan";
 import {
   buildArchitectPlanCatalogScopeKey,
@@ -709,20 +714,37 @@ const hydrateArchitectPlanInStore = async (input: {
   activationPayload: ArchitectPlanActivationPayload;
 }): Promise<void> => {
   const { activationPayload } = input;
-  const plan = activationPayload.plan;
-  if (!plan || plan.status === "deleted") {
+  const rawPlan = activationPayload.plan;
+  if (!rawPlan || rawPlan.status === "deleted") {
     return;
   }
   if (
     input.requestId > 0 &&
     !isCurrentArchitectPlanSwitchRequest({
       requestId: input.requestId,
-      planId: plan.id,
+      planId: rawPlan.id,
       targetBranch: activationPayload.targetBranch,
     })
   ) {
     return;
   }
+
+  const currentState = useAppStore.getState();
+  const registry = {
+    standaloneProjects: currentState.standaloneProjects,
+    projectGroups: currentState.projectGroups,
+  };
+  const scopedProjectIds = getScopedProjectIds(
+    registry,
+    currentState.selectedGroupId,
+    currentState.selectedProjectId,
+  );
+  const plan = retargetPlanForExecution(rawPlan, {
+    scopedProjectIds,
+    knownProjectIds: collectKnownProjectIds(registry),
+  });
+  const reconciledActivationPayload =
+    plan === rawPlan ? activationPayload : { ...activationPayload, plan };
 
   useAppStore.setState({
     activeArchitectPlanId: plan.id,
@@ -739,12 +761,12 @@ const hydrateArchitectPlanInStore = async (input: {
     planNodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
     strategyMutationPreview: null,
-    pendingArchitectPlanActivationPayload: activationPayload,
+    pendingArchitectPlanActivationPayload: reconciledActivationPayload,
   });
-  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, activationPayload.needs);
+  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, reconciledActivationPayload.needs);
 
   const runtime = await readArchitectPlanRuntime({
-    branchName: activationPayload.targetBranch,
+    branchName: reconciledActivationPayload.targetBranch,
     planId: plan.id,
     projectIds: plan.projectIds,
   });
@@ -764,7 +786,7 @@ const hydrateArchitectPlanInStore = async (input: {
 
   if (isObsolete) {
     await persistArchitectPlanStrategyPreview({
-      branchName: activationPayload.targetBranch,
+      branchName: reconciledActivationPayload.targetBranch,
       plan,
       preview: null,
     });
@@ -776,7 +798,7 @@ const hydrateArchitectPlanInStore = async (input: {
     !isCurrentArchitectPlanSwitchRequest({
       requestId: input.requestId,
       planId: plan.id,
-      targetBranch: activationPayload.targetBranch,
+      targetBranch: reconciledActivationPayload.targetBranch,
     })
   ) {
     return;
@@ -1081,20 +1103,37 @@ const pruneLegacyRememberedProjects = (
 const buildMetadataRecoveryHints = (
   macroEnabledProjects: RememberedProject[],
   recentProjects: RememberedProject[],
-): tauriIpc.WorkspaceMetadataRecoveryHintDto[] =>
-  Array.from(
+  lastOpenProjectPath?: string | null,
+): tauriIpc.WorkspaceMetadataRecoveryHintDto[] => {
+  const rememberedProjects = [...macroEnabledProjects, ...recentProjects];
+  const normalizedLastOpenPath =
+    lastOpenProjectPath && shouldPersistProjectPath(lastOpenProjectPath)
+      ? normalizePath(lastOpenProjectPath)
+      : null;
+  const lastOpenProject = normalizedLastOpenPath
+    ? rememberedProjects.find(
+        (project) => normalizePath(project.path) === normalizedLastOpenPath,
+      )
+    : null;
+
+  return Array.from(
     new Map(
-      [...macroEnabledProjects, ...recentProjects]
+      [...rememberedProjects, ...(lastOpenProject ? [lastOpenProject] : [])]
         .map((project) => ({
           projectId: project.projectId,
           groupId: project.groupId ?? null,
           name: project.name,
           path: project.path,
         }))
-        .filter((project) => project.path.trim().length > 0)
+        .filter(
+          (project) =>
+            project.projectId.trim().length > 0 &&
+            project.path.trim().length > 0,
+        )
         .map((project) => [normalizePath(project.path), project] as const),
     ).values(),
   );
+};
 
 interface AppStore {
   mode: AppMode;
@@ -4307,22 +4346,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
         pruneLegacyRememberedProjects(recentProjects);
       const prunedMacroEnabledProjects =
         pruneLegacyRememberedProjects(macroEnabledProjects);
-	      let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
-	        null;
-	      let bootstrapPlan: Plan | null = null;
-	      let bootstrapStandaloneProjects: Project[] = [];
-	      let bootstrapProjectGroups: ProjectGroup[] = [];
+      const metadataRecoveryHints = buildMetadataRecoveryHints(
+        prunedMacroEnabledProjects,
+        prunedRecentProjects,
+        lastOpenProjectPath,
+      );
+      let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
+        null;
+      let bootstrapPlan: Plan | null = null;
+      let bootstrapStandaloneProjects: Project[] = [];
+      let bootstrapProjectGroups: ProjectGroup[] = [];
       let bootstrapPlanNodes: PlanNode[] = [];
       let bootstrapPredictedBranches: PredictedBranch[] = [];
       let bootstrapErrorMessage: string | null = null;
 
-      try {
-	        const bootstrap = await services.getAppBootstrap();
-	        bootstrapPlan = bootstrap.plan;
-	        bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
-	        bootstrapProjectGroups = bootstrap.projectGroups;
+      const reloadWorkspaceBootstrapAfterRegistryRepair = async () => {
+        const bootstrap = await services.getAppBootstrap();
+        bootstrapPlan = bootstrap.plan;
+        bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
+        bootstrapProjectGroups = bootstrap.projectGroups;
         bootstrapPlanNodes = bootstrap.planNodes ?? [];
         bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
+      };
+
+      try {
+        await reloadWorkspaceBootstrapAfterRegistryRepair();
       } catch (bootstrapError) {
         bootstrapErrorMessage = toServiceError(bootstrapError).message;
         devLogger.info(
@@ -4332,23 +4380,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       if (bootstrapErrorMessage && tauriIpc.isTauriAvailable()) {
         try {
-          const recoveryHints = buildMetadataRecoveryHints(
-            prunedMacroEnabledProjects,
-            prunedRecentProjects,
-          );
           const recoveryResult = await tauriIpc.workspaceRecoverMissingMetadata(
             {
               attemptPull: false,
-              projects: recoveryHints,
+              projects: metadataRecoveryHints,
             },
           );
 
-	          const bootstrap = await services.getAppBootstrap();
-	          bootstrapPlan = bootstrap.plan;
-	          bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
-	          bootstrapProjectGroups = bootstrap.projectGroups;
-          bootstrapPlanNodes = bootstrap.planNodes ?? [];
-          bootstrapPredictedBranches = bootstrap.predictedBranches ?? [];
+          await reloadWorkspaceBootstrapAfterRegistryRepair();
           metadataRecoveryReport =
             recoveryResult.status === "none" ? null : recoveryResult;
           bootstrapErrorMessage = null;
@@ -4360,12 +4399,54 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
-	      const prunedStandaloneProjects = pruneLegacyPlaceholderStandaloneProjects(
-	        bootstrapStandaloneProjects,
-	      );
-	      const prunedProjectGroups = pruneLegacyPlaceholderWorkspaces(
-	        bootstrapProjectGroups,
-	      );
+      if (
+        !bootstrapErrorMessage &&
+        metadataRecoveryHints.length > 0 &&
+        tauriIpc.isTauriAvailable()
+      ) {
+        try {
+          const registryReconcileReport =
+            await tauriIpc.workspaceReconcileProjectRegistryFromHints({
+              projects: metadataRecoveryHints,
+            });
+
+          if (registryReconcileReport.addedProjects.length > 0) {
+            await reloadWorkspaceBootstrapAfterRegistryRepair();
+            devLogger.warn(
+              `[Init] restored ${registryReconcileReport.addedProjects.length} project(s) from remembered @macro hints before Architect scan.`,
+            );
+          }
+        } catch (error) {
+          devLogger.warn(
+            `[Init] project registry reconciliation from hints failed: ${toServiceError(error).message}`,
+          );
+        }
+      }
+
+      if (!bootstrapErrorMessage && tauriIpc.isTauriAvailable()) {
+        try {
+          const discoveredRegistryReconcileReport =
+            await tauriIpc.workspaceReconcileProjectRegistryFromKnownParentDirs();
+
+          if (discoveredRegistryReconcileReport.addedProjects.length > 0) {
+            await reloadWorkspaceBootstrapAfterRegistryRepair();
+            devLogger.warn(
+              `[Init] restored ${discoveredRegistryReconcileReport.addedProjects.length} project(s) by discovering @macro repos in known parent directories before Architect scan.`,
+            );
+          }
+        } catch (error) {
+          devLogger.warn(
+            `[Init] project registry reconciliation from known parent directories failed: ${toServiceError(error).message}`,
+          );
+        }
+      }
+
+      const prunedStandaloneProjects = pruneLegacyPlaceholderStandaloneProjects(
+        bootstrapStandaloneProjects,
+      );
+      const prunedProjectGroups = pruneLegacyPlaceholderWorkspaces(
+        bootstrapProjectGroups,
+      );
 
       const sessionSelectedProjectId =
         sessionContext?.selectedProjectId ?? null;
@@ -4378,31 +4459,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const effectiveLastSelectedGroupId =
         sessionSelectedGroupId || lastSelectedGroupId;
 
-	      const normalizedRegistry = normalizeProjectRegistry({
-	        standaloneProjects: prunedStandaloneProjects,
-	        projectGroups: prunedProjectGroups,
+      const normalizedRegistry = normalizeProjectRegistry({
+        standaloneProjects: prunedStandaloneProjects,
+        projectGroups: prunedProjectGroups,
         selectedGroupId: effectiveLastSelectedGroupId,
         selectedProjectId: effectiveLastSelectedProjectId,
-	      });
-	      let resolvedStandaloneProjects = normalizedRegistry.standaloneProjects;
-	      let resolvedProjectGroups = normalizedRegistry.projectGroups;
+      });
+      let resolvedStandaloneProjects = normalizedRegistry.standaloneProjects;
+      let resolvedProjectGroups = normalizedRegistry.projectGroups;
       let resolvedGroupId = normalizedRegistry.selectedGroupId;
       let resolvedProjectId = normalizedRegistry.selectedProjectId;
 
-	      const cleanedRecentProjects = reconcileRememberedProjects(
-	        {
-	          standaloneProjects: resolvedStandaloneProjects,
-	          projectGroups: resolvedProjectGroups,
-	        },
-	        prunedRecentProjects,
-	      );
-	      const cleanedMacroEnabledProjects = reconcileRememberedProjects(
-	        {
-	          standaloneProjects: resolvedStandaloneProjects,
-	          projectGroups: resolvedProjectGroups,
-	        },
-	        prunedMacroEnabledProjects,
-	      );
+      const cleanedRecentProjects = reconcileRememberedProjects(
+        {
+          standaloneProjects: resolvedStandaloneProjects,
+          projectGroups: resolvedProjectGroups,
+        },
+        prunedRecentProjects,
+        { preserveUnmatched: true },
+      );
+      const cleanedMacroEnabledProjects = reconcileRememberedProjects(
+        {
+          standaloneProjects: resolvedStandaloneProjects,
+          projectGroups: resolvedProjectGroups,
+        },
+        prunedMacroEnabledProjects,
+        { preserveUnmatched: true },
+      );
 
       const sanitizedLastOpenProjectPath = shouldPersistProjectPath(
         lastOpenProjectPath,
@@ -4414,60 +4497,65 @@ export const useAppStore = create<AppStore>((set, get) => ({
         void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
       }
 
-	      if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
-	        const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
-	        const standaloneProjectForPath = resolvedStandaloneProjects.find(
-	          (project) => normalizePath(project.path) === normalizedLastPath,
-	        );
-	        if (standaloneProjectForPath) {
-	          resolvedGroupId = null;
-	          resolvedProjectId = standaloneProjectForPath.id;
-	        }
-	        const groupForPath = resolvedProjectGroups.find((group) =>
-	          group.projects.some(
-	            (project) => normalizePath(project.path) === normalizedLastPath,
-	          ),
-	        );
+      if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
+        const normalizedLastPath = normalizePath(sanitizedLastOpenProjectPath);
+        const standaloneProjectForPath = resolvedStandaloneProjects.find(
+          (project) => normalizePath(project.path) === normalizedLastPath,
+        );
+        if (standaloneProjectForPath) {
+          resolvedGroupId = null;
+          resolvedProjectId = standaloneProjectForPath.id;
+        }
+        const groupForPath = resolvedProjectGroups.find((group) =>
+          group.projects.some(
+            (project) => normalizePath(project.path) === normalizedLastPath,
+          ),
+        );
 
-	        if (!standaloneProjectForPath && groupForPath) {
-	          resolvedGroupId = groupForPath.id;
-	        } else if (!standaloneProjectForPath) {
-	          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
-	        }
-	      }
+        if (!standaloneProjectForPath && groupForPath) {
+          resolvedGroupId = groupForPath.id;
+        } else if (!standaloneProjectForPath) {
+          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+        }
+      }
 
-	      if (!resolvedGroupId && !resolvedProjectId) {
-	        const firstValidRecent = cleanedRecentProjects.find((recent) =>
-	          getAllProjectsFromRegistry({
-	            standaloneProjects: resolvedStandaloneProjects,
-	            projectGroups: resolvedProjectGroups,
-	          }).some((project) => normalizePath(project.path) === normalizePath(recent.path)),
-	        );
+      if (!resolvedGroupId && !resolvedProjectId) {
+        const firstValidRecent = cleanedRecentProjects.find((recent) =>
+          getAllProjectsFromRegistry({
+            standaloneProjects: resolvedStandaloneProjects,
+            projectGroups: resolvedProjectGroups,
+          }).some(
+            (project) => normalizePath(project.path) === normalizePath(recent.path),
+          ),
+        );
 
-	        if (firstValidRecent) {
-	          const recentProjectMatch = getAllProjectsFromRegistry({
-	            standaloneProjects: resolvedStandaloneProjects,
-	            projectGroups: resolvedProjectGroups,
-	          })
-	            .find(
-	              (project) =>
-	                normalizePath(project.path) ===
-	                normalizePath(firstValidRecent.path),
-	            );
-	          resolvedGroupId = getProjectGroupIdFromRegistry(
-	            {
-	              standaloneProjects: resolvedStandaloneProjects,
-	              projectGroups: resolvedProjectGroups,
-	            },
-	            recentProjectMatch?.id ?? null,
-	          );
-	          resolvedProjectId = recentProjectMatch?.id ?? null;
-	        }
-	      }
+        if (firstValidRecent) {
+          const recentProjectMatch = getAllProjectsFromRegistry({
+            standaloneProjects: resolvedStandaloneProjects,
+            projectGroups: resolvedProjectGroups,
+          }).find(
+            (project) =>
+              normalizePath(project.path) === normalizePath(firstValidRecent.path),
+          );
+          resolvedGroupId = getProjectGroupIdFromRegistry(
+            {
+              standaloneProjects: resolvedStandaloneProjects,
+              projectGroups: resolvedProjectGroups,
+            },
+            recentProjectMatch?.id ?? null,
+          );
+          resolvedProjectId = recentProjectMatch?.id ?? null;
+        }
+      }
 
-	      if (!resolvedGroupId && !resolvedProjectId) {
-	        resolvedGroupId = resolvedProjectGroups[0]?.id ?? null;
-	      }
+      if (!resolvedGroupId && !resolvedProjectId) {
+        const firstStandaloneProject = resolvedStandaloneProjects[0] ?? null;
+        if (firstStandaloneProject) {
+          resolvedProjectId = firstStandaloneProject.id;
+        } else {
+          resolvedGroupId = resolvedProjectGroups[0]?.id ?? null;
+        }
+      }
 
       if (resolvedGroupId) {
         resolvedProjectId = resolveExplicitProjectIdForGroup(
@@ -4563,7 +4651,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       );
       logProjectRegistryAction("succeeded", {
         action: "initializeCritical",
-        afterCount: countProjectsInRegistry(resolvedProjectGroups),
+        afterCount: countProjectsInProjectRegistry({
+          standaloneProjects: resolvedStandaloneProjects,
+          projectGroups: resolvedProjectGroups,
+        }),
         repairApplied: normalizedRegistry.report.repaired,
       });
     } catch (error) {

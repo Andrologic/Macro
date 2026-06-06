@@ -518,7 +518,12 @@ export type ArchitectPlanReplicaRepairStrategy = 'newest' | 'oldest';
 
 type ArchitectPlanProjectRef = Pick<
   ArchitectPlanSummary,
-  'projectId' | 'projectIds' | 'expectedProjectIds' | 'contextProjectIds'
+  | 'projectId'
+  | 'projectIds'
+  | 'expectedProjectIds'
+  | 'contextProjectIds'
+  | 'availableProjectIds'
+  | 'replicas'
 >;
 
 type ArchitectPlanTargetBranchRef = Pick<
@@ -1130,6 +1135,15 @@ export const getArchitectPlanVisibleProjectIds = (plan: ArchitectPlanProjectRef)
 export const getArchitectPlanProjectIds = (plan: ArchitectPlanProjectRef): string[] =>
   getArchitectPlanVisibleProjectIds(plan);
 
+const getArchitectPlanScopeCandidateProjectIds = (
+  plan: ArchitectPlanProjectRef
+): string[] =>
+  normalizeArchitectPlanIdList(
+    getArchitectPlanVisibleProjectIds(plan),
+    plan.availableProjectIds,
+    plan.replicas?.map((replica) => replica.projectId)
+  );
+
 export const isArchitectPlanVisibleForScope = (
   plan: ArchitectPlanProjectRef,
   scopedProjectIds: string[]
@@ -1138,7 +1152,7 @@ export const isArchitectPlanVisibleForScope = (
     return true;
   }
 
-  const planProjectIds = getArchitectPlanVisibleProjectIds(plan);
+  const planProjectIds = getArchitectPlanScopeCandidateProjectIds(plan);
   if (planProjectIds.length === 0) {
     return false;
   }
@@ -1193,7 +1207,7 @@ export const resolvePlanProjectContextId = (
   plan: ArchitectPlanProjectRef,
   preferredProjectId?: string | null
 ): string | null => {
-  const projectIds = getArchitectPlanVisibleProjectIds(plan);
+  const projectIds = getArchitectPlanScopeCandidateProjectIds(plan);
   if (preferredProjectId && projectIds.includes(preferredProjectId)) {
     return preferredProjectId;
   }
@@ -3601,7 +3615,7 @@ interface ArchitectPlanActivationSnapshot {
 const isWorkspaceArchitectRuntimeAvailable = (
   deps: ResolvedArchitectPlanServiceDependencies
 ): boolean =>
-  deps.tauri.isTauriAvailable() &&
+  (deps.tauri.isTauriAvailable() || deps.tauri.isRemoteBackendAvailable()) &&
   typeof deps.tauri.workspaceArchitectListPlans === 'function' &&
   typeof deps.tauri.workspaceArchitectActivatePlanHead === 'function' &&
   typeof deps.tauri.workspaceArchitectActivatePlanChat === 'function';

@@ -76,6 +76,20 @@ describe('providerModelContextLimits', () => {
     ).toBe(6_000);
   });
 
+  it('does not treat LM Studio max context length as the active budget', () => {
+    expect(
+      inferProviderContextWindowTokens({
+        context_length: 32_768,
+        max_context_length: 131_072,
+      } as Parameters<typeof inferProviderContextWindowTokens>[0] & { max_context_length: number }),
+    ).toBe(32_768);
+    expect(
+      inferProviderContextWindowTokens({
+        max_context_length: 131_072,
+      } as Parameters<typeof inferProviderContextWindowTokens>[0] & { max_context_length: number }),
+    ).toBeNull();
+  });
+
   it('builds and merges AI model overlays without changing unrelated models', () => {
     const overlay = buildProviderModelContextLimitOverlay({
       id: 'model-a',

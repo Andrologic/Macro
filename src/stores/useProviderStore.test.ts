@@ -966,6 +966,92 @@ describe('useProviderStore secret resolution', () => {
     ]);
   });
 
+  it('persists a user context window override for any provider model', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'lmstudio',
+          name: 'LM Studio',
+          providerType: 'lmstudio',
+          baseUrl: 'http://localhost:1234/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: true,
+        },
+      ],
+      modelsByProvider: {
+        lmstudio: [
+          {
+            id: 'qwen/qwen3-coder',
+            name: 'Qwen3 Coder',
+            provider_id: 'lmstudio',
+            isEnabled: true,
+            contextWindowTokens: 16_000,
+            contextWindowSource: 'provider_metadata',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .setProviderModelContextWindowOverride('lmstudio', 'qwen/qwen3-coder', 32_768);
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'lmstudio',
+      models: [
+        expect.objectContaining({
+          model_id: 'qwen/qwen3-coder',
+          context_window_tokens: 32_768,
+          context_window_source: 'user_override',
+        }),
+      ],
+    });
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider.lmstudio[0]
+    ).toMatchObject({
+      contextWindowTokens: 32_768,
+      contextWindowSource: 'user_override',
+    });
+  });
+
+  it('refreshes selected model context metadata when the selected model has no reliable window', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'lmstudio',
+          name: 'LM Studio',
+          providerType: 'lmstudio',
+          baseUrl: 'http://localhost:1234/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: true,
+        },
+      ],
+      modelsByProvider: {
+        lmstudio: [
+          {
+            id: 'qwen/qwen3-coder',
+            name: 'Qwen3 Coder',
+            provider_id: 'lmstudio',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .ensureSelectedModelContextMetadata('lmstudio', 'qwen/qwen3-coder', 'pre_send');
+
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes loaded models from the context catalog and persists reliable enrichments', async () => {
     const providerStore = await loadProviderStore();
     catalogTestables.writeCachedCatalog({

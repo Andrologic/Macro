@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import type { Root } from "react-dom/client";
 import App from "./App";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
@@ -66,6 +67,10 @@ const appTree = isDevelopmentBuild ? (
 
 const rootElement = document.getElementById("root") as HTMLElement;
 
+type MacroRootWindow = Window & {
+  __MACRO_REACT_ROOT__?: Root;
+};
+
 // Mark React render start
 if (typeof performance !== 'undefined' && performance.mark) {
   performance.mark('react-render-start');
@@ -75,7 +80,10 @@ installBenignTauriReloadWarningFilter();
 installFrontendDiagnostics();
 
 const renderApp = (): void => {
-  ReactDOM.createRoot(rootElement).render(
+  const macroWindow = window as MacroRootWindow;
+  const root = macroWindow.__MACRO_REACT_ROOT__ ?? ReactDOM.createRoot(rootElement);
+  macroWindow.__MACRO_REACT_ROOT__ = root;
+  root.render(
     <React.StrictMode>
       <ThemeProvider>
         {appTree}

@@ -1,5 +1,7 @@
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository, WorktreeAddOptions};
 
@@ -292,6 +294,158 @@ fn probe_repo_path(path: &Path) -> RepoProbe {
     }
 }
 
+fn split_lexical_path(path: &Path) -> (Option<OsString>, bool, Vec<OsString>) {
+    let mut prefix = None;
+    let mut rooted = false;
+    let mut parts = Vec::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(value) => prefix = Some(value.as_os_str().to_os_string()),
+            Component::RootDir => rooted = true,
+            Component::CurDir => {}
+            Component::ParentDir => match parts.last() {
+                Some(last) if last != ".." => {
+                    parts.pop();
+                }
+                _ => parts.push(OsString::from("..")),
+            },
+            Component::Normal(value) => parts.push(value.to_os_string()),
+        }
+    }
+
+    (prefix, rooted, parts)
+}
+
+fn lexical_relative_path(target: &Path, base: &Path) -> Option<PathBuf> {
+    let target = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    let base = fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let (target_prefix, target_rooted, target_parts) = split_lexical_path(&target);
+    let (base_prefix, base_rooted, base_parts) = split_lexical_path(&base);
+
+    if target_prefix != base_prefix || target_rooted != base_rooted {
+        return None;
+    }
+
+    let mut common = 0;
+    while common < target_parts.len()
+        && common < base_parts.len()
+        && target_parts[common] == base_parts[common]
+    {
+        common += 1;
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in common..base_parts.len() {
+        relative.push("..");
+    }
+    for part in target_parts.iter().skip(common) {
+        relative.push(part);
+    }
+
+    if relative.as_os_str().is_empty() {
+        Some(PathBuf::from("."))
+    } else {
+        Some(relative)
+    }
+}
+
+fn git_path_for_file(target: &Path, base: &Path) -> String {
+    lexical_relative_path(target, base)
+        .unwrap_or_else(|| target.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
+    if fs::read_to_string(path).ok().as_deref() == Some(content) {
+        return Ok(false);
+    }
+    fs::write(path, content).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+    Ok(true)
+}
+
+pub(crate) fn repair_gitfile_worktree_links(
+    repo: &Repository,
+    worktree_name: &str,
+    worktree_path: &Path,
+) -> Result<bool> {
+    let git_file_path = worktree_path.join(".git");
+    let git_dir = repo.path();
+    let admin_dir = git_dir.join("worktrees").join(worktree_name);
+
+    if !git_file_path.is_file() || !admin_dir.is_dir() {
+        return Ok(false);
+    }
+
+    if Repository::open(worktree_path).is_ok() {
+        return Ok(false);
+    }
+
+    let previous_git_file = fs::read_to_string(&git_file_path).ok();
+    let previous_admin_gitdir = fs::read_to_string(admin_dir.join("gitdir")).ok();
+    let previous_commondir = fs::read_to_string(admin_dir.join("commondir")).ok();
+
+    let git_file_content = format!("gitdir: {}\n", git_path_for_file(&admin_dir, worktree_path));
+    let admin_gitdir_content = format!("{}\n", git_path_for_file(&git_file_path, &admin_dir));
+    let commondir_content = format!("{}\n", git_path_for_file(git_dir, &admin_dir));
+
+    let mut changed = false;
+    changed |= write_if_changed(&git_file_path, &git_file_content)?;
+    changed |= write_if_changed(&admin_dir.join("gitdir"), &admin_gitdir_content)?;
+    changed |= write_if_changed(&admin_dir.join("commondir"), &commondir_content)?;
+
+    match Repository::open(worktree_path) {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            if let Some(content) = previous_git_file {
+                let _ = fs::write(&git_file_path, content);
+            }
+            if let Some(content) = previous_admin_gitdir {
+                let _ = fs::write(admin_dir.join("gitdir"), content);
+            }
+            if let Some(content) = previous_commondir {
+                let _ = fs::write(admin_dir.join("commondir"), content);
+            }
+
+            Err(BackendError::Git {
+                message: format!(
+                    "Failed to repair worktree '{}' at {}: {}",
+                    worktree_name,
+                    worktree_path.display(),
+                    error
+                ),
+            })
+        }
+    }
+    .map(|repaired| repaired || changed)
+}
+
+fn quarantine_path(path: &Path) -> Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "worktree".to_string());
+    let mut candidate = path.with_file_name(format!("{file_name}.invalid-{stamp}"));
+    let mut suffix = 0;
+    while candidate.exists() {
+        suffix += 1;
+        candidate = path.with_file_name(format!("{file_name}.invalid-{stamp}-{suffix}"));
+    }
+    fs::rename(path, &candidate).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+    Ok(candidate)
+}
+
 fn remove_path_if_present(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -316,6 +470,17 @@ fn remove_path_if_present(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+fn remove_or_quarantine_path_for_repair(path: &Path, should_quarantine: bool) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if should_quarantine {
+        let _ = quarantine_path(path)?;
+        return Ok(true);
+    }
+    remove_path_if_present(path)
+}
+
 fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<bool> {
     let worktree = match repo.find_worktree(worktree_name) {
         Ok(worktree) => worktree,
@@ -338,6 +503,7 @@ fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<bool> {
 }
 
 fn inspect_registered_worktree(
+    repo: &Repository,
     task_id: &str,
     worktree_name: String,
     registered_path: PathBuf,
@@ -373,15 +539,30 @@ fn inspect_registered_worktree(
             status: TaskWorktreeStatus::StaleRegistration,
             is_dirty: None,
         }),
-        RepoProbe::Invalid => Ok(TaskWorktreeInspection {
-            task_id: task_id.to_string(),
-            worktree_name,
-            worktree_path: registered_path.clone(),
-            registered_path: Some(registered_path),
-            branch_name: None,
-            status: TaskWorktreeStatus::InvalidRepo,
-            is_dirty: None,
-        }),
+        RepoProbe::Invalid => {
+            if repair_gitfile_worktree_links(repo, &worktree_name, &registered_path)? {
+                if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&registered_path) {
+                    return Ok(TaskWorktreeInspection {
+                        task_id: task_id.to_string(),
+                        worktree_name,
+                        worktree_path: registered_path.clone(),
+                        registered_path: Some(registered_path),
+                        branch_name: current_branch_name(&worktree_repo),
+                        status: TaskWorktreeStatus::Ready,
+                        is_dirty: Some(is_dirty(&worktree_repo)?),
+                    });
+                }
+            }
+            Ok(TaskWorktreeInspection {
+                task_id: task_id.to_string(),
+                worktree_name,
+                worktree_path: registered_path.clone(),
+                registered_path: Some(registered_path),
+                branch_name: None,
+                status: TaskWorktreeStatus::InvalidRepo,
+                is_dirty: None,
+            })
+        }
     }
 }
 
@@ -415,7 +596,7 @@ fn find_ready_worktree_for_branch(
 
         let candidate_path = worktree.path().to_path_buf();
         let inspection =
-            inspect_registered_worktree(task_id, candidate_name.to_string(), candidate_path)?;
+            inspect_registered_worktree(repo, task_id, candidate_name.to_string(), candidate_path)?;
 
         if inspection.status == TaskWorktreeStatus::Ready
             && inspection.branch_name.as_deref() == Some(branch_name)
@@ -484,14 +665,43 @@ impl GitState {
             Ok(worktree) => Some(worktree.path().to_path_buf()),
             Err(err) if err.code() == ErrorCode::NotFound => None,
             Err(err) => {
-                return Err(BackendError::Git {
-                    message: format!("Failed to inspect worktree '{}': {}", worktree_name, err),
-                });
+                if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                    match repo.find_worktree(&worktree_name) {
+                        Ok(worktree) => Some(worktree.path().to_path_buf()),
+                        Err(retry_err) => {
+                            return Err(BackendError::Git {
+                                message: format!(
+                                    "Failed to inspect worktree '{}' after repair: {}",
+                                    worktree_name, retry_err
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    return Err(BackendError::Git {
+                        message: format!("Failed to inspect worktree '{}': {}", worktree_name, err),
+                    });
+                }
             }
         };
 
         if let Some(path) = registered_path.clone() {
-            return inspect_registered_worktree(task_id, worktree_name, path);
+            if path != expected_path
+                && !path.exists()
+                && expected_path.exists()
+                && repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)?
+            {
+                if let Ok(worktree) = repo.find_worktree(&worktree_name) {
+                    return inspect_registered_worktree(
+                        repo,
+                        task_id,
+                        worktree_name,
+                        worktree.path().to_path_buf(),
+                    );
+                }
+                return inspect_registered_worktree(repo, task_id, worktree_name, expected_path);
+            }
+            return inspect_registered_worktree(repo, task_id, worktree_name, path);
         }
 
         if expected_path.exists() {
@@ -509,6 +719,19 @@ impl GitState {
                 }
                 RepoProbe::Missing => {}
                 RepoProbe::Invalid => {
+                    if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                        if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&expected_path) {
+                            return Ok(TaskWorktreeInspection {
+                                task_id: task_id.to_string(),
+                                worktree_name,
+                                worktree_path: expected_path.clone(),
+                                registered_path: None,
+                                branch_name: current_branch_name(&worktree_repo),
+                                status: TaskWorktreeStatus::OrphanPath,
+                                is_dirty: Some(is_dirty(&worktree_repo)?),
+                            });
+                        }
+                    }
                     return Ok(TaskWorktreeInspection {
                         task_id: task_id.to_string(),
                         worktree_name,
@@ -611,13 +834,17 @@ impl GitState {
             TaskWorktreeStatus::StaleRegistration
             | TaskWorktreeStatus::OrphanPath
             | TaskWorktreeStatus::InvalidRepo => {
+                let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_path_if_present(path)?;
+                    let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
-                    let _ = remove_path_if_present(&inspection.worktree_path)?;
+                    let _ = remove_or_quarantine_path_for_repair(
+                        &inspection.worktree_path,
+                        should_quarantine,
+                    )?;
                 }
                 let _ = prune_worktree(repo, &inspection.worktree_name)?;
                 self.clear_worktree_cache(task_id);
@@ -728,14 +955,50 @@ impl GitState {
             Ok(worktree) => Some(worktree.path().to_path_buf()),
             Err(err) if err.code() == ErrorCode::NotFound => None,
             Err(err) => {
-                return Err(BackendError::Git {
-                    message: format!("Failed to inspect worktree '{}': {}", worktree_name, err),
-                });
+                if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                    match repo.find_worktree(&worktree_name) {
+                        Ok(worktree) => Some(worktree.path().to_path_buf()),
+                        Err(retry_err) => {
+                            return Err(BackendError::Git {
+                                message: format!(
+                                    "Failed to inspect worktree '{}' after repair: {}",
+                                    worktree_name, retry_err
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    return Err(BackendError::Git {
+                        message: format!("Failed to inspect worktree '{}': {}", worktree_name, err),
+                    });
+                }
             }
         };
 
         if let Some(path) = registered_path.clone() {
-            return inspect_registered_worktree(worktree_key, worktree_name, path)
+            if path != expected_path
+                && !path.exists()
+                && expected_path.exists()
+                && repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)?
+            {
+                if let Ok(worktree) = repo.find_worktree(&worktree_name) {
+                    return inspect_registered_worktree(
+                        repo,
+                        worktree_key,
+                        worktree_name,
+                        worktree.path().to_path_buf(),
+                    )
+                    .map(branch_inspection_from_task);
+                }
+                return inspect_registered_worktree(
+                    repo,
+                    worktree_key,
+                    worktree_name,
+                    expected_path,
+                )
+                .map(branch_inspection_from_task);
+            }
+            return inspect_registered_worktree(repo, worktree_key, worktree_name, path)
                 .map(branch_inspection_from_task);
         }
 
@@ -754,6 +1017,19 @@ impl GitState {
                 }
                 RepoProbe::Missing => {}
                 RepoProbe::Invalid => {
+                    if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                        if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&expected_path) {
+                            return Ok(BranchWorktreeInspection {
+                                worktree_key: worktree_key.to_string(),
+                                worktree_name,
+                                worktree_path: expected_path.clone(),
+                                registered_path: None,
+                                branch_name: current_branch_name(&worktree_repo),
+                                status: TaskWorktreeStatus::OrphanPath,
+                                is_dirty: Some(is_dirty(&worktree_repo)?),
+                            });
+                        }
+                    }
                     return Ok(BranchWorktreeInspection {
                         worktree_key: worktree_key.to_string(),
                         worktree_name,
@@ -833,13 +1109,17 @@ impl GitState {
             | TaskWorktreeStatus::StaleRegistration
             | TaskWorktreeStatus::OrphanPath
             | TaskWorktreeStatus::InvalidRepo => {
+                let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_path_if_present(path)?;
+                    let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
-                    let _ = remove_path_if_present(&inspection.worktree_path)?;
+                    let _ = remove_or_quarantine_path_for_repair(
+                        &inspection.worktree_path,
+                        should_quarantine,
+                    )?;
                 }
                 let _ = prune_worktree(repo, &inspection.worktree_name)?;
                 repaired = true;

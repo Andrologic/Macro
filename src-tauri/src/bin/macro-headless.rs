@@ -15,8 +15,13 @@ use macro_lib::core::tool_policy::{
 };
 use macro_lib::git::GitState;
 use macro_lib::workspace;
+use macro_lib::workspace::metadata::{
+    WorkspaceArchitectActivatePlanChatRequestDto, WorkspaceArchitectActivatePlanHeadRequestDto,
+    WorkspaceArchitectListPlansRequestDto,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 struct HeadlessState {
@@ -96,7 +101,22 @@ fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf,
         .resolve_macro_metadata_root(&state.workspace_path)
     {
         Ok(path) => Ok(path),
-        Err(BackendError::GitRepositoryNotFound { message }) => {
+        Err(error) => {
+            let error_message = error.to_string();
+            if let Some(metadata_worktree) =
+                macro_lib::git::find_existing_macro_metadata_worktree_root(&state.workspace_path)
+            {
+                tracing::warn!(
+                    action = "headless_metadata_root_existing_worktree_fallback",
+                    workspace_path = %state.workspace_path.display(),
+                    fallback_path = %metadata_worktree.display(),
+                    reason = %error_message
+                );
+                return Ok(metadata_worktree);
+            }
+            let BackendError::GitRepositoryNotFound { message } = error else {
+                return Err(error);
+            };
             let fallback = state.workspace_path.join(".macro");
             tracing::warn!(
                 action = "headless_metadata_root_fallback",
@@ -106,7 +126,6 @@ fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf,
             );
             Ok(fallback)
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -271,6 +290,97 @@ async fn workspace_tasks_scoped(
     workspace_tasks(State(state), headers).await
 }
 
+async fn workspace_architect_list_plans(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkspaceArchitectListPlansRequestDto>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
+    let metadata_root = match resolve_metadata_root_for_workspace(&state) {
+        Ok(path) => path,
+        Err(error) => return backend_error_response(error),
+    };
+
+    match workspace::architect::list_plans(&state.workspace_path, &metadata_root, payload).await {
+        Ok(plans) => (StatusCode::OK, Json(plans)).into_response(),
+        Err(error) => backend_error_response(error),
+    }
+}
+
+async fn workspace_architect_list_plans_scoped(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(_workspace_id): Path<String>,
+    Json(payload): Json<WorkspaceArchitectListPlansRequestDto>,
+) -> impl IntoResponse {
+    workspace_architect_list_plans(State(state), headers, Json(payload)).await
+}
+
+async fn workspace_architect_activate_plan_head(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkspaceArchitectActivatePlanHeadRequestDto>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
+    let metadata_root = match resolve_metadata_root_for_workspace(&state) {
+        Ok(path) => path,
+        Err(error) => return backend_error_response(error),
+    };
+
+    match workspace::architect::activate_plan_head(&state.workspace_path, &metadata_root, payload)
+        .await
+    {
+        Ok(head) => (StatusCode::OK, Json(head)).into_response(),
+        Err(error) => backend_error_response(error),
+    }
+}
+
+async fn workspace_architect_activate_plan_head_scoped(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(_workspace_id): Path<String>,
+    Json(payload): Json<WorkspaceArchitectActivatePlanHeadRequestDto>,
+) -> impl IntoResponse {
+    workspace_architect_activate_plan_head(State(state), headers, Json(payload)).await
+}
+
+async fn workspace_architect_activate_plan_chat(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkspaceArchitectActivatePlanChatRequestDto>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
+    let metadata_root = match resolve_metadata_root_for_workspace(&state) {
+        Ok(path) => path,
+        Err(error) => return backend_error_response(error),
+    };
+
+    match workspace::architect::activate_plan_chat(&state.workspace_path, &metadata_root, payload)
+        .await
+    {
+        Ok(transcript) => (StatusCode::OK, Json(transcript)).into_response(),
+        Err(error) => backend_error_response(error),
+    }
+}
+
+async fn workspace_architect_activate_plan_chat_scoped(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(_workspace_id): Path<String>,
+    Json(payload): Json<WorkspaceArchitectActivatePlanChatRequestDto>,
+) -> impl IntoResponse {
+    workspace_architect_activate_plan_chat(State(state), headers, Json(payload)).await
+}
+
 async fn project_git_tree(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
@@ -386,6 +496,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(workspace_tasks_scoped),
         )
         .route(
+            "/api/v1/workspace/architect/plans/list",
+            post(workspace_architect_list_plans),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/architect/plans/list",
+            post(workspace_architect_list_plans_scoped),
+        )
+        .route(
+            "/api/v1/workspace/architect/plans/activate-head",
+            post(workspace_architect_activate_plan_head),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/architect/plans/activate-head",
+            post(workspace_architect_activate_plan_head_scoped),
+        )
+        .route(
+            "/api/v1/workspace/architect/plans/activate-chat",
+            post(workspace_architect_activate_plan_chat),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/architect/plans/activate-chat",
+            post(workspace_architect_activate_plan_chat_scoped),
+        )
+        .route(
             "/api/v1/projects/{project_id}/git/tree",
             get(project_git_tree),
         )
@@ -393,7 +527,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/projects/{project_id}/git/commits",
             get(project_git_commits),
         )
-        .with_state(state);
+        .with_state(state)
+        .layer(CorsLayer::permissive());
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     tracing::info!("macro-headless listening on {}", addr);
