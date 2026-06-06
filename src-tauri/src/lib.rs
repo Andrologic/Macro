@@ -16,6 +16,7 @@ pub mod git;
 
 mod ai;
 mod index;
+pub mod project_path;
 mod tool_host;
 pub mod workspace;
 
@@ -248,6 +249,7 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(None)) as DbPool)
         .manage(AiState::default())
         .manage(GitState::new())
+        .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -426,6 +428,7 @@ pub fn run() {
             commands::workspace::workspace_architect_activate_plan_chat,
             commands::workspace::workspace_architect_invalidate,
             commands::workspace::workspace_preview_project_git_setup,
+            commands::workspace::workspace_cancel_project_operation,
             commands::workspace::workspace_set_active_root,
             commands::workspace::workspace_create_project,
             commands::workspace::workspace_create_project_with_git_setup,

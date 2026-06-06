@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
@@ -8,6 +8,7 @@ import { Button } from '../ui/Button';
 import { GroupCombobox } from '../ui/GroupCombobox';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { toServiceError } from '../../services/contracts/errors';
+import { isWslProjectPath } from '../../services/wslPaths';
 import {
   resolveProjectGitFlowSettings,
   validateProjectGitFlowSettings,
@@ -64,6 +65,8 @@ export const ProjectModal: React.FC = () => {
     createProjectWithGitSetup,
     createNewProjectRepo,
     createProjectGroup,
+    projectAddOperation,
+    cancelProjectAddOperation,
   } = useAppStore();
 
   const [sourceMode, setSourceMode] = useState<ProjectModalSourceMode>('new_repo');
@@ -82,6 +85,7 @@ export const ProjectModal: React.FC = () => {
     useState<PendingGitFlowConfirmation | null>(null);
   const [pendingProjectSetupPrompt, setPendingProjectSetupPrompt] =
     useState<PendingProjectSetupPrompt | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
 
   const preselectedGroup = useMemo(
     () => projectGroups.find((group) => group.id === projectModalGroupId) ?? null,
@@ -113,17 +117,24 @@ export const ProjectModal: React.FC = () => {
     setIsSubmitting(false);
     setPendingGitFlowConfirmation(null);
     setPendingProjectSetupPrompt(null);
+    activeRequestIdRef.current = null;
   }, [preselectedGroup, projectModalOpen]);
 
   if (!projectModalOpen) return null;
 
   const finalNewRepoPath = joinProjectPath(parentPath, folderName);
   const activeProjectPath = isCreatingNewRepo ? finalNewRepoPath : subProjectPath;
+  const isWslPath = isWslProjectPath(activeProjectPath);
+  const isCancellingProjectAdd = projectAddOperation?.status === 'cancelling';
   const duplicatePathProject = findProjectByPath(projectGroups, activeProjectPath, standaloneProjects);
   const derivedExistingRepoName = inferProjectNameFromPath(subProjectPath);
   const derivedProjectName = isCreatingNewRepo ? repoName.trim() : derivedExistingRepoName;
   const submitLabel = isSubmitting
-    ? t('project.saving', 'Saving...')
+    ? isCancellingProjectAdd
+      ? t('project.cancellingAddProject', 'Cancelling...')
+      : isWslPath && !isCreatingNewRepo
+        ? t('project.detectingWslGit', 'Detecting WSL Git...')
+        : t('project.saving', 'Saving...')
     : isCreatingNewGroup
       ? t('project.createProjectGroup', 'Create group')
     : isAttachingToExistingGroup
@@ -162,6 +173,30 @@ export const ProjectModal: React.FC = () => {
     setError('');
   };
 
+  const createProjectAddRequestId = () =>
+    `project-add-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  const ensureProjectAddRequestId = () => {
+    if (!activeRequestIdRef.current) {
+      activeRequestIdRef.current = createProjectAddRequestId();
+    }
+    return activeRequestIdRef.current;
+  };
+
+  const clearProjectAddRequestId = (requestId: string) => {
+    if (activeRequestIdRef.current === requestId) {
+      activeRequestIdRef.current = null;
+    }
+  };
+
+  const handleClose = () => {
+    const requestId = activeRequestIdRef.current || projectAddOperation?.requestId || null;
+    if (requestId && (isSubmitting || projectAddOperation?.status === 'running')) {
+      void cancelProjectAddOperation(requestId);
+    }
+    closeProjectModal();
+  };
+
   const toggleNewGroupProject = (projectId: string) => {
     setSelectedNewGroupProjectIds((current) =>
       current.includes(projectId)
@@ -194,9 +229,11 @@ export const ProjectModal: React.FC = () => {
   };
 
   const persistProject = async (payload: PendingProjectCreation) => {
-    const project = await createProject(payload);
+    const requestId = ensureProjectAddRequestId();
+    const project = await createProject({ ...payload, requestId });
     await createSelectedGroupForProject(project);
     closeProjectModal();
+    clearProjectAddRequestId(requestId);
     return project;
   };
 
@@ -224,6 +261,7 @@ export const ProjectModal: React.FC = () => {
       detectionOverride ||
       await services.previewProjectGitSetup({
         path: projectPath,
+        requestId: ensureProjectAddRequestId(),
       });
 
     if (shouldConfirmDetectedGitFlow(detection)) {
@@ -319,6 +357,7 @@ export const ProjectModal: React.FC = () => {
         return;
       }
 
+      const requestId = ensureProjectAddRequestId();
       const result = await createProjectWithGitSetup({
         ...buildProjectWithGitSetupPayload(
           finalPayload,
@@ -326,9 +365,11 @@ export const ProjectModal: React.FC = () => {
           detection,
           nextAcceptedActions
         ),
+        requestId,
       });
       await createSelectedGroupForProject(result.project);
       closeProjectModal();
+      clearProjectAddRequestId(requestId);
     } catch (submitError: unknown) {
       setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
     } finally {
@@ -360,6 +401,7 @@ export const ProjectModal: React.FC = () => {
         activeProjectSetupPrompt.kind === 'create_develop'
         && finalPath.trim()
       ) {
+        const requestId = ensureProjectAddRequestId();
         const result = await createProjectWithGitSetup({
           ...buildProjectWithGitSetupPayload(
             payload,
@@ -367,9 +409,11 @@ export const ProjectModal: React.FC = () => {
             detection,
             acceptedActions
           ),
+          requestId,
         });
         await createSelectedGroupForProject(result.project);
         closeProjectModal();
+        clearProjectAddRequestId(requestId);
         return;
       }
 
@@ -453,15 +497,18 @@ export const ProjectModal: React.FC = () => {
     if (isCreatingNewRepo) {
       try {
         setIsSubmitting(true);
+        const requestId = ensureProjectAddRequestId();
         const result = await createNewProjectRepo({
           repoName: trimmedRepoName,
           parentPath: trimmedParentPath,
           folderName: trimmedFolderName,
           groupId: isAttachingToExistingGroup ? targetGroupId : null,
           groupName: null,
+          requestId,
         });
         await createSelectedGroupForProject(result.project);
         closeProjectModal();
+        clearProjectAddRequestId(requestId);
       } catch (submitError: unknown) {
         setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
       } finally {
@@ -500,7 +547,7 @@ export const ProjectModal: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={closeProjectModal}
+            onClick={handleClose}
             className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-accent transition-colors"
           >
             <Icon name="x" size={14} className="text-muted-foreground" />
@@ -800,7 +847,7 @@ export const ProjectModal: React.FC = () => {
           <Button
             variant="secondary"
             size="sm"
-            onClick={closeProjectModal}
+            onClick={handleClose}
           >
             {t('common.cancel', 'Cancel')}
           </Button>

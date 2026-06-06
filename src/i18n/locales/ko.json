@@ -990,6 +990,8 @@
     "addExistingRepoToGlobalProject": "프로젝트 추가",
     "addSubproject": "프로젝트 추가",
     "saving": "절약...",
+    "cancellingAddProject": "취소 중...",
+    "detectingWslGit": "WSL Git 감지 중...",
     "initGitTitle": "Git을 초기화할까요?",
     "initialCommitTitle": "초기 커밋을 만들까요?",
     "createDevelopTitle": "develop를 만들까요?",

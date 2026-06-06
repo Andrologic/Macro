@@ -420,7 +420,9 @@ const cleanString = (value: unknown): string | null => {
 };
 
 const isAbsolutePath = (value: string): boolean =>
-  /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/");
+  /^[a-zA-Z]:[\\/]/.test(value) ||
+  value.startsWith("/") ||
+  /^\\\\wsl(?:\.localhost|\$)\\/i.test(value);
 
 const normalizePathForComparison = (value: string): string => {
   const normalized = value.replace(/\\/g, "/").trim();

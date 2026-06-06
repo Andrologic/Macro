@@ -166,6 +166,14 @@ interface RememberedProject {
   lastOpenedAt: string;
 }
 
+export interface ProjectAddOperation {
+  requestId: string;
+  status: "running" | "cancelling";
+  path: string | null;
+  startedAt: number;
+  canCancel: boolean;
+}
+
 const MAX_REMEMBERED_PROJECTS = 50;
 let projectSwitchRequestId = 0;
 let architectPlanSwitchRequestId = 0;
@@ -323,6 +331,9 @@ const shouldPersistProjectPath = (path?: string | null): boolean => {
   if (!path) return false;
   return !isImplicitWorkspaceRootPath(path);
 };
+
+const createProjectAddRequestId = (): string =>
+  `project-add-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 const persistSessionContext = async (input: {
   selectedGroupId: string | null;
@@ -1108,6 +1119,7 @@ interface AppStore {
   taskSortOption: TaskSortOption;
   isLoading: boolean;
   lastError: string | null;
+  projectAddOperation: ProjectAddOperation | null;
   settingsOpen: boolean;
   activeSettingsTab: SettingsTab; // Added
   accountOpen: boolean;
@@ -1268,6 +1280,7 @@ interface AppStore {
   createNewProjectRepo: (
     data: CreateNewProjectRepoData,
   ) => Promise<ProjectGitSetupCommitResult>;
+  cancelProjectAddOperation: (requestId: string) => Promise<void>;
   refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
@@ -1285,6 +1298,7 @@ interface CreateProjectData {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings;
+  requestId?: string | null;
 }
 
 interface CreateNewProjectRepoData {
@@ -1294,6 +1308,7 @@ interface CreateNewProjectRepoData {
   groupId: string | null;
   groupName?: string | null;
   gitFlowSettings?: ProjectGitFlowSettings;
+  requestId?: string | null;
 }
 
 interface SwitchProjectContextOptions {
@@ -1396,6 +1411,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   taskSortOption: "date",
   isLoading: false,
   lastError: null,
+  projectAddOperation: null,
   settingsOpen: false,
   activeSettingsTab: "general",
   accountOpen: false,
@@ -3594,8 +3610,40 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   closeProjectGitFlowModal: () => set({ projectGitFlowModalProjectId: null }),
 
+  cancelProjectAddOperation: async (requestId) => {
+    const operation = get().projectAddOperation;
+    if (!operation || operation.requestId !== requestId) {
+      return;
+    }
+    set({
+      projectAddOperation: {
+        ...operation,
+        status: "cancelling",
+      },
+    });
+    try {
+      await services.cancelProjectOperation(requestId);
+    } finally {
+      const current = get().projectAddOperation;
+      if (current?.requestId === requestId) {
+        set({ projectAddOperation: null, isLoading: false });
+      }
+    }
+  },
+
   createProject: async (data: CreateProjectData) => {
-    set({ isLoading: true, lastError: null });
+    const requestId = data.requestId || createProjectAddRequestId();
+    set({
+      isLoading: true,
+      lastError: null,
+      projectAddOperation: {
+        requestId,
+        status: "running",
+        path: data.path ?? null,
+        startedAt: Date.now(),
+        canCancel: true,
+      },
+    });
     try {
       const previousState = get();
       const gitFlowSettings =
@@ -3609,7 +3657,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const { project: newProject } = await services.createProject({
         ...data,
         gitFlowSettings,
+        requestId,
       });
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return newProject;
+      }
       const state = get();
       if (state.selectedGroupId) {
         await persistCurrentProjectContext(
@@ -3759,11 +3811,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
-      set({ isLoading: false, lastError: null });
+      set({ isLoading: false, lastError: null, projectAddOperation: null });
       return newProject;
     } catch (error) {
       const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
+      const current = get().projectAddOperation;
+      set({
+        isLoading: false,
+        lastError: current?.status === "cancelling" ? null : normalized.message,
+        projectAddOperation: current?.requestId === requestId ? null : current,
+      });
       logProjectRegistryAction("failed", {
         action: "create_project",
         groupId: data.groupId,
@@ -3775,7 +3832,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   createProjectWithGitSetup: async (data) => {
-    set({ isLoading: true, lastError: null });
+    const requestId = data.requestId || createProjectAddRequestId();
+    set({
+      isLoading: true,
+      lastError: null,
+      projectAddOperation: {
+        requestId,
+        status: "running",
+        path: data.path ?? null,
+        startedAt: Date.now(),
+        canCancel: true,
+      },
+    });
     try {
       const previousState = get();
       const gitFlowSettings =
@@ -3790,8 +3858,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const result = await services.createProjectWithGitSetup({
         ...data,
         gitFlowSettings,
+        requestId,
       });
       const newProject = result.project;
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return result;
+      }
       const state = get();
       if (state.selectedGroupId) {
         await persistCurrentProjectContext(
@@ -3941,11 +4013,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
-      set({ isLoading: false, lastError: null });
+      set({ isLoading: false, lastError: null, projectAddOperation: null });
       return result;
     } catch (error) {
       const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
+      const current = get().projectAddOperation;
+      set({
+        isLoading: false,
+        lastError: current?.status === "cancelling" ? null : normalized.message,
+        projectAddOperation: current?.requestId === requestId ? null : current,
+      });
       logProjectRegistryAction("failed", {
         action: "create_project_with_git_setup",
         groupId: data.groupId,
@@ -3960,7 +4037,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   createNewProjectRepo: async (data) => {
-    set({ isLoading: true, lastError: null });
+    const requestId = data.requestId || createProjectAddRequestId();
+    set({
+      isLoading: true,
+      lastError: null,
+      projectAddOperation: {
+        requestId,
+        status: "running",
+        path: data.parentPath,
+        startedAt: Date.now(),
+        canCancel: true,
+      },
+    });
     try {
       const previousState = get();
       const gitFlowSettings =
@@ -3975,8 +4063,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const result = await services.createNewProjectRepo({
         ...data,
         gitFlowSettings,
+        requestId,
       });
       const newProject = result.project;
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return result;
+      }
       const state = get();
       if (state.selectedGroupId) {
         await persistCurrentProjectContext(
@@ -4126,11 +4218,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
-      set({ isLoading: false, lastError: null });
+      set({ isLoading: false, lastError: null, projectAddOperation: null });
       return result;
     } catch (error) {
       const normalized = toServiceError(error);
-      set({ isLoading: false, lastError: normalized.message });
+      const current = get().projectAddOperation;
+      set({
+        isLoading: false,
+        lastError: current?.status === "cancelling" ? null : normalized.message,
+        projectAddOperation: current?.requestId === requestId ? null : current,
+      });
       logProjectRegistryAction("failed", {
         action: "create_new_project_repo",
         groupId: data.groupId,

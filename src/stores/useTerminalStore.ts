@@ -363,7 +363,8 @@ const normalizeSessionCwd = (value: string | null | undefined): string | null =>
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const isAbsoluteSessionCwd = (value: string): boolean => /^(?:[a-zA-Z]:[\\/]|\/)/.test(value);
+const isAbsoluteSessionCwd = (value: string): boolean =>
+  /^(?:[a-zA-Z]:[\\/]|\/|\\\\wsl(?:\.localhost|\$)\\)/i.test(value);
 
 const joinSessionCwd = (basePath: string, relativePath: string): string => {
   const normalizedBase = basePath.replace(/[\\/]+$/, '');

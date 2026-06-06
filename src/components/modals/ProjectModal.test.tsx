@@ -5,12 +5,13 @@ import { useAppStore } from '../../stores/useAppStore';
 import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 
 let importCounter = 0;
-let previewProjectGitSetupMock = mock(async (_data: { path: string }) => buildDetection());
+let previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
 let createProjectMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
 let createProjectWithGitSetupMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
 let createNewProjectRepoMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
 let createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
 let closeProjectModalMock = mock(() => undefined);
+let cancelProjectAddOperationMock = mock(async (_requestId: string) => undefined);
 
 const loadProjectModal = async () => {
   mock.restore();
@@ -40,7 +41,7 @@ const loadProjectModal = async () => {
   }));
   mock.module('../../services', () => ({
     services: {
-      previewProjectGitSetup: (data: { path: string }) => previewProjectGitSetupMock(data),
+      previewProjectGitSetup: (data: { path: string; requestId?: string }) => previewProjectGitSetupMock(data),
     },
   }));
 
@@ -143,7 +144,7 @@ describe('ProjectModal', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
-    previewProjectGitSetupMock = mock(async (_data: { path: string }) => buildDetection());
+    previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
     createProjectMock = mock(async (payload: Record<string, unknown>) =>
       buildProject({
         id: 'created-project',
@@ -171,6 +172,7 @@ describe('ProjectModal', () => {
     }));
     createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
     closeProjectModalMock = mock(() => undefined);
+    cancelProjectAddOperationMock = mock(async (_requestId: string) => undefined);
 
     useAppStore.setState({
       projectModalOpen: true,
@@ -181,6 +183,7 @@ describe('ProjectModal', () => {
       createProjectWithGitSetup: createProjectWithGitSetupMock as never,
       createNewProjectRepo: createNewProjectRepoMock as never,
       createProjectGroup: createProjectGroupMock as never,
+      cancelProjectAddOperation: cancelProjectAddOperationMock,
       closeProjectModal: closeProjectModalMock,
     });
 
@@ -239,6 +242,7 @@ describe('ProjectModal', () => {
       folderName: 'backend-api',
       groupId: null,
       groupName: null,
+      requestId: expect.any(String),
     });
     expect(closeProjectModalMock).toHaveBeenCalled();
   });
@@ -283,6 +287,31 @@ describe('ProjectModal', () => {
     expect(document.body.textContent).toContain('This folder is already attached to "API"');
     expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
     expect(createProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels the in-flight add operation when closing during Git preview', async () => {
+    previewProjectGitSetupMock = mock(
+      (_data: { path: string; requestId?: string }) =>
+        new Promise<ProjectGitFlowDetection>(() => undefined)
+    );
+    await renderModal();
+
+    await selectExistingRepoSource();
+    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
+
+    await act(async () => {
+      findButton('Add existing project').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findButton('Cancel').click();
+      await Promise.resolve();
+    });
+
+    const requestId = previewProjectGitSetupMock.mock.calls[0]?.[0]?.requestId;
+    expect(requestId).toEqual(expect.any(String));
+    expect(cancelProjectAddOperationMock).toHaveBeenCalledWith(requestId);
+    expect(closeProjectModalMock).toHaveBeenCalled();
   });
 
   it('requires an existing group selection before using an existing destination', async () => {
@@ -333,6 +362,7 @@ describe('ProjectModal', () => {
       folderName: 'backend-api',
       groupId: null,
       groupName: null,
+      requestId: expect.any(String),
     });
     expect(createProjectGroupMock).toHaveBeenCalledWith('Suite', [
       'created-project',
@@ -527,6 +557,7 @@ describe('ProjectModal', () => {
       groupId: null,
       groupName: null,
       path: 'C:/work/app',
+      requestId: expect.any(String),
     });
     expect(createProjectWithGitSetupMock).not.toHaveBeenCalled();
   });

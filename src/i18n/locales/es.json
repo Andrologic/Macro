@@ -990,6 +990,8 @@
     "addExistingRepoToGlobalProject": "Agregar proyecto",
     "addSubproject": "Agregar proyecto",
     "saving": "Guardando...",
+    "cancellingAddProject": "Cancelando...",
+    "detectingWslGit": "Detectando Git en WSL...",
     "initGitTitle": "¿Inicializar Git?",
     "initialCommitTitle": "¿Crear el commit inicial?",
     "createDevelopTitle": "¿Crear develop?",

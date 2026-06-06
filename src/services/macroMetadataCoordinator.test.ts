@@ -73,6 +73,29 @@ describe('macroMetadataCoordinator', () => {
     });
   });
 
+  it('skips WSL workspace metadata flushes', async () => {
+    recordMacroMetadataMutation({
+      workspacePath: '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo',
+      kind: 'plan_updated',
+      label: 'wsl-plan',
+      importance: 'structural',
+    }, deps);
+
+    await flushMacroMetadata({
+      trigger: 'code_push',
+      workspacePaths: [
+        '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo',
+        '/repos/web',
+      ],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
+
   it('commits structural mutations immediately', async () => {
     recordMacroMetadataMutation({
       workspacePath: '/repos/web',

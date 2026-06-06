@@ -235,6 +235,31 @@ describe('macroSyncService', () => {
     });
   });
 
+  it('skips WSL repositories when syncing @macro metadata', async () => {
+    const service = createMacroSyncService({
+      tauriIpc: {
+        isTauriAvailable: () => true,
+        macroBranchEnsure: macroBranchEnsureMock,
+        macroBranchStatus: macroBranchStatusMock,
+        macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+        macroBranchPull: macroBranchPullMock,
+        macroBranchPush: macroBranchPushMock,
+      },
+      getAppState: () => createAppState(),
+      resolveTargets: async () => [
+        { repoPath: '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo', projectId: 'wsl' },
+        { repoPath: '/repos/api', projectId: 'api' },
+      ],
+      toServiceError,
+    });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
+  });
+
   it('blocks pull across all repositories when one target still requires a commit', async () => {
     macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
       workspacePath?.includes('web')

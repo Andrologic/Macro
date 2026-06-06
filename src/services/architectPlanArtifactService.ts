@@ -18,6 +18,7 @@ import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
+import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
@@ -267,7 +268,7 @@ const resolveWorkspacePaths = async (params: {
       activeRoot = null;
     }
   }
-  return unique([...(params.repoPaths || []), ...projectPaths, activeRoot]);
+  return filterNonWslProjectPaths(unique([...(params.repoPaths || []), ...projectPaths, activeRoot]));
 };
 
 const readJsonAtWorkspace = async <T>(

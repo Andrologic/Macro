@@ -113,6 +113,8 @@ export const services = {
   createNewProjectRepo: (
     data: Parameters<ServiceProvider['createNewProjectRepo']>[0]
   ) => callProviderMethod('createNewProjectRepo', data),
+  cancelProjectOperation: (requestId: string) =>
+    callProviderMethod('cancelProjectOperation', requestId),
   renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
     callProviderMethod('renameProjectGroup', data),
   createProjectGroup: (data: Parameters<ServiceProvider['createProjectGroup']>[0]) =>

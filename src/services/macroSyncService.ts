@@ -15,6 +15,7 @@ import {
   resolveTargetBranch,
   syncArchitectPlanChatFromConversation,
 } from './architectPlanService';
+import { isWslProjectPath } from './wslPaths';
 
 type MacroSyncResult = tauriIpc.MacroBranchSyncDto & {
   repositories?: MetadataSyncRepositoryStatus[];
@@ -141,6 +142,7 @@ const dedupeTargets = (targets: MetadataSyncTarget[]): MetadataSyncTarget[] =>
           repoPath: normalizeRepoPath(target.repoPath) || target.repoPath,
         }))
         .filter((target) => target.repoPath.trim().length > 0)
+        .filter((target) => !isWslProjectPath(target.repoPath))
         .map((target) => [target.repoPath, target] as const)
     ).values()
   );

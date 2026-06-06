@@ -117,6 +117,7 @@ export const detectProjectGitFlow = async (_data: {
 
 export const previewProjectGitSetup = async (_data: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> => remoteUnsupported('previewProjectGitSetup');
 
 export const createProject = async (_data: {
@@ -126,6 +127,7 @@ export const createProject = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectDto> => remoteUnsupported('createProject');
 
 export const createProjectWithGitSetup = async (_data: {
@@ -139,6 +141,7 @@ export const createProjectWithGitSetup = async (_data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createProjectWithGitSetup');
 
 export const createNewProjectRepo = async (_data: {
@@ -148,7 +151,11 @@ export const createNewProjectRepo = async (_data: {
   groupId: string | null;
   groupName?: string | null;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createNewProjectRepo');
+
+export const cancelProjectOperation = async (_requestId: string): Promise<boolean> =>
+  remoteUnsupported('cancelProjectOperation');
 
 export const importGitRepo = async (_data: {
   gitUrl: string;
@@ -357,6 +364,7 @@ export const provider: ServiceProvider = {
   createProject,
   createProjectWithGitSetup,
   createNewProjectRepo,
+  cancelProjectOperation,
   importGitRepo,
   renameProjectGroup,
   createProjectGroup,

@@ -328,9 +328,11 @@ export const sendChat = async (
 
 export const previewProjectGitSetup = async (data: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> => {
   return tauriIpc.workspacePreviewProjectGitSetup({
     path: data.path,
+    requestId: data.requestId ?? null,
   });
 };
 
@@ -341,6 +343,7 @@ export const createProject = async (data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
     name: data.name,
@@ -349,6 +352,7 @@ export const createProject = async (data: {
     groupName: data.groupName,
     path: data.path,
     gitFlowSettings: data.gitFlowSettings,
+    requestId: data.requestId ?? null,
   });
 
   return { project };
@@ -365,6 +369,7 @@ export const createProjectWithGitSetup = async (data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => {
   return tauriIpc.workspaceCreateProjectWithGitSetup({
     name: data.name,
@@ -377,6 +382,7 @@ export const createProjectWithGitSetup = async (data: {
     expectedRepoRootPath: data.expectedRepoRootPath ?? null,
     expectedSetupState: data.expectedSetupState,
     expectedRecommendedActionSequence: data.expectedRecommendedActionSequence,
+    requestId: data.requestId ?? null,
   });
 };
 
@@ -387,6 +393,7 @@ export const createNewProjectRepo = async (data: {
   groupId: string | null;
   groupName?: string | null;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => {
   return tauriIpc.workspaceCreateNewProjectRepo({
     repoName: data.repoName,
@@ -395,8 +402,12 @@ export const createNewProjectRepo = async (data: {
     groupId: data.groupId,
     groupName: data.groupName,
     gitFlowSettings: data.gitFlowSettings,
+    requestId: data.requestId ?? null,
   });
 };
+
+export const cancelProjectOperation = async (requestId: string): Promise<boolean> =>
+  tauriIpc.workspaceCancelProjectOperation(requestId);
 
 export const importGitRepo = async (data: {
   gitUrl: string;
@@ -661,6 +672,7 @@ export const provider: ServiceProvider = {
   createProject,
   createProjectWithGitSetup,
   createNewProjectRepo,
+  cancelProjectOperation,
   importGitRepo,
   renameProjectGroup,
   createProjectGroup,

@@ -9,6 +9,7 @@ use super::metadata::{
 };
 use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
+use crate::project_path::parse_wsl_unc_path;
 use chrono::DateTime;
 use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
@@ -604,6 +605,9 @@ async fn resolve_project_scopes(
         try_join_all(project_paths.into_iter().map(|(project_id, project_path)| {
             let git_state = git_state.clone();
             async move {
+                if parse_wsl_unc_path(&project_path).is_some() {
+                    return Ok::<_, BackendError>(None);
+                }
                 let resolved_repo_path = PathBuf::from(project_path);
                 let metadata_root_result = tokio::task::spawn_blocking({
                     let git_state = git_state.clone();
@@ -1314,6 +1318,9 @@ mod tests {
             git_setup_state: "ready".to_string(),
             is_read_only: false,
             read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
             metadata: ProjectMetadataDto {
                 description: String::new(),
                 tags: Vec::new(),
