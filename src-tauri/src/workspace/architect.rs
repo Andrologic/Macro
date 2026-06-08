@@ -587,9 +587,15 @@ async fn resolve_project_scopes(
         )
     };
 
+    let workspace_scope_project_id =
+        if normalized_scope_hint.len() == 1 && workspace_path.join(".git").exists() {
+            normalized_scope_hint.first().cloned()
+        } else {
+            None
+        };
     let workspace_scope = ArchitectRuntimeScope {
         scope_key: format!("workspace:{}", workspace_path.to_string_lossy()),
-        project_id: None,
+        project_id: workspace_scope_project_id,
         repo_path: Some(workspace_path.to_path_buf()),
         workspace_path: Some(workspace_path.to_path_buf()),
         metadata_root: metadata_root.to_path_buf(),
@@ -1457,6 +1463,65 @@ mod tests {
         assert_eq!(
             paths,
             vec![("project-solo".to_string(), "/repos/solo".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_plans_tags_physical_workspace_scope_with_single_project_hint() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let project_path = workspace.path().join("octan_sales");
+        let _repo = init_repo(&project_path);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+
+        let current_project_id = "project-octan-sales-1780653766405";
+        let stale_project_id = "project-lplr-app-1780329499166";
+        let plan_id = "refonte-catalogue-produit";
+        write_json(
+            &architect_plan_index_path(&metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![plan_summary(plan_id, stale_project_id)],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+
+        let listed = list_plans(
+            &project_path,
+            &metadata_root,
+            WorkspaceArchitectListPlansRequestDto {
+                branch_name: "main".to_string(),
+                include_deleted: false,
+                include_archived: false,
+                scoped_project_ids_hint: vec![current_project_id.to_string()],
+            },
+        )
+        .await
+        .expect("list plans from physical workspace scope");
+
+        assert_eq!(listed.plans.len(), 1);
+        assert_eq!(listed.plans[0].id, plan_id);
+        assert_eq!(
+            listed.plans[0].project_ids,
+            vec![stale_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0].available_project_ids,
+            vec![current_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0].missing_project_ids,
+            vec![stale_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0]
+                .replicas
+                .iter()
+                .map(|replica| replica.project_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some(current_project_id)]
         );
     }
 

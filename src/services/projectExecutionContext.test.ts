@@ -195,6 +195,47 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePath).toBe('/repos/lplr-app');
   });
 
+  it('prefers the current registry path over stale task repoPath snapshots', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'project-lplr-app-1780329499166',
+      name: 'octan_sales',
+      mountName: 'octan_sales',
+      path: '/repos/octan_sales',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [standaloneProject],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-renamed',
+          project_id: 'project-lplr-app-1780329499166',
+          project_ids: ['project-lplr-app-1780329499166'],
+          assigned_branch: 'feature/catalogue',
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780329499166',
+              branchName: 'feature/catalogue',
+              worktreeKey: 'branch-project-lplr-app-feature-catalogue',
+              repoPath: '/repos/lplr-app',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: 'project-lplr-app-1780329499166',
+      selectedTaskId: 'task-renamed',
+    });
+
+    expect(context.projectId).toBe('project-lplr-app-1780329499166');
+    expect(context.workspacePath).toBe('/repos/octan_sales');
+    expect(context.workspacePathsByProjectId).toEqual({
+      'project-lplr-app-1780329499166': '/repos/octan_sales',
+    });
+  });
+
   it('does not expose a truly unknown task project without a valid fallback', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({

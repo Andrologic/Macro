@@ -767,7 +767,7 @@ describe('FileChangesPanel', () => {
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
-  it('renders task artifacts as a changes project with new and inherited badges', async () => {
+  it('renders task artifacts as a changes project with produced and inherited badges', async () => {
     const plan = buildArtifactPlan();
     const entries = buildArtifactEntries();
     getArchitectPlanMock = mock(async () => plan);
@@ -796,8 +796,8 @@ describe('FileChangesPanel', () => {
     });
     expect(document.body.textContent).toContain('API contract');
     expect(document.body.textContent).toContain('Audit findings');
-    expect(document.body.textContent).toContain('new');
-    expect(document.body.textContent).toContain('hérité');
+    expect(document.body.textContent).toContain('Produced');
+    expect(document.body.textContent).toContain('Inherited');
     expect(document.body.textContent).toContain('Validated');
   });
 
@@ -838,7 +838,7 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Artifacts');
   });
 
-  it('shows expected artifact contracts as a plain empty-state hint', async () => {
+  it('shows expected artifact contracts as a compact empty-state count', async () => {
     const plan = buildArtifactPlan();
     getArchitectPlanMock = mock(async () => plan);
     listArtifactEntriesMock = mock(async () => []);
@@ -863,10 +863,10 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    expect(artifactSection?.textContent).toContain('Expected by this task: API contract');
+    expect(artifactSection?.textContent).toContain('1 expected');
+    expect(artifactSection?.textContent).not.toContain('Expected by this task: API contract');
     expect(artifactSection?.textContent).not.toContain('Expected artifacts');
     expect(artifactSection?.textContent).not.toContain('required');
-    expect(artifactSection?.textContent).toContain('API contract');
     expect(artifactSection?.textContent).toContain('No produced artifacts yet.');
   });
 

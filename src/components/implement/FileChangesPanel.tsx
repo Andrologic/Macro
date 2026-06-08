@@ -549,9 +549,6 @@ const ArtifactReviewItem: React.FC<ArtifactReviewItemProps> = ({
           >
             {isOwn ? labels.new : labels.inherited}
           </span>
-          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-            {artifact.kind}
-          </span>
           {entry.hasValidatedReview && (
             <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
               {labels.staged}
@@ -1670,8 +1667,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     validate: t('implement.artifacts.validateAction', 'Validate artifact'),
     unstage: t('implement.artifacts.unvalidateAction', 'Unvalidate'),
     revert: t('implement.revertAction', 'Revert'),
-    new: t('implement.artifacts.newBadge', 'new'),
-    inherited: t('implement.artifacts.inheritedBadge', 'hérité'),
+    new: t('implement.artifacts.newBadge', 'Produced'),
+    inherited: t('implement.artifacts.inheritedBadge', 'Inherited'),
   };
 
   if (isWorkspaceMissing) {
@@ -2193,8 +2190,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         </div>
                         {artifactContracts.length > 0 && (
                           <div className="mx-auto mt-1 max-w-[18rem] text-xs leading-relaxed text-muted-foreground/80">
-                            {t('implement.artifacts.expectedInline', 'Expected by this task: {{items}}', {
-                              items: artifactContracts.map((contract) => contract.title).join(', '),
+                            {t('implement.artifacts.expectedCount', '{{count}} expected', {
+                              count: artifactContracts.length,
                             })}
                           </div>
                         )}
@@ -2204,8 +2201,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       artifactEntries.length > 0 &&
                       missingArtifactContracts.length > 0 && (
                         <div className="px-2 pb-1 text-xs leading-relaxed text-muted-foreground/80">
-                          {t('implement.artifacts.stillExpectedInline', 'Still expected: {{items}}', {
-                            items: missingArtifactContracts.map((contract) => contract.title).join(', '),
+                          {t('implement.artifacts.stillExpectedCount', '{{count}} still expected', {
+                            count: missingArtifactContracts.length,
                           })}
                         </div>
                       )}

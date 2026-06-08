@@ -32,5 +32,13 @@ describe('contextOverflow', () => {
         providerMessage: 'context length is only 200000 tokens',
       }),
     ).toBe(200_000);
+    expect(
+      extractContextLimitTokensFromErrorLike({
+        providerMessage: 'LM Studio rejected the request because the context window is 32,768 tokens.',
+      }),
+    ).toBe(32_768);
+    expect(
+      extractContextLimitTokensFromMessage('llama.cpp error: n_ctx = 8192'),
+    ).toBe(8_192);
   });
 });

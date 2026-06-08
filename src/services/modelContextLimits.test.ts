@@ -131,6 +131,17 @@ describe('modelContextLimits', () => {
     expect(budget.usableContextTokens).toBe(110_000);
   });
 
+  it('keeps small fallback windows usable when output metadata is unknown', () => {
+    const budget = resolveUsableContextTokens({
+      contextTokens: 16_000,
+    });
+
+    expect(budget.maxOutputTokens).toBe(OUTPUT_TOKEN_MAX);
+    expect(budget.outputReserveTokens).toBe(4_000);
+    expect(budget.reservedTokens).toBe(4_000);
+    expect(budget.usableContextTokens).toBe(12_000);
+  });
+
   it('lets an explicit reserved token budget win', () => {
     const budget = resolveUsableContextTokens({
       contextTokens: 200_000,

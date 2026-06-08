@@ -23,6 +23,19 @@ export interface ProviderModel {
   max_output_tokens?: number;
   output_tokens?: number;
   max_completion_tokens?: number;
+  max_context_length?: number;
+  loaded_instances?: Array<{
+    id?: string;
+    config?: {
+      context_length?: number;
+    };
+  }>;
+  capabilities?: {
+    reasoning?: {
+      allowed_options?: string[];
+      default?: string;
+    };
+  };
   top_provider?: {
     context_length?: number;
     max_completion_tokens?: number;
@@ -56,6 +69,7 @@ export interface FetchModelsOptions {
   baseUrl: string;
   apiKey?: string;
   providerId: string;
+  providerType?: string;
   timeout?: number;
 }
 
@@ -132,8 +146,19 @@ const normalizeProviderDefaultReasoningEffort = (entry: ProviderModel): string |
   return undefined;
 };
 
-const isLocalProvider = (providerId: string): boolean =>
-  providerId === 'lmstudio' || providerId === 'ollama';
+const normalizeProviderKind = (value?: string | null): string =>
+  (value || '').trim().toLowerCase();
+
+const isLmStudioProvider = (providerId: string, providerType?: string): boolean =>
+  normalizeProviderKind(providerId) === 'lmstudio' ||
+  normalizeProviderKind(providerType) === 'lmstudio';
+
+const isOllamaProvider = (providerId: string, providerType?: string): boolean =>
+  normalizeProviderKind(providerId) === 'ollama' ||
+  normalizeProviderKind(providerType) === 'ollama';
+
+const isLocalProvider = (providerId: string, providerType?: string): boolean =>
+  isLmStudioProvider(providerId, providerType) || isOllamaProvider(providerId, providerType);
 
 const buildProviderHeaders = (params: {
   apiKey?: string;
@@ -157,8 +182,17 @@ const buildProviderHeaders = (params: {
   return headers;
 };
 
-const getEffectiveTimeout = (providerId: string, timeout: number): number =>
-  isLocalProvider(providerId) ? Math.max(timeout, 15000) : timeout;
+const getEffectiveTimeout = (
+  providerId: string,
+  timeout: number,
+  providerType?: string,
+): number =>
+  isLocalProvider(providerId, providerType) ? Math.max(timeout, 15000) : timeout;
+
+const toPositiveInteger = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : undefined;
 
 const normalizeProviderModels = (data: unknown): ProviderModel[] => {
   if (!data || typeof data !== 'object') {
@@ -198,6 +232,15 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
       max_output_tokens: entry.max_output_tokens,
       output_tokens: entry.output_tokens,
       max_completion_tokens: entry.max_completion_tokens,
+      ...(typeof entry.max_context_length === 'number'
+        ? { max_context_length: entry.max_context_length }
+        : {}),
+      ...(Array.isArray(entry.loaded_instances)
+        ? { loaded_instances: entry.loaded_instances }
+        : {}),
+      ...(entry.capabilities && typeof entry.capabilities === 'object'
+        ? { capabilities: entry.capabilities }
+        : {}),
       ...(topProvider ? { top_provider: topProvider } : {}),
       ...(Array.isArray(entry.supported_parameters)
         ? {
@@ -324,13 +367,231 @@ const readResponseErrorText = async (response: Response): Promise<string> => {
   }
 };
 
+const stripOpenAiCompatibilitySuffix = (baseUrl: string): string => {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  return trimmed.replace(/\/v1$/i, '');
+};
+
+const requestModelsJson = async (params: {
+  url: string;
+  headers: Record<string, string>;
+  timeout: number;
+  signal: AbortSignal;
+}): Promise<{ response: Response; data?: unknown; errorText?: string }> => {
+  const response = await tauriFetch(params.url, {
+    method: 'GET',
+    headers: params.headers,
+    connectTimeout: params.timeout,
+    signal: params.signal,
+  });
+
+  if (!response.ok) {
+    return {
+      response,
+      errorText: await readResponseErrorText(response),
+    };
+  }
+
+  return {
+    response,
+    data: await response.json(),
+  };
+};
+
+const stringValue = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+const normalizeLmStudioV1Models = (payload: unknown): ProviderModel[] => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('LM Studio native models response payload is not an object.');
+  }
+  const models = (payload as { models?: unknown }).models;
+  if (!Array.isArray(models)) {
+    throw new Error('LM Studio native models response did not include a models array.');
+  }
+
+  return models.flatMap((rawModel) => {
+    const model = (rawModel ?? {}) as {
+      type?: unknown;
+      publisher?: unknown;
+      key?: unknown;
+      display_name?: unknown;
+      max_context_length?: unknown;
+      loaded_instances?: unknown;
+      capabilities?: unknown;
+    };
+    if (stringValue(model.type)?.toLowerCase() !== 'llm') {
+      return [];
+    }
+
+    const key = stringValue(model.key);
+    if (!key) return [];
+    const displayName = stringValue(model.display_name) ?? key;
+    const loadedInstances = Array.isArray(model.loaded_instances)
+      ? model.loaded_instances
+          .map((instance) => {
+            const record = (instance ?? {}) as {
+              id?: unknown;
+              config?: { context_length?: unknown };
+            };
+            return {
+              id: stringValue(record.id),
+              config: {
+                context_length: toPositiveInteger(record.config?.context_length),
+              },
+            };
+          })
+          .filter((instance) => instance.id)
+      : [];
+    const maxContextLength = toPositiveInteger(model.max_context_length);
+    const capabilities =
+      model.capabilities &&
+      typeof model.capabilities === 'object' &&
+      !Array.isArray(model.capabilities)
+        ? (model.capabilities as ProviderModel['capabilities'])
+        : undefined;
+    const reasoningEfforts = normalizeStringArray(
+      capabilities?.reasoning?.allowed_options,
+    );
+    const defaultReasoningEffort = stringValue(capabilities?.reasoning?.default);
+
+    if (loadedInstances.length === 0) {
+      return [
+        {
+          id: key,
+          name: displayName,
+          owned_by: stringValue(model.publisher),
+          ...(maxContextLength ? { max_context_length: maxContextLength } : {}),
+          ...(capabilities ? { capabilities } : {}),
+          ...(reasoningEfforts.length > 0
+            ? { supported_reasoning_efforts: reasoningEfforts }
+            : {}),
+          ...(defaultReasoningEffort
+            ? { default_reasoning_effort: defaultReasoningEffort }
+            : {}),
+        },
+      ];
+    }
+
+    return loadedInstances.map((instance) => ({
+      id: instance.id ?? key,
+      name: displayName,
+      owned_by: stringValue(model.publisher),
+      context_length: instance.config.context_length,
+      loaded_instances: [instance],
+      ...(maxContextLength ? { max_context_length: maxContextLength } : {}),
+      ...(capabilities ? { capabilities } : {}),
+      ...(reasoningEfforts.length > 0
+        ? { supported_reasoning_efforts: reasoningEfforts }
+        : {}),
+      ...(defaultReasoningEffort
+        ? { default_reasoning_effort: defaultReasoningEffort }
+        : {}),
+    }));
+  });
+};
+
+const normalizeLmStudioV0Models = (payload: unknown): ProviderModel[] => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('LM Studio v0 models response payload is not an object.');
+  }
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) {
+    throw new Error('LM Studio v0 models response did not include a data array.');
+  }
+
+  return data.flatMap((rawModel) => {
+    const model = (rawModel ?? {}) as {
+      id?: unknown;
+      type?: unknown;
+      publisher?: unknown;
+      max_context_length?: unknown;
+    };
+    if (stringValue(model.type)?.toLowerCase() !== 'llm') {
+      return [];
+    }
+    const id = stringValue(model.id);
+    if (!id) return [];
+    const maxContextLength = toPositiveInteger(model.max_context_length);
+    return [
+      {
+        id,
+        name: id,
+        owned_by: stringValue(model.publisher),
+        ...(maxContextLength ? { max_context_length: maxContextLength } : {}),
+      },
+    ];
+  });
+};
+
+const probeLmStudioNativeModels = async (params: {
+  baseUrl: string;
+  headers: Record<string, string>;
+  timeout: number;
+  signal: AbortSignal;
+}): Promise<ProviderProbeResult | null> => {
+  const nativeBaseUrl = stripOpenAiCompatibilitySuffix(params.baseUrl);
+  const attempts = [
+    {
+      url: `${nativeBaseUrl}/api/v1/models`,
+      normalize: normalizeLmStudioV1Models,
+    },
+    {
+      url: `${nativeBaseUrl}/api/v0/models`,
+      normalize: normalizeLmStudioV0Models,
+    },
+  ];
+
+  for (const attempt of attempts) {
+    devLogger.log(`[lmstudio] Fetching native model metadata from ${attempt.url}`);
+    try {
+      const { response, data, errorText } = await requestModelsJson({
+        url: attempt.url,
+        headers: params.headers,
+        timeout: params.timeout,
+        signal: params.signal,
+      });
+
+      if (!response.ok) {
+        if ([404, 405, 422].includes(response.status)) {
+          continue;
+        }
+        return buildFailureResult({
+          status: 'unreachable',
+          source: 'models_endpoint',
+          message: `Failed to fetch LM Studio native models: ${response.status} - ${errorText}`,
+          errorKind: response.status === 401 || response.status === 403 ? 'auth' : 'unknown',
+          httpStatus: response.status,
+        });
+      }
+
+      const models = attempt.normalize(data);
+      return {
+        success: true,
+        status: 'reachable',
+        source: 'models_endpoint',
+        message: `Connected! Found ${models.length} LM Studio models.`,
+        models,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('aborted') || message.includes('Request cancelled')) {
+        throw error;
+      }
+      continue;
+    }
+  }
+
+  return null;
+};
+
 /**
  * Fetch models from an OpenAI-compatible /v1/models endpoint
  */
 export async function probeModelsEndpoint(
   options: FetchModelsOptions
 ): Promise<ProviderProbeResult> {
-  const { baseUrl, apiKey, providerId, timeout = 10000 } = options;
+  const { baseUrl, apiKey, providerId, providerType, timeout = 10000 } = options;
   let didTimeout = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -343,11 +604,11 @@ export async function probeModelsEndpoint(
     });
   }
 
-  const effectiveTimeout = getEffectiveTimeout(providerId, timeout);
+  const effectiveTimeout = getEffectiveTimeout(providerId, timeout, providerType);
   const headers = buildProviderHeaders({ apiKey, providerId });
 
   // Log connection attempt for debugging
-  if (isLocalProvider(providerId)) {
+  if (isLocalProvider(providerId, providerType)) {
     devLogger.log(`[${providerId}] Fetching models from ${baseUrl}/models`);
   } else if (resolveProviderCapabilities({ providerId, baseUrl }).providerId === 'opencode-go') {
     devLogger.log('[opencode_http_probe] Fetching OpenCode models over HTTP');
@@ -365,6 +626,20 @@ export async function probeModelsEndpoint(
     }, effectiveTimeout);
 
     try {
+      if (isLmStudioProvider(providerId, providerType)) {
+        const nativeResult = await probeLmStudioNativeModels({
+          baseUrl,
+          headers,
+          timeout: effectiveTimeout,
+          signal,
+        });
+        if (nativeResult) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+          return nativeResult;
+        }
+      }
+
       const response = await tauriFetch(`${baseUrl}/models`, {
         method: 'GET',
         headers,
@@ -448,7 +723,7 @@ export async function probeModelsEndpoint(
 export async function probeChatCompletionsEndpoint(
   options: FetchModelsOptions & { modelId: string }
 ): Promise<ProviderProbeResult> {
-  const { baseUrl, apiKey, providerId, modelId, timeout = 10000 } = options;
+  const { baseUrl, apiKey, providerId, providerType, modelId, timeout = 10000 } = options;
   let didTimeout = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -462,7 +737,7 @@ export async function probeChatCompletionsEndpoint(
     });
   }
 
-  const effectiveTimeout = getEffectiveTimeout(providerId, timeout);
+  const effectiveTimeout = getEffectiveTimeout(providerId, timeout, providerType);
   const headers = buildProviderHeaders({ apiKey, providerId });
 
   if (resolveProviderCapabilities({ providerId, baseUrl }).providerId === 'opencode-go') {

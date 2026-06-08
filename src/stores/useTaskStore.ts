@@ -422,7 +422,7 @@ const resolveTaskRepositoryPath = (
   projectId: string,
   explicitRepoPath?: string | null
 ): string | null =>
-  explicitRepoPath || useAppStore.getState().getProjectById(projectId)?.path || null;
+  useAppStore.getState().getProjectById(projectId)?.path || explicitRepoPath || null;
 
 const getExecutionTargetsWithRepoPaths = (
   task: CatalogedImplementTask

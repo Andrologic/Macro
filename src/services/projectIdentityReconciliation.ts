@@ -188,13 +188,23 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
     ...(plan.projectIds ?? []),
     plan.projectId,
   ]);
-  const hasUnknownProjectId = persistedProjectIds.some((projectId) => !knownProjectIdSet.has(projectId));
+  const childProjectIds = normalizeExecutionProjectIds([
+    ...(plan.nodes ?? []).flatMap((node) => [
+      ...(node.projectIds ?? []),
+      node.projectId,
+    ]),
+    ...(plan.predictedBranches ?? []).map((branch) => branch.projectId),
+  ]);
+  const hasUnknownProjectId = normalizeExecutionProjectIds([
+    ...persistedProjectIds,
+    ...childProjectIds,
+  ]).some((projectId) => !knownProjectIdSet.has(projectId));
   if (!hasUnknownProjectId) {
     return plan;
   }
 
   const replacementProjectIds = resolveExecutionProjectIds({
-    persistedIds: persistedProjectIds,
+    persistedIds: persistedProjectIds.length > 0 ? persistedProjectIds : childProjectIds,
     availableProjectIds: plan.availableProjectIds,
     replicas: plan.replicas,
     scopedProjectIds: scope.scopedProjectIds,

@@ -82,6 +82,36 @@ pub struct WorkspaceRecoverMissingMetadataRequestDto {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+    #[serde(default)]
+    pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
+    #[serde(default, rename = "maxChildrenPerRoot")]
+    pub max_children_per_root: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectRegistryReconcileSkippedDto {
+    pub project_id: Option<String>,
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectRegistryReconcileReportDto {
+    pub status: String,
+    pub added_projects: Vec<ProjectDto>,
+    pub skipped_projects: Vec<WorkspaceProjectRegistryReconcileSkippedDto>,
+    pub duplicate_paths: Vec<String>,
+    pub invalid_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceMetadataRecoveryReportDto {
     pub status: String,
     #[serde(default, rename = "restoredCommit")]

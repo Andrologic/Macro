@@ -5,6 +5,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskCatalogDto } from "./contracts/dtos";
+import {
+  getWorkspaceBasePath,
+  remoteRequest,
+  resolveRemoteConfig,
+} from "./providers/remoteHttp";
 import type {
   PredictedGitTree,
   GitCommit,
@@ -547,6 +552,20 @@ export interface WorkspaceMetadataRecoveryReportDto {
   pullAttempted: boolean;
   pullSucceeded: boolean;
   message?: string | null;
+}
+
+export interface WorkspaceProjectRegistryReconcileSkippedDto {
+  projectId?: string | null;
+  path: string;
+  reason: string;
+}
+
+export interface WorkspaceProjectRegistryReconcileReportDto {
+  status: "unchanged" | "reconciled" | string;
+  addedProjects: Project[];
+  skippedProjects: WorkspaceProjectRegistryReconcileSkippedDto[];
+  duplicatePaths: string[];
+  invalidPaths: string[];
 }
 
 export interface DbProviderModelInput {
@@ -2312,13 +2331,26 @@ export async function workspaceArchitectListPlans(params: {
   includeArchived?: boolean;
   scopedProjectIdsHint?: string[];
 }): Promise<WorkspaceArchitectPlanListDto> {
+  const request = {
+    branchName: params.branchName,
+    includeDeleted: params.includeDeleted ?? false,
+    includeArchived: params.includeArchived ?? false,
+    scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+  };
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanListDto>(
+        `${getWorkspaceBasePath(config)}/architect/plans/list`,
+        {
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanListDto>("workspace_architect_list_plans", {
-    request: {
-      branchName: params.branchName,
-      includeDeleted: params.includeDeleted ?? false,
-      includeArchived: params.includeArchived ?? false,
-      scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
-    },
+    request,
   });
 }
 
@@ -2328,15 +2360,28 @@ export async function workspaceArchitectActivatePlanHead(params: {
   summaryHint?: WorkspaceArchitectPlanSummaryDto | null;
   scopedProjectIdsHint?: string[];
 }): Promise<WorkspaceArchitectPlanActivationHeadDto | null> {
+  const request = {
+    branchName: params.branchName,
+    planId: params.planId,
+    summaryHint: params.summaryHint ?? null,
+    scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+  };
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanActivationHeadDto | null>(
+        `${getWorkspaceBasePath(config)}/architect/plans/activate-head`,
+        {
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanActivationHeadDto | null>(
     "workspace_architect_activate_plan_head",
     {
-      request: {
-        branchName: params.branchName,
-        planId: params.planId,
-        summaryHint: params.summaryHint ?? null,
-        scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
-      },
+      request,
     },
   );
 }
@@ -2345,6 +2390,18 @@ export async function workspaceArchitectActivatePlanChat(params: {
   branchName: string;
   planId: string;
 }): Promise<WorkspaceArchitectPlanTranscriptDto | null> {
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanTranscriptDto | null>(
+        `${getWorkspaceBasePath(config)}/architect/plans/activate-chat`,
+        {
+          method: "POST",
+          body: JSON.stringify(params),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanTranscriptDto | null>(
     "workspace_architect_activate_plan_chat",
     {
@@ -2651,6 +2708,32 @@ export async function workspaceRecoverMissingMetadata(params: {
       request: {
         attemptPull: params.attemptPull,
         projects: params.projects,
+      },
+    },
+  );
+}
+
+export async function workspaceReconcileProjectRegistryFromHints(params: {
+  projects: WorkspaceMetadataRecoveryHintDto[];
+}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
+  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
+    "workspace_reconcile_project_registry_from_hints",
+    {
+      request: {
+        projects: params.projects,
+      },
+    },
+  );
+}
+
+export async function workspaceReconcileProjectRegistryFromKnownParentDirs(params: {
+  maxChildrenPerRoot?: number;
+} = {}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
+  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
+    "workspace_reconcile_project_registry_from_known_parent_dirs",
+    {
+      request: {
+        maxChildrenPerRoot: params.maxChildrenPerRoot ?? null,
       },
     },
   );
@@ -3337,6 +3420,10 @@ export function isTauriAvailable(): boolean {
   };
 
   return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+}
+
+export function isRemoteBackendAvailable(): boolean {
+  return resolveRemoteConfig() !== null;
 }
 
 /**

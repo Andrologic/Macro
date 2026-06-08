@@ -254,8 +254,8 @@ export const resolveProjectExecutionContext = (
     const resolvedPath =
       workspacePathOverride ||
       branchWorktree ||
-      cleanString(matchingTarget?.repoPath) ||
       cleanString(projectById.get(scopedProjectId)?.path) ||
+      cleanString(matchingTarget?.repoPath) ||
       null;
 
     if (resolvedPath) {

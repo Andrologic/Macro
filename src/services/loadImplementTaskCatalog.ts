@@ -19,6 +19,7 @@ import { readArchitectPlanRuntime } from './architectPlanRuntimeService';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { buildPlanFinalizationTaskId } from './planFinalization';
 import {
+  collectKnownProjects,
   collectKnownProjectIds,
   projectRefMatchesExecutionScope,
   retargetPlanForExecution,
@@ -125,6 +126,10 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     )
   );
 
+  const knownProjectById = new Map(
+    collectKnownProjects(appState).map((project) => [project.id, project])
+  );
+
   const draftPlan = {
     id: activePlanId,
     slug:
@@ -151,9 +156,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
       draftPlan,
       {
         getProjectGitFlowSettings: (projectId) =>
-          appState.projectGroups
-            .flatMap((group) => group.projects)
-            .find((project) => project.id === projectId)?.gitFlowSettings ?? null,
+          knownProjectById.get(projectId)?.gitFlowSettings ?? null,
       }
     ),
   };

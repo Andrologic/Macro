@@ -227,6 +227,101 @@ describe('providerApi fetchModelsFromProvider', () => {
     });
   });
 
+  it('uses LM Studio native model metadata before the OpenAI-compatible endpoint', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      expect(String(input)).toBe('http://localhost:1234/api/v1/models');
+      return new Response(
+        JSON.stringify({
+          models: [
+            {
+              type: 'llm',
+              publisher: 'qwen',
+              key: 'qwen/qwen3-coder',
+              display_name: 'Qwen3 Coder',
+              loaded_instances: [
+                {
+                  id: 'qwen/qwen3-coder',
+                  config: { context_length: 32768 },
+                },
+              ],
+              max_context_length: 131072,
+            },
+            {
+              type: 'embedding',
+              key: 'text-embedding',
+              display_name: 'Embedding',
+              max_context_length: 2048,
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      providerId: 'lmstudio',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({
+      id: 'qwen/qwen3-coder',
+      name: 'Qwen3 Coder',
+      context_length: 32768,
+      max_context_length: 131072,
+    });
+  });
+
+  it('falls back to LM Studio v0 metadata when the native v1 endpoint is unavailable', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      if (String(input) === 'http://localhost:1234/api/v1/models') {
+        return new Response('missing', { status: 404 });
+      }
+      expect(String(input)).toBe('http://localhost:1234/api/v0/models');
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            {
+              id: 'llama-3.1-8b',
+              type: 'llm',
+              publisher: 'meta',
+              max_context_length: 131072,
+            },
+            {
+              id: 'nomic-embed',
+              type: 'embeddings',
+              max_context_length: 2048,
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      providerId: 'lmstudio',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toEqual([
+      expect.objectContaining({
+        id: 'llama-3.1-8b',
+        max_context_length: 131072,
+      }),
+    ]);
+  });
+
   it('falls back to chat completions when the models endpoint is unsupported', async () => {
     tauriFetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (String(input).endsWith('/models')) {

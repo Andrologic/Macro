@@ -14,6 +14,11 @@ import {
   updateMCPServerSettings,
   updateToolSettings,
 } from './remote';
+import {
+  workspaceArchitectActivatePlanChat,
+  workspaceArchitectActivatePlanHead,
+  workspaceArchitectListPlans,
+} from '../tauriIpc';
 
 type FetchCall = {
   url: string;
@@ -173,6 +178,61 @@ describe('remote provider', () => {
     expect(result.tasks.length).toBe(1);
     expect(result.source).toBe('fallback');
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/api/v1/workspace/tasks');
+  });
+
+  it('maps Architect runtime endpoints through the remote backend when Tauri is unavailable', async () => {
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_API_PREFIX', '/api/v1');
+    setEnv('VITE_REMOTE_WORKSPACE_ID', 'ws_main');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      const urlText = String(url);
+      if (urlText.endsWith('/architect/plans/list')) {
+        return jsonResponse({
+          activePlanId: 'plan-1',
+          plans: [],
+        });
+      }
+      if (urlText.endsWith('/architect/plans/activate-head')) {
+        return jsonResponse(null);
+      }
+      return jsonResponse({
+        planId: 'plan-1',
+        targetBranch: 'main',
+        transcriptRevision: null,
+        messageCount: 0,
+        messages: [],
+      });
+    }) as unknown as typeof fetch;
+
+    await workspaceArchitectListPlans({
+      branchName: 'main',
+      includeDeleted: true,
+      includeArchived: true,
+      scopedProjectIdsHint: ['project-octan-sales'],
+    });
+    await workspaceArchitectActivatePlanHead({
+      branchName: 'main',
+      planId: 'plan-1',
+      scopedProjectIdsHint: ['project-octan-sales'],
+    });
+    await workspaceArchitectActivatePlanChat({
+      branchName: 'main',
+      planId: 'plan-1',
+    });
+
+    expect(fetchCalls.map((call) => call.url)).toEqual([
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/architect/plans/list',
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/architect/plans/activate-head',
+      'http://127.0.0.1:8787/api/v1/workspaces/ws_main/architect/plans/activate-chat',
+    ]);
+    expect(JSON.parse(String(fetchCalls[0].init?.body))).toMatchObject({
+      branchName: 'main',
+      includeDeleted: true,
+      includeArchived: true,
+      scopedProjectIdsHint: ['project-octan-sales'],
+    });
   });
 
   it('encodes project id for git tree and commit endpoints', async () => {

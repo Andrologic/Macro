@@ -67,9 +67,15 @@ const sortModelsByName = (models: AIModel[]): AIModel[] =>
     (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
   );
 
-type ProviderModelRefreshReason = 'boot' | 'provider_selection' | 'manual';
+type ProviderModelRefreshReason =
+  | 'boot'
+  | 'provider_selection'
+  | 'model_selection'
+  | 'pre_send'
+  | 'manual';
 
 const MODEL_REFRESH_SELECTION_COOLDOWN_MS = 5 * 60 * 1000;
+const MODEL_CONTEXT_METADATA_STALE_MS = 5 * 60 * 1000;
 const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
 const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
 
@@ -172,6 +178,20 @@ const modelContextFieldsChanged = (left: AIModel, right: AIModel): boolean =>
   left.outputLimitTokens !== right.outputLimitTokens ||
   left.contextWindowSource !== right.contextWindowSource ||
   left.contextLimitsUpdatedAt !== right.contextLimitsUpdatedAt;
+
+const modelContextMetadataIsStale = (model: AIModel): boolean => {
+  if (!model.contextLimitsUpdatedAt) return true;
+  const updatedAt = Date.parse(model.contextLimitsUpdatedAt);
+  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > MODEL_CONTEXT_METADATA_STALE_MS;
+};
+
+const shouldRefreshModelContextMetadata = (model: AIModel | undefined): boolean => {
+  if (!model) return true;
+  if (model.contextWindowSource === 'user_override') return false;
+  if (!model.contextWindowTokens || !model.contextWindowSource) return true;
+  if (model.contextWindowSource === 'macro_fallback') return true;
+  return model.contextWindowSource === 'provider_metadata' && modelContextMetadataIsStale(model);
+};
 
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
   const enabled = models.find((m) => m.isEnabled !== false);
@@ -643,6 +663,11 @@ interface ProviderStore {
     providerId: string,
     reason: ProviderModelRefreshReason
   ) => Promise<AIModel[]>;
+  ensureSelectedModelContextMetadata: (
+    providerId: string,
+    modelId: string,
+    reason: ProviderModelRefreshReason
+  ) => Promise<AIModel[]>;
   refreshLoadedModelContextCatalog: (providerId?: string) => Promise<void>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
@@ -661,6 +686,11 @@ interface ProviderStore {
   resetProviderModelContextOverflowLimit: (
     providerId: string,
     modelId: string,
+  ) => Promise<void>;
+  setProviderModelContextWindowOverride: (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number | null,
   ) => Promise<void>;
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
@@ -800,7 +830,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const now = Date.now();
     const lastStartedAt = lastModelRefreshStartedAtByProviderId.get(providerId) ?? 0;
     if (
-      reason === 'provider_selection' &&
+      reason !== 'manual' &&
       lastStartedAt > 0 &&
       now - lastStartedAt < MODEL_REFRESH_SELECTION_COOLDOWN_MS
     ) {
@@ -830,6 +860,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     modelRefreshInFlightByProviderId.set(providerId, refreshPromise);
     return refreshPromise;
+  },
+
+  ensureSelectedModelContextMetadata: async (providerId, modelId, reason) => {
+    const provider = get().providerConfigs.find((candidate) => candidate.id === providerId);
+    const model = (get().modelsByProvider[providerId] || []).find(
+      (candidate) => candidate.id === modelId,
+    );
+
+    if (!provider || !providerHasCredentials(provider)) {
+      return get().modelsByProvider[providerId] || [];
+    }
+    if (!shouldRefreshModelContextMetadata(model)) {
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    return get().refreshModelsForProviderIfNeeded(providerId, reason);
   },
 
   refreshLoadedModelContextCatalog: async (providerId?: string) => {
@@ -1268,6 +1314,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         baseUrl: config.baseUrl,
         apiKey,
         providerId: config.providerType,
+        providerType: config.providerType,
       });
 
       if (!result.success) {
@@ -1848,6 +1895,84 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     });
   },
 
+  setProviderModelContextWindowOverride: async (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number | null,
+  ) => {
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel) return;
+
+    const providerConfig = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    );
+    const normalizedTokens =
+      typeof contextWindowTokens === 'number' &&
+      Number.isFinite(contextWindowTokens) &&
+      contextWindowTokens > 0
+        ? Math.trunc(contextWindowTokens)
+        : null;
+    if (contextWindowTokens !== null && !normalizedTokens) {
+      throw new Error('Context window must be a positive token count.');
+    }
+
+    const {
+      contextWindowTokens: _overrideContextWindowTokens,
+      contextWindowSource: _overrideContextWindowSource,
+      contextLimitsUpdatedAt: _overrideContextLimitsUpdatedAt,
+      ...baseModel
+    } = currentModel;
+    const nextModel: AIModel = normalizedTokens
+      ? {
+          ...currentModel,
+          contextWindowTokens: normalizedTokens,
+          contextWindowSource: 'user_override',
+          contextLimitsUpdatedAt: new Date().toISOString(),
+        }
+      : enrichModelWithCatalogContextLimits(baseModel, {
+          providerType: providerConfig?.providerType,
+          providerId,
+          baseUrl: providerConfig?.baseUrl,
+        });
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const providerType = state.providerConfigs.find(
+        (provider) => provider.id === providerId,
+      )?.providerType;
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
+
+    if (!normalizedTokens && providerConfig && providerHasCredentials(providerConfig)) {
+      void get().refreshModelsForProviderIfNeeded(providerId, 'manual');
+    }
+  },
+
   deleteManualModel: async (providerId: string, modelId: string) => {
     if (tauriIpc.isTauriAvailable()) {
       const updated = await tauriIpc.deleteManualModel({ providerId, modelId });
@@ -2086,6 +2211,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         requested: state.selectedReasoningEffort,
       }),
     });
+    if (state.selectedProviderId) {
+      void get().ensureSelectedModelContextMetadata(
+        state.selectedProviderId,
+        modelId,
+        'model_selection',
+      );
+    }
   },
 
   selectReasoningEffort: (effort: ReasoningEffort | null) => {
@@ -2877,6 +3009,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       baseUrl: config.baseUrl,
       apiKey,
       providerId: config.providerType,
+      providerType: config.providerType,
       preferredModelId: probeModels.preferredModelId,
       modelIds: probeModels.modelIds,
       timeout: 5000,

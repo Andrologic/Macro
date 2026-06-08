@@ -81,7 +81,22 @@ async fn resolve_workspace_for_path(
             .map_err(to_join_error);
     match resolved {
         Ok(Ok(metadata_root)) => Ok(metadata_root),
-        Ok(Err(BackendError::GitRepositoryNotFound { message })) => {
+        Ok(Err(error)) => {
+            let error_message = error.to_string();
+            if let Some(metadata_worktree) =
+                crate::git::find_existing_macro_metadata_worktree_root(&base_workspace_for_fallback)
+            {
+                tracing::warn!(
+                    action = "workspace_fs_metadata_root_existing_worktree_fallback",
+                    workspace_path = %base_workspace_for_fallback.display(),
+                    fallback_path = %metadata_worktree.display(),
+                    reason = %error_message
+                );
+                return Ok(metadata_worktree);
+            }
+            let BackendError::GitRepositoryNotFound { message } = error else {
+                return Err(error);
+            };
             let fallback = base_workspace_for_fallback.join(".macro");
             tracing::warn!(
                 action = "workspace_fs_metadata_root_fallback",
@@ -91,7 +106,6 @@ async fn resolve_workspace_for_path(
             );
             Ok(fallback)
         }
-        Ok(Err(error)) => Err(error),
         Err(error) => Err(error),
     }
 }
@@ -2033,6 +2047,51 @@ mod tests {
 
         assert!(resolved.starts_with(&explicit_repo));
         assert!(resolved.ends_with(Path::new("macro-metadata-worktree")));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_workspace_for_path_uses_existing_metadata_worktree_when_repo_open_fails()
+    {
+        let default_workspace = setup_empty_workspace();
+        let explicit_repo = setup_empty_workspace();
+        let repo = init_git_repo(explicit_repo.path());
+        let git_dir = repo.path().to_path_buf();
+        let metadata_worktree = git_dir.join("macro-metadata-worktree");
+        fs::create_dir_all(&metadata_worktree).expect("create metadata worktree");
+        fs::write(
+            metadata_worktree.join(".git"),
+            "gitdir: ../worktrees/macro-metadata\n",
+        )
+        .expect("write metadata gitfile");
+        {
+            let mut config = fs::OpenOptions::new()
+                .append(true)
+                .open(git_dir.join("config"))
+                .expect("open git config");
+            writeln!(
+                config,
+                "\n[extensions]\n\trelativeWorktrees = true\n\tworktreeConfig = true"
+            )
+            .expect("write relative worktree extension");
+        }
+        drop(repo);
+
+        let resolved = resolve_workspace_for_path(
+            default_workspace.path().to_path_buf(),
+            GitState::new(),
+            Some(explicit_repo.path().to_path_buf()),
+            "branches/develop/plans/index.json",
+            None,
+            Some("metadata"),
+        )
+        .await
+        .expect("resolve metadata workspace");
+
+        let resolved = resolved.canonicalize().expect("canonical resolved path");
+        let expected = metadata_worktree
+            .canonicalize()
+            .expect("canonical metadata worktree");
+        assert_eq!(resolved, expected);
     }
 
     #[tokio::test]

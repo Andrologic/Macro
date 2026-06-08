@@ -303,7 +303,8 @@ export const normalizeProjectRegistry = (params: {
 
 export const reconcileRememberedProjects = (
   projectRegistry: ProjectRegistry | ProjectGroup[],
-  rememberedProjects: RememberedProjectRecord[]
+  rememberedProjects: RememberedProjectRecord[],
+  options: { preserveUnmatched?: boolean } = {}
 ): RememberedProjectRecord[] => {
   const registry = toRegistry(projectRegistry);
   const projectById = new Map<
@@ -385,7 +386,22 @@ export const reconcileRememberedProjects = (
       : byPath;
 
     if (!resolved) {
-      return [];
+      if (!options.preserveUnmatched) {
+        return [];
+      }
+
+      const normalizedRememberedPath = normalizePath(remembered.path);
+      if (!remembered.projectId.trim() || !normalizedRememberedPath) {
+        return [];
+      }
+
+      const key = `${remembered.projectId}:${normalizedRememberedPath}`;
+      if (seenKeys.has(key)) {
+        return [];
+      }
+      seenKeys.add(key);
+
+      return [remembered];
     }
 
     const key = `${resolved.projectId}:${normalizePath(resolved.path)}`;
