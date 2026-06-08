@@ -653,6 +653,25 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("uses camelCase payload keys for recoverable project discovery", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceDiscoverRecoverableProjects({
+      maxChildrenPerRoot: 25,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "workspace_discover_recoverable_projects",
+        payload: {
+          request: {
+            maxChildrenPerRoot: 25,
+          },
+        },
+      },
+    ]);
+  });
+
   it("uses camelCase payload keys for terminal commands", async () => {
     const tauriIpc = await loadTauriIpc();
 

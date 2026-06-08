@@ -1111,41 +1111,6 @@ const pruneLegacyRememberedProjects = (
       !isImplicitWorkspaceRootPath(project.path),
   );
 
-const buildMetadataRecoveryHints = (
-  macroEnabledProjects: RememberedProject[],
-  recentProjects: RememberedProject[],
-  lastOpenProjectPath?: string | null,
-): tauriIpc.WorkspaceMetadataRecoveryHintDto[] => {
-  const rememberedProjects = [...macroEnabledProjects, ...recentProjects];
-  const normalizedLastOpenPath =
-    lastOpenProjectPath && shouldPersistProjectPath(lastOpenProjectPath)
-      ? normalizePath(lastOpenProjectPath)
-      : null;
-  const lastOpenProject = normalizedLastOpenPath
-    ? rememberedProjects.find(
-        (project) => normalizePath(project.path) === normalizedLastOpenPath,
-      )
-    : null;
-
-  return Array.from(
-    new Map(
-      [...rememberedProjects, ...(lastOpenProject ? [lastOpenProject] : [])]
-        .map((project) => ({
-          projectId: project.projectId,
-          groupId: project.groupId ?? null,
-          name: project.name,
-          path: project.path,
-        }))
-        .filter(
-          (project) =>
-            project.projectId.trim().length > 0 &&
-            project.path.trim().length > 0,
-        )
-        .map((project) => [normalizePath(project.path), project] as const),
-    ).values(),
-  );
-};
-
 interface AppStore {
   mode: AppMode;
   agentType: AgentType;
@@ -3122,6 +3087,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           selectedProjectId: normalizedRegistry.selectedProjectId,
           mode: previousState.mode,
         });
+        await localProjectContext.deleteLocalProjectContextState(projectId);
         await reconcileProjectRegistryDependencies({
           standaloneProjects: normalizedRegistry.standaloneProjects,
           projectGroups: normalizedRegistry.projectGroups,
@@ -3243,6 +3209,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: normalizedRegistry.selectedProjectId,
         mode: previousState.mode,
       });
+      await localProjectContext.deleteLocalProjectContextState(canonicalProject.id);
       await reconcileProjectRegistryDependencies({
         standaloneProjects: normalizedRegistry.standaloneProjects,
         projectGroups: normalizedRegistry.projectGroups,
@@ -4443,11 +4410,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         pruneLegacyRememberedProjects(recentProjects);
       const prunedMacroEnabledProjects =
         pruneLegacyRememberedProjects(macroEnabledProjects);
-      const metadataRecoveryHints = buildMetadataRecoveryHints(
-        prunedMacroEnabledProjects,
-        prunedRecentProjects,
-        lastOpenProjectPath,
-      );
       let metadataRecoveryReport: WorkspaceMetadataRecoveryReportDto | null =
         null;
       let bootstrapPlan: Plan | null = null;
@@ -4471,71 +4433,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       } catch (bootstrapError) {
         bootstrapErrorMessage = toServiceError(bootstrapError).message;
         devLogger.info(
-          `[Init] workspace bootstrap failed before local metadata recovery: ${bootstrapErrorMessage}`,
+          `[Init] workspace bootstrap failed: ${bootstrapErrorMessage}`,
         );
-      }
-
-      if (bootstrapErrorMessage && tauriIpc.isTauriAvailable()) {
-        try {
-          const recoveryResult = await tauriIpc.workspaceRecoverMissingMetadata(
-            {
-              attemptPull: false,
-              projects: metadataRecoveryHints,
-            },
-          );
-
-          await reloadWorkspaceBootstrapAfterRegistryRepair();
-          metadataRecoveryReport =
-            recoveryResult.status === "none" ? null : recoveryResult;
-          bootstrapErrorMessage = null;
-        } catch (error) {
-          bootstrapErrorMessage = toServiceError(error).message;
-          devLogger.info(
-            `[Init] local @macro metadata recovery failed before bootstrap: ${bootstrapErrorMessage}`,
-          );
-        }
-      }
-
-      if (
-        !bootstrapErrorMessage &&
-        metadataRecoveryHints.length > 0 &&
-        tauriIpc.isTauriAvailable()
-      ) {
-        try {
-          const registryReconcileReport =
-            await tauriIpc.workspaceReconcileProjectRegistryFromHints({
-              projects: metadataRecoveryHints,
-            });
-
-          if (registryReconcileReport.addedProjects.length > 0) {
-            await reloadWorkspaceBootstrapAfterRegistryRepair();
-            devLogger.warn(
-              `[Init] restored ${registryReconcileReport.addedProjects.length} project(s) from remembered @macro hints before Architect scan.`,
-            );
-          }
-        } catch (error) {
-          devLogger.warn(
-            `[Init] project registry reconciliation from hints failed: ${toServiceError(error).message}`,
-          );
-        }
-      }
-
-      if (!bootstrapErrorMessage && tauriIpc.isTauriAvailable()) {
-        try {
-          const discoveredRegistryReconcileReport =
-            await tauriIpc.workspaceReconcileProjectRegistryFromKnownParentDirs();
-
-          if (discoveredRegistryReconcileReport.addedProjects.length > 0) {
-            await reloadWorkspaceBootstrapAfterRegistryRepair();
-            devLogger.warn(
-              `[Init] restored ${discoveredRegistryReconcileReport.addedProjects.length} project(s) by discovering @macro repos in known parent directories before Architect scan.`,
-            );
-          }
-        } catch (error) {
-          devLogger.warn(
-            `[Init] project registry reconciliation from known parent directories failed: ${toServiceError(error).message}`,
-          );
-        }
       }
 
       const prunedStandaloneProjects = pruneLegacyPlaceholderStandaloneProjects(
