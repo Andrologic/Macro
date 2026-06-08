@@ -42,6 +42,12 @@ Current endpoints include:
 - `GET /api/v1/workspaces/{workspace_id}/bootstrap`
 - `GET /api/v1/workspace/tasks`
 - `GET /api/v1/workspaces/{workspace_id}/tasks`
+- `POST /api/v1/workspace/architect/plans/list`
+- `POST /api/v1/workspaces/{workspace_id}/architect/plans/list`
+- `POST /api/v1/workspace/architect/plans/activate-head`
+- `POST /api/v1/workspaces/{workspace_id}/architect/plans/activate-head`
+- `POST /api/v1/workspace/architect/plans/activate-chat`
+- `POST /api/v1/workspaces/{workspace_id}/architect/plans/activate-chat`
 - `GET /api/v1/projects/{project_id}/git/tree`
 - `GET /api/v1/projects/{project_id}/git/commits`
 
@@ -58,9 +64,10 @@ VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
-Remote mode currently supports workspace bootstrap, task catalog, Git tree and
-history, remote tool policy, remote tool validation, remote tool execution, and
-local browser persistence for tool and MCP preferences.
+Remote mode currently supports workspace bootstrap, task catalog, Architect plan
+listing and activation, Git tree and history, remote tool policy, remote tool
+validation, remote tool execution, and local browser persistence for tool and
+MCP preferences.
 
 ## Current Limits
 

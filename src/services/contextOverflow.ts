@@ -20,6 +20,9 @@ export const CONTEXT_OVERFLOW_PATTERNS = [
   /input length.*exceeds.*context length/i,
   /prompt too long; exceeded (?:max )?context length/i,
   /too large for model with \d+ maximum context length/i,
+  /requested tokens.*exceed.*context window/i,
+  /context window.*(?:is|of|:)\s*\d+/i,
+  /n_ctx.*\d+/i,
   /^4(00|13)\s*(status code)?\s*\(no body\)/i,
 ];
 
@@ -73,6 +76,8 @@ export const extractContextLimitTokensFromMessage = (
     /context length is only ([\d,._\s]+) tokens/i,
     /model with ([\d,._\s]+) maximum context length/i,
     /context[_ ]window[_ ]tokens["':\s]+([\d,._\s]+)/i,
+    /context window (?:is|of|:)\s*([\d,._\s]+)(?: tokens)?/i,
+    /n_ctx["':=\s]+([\d,._\s]+)/i,
   ];
 
   for (const pattern of patterns) {

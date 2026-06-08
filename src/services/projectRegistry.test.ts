@@ -159,6 +159,35 @@ describe('projectRegistry', () => {
     ]);
   });
 
+  it('can preserve unmatched remembered projects as boot recovery hints', () => {
+    const remembered = reconcileRememberedProjects(
+      {
+        standaloneProjects: [],
+        projectGroups: [],
+      },
+      [
+        {
+          projectId: 'project-octan-sales-1780653766405',
+          groupId: null,
+          name: 'octan_sales',
+          path: '/Users/oscarlahaie/github/octan_sales',
+          lastOpenedAt: '2026-06-05T08:00:00.000Z',
+        },
+      ],
+      { preserveUnmatched: true }
+    );
+
+    expect(remembered).toEqual([
+      {
+        projectId: 'project-octan-sales-1780653766405',
+        groupId: null,
+        name: 'octan_sales',
+        path: '/Users/oscarlahaie/github/octan_sales',
+        lastOpenedAt: '2026-06-05T08:00:00.000Z',
+      },
+    ]);
+  });
+
   it('reconciles remembered standalone projects without a group id', () => {
     const remembered = reconcileRememberedProjects(
       {

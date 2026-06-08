@@ -134,7 +134,21 @@ const runWorktreeSetupCommandMock = mock(async () => ({
   failed: false,
   tabId: 'setup-tab-1',
 }));
-let taskProjectCommandRegistryMock = {
+let taskProjectCommandRegistryMock: {
+  version: 3;
+  commandsByProjectPath: Record<
+    string,
+    {
+      projectId: string;
+      projectName: string;
+      projectPath: string;
+      command: string;
+      worktreeSetupCommand: string;
+      openTerminalOnRun: boolean;
+      updatedAt: string;
+    }
+  >;
+} = {
   version: 3,
   commandsByProjectPath: {
     '/repos/web': {
@@ -177,6 +191,11 @@ const appStoreState = {
       ],
     },
   ],
+  standaloneProjects: [] as Array<{
+    id: string;
+    name: string;
+    path: string;
+  }>,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { targetBranch?: string | null } | null,
   getProjectById: (_projectId: string) => null as null | {
@@ -1699,8 +1718,49 @@ describe('useTaskStore remote runtime guards', () => {
 });
 
 describe('useTaskStore task command terminal lifecycle', () => {
-  it('keeps the command run visible after launching a task terminal', async () => {
+  beforeEach(() => {
     startTaskCommandTabMock.mockClear();
+    runWorktreeSetupCommandMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = null;
+    appStoreState.projectGroups = [
+      {
+        id: 'group-1',
+        name: 'Group One',
+        isOpen: true,
+        projects: [
+          {
+            id: 'project-1',
+            name: 'Project One',
+            path: '/repos/web',
+          },
+        ],
+      },
+    ];
+    appStoreState.standaloneProjects = [];
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+    });
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+  });
+
+  it('keeps the command run visible after launching a task terminal', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
 
     useTaskStore.setState({
@@ -1750,6 +1810,90 @@ describe('useTaskStore task command terminal lifecycle', () => {
       activeTabId: 'terminal-tab-1',
       currentProjectId: 'project-1',
     });
+  });
+
+  it('uses the current registry repo path instead of stale task target snapshots when launching commands', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-lplr-app-1780329499166';
+    appStoreState.projectGroups = [];
+    appStoreState.standaloneProjects = [
+      {
+        id: 'project-lplr-app-1780329499166',
+        name: 'octan_sales',
+        path: '/repos/octan_sales',
+      },
+    ];
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-lplr-app-1780329499166',
+      name: 'octan_sales',
+      path: '/repos/octan_sales',
+    });
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/octan_sales': {
+          projectId: 'project-lplr-app-1780329499166',
+          projectName: 'octan_sales',
+          projectPath: '/repos/octan_sales',
+          command: 'npm test',
+          worktreeSetupCommand: 'bun install',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run renamed app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-lplr-app-1780329499166',
+          project_ids: ['project-lplr-app-1780329499166'],
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780329499166',
+              branchName: 'feature/run-app',
+              worktreeKey: 'branch-project-lplr-app-feature-run-app',
+              repoPath: '/repos/lplr-app',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-lplr-app-1780329499166::feature/run-app':
+          '/repos/octan_sales/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      completedCount: 1,
+      totalCount: 1,
+    });
+    expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-lplr-app-1780329499166',
+        repoPath: '/repos/octan_sales',
+        worktreePath: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        command: 'bun install',
+      })
+    );
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        projectId: 'project-lplr-app-1780329499166',
+        cwd: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        command: 'npm test',
+      })
+    );
   });
 
   it('runs the configured worktree setup command before launching task commands', async () => {
@@ -1802,7 +1946,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
         taskId: 'task-1',
         taskTitle: 'Run app',
         projectId: 'project-1',
-        projectName: 'project-1',
+        projectName: 'Project One',
         repoPath: '/repos/web',
         worktreePath: '/repos/web/.macro/worktrees/task-1',
         command: 'bun install',

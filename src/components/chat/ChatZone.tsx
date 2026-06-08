@@ -64,6 +64,7 @@ import {
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
 import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
+import { TaskArtifactsButton } from '../implement/TaskArtifactsButton';
 import {
   getDependencyBlockedMessage,
   TaskBlockedState,
@@ -2614,6 +2615,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </Suspense>
               </div>
             )}
+            {mode === 'Implement' && <TaskArtifactsButton />}
             {shouldShowContextIndicator && selectedConversationId && (
               <ContextWindowIndicator
                 diagnostics={contextDiagnostics}

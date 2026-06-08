@@ -7920,6 +7920,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return { skillTurnFeedbackByMessageId: nextFeedback };
     });
     const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+    await useProviderStore
+      .getState()
+      .ensureSelectedModelContextMetadata(
+        params.providerId,
+        params.modelId,
+        "pre_send",
+      );
     const { footprintFields } = getSelectedModelContext(
       params.providerId,
       params.modelId,
@@ -8845,6 +8852,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const currentCompactionState = await getConversationCompactionState(
         conversationId,
       );
+      await useProviderStore
+        .getState()
+        .ensureSelectedModelContextMetadata(
+          providerContext.providerId,
+          providerContext.modelId,
+          "pre_send",
+        );
       const { footprintFields } = getSelectedModelContext(
         providerContext.providerId,
         providerContext.modelId,
@@ -9212,6 +9226,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
+    let providerOverflowLimitRecorded = false;
+    const recordProviderContextOverflowLimit = async (error: Error) => {
+      if (providerOverflowLimitRecorded || !isProviderContextOverflowError(error)) {
+        return;
+      }
+      const learnedContextLimit =
+        extractContextLimitTokensFromErrorLike(error);
+      if (!learnedContextLimit) {
+        return;
+      }
+      providerOverflowLimitRecorded = true;
+      try {
+        await useProviderStore
+          .getState()
+          .recordProviderModelContextOverflowLimit(
+            params.selectedProviderId,
+            params.selectedModelId,
+            learnedContextLimit,
+          );
+      } catch (persistError) {
+        console.warn(
+          "Failed to persist provider context overflow limit:",
+          persistError,
+        );
+      }
+    };
+
     const tryRecoverFromOverflow = async (
       error: Error,
       tokenControls: ChatStreamTokenControls,
@@ -9225,6 +9266,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return false;
       }
 
+      await recordProviderContextOverflowLimit(error);
       tokenControls.flushNow();
       const assistantMessage = get().messages.find(
         (message) => message.id === params.assistantMessage.id,
@@ -9236,25 +9278,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (hasPartialAssistantProgress) {
         return false;
-      }
-
-      const learnedContextLimit =
-        extractContextLimitTokensFromErrorLike(error);
-      if (learnedContextLimit) {
-        try {
-          await useProviderStore
-            .getState()
-            .recordProviderModelContextOverflowLimit(
-              params.selectedProviderId,
-              params.selectedModelId,
-              learnedContextLimit,
-            );
-        } catch (persistError) {
-          console.warn(
-            "Failed to persist provider context overflow limit:",
-            persistError,
-          );
-        }
       }
 
       tokenControls.dispose();

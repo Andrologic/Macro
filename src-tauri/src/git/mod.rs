@@ -94,6 +94,12 @@ pub struct MacroProjectResetResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MacroMetadataWorktreeEnsureResult {
+    pub worktree_path: PathBuf,
+    pub repaired_after_move: bool,
+}
+
 fn current_branch_name(repo: &Repository) -> Option<String> {
     if repo.head_detached().ok()? {
         return None;
@@ -238,6 +244,110 @@ fn should_confirm_git_flow_branch_mapping(
             (main_branch, base_branch),
             (Some(main_branch), Some(base_branch)) if main_branch == base_branch
         )
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(path).map_err(|e| BackendError::Io {
+        message: e.to_string(),
+        source: e,
+    })?;
+    Ok(entries.next().is_none())
+}
+
+fn describe_metadata_gitfile(worktree_path: &Path) -> String {
+    fs::read_to_string(worktree_path.join(".git"))
+        .ok()
+        .and_then(|content| content.lines().next().map(str::to_string))
+        .filter(|line| !line.trim().is_empty())
+        .unwrap_or_else(|| "missing .git pointer".to_string())
+}
+
+fn resolve_git_pointer_path(base: &Path, raw_path: &str) -> PathBuf {
+    let path = PathBuf::from(raw_path.trim());
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+fn canonicalize_for_cache(path: &Path) -> PathBuf {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    std::fs::canonicalize(&candidate).unwrap_or(candidate)
+}
+
+fn collect_git_admin_dirs_without_opening(workspace_path: &Path) -> Vec<PathBuf> {
+    let dot_git = workspace_path.join(".git");
+    let mut dirs = Vec::new();
+    if dot_git.is_dir() {
+        dirs.push(dot_git);
+        return dirs;
+    }
+
+    if !dot_git.is_file() {
+        return dirs;
+    }
+
+    let Ok(content) = fs::read_to_string(&dot_git) else {
+        return dirs;
+    };
+    let Some(gitdir) = content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:").map(str::trim))
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_git_pointer_path(workspace_path, value))
+    else {
+        return dirs;
+    };
+
+    dirs.push(gitdir.clone());
+    let commondir_path = gitdir.join("commondir");
+    if let Ok(commondir) = fs::read_to_string(&commondir_path) {
+        let common = resolve_git_pointer_path(&gitdir, commondir.trim());
+        if !dirs.contains(&common) {
+            dirs.push(common);
+        }
+    }
+    dirs
+}
+
+pub fn find_existing_macro_metadata_worktree_root(workspace_path: &Path) -> Option<PathBuf> {
+    collect_git_admin_dirs_without_opening(workspace_path)
+        .into_iter()
+        .map(|git_dir| git_dir.join(MACRO_WORKTREE_DIR_NAME))
+        .find(|candidate| candidate.join(".git").exists())
+        .map(|candidate| std::fs::canonicalize(&candidate).unwrap_or(candidate))
+}
+
+pub(crate) fn repair_existing_macro_metadata_worktree(
+    repo: &Repository,
+) -> Result<Option<MacroMetadataWorktreeEnsureResult>> {
+    let worktree_path = repo.path().join(MACRO_WORKTREE_DIR_NAME);
+    if !worktree_path.join(".git").exists() {
+        return Ok(None);
+    }
+
+    let mut repaired_after_move = false;
+    if Repository::open(&worktree_path).is_err() {
+        repaired_after_move =
+            worktree::repair_gitfile_worktree_links(repo, MACRO_WORKTREE_NAME, &worktree_path)?;
+        if !repaired_after_move || Repository::open(&worktree_path).is_err() {
+            return Ok(None);
+        }
+    }
+
+    migrate_legacy_metadata_layout(&worktree_path)?;
+    ensure_metadata_gitignore_override(&worktree_path)?;
+    Ok(Some(MacroMetadataWorktreeEnsureResult {
+        worktree_path,
+        repaired_after_move,
+    }))
 }
 
 fn resolve_commit_branch_override(
@@ -699,6 +809,7 @@ pub struct GitState {
 struct GitStateInner {
     repos: Mutex<HashMap<PathBuf, Arc<Mutex<Repository>>>>,
     worktrees: Mutex<HashMap<String, PathBuf>>,
+    metadata_roots: Mutex<HashMap<PathBuf, MacroMetadataWorktreeEnsureResult>>,
 }
 
 impl GitState {
@@ -707,20 +818,14 @@ impl GitState {
             inner: Arc::new(GitStateInner {
                 repos: Mutex::new(HashMap::new()),
                 worktrees: Mutex::new(HashMap::new()),
+                metadata_roots: Mutex::new(HashMap::new()),
             }),
         }
     }
 
     /// Open a repository and cache its handle.
     pub fn open_repo(&self, path: &Path) -> Result<Arc<Mutex<Repository>>> {
-        let candidate = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| path.to_path_buf())
-        };
-        let canonical = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+        let canonical = canonicalize_for_cache(path);
         let mut repos = self
             .inner
             .repos
@@ -759,7 +864,10 @@ impl GitState {
         }
     }
 
-    pub fn ensure_macro_metadata_worktree(&self, repo: &Repository) -> Result<PathBuf> {
+    pub fn ensure_macro_metadata_worktree_with_status(
+        &self,
+        repo: &Repository,
+    ) -> Result<MacroMetadataWorktreeEnsureResult> {
         ensure_metadata_branch_exists(repo)?;
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
@@ -770,22 +878,69 @@ impl GitState {
         let worktree_path = git_dir.join(MACRO_WORKTREE_DIR_NAME);
 
         if worktree_path.join(".git").exists() {
+            let mut repaired_after_move = false;
+            if Repository::open(&worktree_path).is_err() {
+                repaired_after_move = worktree::repair_gitfile_worktree_links(
+                    repo,
+                    MACRO_WORKTREE_NAME,
+                    &worktree_path,
+                )?;
+                if !repaired_after_move || Repository::open(&worktree_path).is_err() {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Failed to open metadata worktree at {} after repair attempt. {}. Retry the @macro sync after repairing or removing the stale Git worktree pointer.",
+                            worktree_path.display(),
+                            describe_metadata_gitfile(&worktree_path)
+                        ),
+                    });
+                }
+            }
             migrate_legacy_metadata_layout(&worktree_path)?;
             ensure_metadata_gitignore_override(&worktree_path)?;
-            return Ok(worktree_path);
+            return Ok(MacroMetadataWorktreeEnsureResult {
+                worktree_path,
+                repaired_after_move,
+            });
         }
 
         if worktree_path.exists() {
+            if !worktree_path.is_dir() || !directory_is_empty(&worktree_path)? {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Metadata worktree path {} exists but is not an openable Git worktree. Macro left it untouched to avoid losing @macro files. Move it aside or repair its .git pointer, then retry @macro sync.",
+                        worktree_path.display()
+                    ),
+                });
+            }
             fs::remove_dir_all(&worktree_path).map_err(|e| BackendError::Io {
                 message: e.to_string(),
                 source: e,
             })?;
         }
 
-        if let Ok(worktree) = repo.find_worktree(MACRO_WORKTREE_NAME) {
-            let mut prune_opts = git2::WorktreePruneOptions::new();
-            prune_opts.valid(true);
-            let _ = worktree.prune(Some(&mut prune_opts));
+        match repo.find_worktree(MACRO_WORKTREE_NAME) {
+            Ok(worktree) => {
+                let mut prune_opts = git2::WorktreePruneOptions::new();
+                prune_opts.valid(true);
+                let _ = worktree.prune(Some(&mut prune_opts));
+            }
+            Err(err) if err.code() == ErrorCode::NotFound => {}
+            Err(err) => {
+                let admin_path = git_dir.join("worktrees").join(MACRO_WORKTREE_NAME);
+                if admin_path.exists() {
+                    fs::remove_dir_all(&admin_path).map_err(|e| BackendError::Io {
+                        message: e.to_string(),
+                        source: e,
+                    })?;
+                } else {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Failed to inspect metadata worktree registration '{}': {}",
+                            MACRO_WORKTREE_NAME, err
+                        ),
+                    });
+                }
+            }
         }
 
         let reference = repo
@@ -807,15 +962,68 @@ impl GitState {
 
         migrate_legacy_metadata_layout(&worktree_path)?;
         ensure_metadata_gitignore_override(&worktree_path)?;
-        Ok(worktree_path)
+        Ok(MacroMetadataWorktreeEnsureResult {
+            worktree_path,
+            repaired_after_move: false,
+        })
     }
 
-    pub fn resolve_macro_metadata_root(&self, workspace_path: &Path) -> Result<PathBuf> {
-        let repo = self.open_repo(workspace_path)?;
+    pub fn ensure_macro_metadata_worktree(&self, repo: &Repository) -> Result<PathBuf> {
+        let ensured = self.ensure_macro_metadata_worktree_with_status(repo)?;
+        Ok(ensured.worktree_path)
+    }
+
+    pub fn resolve_macro_metadata_root_with_status(
+        &self,
+        workspace_path: &Path,
+    ) -> Result<MacroMetadataWorktreeEnsureResult> {
+        let cache_key = canonicalize_for_cache(workspace_path);
+        let mut metadata_roots =
+            self.inner
+                .metadata_roots
+                .lock()
+                .map_err(|_| BackendError::Internal {
+                    message: "Failed to lock git metadata root cache".to_string(),
+                })?;
+        if let Some(cached) = metadata_roots.get(&cache_key).cloned() {
+            return Ok(cached);
+        }
+
+        let repo = match self.open_repo(workspace_path) {
+            Ok(repo) => repo,
+            Err(error) => {
+                if let Some(worktree_path) =
+                    find_existing_macro_metadata_worktree_root(workspace_path)
+                {
+                    migrate_legacy_metadata_layout(&worktree_path)?;
+                    ensure_metadata_gitignore_override(&worktree_path)?;
+                    let ensured = MacroMetadataWorktreeEnsureResult {
+                        worktree_path,
+                        repaired_after_move: false,
+                    };
+                    metadata_roots.insert(cache_key, ensured.clone());
+                    tracing::debug!(
+                        action = "macro_metadata_root_existing_worktree_without_repo_open",
+                        workspace_path = %workspace_path.display(),
+                        metadata_root = %ensured.worktree_path.display(),
+                        reason = %error
+                    );
+                    return Ok(ensured);
+                }
+                return Err(error);
+            }
+        };
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
-        self.ensure_macro_metadata_worktree(&repo)
+        let ensured = self.ensure_macro_metadata_worktree_with_status(&repo)?;
+        metadata_roots.insert(cache_key, ensured.clone());
+        Ok(ensured)
+    }
+
+    pub fn resolve_macro_metadata_root(&self, workspace_path: &Path) -> Result<PathBuf> {
+        let ensured = self.resolve_macro_metadata_root_with_status(workspace_path)?;
+        Ok(ensured.worktree_path)
     }
 
     pub fn debug_reset_macro_project_artifacts(
@@ -1152,6 +1360,155 @@ mod tests {
             fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
             format!("node_modules\n{TASK_WORKTREE_GITIGNORE_RULE}\n")
         );
+    }
+
+    #[test]
+    fn test_ensure_macro_metadata_worktree_repairs_after_project_rename() {
+        let temp = TempDir::new().expect("temp dir");
+        let original_path = temp.path().join("lplr-app");
+        let renamed_path = temp.path().join("octan_sales");
+        fs::create_dir(&original_path).expect("create original project dir");
+
+        {
+            let repo = init_repo(&original_path);
+            let state = GitState::new();
+            let worktree_path = state
+                .ensure_macro_metadata_worktree(&repo)
+                .expect("metadata worktree");
+            fs::write(worktree_path.join("plan.txt"), "kept metadata")
+                .expect("write metadata file");
+            assert!(Repository::open(&worktree_path).is_ok());
+        }
+
+        fs::rename(&original_path, &renamed_path).expect("rename project dir");
+        let repo = Repository::open(&renamed_path).expect("open renamed repo");
+        let state = GitState::new();
+
+        let ensured = state
+            .ensure_macro_metadata_worktree_with_status(&repo)
+            .expect("repair metadata worktree");
+
+        assert!(ensured.repaired_after_move);
+        assert!(Repository::open(&ensured.worktree_path).is_ok());
+        assert_eq!(
+            fs::read_to_string(ensured.worktree_path.join("plan.txt")).expect("read metadata file"),
+            "kept metadata"
+        );
+        let gitfile =
+            fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
+        assert!(!gitfile.contains("lplr-app"));
+        assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_find_existing_macro_metadata_worktree_from_linked_worktree() {
+        let temp = TempDir::new().expect("temp dir");
+        let primary_path = temp.path().join("octan_sales");
+        let linked_path = temp.path().join("octan_sales-linked");
+        fs::create_dir(&primary_path).expect("create primary project dir");
+
+        let repo = init_repo(&primary_path);
+        let state = GitState::new();
+        let metadata_root = state
+            .ensure_macro_metadata_worktree(&repo)
+            .expect("metadata worktree");
+        fs::write(metadata_root.join("plan.txt"), "metadata from common repo")
+            .expect("write metadata file");
+        repo.worktree("octan_sales-linked", &linked_path, None)
+            .expect("create linked worktree");
+
+        let found = find_existing_macro_metadata_worktree_root(&linked_path)
+            .expect("find metadata from linked worktree");
+
+        assert_eq!(
+            found.canonicalize().expect("canonical found metadata"),
+            metadata_root
+                .canonicalize()
+                .expect("canonical original metadata")
+        );
+        assert_eq!(
+            fs::read_to_string(found.join("plan.txt")).expect("read metadata file"),
+            "metadata from common repo"
+        );
+    }
+
+    #[test]
+    fn test_resolve_macro_metadata_root_uses_existing_worktree_when_repo_extension_is_unsupported()
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let metadata_root = state
+            .ensure_macro_metadata_worktree(&repo)
+            .expect("metadata worktree");
+        fs::write(
+            metadata_root.join("plan.txt"),
+            "metadata survives unsupported extension",
+        )
+        .expect("write metadata file");
+        drop(repo);
+
+        let config_path = temp.path().join(".git").join("config");
+        let mut config = fs::read_to_string(&config_path).expect("read git config");
+        config.push_str("\n[extensions]\n\trelativeworktrees = true\n");
+        fs::write(&config_path, config).expect("write unsupported extension");
+
+        let resolved = state
+            .resolve_macro_metadata_root(temp.path())
+            .expect("resolve existing metadata root");
+
+        assert_eq!(
+            resolved
+                .canonicalize()
+                .expect("canonical resolved metadata"),
+            metadata_root
+                .canonicalize()
+                .expect("canonical original metadata")
+        );
+        assert_eq!(
+            fs::read_to_string(resolved.join("plan.txt")).expect("read metadata file"),
+            "metadata survives unsupported extension"
+        );
+    }
+
+    #[test]
+    fn test_ensure_task_worktree_repairs_git_pointers_after_project_rename() {
+        let temp = TempDir::new().expect("temp dir");
+        let original_path = temp.path().join("lplr-app");
+        let renamed_path = temp.path().join("octan_sales");
+        fs::create_dir(&original_path).expect("create original project dir");
+
+        {
+            let repo = init_repo(&original_path);
+            let state = GitState::new();
+            let worktree_path = state
+                .ensure_task_worktree(&repo, "rename-task", "feature/rename-task", None, None, &[])
+                .expect("task worktree")
+                .worktree_path;
+            fs::write(worktree_path.join("local-note.txt"), "kept task worktree")
+                .expect("write task worktree file");
+            assert!(Repository::open(&worktree_path).is_ok());
+        }
+
+        fs::rename(&original_path, &renamed_path).expect("rename project dir");
+        let repo = Repository::open(&renamed_path).expect("open renamed repo");
+        let state = GitState::new();
+
+        let ensured = state
+            .ensure_task_worktree(&repo, "rename-task", "feature/rename-task", None, None, &[])
+            .expect("repair task worktree");
+
+        assert_eq!(ensured.status, TaskWorktreeEnsureStatus::Reused);
+        assert!(Repository::open(&ensured.worktree_path).is_ok());
+        assert_eq!(
+            fs::read_to_string(ensured.worktree_path.join("local-note.txt"))
+                .expect("read task worktree file"),
+            "kept task worktree"
+        );
+        let gitfile =
+            fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
+        assert!(!gitfile.contains("lplr-app"));
+        assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
     }
 
     #[test]

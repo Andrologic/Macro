@@ -333,6 +333,103 @@ describe('createLoadImplementTaskCatalog', () => {
     ]);
   });
 
+  it('uses standalone project git flow settings when injecting the active plan from memory', async () => {
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: 'plan-standalone-active',
+        activePlanContext: {
+          id: 'plan-standalone-active',
+          title: 'Standalone Active Plan',
+          description: 'Plan restored from app state after reload',
+          status: 'validated',
+          targetBranch: 'main',
+        },
+        planNodes: [
+          {
+            id: 'standalone-task',
+            title: 'Implement restored standalone task',
+            type: 'task',
+            status: 'pending',
+            dependencies: [],
+            assignedBranch: 'feature/restored-task',
+            projectId: 'project-octan-sales',
+          },
+        ],
+        predictedBranches: [
+          {
+            id: 'standalone-branch',
+            name: 'feature/restored-task',
+            color: '#6366f1',
+            parentBranch: 'main',
+            projectId: 'project-octan-sales',
+            taskIds: ['standalone-task'],
+            status: 'pending',
+          },
+        ],
+        selectedGroupId: null,
+        selectedProjectId: 'project-octan-sales',
+        standaloneProjects: [
+          {
+            id: 'project-octan-sales',
+            name: 'octan_sales',
+            mountName: 'octan-sales',
+            path: '/Users/oscarlahaie/github/octan_sales',
+            created_at: '',
+            status: 'active',
+            gitFlowSettings: {
+              mainBranch: 'main',
+              baseBranch: 'develop',
+              planBranchTemplate: 'plan/{planSlug}',
+              featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+              standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+              releaseBranchTemplate: 'release/{releaseSlug}',
+              hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+              bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+              completionMergePolicy: 'merge_commit',
+            },
+            metadata: {
+              description: '',
+              tags: [],
+              team_members: [],
+              api_contracts: [],
+              dependencies: [],
+            },
+          },
+        ],
+        projectGroups: [],
+      }),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [],
+      }),
+      getArchitectPlan: async () => null,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+    const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-task');
+    const finalizationTask = catalog.tasks.find(
+      (candidate) => candidate.id === 'plan-finalization:plan-standalone-active',
+    );
+
+    expect(task?.plan_target_branch).toBe('develop');
+    expect(task?.plan_target_branches_by_project_id).toEqual({
+      'project-octan-sales': 'develop',
+    });
+    expect(finalizationTask?.execution_targets).toEqual([
+      {
+        projectId: 'project-octan-sales',
+        branchName: 'develop',
+        targetBranchName: 'develop',
+        executionKind: 'repository_root',
+        worktreeKey: 'plan-finalization:project-octan-sales:project-octan-sales',
+      },
+    ]);
+  });
+
   it('retargets a physically scoped standalone project plan when stored project ids are stale', async () => {
     const plan = makePlan({
       id: 'plan-lplr',

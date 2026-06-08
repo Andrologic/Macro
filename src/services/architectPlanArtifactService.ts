@@ -18,6 +18,12 @@ import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
+import {
+  collectKnownProjectIds,
+  getProjectSelectionScopedProjectIds,
+  resolveExecutionProjectIds,
+  retargetPlanForExecution,
+} from './projectIdentityReconciliation';
 import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
@@ -52,6 +58,18 @@ export interface VisiblePlanTaskArtifactDiff {
 export interface MissingRequiredPlanTaskArtifact {
   contract: PlanNodeArtifactContract;
   taskId: string;
+}
+
+export interface PlanArtifactExpectedOverviewItem {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  contract: PlanNodeArtifactContract;
+}
+
+export interface PlanArtifactOverview {
+  entries: VisiblePlanTaskArtifactReviewEntry[];
+  expected: PlanArtifactExpectedOverviewItem[];
 }
 
 export interface TaskArtifactToolTarget {
@@ -250,16 +268,53 @@ const normalizeArtifactIndex = (
     : [],
 });
 
+const getPlanWorkspaceHints = (
+  plan: Pick<
+    ArchitectPlanRecord,
+    'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'
+  >,
+  repoPaths: Array<string | null | undefined> = [],
+) => ({
+  projectIds: unique([...(plan.projectIds || []), plan.projectId]),
+  availableProjectIds: plan.availableProjectIds,
+  replicas: plan.replicas,
+  repoPaths: [
+    ...repoPaths,
+    ...(plan.replicas || []).map((replica) => replica.repoPath),
+  ],
+});
+
 const resolveWorkspacePaths = async (params: {
+  projectId?: string | null;
   projectIds?: string[] | null;
+  availableProjectIds?: string[] | null;
+  replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
 }): Promise<string[]> => {
   const appState = useAppStore.getState();
-  const projectPaths = (params.projectIds || []).map((projectId) =>
+  const knownProjectIds = collectKnownProjectIds({
+    standaloneProjects: appState.standaloneProjects,
+    projectGroups: appState.projectGroups,
+  });
+  const scopedProjectIds = getProjectSelectionScopedProjectIds({
+    standaloneProjects: appState.standaloneProjects,
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+  });
+  const projectIds = resolveExecutionProjectIds({
+    persistedIds: [...(params.projectIds || []), params.projectId],
+    availableProjectIds: params.availableProjectIds || [],
+    replicas: params.replicas || [],
+    scopedProjectIds,
+    knownProjectIds,
+  });
+  const projectPaths = projectIds.map((projectId) =>
     typeof appState.getProjectById === 'function'
       ? appState.getProjectById(projectId)?.path ?? null
       : null,
   );
+  const replicaRepoPaths = (params.replicas || []).map((replica) => replica.repoPath);
   let activeRoot: string | null = null;
   if (tauriIpc.isTauriAvailable()) {
     try {
@@ -268,7 +323,9 @@ const resolveWorkspacePaths = async (params: {
       activeRoot = null;
     }
   }
-  return filterNonWslProjectPaths(unique([...(params.repoPaths || []), ...projectPaths, activeRoot]));
+  return filterNonWslProjectPaths(
+    unique([...(params.repoPaths || []), ...projectPaths, ...replicaRepoPaths, activeRoot]),
+  );
 };
 
 const readJsonAtWorkspace = async <T>(
@@ -376,7 +433,10 @@ const updateArtifactManifestAtWorkspace = async (params: {
 export const readPlanTaskArtifactIndex = async (params: {
   branchName: string;
   planId: string;
+  projectId?: string | null;
   projectIds?: string[] | null;
+  availableProjectIds?: string[] | null;
+  replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
 }): Promise<PlanTaskArtifactIndex> => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -399,7 +459,10 @@ export const readPlanTaskArtifactIndex = async (params: {
 const writePlanTaskArtifactIndex = async (params: {
   branchName: string;
   planId: string;
+  projectId?: string | null;
   projectIds?: string[] | null;
+  availableProjectIds?: string[] | null;
+  replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   index: PlanTaskArtifactIndex;
   contentWrites?: Array<{ path: string; content: string }>;
@@ -519,7 +582,25 @@ export const resolveTaskArtifactTarget = async (
   if (!plan || plan.status === 'deleted') {
     throw toServiceError(`Cannot load plan metadata for task ${task.id}.`);
   }
-  return { branchName, plan, task, currentTask: currentTask! };
+  const appState = useAppStore.getState();
+  const retargetedPlan = retargetPlanForExecution(plan, {
+    scopedProjectIds: unique([
+      ...(task.project_ids || []),
+      task.project_id,
+      ...(task.execution_targets || []).map((target) => target.projectId),
+      ...getProjectSelectionScopedProjectIds({
+        standaloneProjects: appState.standaloneProjects,
+        projectGroups: appState.projectGroups,
+        selectedGroupId: appState.selectedGroupId,
+        selectedProjectId: appState.selectedProjectId,
+      }),
+    ]),
+    knownProjectIds: collectKnownProjectIds({
+      standaloneProjects: appState.standaloneProjects,
+      projectGroups: appState.projectGroups,
+    }),
+  });
+  return { branchName, plan: retargetedPlan, task, currentTask: currentTask! };
 };
 
 export const resolveVisiblePlanTaskIds = (params: {
@@ -578,7 +659,7 @@ export const listVisibleTaskArtifacts = async (params: {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   const visibleTaskIds = resolveVisiblePlanTaskIds({
     plan: params.plan,
@@ -610,7 +691,7 @@ export const listVisibleTaskArtifactReviewEntries = async (params: {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   const artifacts = await listVisibleTaskArtifacts(params);
   const reviews = index.reviews || [];
@@ -630,6 +711,56 @@ export const listVisibleTaskArtifactReviewEntries = async (params: {
   });
 };
 
+export const listPlanArtifactOverview = async (params: {
+  branchName: string;
+  plan: ArchitectPlanRecord;
+}): Promise<PlanArtifactOverview> => {
+  const index = await readPlanTaskArtifactIndex({
+    branchName: params.branchName,
+    planId: params.plan.id,
+    ...getPlanWorkspaceHints(params.plan),
+  });
+  const reviews = index.reviews || [];
+  const entries = index.artifacts
+    .map((artifact) => {
+      const review =
+        reviews
+          .filter((candidate) => candidate.artifactId === artifact.id)
+          .sort((left, right) => right.validatedAt.localeCompare(left.validatedAt))[0] || null;
+      return {
+        artifact: {
+          ...artifact,
+          visibility: 'own' as const,
+        },
+        review,
+        hasValidatedReview: Boolean(review),
+        hasPendingReview: !review,
+      };
+    })
+    .sort((left, right) =>
+      right.artifact.updatedAt.localeCompare(left.artifact.updatedAt)
+    );
+  const expected = (params.plan.nodes || []).flatMap((node) =>
+    normalizeArtifactContracts(node)
+      .filter(
+        (contract) =>
+          !index.artifacts.some(
+            (artifact) =>
+              artifact.taskId === node.id &&
+              (artifact.contractId === contract.id || artifact.id === contract.id),
+          ),
+      )
+      .map((contract) => ({
+        id: `${sanitizeId(node.id)}:${contract.id}`,
+        taskId: node.id,
+        taskTitle: node.title || node.id,
+        contract,
+      })),
+  );
+
+  return { entries, expected };
+};
+
 export const readVisibleTaskArtifactContent = async (params: {
   branchName: string;
   plan: ArchitectPlanRecord;
@@ -646,7 +777,7 @@ export const readVisibleTaskArtifactContent = async (params: {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
   const workspacePaths = await resolveWorkspacePaths({
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   for (const workspacePath of workspacePaths) {
     const content = await readTextAtWorkspace(workspacePath, artifact.path);
@@ -658,11 +789,19 @@ export const readVisibleTaskArtifactContent = async (params: {
 };
 
 const readArtifactContentByPath = async (params: {
+  projectId?: string | null;
   projectIds?: string[] | null;
+  availableProjectIds?: string[] | null;
+  replicas?: ArchitectPlanRecord['replicas'];
+  repoPaths?: Array<string | null | undefined>;
   path: string;
 }): Promise<string> => {
   const workspacePaths = await resolveWorkspacePaths({
+    projectId: params.projectId,
     projectIds: params.projectIds,
+    availableProjectIds: params.availableProjectIds,
+    replicas: params.replicas,
+    repoPaths: params.repoPaths,
   });
   for (const workspacePath of workspacePaths) {
     const content = await readTextAtWorkspace(workspacePath, params.path);
@@ -683,7 +822,7 @@ export const readVisibleTaskArtifactDiff = async (params: {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   const visibleTaskIds = resolveVisiblePlanTaskIds({
     plan: params.plan,
@@ -702,7 +841,7 @@ export const readVisibleTaskArtifactDiff = async (params: {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
   const content = await readArtifactContentByPath({
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
     path: artifact.path,
   });
   const previousArtifact = artifact.supersedes
@@ -710,7 +849,7 @@ export const readVisibleTaskArtifactDiff = async (params: {
     : null;
   const previousContent = previousArtifact
     ? await readArtifactContentByPath({
-        projectIds: params.plan.projectIds,
+        ...getPlanWorkspaceHints(params.plan),
         path: previousArtifact.path,
       })
     : '';
@@ -718,6 +857,53 @@ export const readVisibleTaskArtifactDiff = async (params: {
     artifact,
     content,
     previousArtifact,
+    previousContent,
+    status: previousArtifact ? 'modified' : 'added',
+  };
+};
+
+export const readPlanArtifactDiff = async (params: {
+  branchName: string;
+  plan: ArchitectPlanRecord;
+  artifactId: string;
+}): Promise<VisiblePlanTaskArtifactDiff> => {
+  const artifactId = sanitizeId(params.artifactId);
+  const index = await readPlanTaskArtifactIndex({
+    branchName: params.branchName,
+    planId: params.plan.id,
+    ...getPlanWorkspaceHints(params.plan),
+  });
+  const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
+  if (!artifact) {
+    throw toServiceError(`Artifact not found: ${params.artifactId}`);
+  }
+  const visibleArtifact: VisiblePlanTaskArtifact = {
+    ...artifact,
+    visibility: 'own',
+  };
+  const content = await readArtifactContentByPath({
+    ...getPlanWorkspaceHints(params.plan),
+    path: artifact.path,
+  });
+  const previousArtifact = artifact.supersedes
+    ? index.artifacts.find((candidate) => candidate.id === artifact.supersedes) || null
+    : null;
+  const visiblePreviousArtifact: VisiblePlanTaskArtifact | null = previousArtifact
+    ? {
+        ...previousArtifact,
+        visibility: 'inherited',
+      }
+    : null;
+  const previousContent = previousArtifact
+    ? await readArtifactContentByPath({
+        ...getPlanWorkspaceHints(params.plan),
+        path: previousArtifact.path,
+      })
+    : '';
+  return {
+    artifact: visibleArtifact,
+    content,
+    previousArtifact: visiblePreviousArtifact,
     previousContent,
     status: previousArtifact ? 'modified' : 'added',
   };
@@ -744,7 +930,7 @@ export const validateVisibleTaskArtifact = async (params: {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   const now = new Date().toISOString();
   const review: PlanTaskArtifactReview = {
@@ -771,8 +957,10 @@ export const validateVisibleTaskArtifact = async (params: {
   await writePlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
-    repoPaths: (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ...getPlanWorkspaceHints(
+      params.plan,
+      (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ),
     index: nextIndex,
   });
   return review;
@@ -798,7 +986,7 @@ export const unvalidateVisibleTaskArtifact = async (params: {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
+    ...getPlanWorkspaceHints(params.plan),
   });
   const now = new Date().toISOString();
   const nextIndex: PlanTaskArtifactIndex = {
@@ -813,8 +1001,10 @@ export const unvalidateVisibleTaskArtifact = async (params: {
   await writePlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
-    projectIds: params.plan.projectIds,
-    repoPaths: (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ...getPlanWorkspaceHints(
+      params.plan,
+      (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ),
     index: nextIndex,
   });
 };
@@ -893,7 +1083,7 @@ export const putTaskArtifact = async ({
   const index = await readPlanTaskArtifactIndex({
     branchName: target.branchName,
     planId: target.plan.id,
-    projectIds: target.plan.projectIds,
+    ...getPlanWorkspaceHints(target.plan),
   });
   const explicitArtifactId =
     typeof args.artifact_id === 'string' && args.artifact_id.trim()
@@ -978,8 +1168,10 @@ export const putTaskArtifact = async ({
   await writePlanTaskArtifactIndex({
     branchName: target.branchName,
     planId: target.plan.id,
-    projectIds: target.plan.projectIds,
-    repoPaths: (target.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ...getPlanWorkspaceHints(
+      target.plan,
+      (target.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
+    ),
     index: nextIndex,
     contentWrites: [{ path, content: normalizedContent }],
   });
@@ -1110,8 +1302,10 @@ export const loadMissingRequiredArtifactsForCompletion = async (
   const index = await readPlanTaskArtifactIndex({
     branchName,
     planId: plan.id,
-    projectIds: plan.projectIds,
-    repoPaths: (task.execution_targets || []).map((target) => target.repoPath),
+    ...getPlanWorkspaceHints(
+      plan,
+      (task.execution_targets || []).map((target) => target.repoPath),
+    ),
   });
   return requiredContracts
     .filter(
@@ -1156,8 +1350,10 @@ export const loadUnvalidatedCurrentTaskArtifactsForCompletion = async (
   const index = await readPlanTaskArtifactIndex({
     branchName,
     planId: plan.id,
-    projectIds: plan.projectIds,
-    repoPaths: (task.execution_targets || []).map((target) => target.repoPath),
+    ...getPlanWorkspaceHints(
+      plan,
+      (task.execution_targets || []).map((target) => target.repoPath),
+    ),
   });
   const reviews = index.reviews || [];
   return index.artifacts

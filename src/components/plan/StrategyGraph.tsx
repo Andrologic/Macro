@@ -5,7 +5,15 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
-import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
+import {
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  type ArchitectPlanRecord,
+} from '../../services/architectPlanService';
+import {
+  listPlanArtifactOverview,
+  type PlanArtifactOverview,
+} from '../../services/architectPlanArtifactService';
 import { persistArchitectPlanStrategyPreview } from '../../services/architectPlanRuntimeService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -45,6 +53,7 @@ import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { TodoStatusIcon } from '../tasks/TodoStatusIcon';
 import { Skeleton } from '../shared/Skeleton';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { ArtifactDiffModal } from '../modals/ArtifactDiffModal';
 import { cn } from '../../utils/cn';
 import { useElementSize } from '../../hooks/useElementSize';
 import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
@@ -550,6 +559,9 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   }, [activePlanNeeds, t]);
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
+  const [isPlanArtifactsOpen, setIsPlanArtifactsOpen] = useState(false);
+  const [selectedPlanArtifactId, setSelectedPlanArtifactId] = useState<string | null>(null);
+  const [planArtifactOverview, setPlanArtifactOverview] = useState<PlanArtifactOverview | null>(null);
   const [isModalPanning, setIsModalPanning] = useState(false);
   const [hasInitializedModalView, setHasInitializedModalView] = useState(false);
   const [modalTransform, setModalTransform] = useState<GraphTransform>({ x: 0, y: 0, scale: 1 });
@@ -639,6 +651,112 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return getGitFlowBaseBranch();
   }, [activePlanTargetBranch]);
+
+  const activePlanArtifactRecord = useMemo<ArchitectPlanRecord | null>(() => {
+    if (!activePlanContext) {
+      return null;
+    }
+
+    const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
+    const nodeProjectIds = planNodes.flatMap((node) => normalizeNodeProjectIds(node));
+    const branchProjectIds = predictedBranches
+      .map((branch) => branch.projectId)
+      .filter((projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0);
+    const projectIds = Array.from(new Set([
+      ...(scopedProjectIds.length > 0 ? scopedProjectIds : []),
+      ...nodeProjectIds,
+      ...branchProjectIds,
+    ]));
+
+    return {
+      id: activePlanContext.id,
+      slug: activePlanContext.slug?.trim() || activePlanContext.title?.trim() || activePlanContext.id,
+      title: activePlanContext.title || activePlanContext.id,
+      label: activePlanContext.label,
+      description: activePlanContext.description || '',
+      status: activePlanContext.status as ArchitectPlanRecord['status'],
+      targetBranch,
+      targetBranchesByProjectId: activePlanContext.targetBranchesByProjectId,
+      projectIds,
+      createdAt: '',
+      updatedAt: '',
+      nodes: planNodes,
+      predictedBranches,
+    };
+  }, [
+    activePlanContext,
+    planNodes,
+    predictedBranches,
+    projectRegistry,
+    selectedGroupId,
+    selectedProjectId,
+    targetBranch,
+  ]);
+
+  useEffect(() => {
+    let disposed = false;
+    setIsPlanArtifactsOpen(false);
+    setSelectedPlanArtifactId(null);
+    setPlanArtifactOverview(null);
+
+    if (!activePlanArtifactRecord) {
+      return () => {
+        disposed = true;
+      };
+    }
+
+    void listPlanArtifactOverview({
+      branchName: targetBranch,
+      plan: activePlanArtifactRecord,
+    })
+      .then((overview) => {
+        if (!disposed) {
+          setPlanArtifactOverview(overview);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setPlanArtifactOverview(null);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [activePlanArtifactRecord, targetBranch]);
+
+  const producedPlanArtifactCount = planArtifactOverview?.entries.length ?? 0;
+  const hasPlanArtifactPlaceholders = (planArtifactOverview?.expected.length ?? 0) > 0;
+  const canOpenPlanArtifacts = Boolean(
+    activePlanArtifactRecord &&
+      planArtifactOverview &&
+      (producedPlanArtifactCount > 0 || hasPlanArtifactPlaceholders)
+  );
+  const openPlanArtifacts = useCallback(() => {
+    if (!planArtifactOverview || !activePlanArtifactRecord) {
+      return;
+    }
+    setSelectedPlanArtifactId(planArtifactOverview.entries[0]?.artifact.id ?? null);
+    setIsPlanArtifactsOpen(true);
+  }, [activePlanArtifactRecord, planArtifactOverview]);
+
+  const planArtifactsButton = canOpenPlanArtifacts ? (
+    <button
+      type="button"
+      onClick={openPlanArtifacts}
+      className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background/40 px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title={t('architect.openArtifacts', 'Open artifacts')}
+      aria-label={t('architect.openArtifacts', 'Open artifacts')}
+    >
+      <Icon name="file-text" size={14} className="text-primary" />
+      <span>{t('architect.artifacts', 'Artifacts')}</span>
+      {producedPlanArtifactCount > 0 && (
+        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+          {producedPlanArtifactCount}
+        </span>
+      )}
+    </button>
+  ) : null;
 
   const getFrozenReasonLabel = useCallback(
     (reason: FrozenPlanNode['reason']): string => {
@@ -1452,6 +1570,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     </svg>
   );
 
+  const planArtifactsModal =
+    isPlanArtifactsOpen && planArtifactOverview && activePlanArtifactRecord ? (
+      <ArtifactDiffModal
+        branchName={targetBranch}
+        plan={activePlanArtifactRecord}
+        task={null}
+        entries={planArtifactOverview.entries}
+        expectedItems={planArtifactOverview.expected}
+        artifactId={selectedPlanArtifactId ?? planArtifactOverview.entries[0]?.artifact.id ?? null}
+        context="readOnly"
+        onSelectArtifact={setSelectedPlanArtifactId}
+        onClose={() => setIsPlanArtifactsOpen(false)}
+      />
+    ) : null;
+
   if (isWorkspaceMissing) {
     return (
       <aside
@@ -1494,30 +1627,35 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
     return (
-      <aside
-        className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
-        data-tour-id="architect-strategy-panel"
-      >
-        <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
-          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="strategy" size={16} className="text-primary" />
-            {t('architect.strategy', 'Strategy')}
-          </h1>
-        </div>
-        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
-          <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
-          <h3 className="text-sm font-semibold text-foreground mb-1">
-            {t('architect.noStrategyTitle', 'No strategy generated yet')}
-          </h3>
-          <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            {emptyStrategyDescription}
-          </p>
-        </div>
-      </aside>
+      <>
+        <aside
+          className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+          data-tour-id="architect-strategy-panel"
+        >
+          <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
+            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Icon name="strategy" size={16} className="text-primary" />
+              {t('architect.strategy', 'Strategy')}
+            </h1>
+            {planArtifactsButton}
+          </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
+            <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
+            <h3 className="text-sm font-semibold text-foreground mb-1">
+              {t('architect.noStrategyTitle', 'No strategy generated yet')}
+            </h3>
+            <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
+              {emptyStrategyDescription}
+            </p>
+          </div>
+        </aside>
+        {planArtifactsModal}
+      </>
     );
   }
 
   return (
+    <>
     <aside
       className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
       data-tour-id="architect-strategy-panel"
@@ -1528,18 +1666,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           <Icon name="strategy" size={16} className="text-primary" />
           {t('architect.strategy', 'Strategy')}
         </h1>
-        {viewMode === 'graph' && (
-          <button
-            type="button"
-            onClick={openGraphModal}
-            data-tour-id="architect-graph-expand"
-            className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title={t('architect.openGraphExplorer', 'Open graph explorer')}
-            aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
-          >
-            <Icon name="expand" size={14} />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {planArtifactsButton}
+          {viewMode === 'graph' && (
+            <button
+              type="button"
+              onClick={openGraphModal}
+              data-tour-id="architect-graph-expand"
+              className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              title={t('architect.openGraphExplorer', 'Open graph explorer')}
+              aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
+            >
+              <Icon name="expand" size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* View Toggle */}
@@ -2212,6 +2353,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         )}
       </div>
     </aside>
+    {planArtifactsModal}
+    </>
   );
 };
 

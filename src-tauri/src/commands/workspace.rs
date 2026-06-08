@@ -14,8 +14,10 @@ use crate::workspace::metadata::{
     WorkspaceArchitectActivatePlanHeadRequestDto, WorkspaceArchitectListPlansRequestDto,
     WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
     WorkspaceArchitectPlanTranscriptDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
-    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto,
-    WorkspaceTaskCatalogDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceProjectRegistryReconcileReportDto,
+    WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+    WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
@@ -46,7 +48,22 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             .map_err(to_join_error);
     match resolved {
         Ok(Ok(metadata_root)) => Ok(metadata_root),
-        Ok(Err(BackendError::GitRepositoryNotFound { message })) => {
+        Ok(Err(error)) => {
+            let error_message = error.to_string();
+            if let Some(metadata_worktree) =
+                crate::git::find_existing_macro_metadata_worktree_root(&workspace_path_for_fallback)
+            {
+                tracing::warn!(
+                    action = "workspace_metadata_root_existing_worktree_fallback",
+                    workspace_path = %workspace_path_for_fallback.display(),
+                    fallback_path = %metadata_worktree.display(),
+                    reason = %error_message
+                );
+                return Ok(metadata_worktree);
+            }
+            let BackendError::GitRepositoryNotFound { message } = error else {
+                return Err(error);
+            };
             let fallback = workspace_path_for_fallback.join(".macro");
             tracing::warn!(
                 action = "workspace_metadata_root_fallback",
@@ -56,7 +73,6 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             );
             Ok(fallback)
         }
-        Ok(Err(error)) => Err(error),
         Err(error) => Err(error),
     }
 }
@@ -168,6 +184,32 @@ pub async fn workspace_get_bootstrap(
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    match workspace::reconcile_project_registry_from_known_parent_dirs(
+        &workspace_path,
+        &metadata_root,
+        WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto::default(),
+    )
+    .await
+    {
+        Ok(report) if !report.added_projects.is_empty() => {
+            tracing::warn!(
+                action = "workspace_bootstrap_repaired_project_registry_from_known_parent_dirs",
+                added_project_count = report.added_projects.len(),
+                skipped_project_count = report.skipped_projects.len(),
+                duplicate_path_count = report.duplicate_paths.len(),
+                invalid_path_count = report.invalid_paths.len(),
+                "Workspace bootstrap repaired missing projects additively before loading state."
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                action = "workspace_bootstrap_project_registry_repair_failed",
+                error = %error,
+                "Workspace bootstrap could not run additive project registry repair."
+            );
+        }
+    }
     workspace::get_bootstrap(&workspace_path, &metadata_root).await
 }
 
@@ -225,6 +267,35 @@ pub async fn workspace_recover_missing_metadata(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::recover_missing_metadata(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_reconcile_project_registry_from_hints(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::reconcile_project_registry_from_hints(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_reconcile_project_registry_from_known_parent_dirs(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::reconcile_project_registry_from_known_parent_dirs(
+        &workspace_path,
+        &metadata_root,
+        request,
+    )
+    .await
 }
 
 #[tauri::command]

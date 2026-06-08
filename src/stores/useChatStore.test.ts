@@ -223,6 +223,8 @@ const providerState = {
   selectedReasoningEffort: null as string | null,
   loadProviderModels: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
   scanModelsForProvider: mock(async (providerId: string) => providerState.modelsByProvider[providerId] ?? []),
+  ensureSelectedModelContextMetadata: mock(async () => providerState.modelsByProvider[providerState.selectedProviderId ?? 'provider-1'] ?? []),
+  recordProviderModelContextOverflowLimit: mock(async () => undefined),
   resolveProviderApiKey: mock(async () => undefined),
   selectedSupportsNativeToolCalling: () => false,
   markReasoningUnsupportedForModel: mock(() => undefined),
