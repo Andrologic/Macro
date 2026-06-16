@@ -422,6 +422,7 @@ pub fn run() {
             commands::workspace::workspace_get_metadata,
             commands::workspace::workspace_get_project_registry_diagnostics,
             commands::workspace::workspace_recover_missing_metadata,
+            commands::workspace::workspace_discover_recoverable_projects,
             commands::workspace::workspace_reconcile_project_registry_from_hints,
             commands::workspace::workspace_reconcile_project_registry_from_known_parent_dirs,
             commands::workspace::workspace_get_active_root,

@@ -978,9 +978,11 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
       }), {
         description: t(
           'projects.debugResetSuccessDescription',
-          '{{worktreeCount}} Macro worktree(s) removed. Shared @macro metadata was preserved.',
+          '{{worktreeCount}} Macro worktree(s) removed. Local Macro metadata removed: {{metadataRemoved}}. Local @macro branch removed: {{branchRemoved}}.',
           {
             worktreeCount: report.removedTaskWorktrees,
+            metadataRemoved: report.removedMetadataWorktree ? 'yes' : 'no',
+            branchRemoved: report.removedMacroBranch ? 'yes' : 'no',
           }
         ),
       });
@@ -1558,7 +1560,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
               )
             : t(
                 'projects.removeProjectPrompt',
-                'Remove this project from Macro without deleting local files.'
+                'Retire ce projet de l’interface Macro sans supprimer les fichiers locaux.'
               )
         }
         confirmLabel={
@@ -1628,7 +1630,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
         title={t('projects.debugResetTitle', 'Reset Macro data')}
         description={t(
           'projects.debugResetPrompt',
-          'This debug-only action removes this project from Macro and deletes its local Macro task worktrees. It preserves the shared @macro metadata branch/worktree, never deletes your source code or remote branches, but uncommitted changes inside Macro worktrees will be lost.'
+          'Supprime les données Macro locales de ce projet. Le code source et les branches distantes sont conservés, mais les worktrees et métadonnées Macro locales seront supprimés.'
         )}
         confirmLabel={t('projects.debugResetConfirm', 'Reset Macro data')}
         cancelLabel={t('common.cancel', 'Cancel')}

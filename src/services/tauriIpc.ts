@@ -562,6 +562,7 @@ export interface WorkspaceProjectRegistryReconcileSkippedDto {
 
 export interface WorkspaceProjectRegistryReconcileReportDto {
   status: "unchanged" | "reconciled" | string;
+  discoveredProjects: Project[];
   addedProjects: Project[];
   skippedProjects: WorkspaceProjectRegistryReconcileSkippedDto[];
   duplicatePaths: string[];
@@ -2708,6 +2709,19 @@ export async function workspaceRecoverMissingMetadata(params: {
       request: {
         attemptPull: params.attemptPull,
         projects: params.projects,
+      },
+    },
+  );
+}
+
+export async function workspaceDiscoverRecoverableProjects(params: {
+  maxChildrenPerRoot?: number;
+} = {}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
+  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
+    "workspace_discover_recoverable_projects",
+    {
+      request: {
+        maxChildrenPerRoot: params.maxChildrenPerRoot ?? null,
       },
     },
   );
