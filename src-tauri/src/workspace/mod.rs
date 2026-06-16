@@ -34,7 +34,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::watch;
@@ -59,7 +58,6 @@ const READ_ONLY_REASON_MANUAL: &str = "manual";
 const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
 const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
 
-static KNOWN_PARENT_REGISTRY_REPAIR_ATTEMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
 const GIT_RESOLUTION_NONE: &str = "none";
 const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
@@ -5256,11 +5254,7 @@ pub async fn reconcile_project_registry_from_hints(
             continue;
         }
 
-        let project_name = project_name_from_hint(&hint, &resolved_path);
-        let mut project = build_project(&project_name, "", Some(raw_path), workspace_path, None);
-        project.id = project_id.to_string();
-        project.name = project_name;
-        project.mount_name = derive_project_mount_name(&project.path, &project.name, &project.id);
+        let project = project_from_recovery_hint(&hint, &resolved_path, workspace_path);
 
         known_project_ids.insert(project.id.clone());
         seen_paths.insert(normalized_path);
@@ -5282,6 +5276,57 @@ pub async fn reconcile_project_registry_from_hints(
         );
     }
 
+    Ok(report)
+}
+
+fn project_from_recovery_hint(
+    hint: &WorkspaceMetadataRecoveryHintDto,
+    resolved_path: &Path,
+    workspace_path: &Path,
+) -> ProjectDto {
+    let project_name = project_name_from_hint(hint, resolved_path);
+    let mut project = build_project(&project_name, "", Some(&hint.path), workspace_path, None);
+    project.id = hint.project_id.trim().to_string();
+    project.name = project_name;
+    project.mount_name = derive_project_mount_name(&project.path, &project.name, &project.id);
+    project
+}
+
+pub async fn discover_recoverable_projects(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let state = load_raw_state(metadata_root).await?.unwrap_or_default();
+    let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
+    let hints = discover_project_registry_recovery_hints_from_known_parent_dirs(
+        workspace_path,
+        &state,
+        max_children_per_root,
+    );
+
+    let mut report = WorkspaceProjectRegistryReconcileReportDto {
+        status: if hints.is_empty() {
+            "unchanged".to_string()
+        } else {
+            "discovered".to_string()
+        },
+        ..WorkspaceProjectRegistryReconcileReportDto::default()
+    };
+
+    for hint in hints {
+        let resolved_path = resolve_project_path(workspace_path, &hint.path);
+        report
+            .discovered_projects
+            .push(project_from_recovery_hint(&hint, &resolved_path, workspace_path));
+    }
+
+    tracing::info!(
+        action = "project_registry_discover_recoverable_projects_completed",
+        discovered_project_count = report.discovered_projects.len(),
+        status = %report.status,
+        "Workspace registry recoverable project discovery completed without mutating metadata."
+    );
     Ok(report)
 }
 
@@ -5504,78 +5549,6 @@ pub async fn recover_missing_metadata(
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
 
-async fn repair_project_registry_from_known_parent_dirs_once(
-    workspace_path: &Path,
-    metadata_root: &Path,
-) {
-    let raw_state = match load_raw_state(metadata_root).await {
-        Ok(Some(state)) => state,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!(
-                action = "project_registry_known_parent_repair_state_load_failed",
-                metadata_root = %metadata_root.display(),
-                error = %error,
-                "Could not inspect workspace state before additive project registry repair."
-            );
-            return;
-        }
-    };
-
-    if collect_project_registry_parent_dirs(workspace_path, &raw_state).is_empty() {
-        return;
-    }
-
-    let key = normalized_path_key(metadata_root);
-    let attempts = KNOWN_PARENT_REGISTRY_REPAIR_ATTEMPTS.get_or_init(|| Mutex::new(HashSet::new()));
-    match attempts.lock() {
-        Ok(mut seen) => {
-            if !seen.insert(key.clone()) {
-                return;
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                action = "project_registry_known_parent_repair_cache_poisoned",
-                error = %error,
-                "Continuing without the known-parent registry repair once-cache."
-            );
-        }
-    }
-
-    match reconcile_project_registry_from_known_parent_dirs(
-        workspace_path,
-        metadata_root,
-        WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto::default(),
-    )
-    .await
-    {
-        Ok(report) if !report.added_projects.is_empty() => {
-            tracing::warn!(
-                action = "project_registry_known_parent_repair_once_added_projects",
-                metadata_root = %metadata_root.display(),
-                added_project_count = report.added_projects.len(),
-                skipped_project_count = report.skipped_projects.len(),
-                duplicate_path_count = report.duplicate_paths.len(),
-                invalid_path_count = report.invalid_paths.len(),
-                "Workspace state load repaired missing projects additively from known parent directories."
-            );
-        }
-        Ok(_) => {}
-        Err(error) => {
-            if let Ok(mut seen) = attempts.lock() {
-                seen.remove(&key);
-            }
-            tracing::warn!(
-                action = "project_registry_known_parent_repair_once_failed",
-                metadata_root = %metadata_root.display(),
-                error = %error,
-                "Workspace state load could not run additive known-parent project registry repair."
-            );
-        }
-    }
-}
-
 async fn load_or_create_state(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -5604,8 +5577,6 @@ async fn load_or_default_state(
 }
 
 async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
-    repair_project_registry_from_known_parent_dirs_once(workspace_path, metadata_root).await;
-
     let Some(state) = load_raw_state(metadata_root).await? else {
         return Ok(None);
     };
@@ -8201,7 +8172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_project_registry_from_known_parent_dirs_discovers_missing_macro_repo() {
+    async fn discover_recoverable_projects_finds_missing_macro_repo_without_mutating_registry() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
         let parent = temp.path().join("github");
@@ -8265,7 +8236,10 @@ mod tests {
         )
         .expect("persist workspace state");
 
-        let report = reconcile_project_registry_from_known_parent_dirs(
+        let before = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read workspace state before discovery");
+
+        let report = discover_recoverable_projects(
             temp.path(),
             &metadata_root,
             WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
@@ -8274,23 +8248,96 @@ mod tests {
         )
         .await
         .expect("discover missing macro repo");
-        let repaired = load_raw_state_sync(&metadata_root)
-            .expect("read repaired state")
-            .expect("repaired state");
+        let after = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read workspace state after discovery");
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("read persisted state")
+            .expect("persisted state");
 
-        assert_eq!(report.status, "reconciled");
-        assert_eq!(report.added_projects.len(), 1);
+        assert_eq!(report.status, "discovered");
+        assert_eq!(report.discovered_projects.len(), 1);
+        assert!(report.added_projects.is_empty());
         assert_eq!(
-            report.added_projects[0].id,
+            report.discovered_projects[0].id,
             "project-lplr-app-1780329499166"
         );
-        assert_eq!(report.added_projects[0].name, "octan_sales");
-        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(report.discovered_projects[0].name, "octan_sales");
+        assert_eq!(before, after);
+        assert!(persisted.standalone_projects.is_empty());
         assert_eq!(
-            repaired.standalone_projects[0].id,
-            "project-lplr-app-1780329499166"
+            persisted.project_groups[0].projects[0].id,
+            "project-sysml"
         );
-        assert_eq!(repaired.project_groups.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remove_project_does_not_restore_macro_sibling_on_next_load() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let kept_path = parent.join("kept");
+        let removed_path = parent.join("octan_sales");
+        let _kept_repo = init_git_repo(&kept_path, "main", &[]);
+        let _removed_repo = init_git_repo(&removed_path, "main", &[]);
+        let removed_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&removed_path)
+            .expect("removed project metadata root");
+        let plan_dir = removed_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create removed plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-octan-sales"]
+            })
+            .to_string(),
+        )
+        .expect("write removed manifest");
+
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-main".to_string(),
+                    name: "Main".to_string(),
+                    is_open: true,
+                    projects: vec![
+                        make_project("project-kept", kept_path.to_string_lossy().as_ref()),
+                        make_project(
+                            "project-octan-sales",
+                            removed_path.to_string_lossy().as_ref(),
+                        ),
+                    ],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        close_project(temp.path(), &metadata_root, "project-octan-sales")
+            .await
+            .expect("remove project");
+        let loaded = load_state(temp.path(), &metadata_root)
+            .await
+            .expect("load state")
+            .expect("state");
+        let all_project_ids = loaded
+            .standalone_projects
+            .iter()
+            .chain(loaded.project_groups.iter().flat_map(|group| group.projects.iter()))
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(all_project_ids, vec!["project-kept"]);
+        assert!(removed_metadata_root.exists());
     }
 
     #[tokio::test]
@@ -8420,7 +8467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_bootstrap_repairs_missing_sibling_macro_repo_before_returning_state() {
+    async fn get_bootstrap_does_not_restore_missing_sibling_macro_repo() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
         let parent = temp.path().join("github");
@@ -8473,21 +8520,33 @@ mod tests {
 
         let bootstrap = get_bootstrap(temp.path(), &metadata_root)
             .await
-            .expect("bootstrap repairs registry");
-        let repaired = load_raw_state_sync(&metadata_root)
-            .expect("read repaired state")
-            .expect("repaired state");
+            .expect("bootstrap loads registry");
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("read persisted state")
+            .expect("persisted state");
 
-        assert!(bootstrap
+        assert!(!bootstrap
             .standalone_projects
             .iter()
             .any(|project| project.id == "project-lplr-app-1780329499166"
                 && project.name == "octan_sales"));
-        assert!(repaired
+        assert!(!persisted
             .standalone_projects
             .iter()
             .any(|project| project.id == "project-lplr-app-1780329499166"
                 && project.name == "octan_sales"));
+        let persisted_project_ids = persisted
+            .standalone_projects
+            .iter()
+            .chain(
+                persisted
+                    .project_groups
+                    .iter()
+                    .flat_map(|group| group.projects.iter()),
+            )
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_project_ids, vec!["project-sysml"]);
     }
 
     #[tokio::test]

@@ -184,32 +184,6 @@ pub async fn workspace_get_bootstrap(
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    match workspace::reconcile_project_registry_from_known_parent_dirs(
-        &workspace_path,
-        &metadata_root,
-        WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto::default(),
-    )
-    .await
-    {
-        Ok(report) if !report.added_projects.is_empty() => {
-            tracing::warn!(
-                action = "workspace_bootstrap_repaired_project_registry_from_known_parent_dirs",
-                added_project_count = report.added_projects.len(),
-                skipped_project_count = report.skipped_projects.len(),
-                duplicate_path_count = report.duplicate_paths.len(),
-                invalid_path_count = report.invalid_paths.len(),
-                "Workspace bootstrap repaired missing projects additively before loading state."
-            );
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::warn!(
-                action = "workspace_bootstrap_project_registry_repair_failed",
-                error = %error,
-                "Workspace bootstrap could not run additive project registry repair."
-            );
-        }
-    }
     workspace::get_bootstrap(&workspace_path, &metadata_root).await
 }
 
@@ -296,6 +270,18 @@ pub async fn workspace_reconcile_project_registry_from_known_parent_dirs(
         request,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn workspace_discover_recoverable_projects(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::discover_recoverable_projects(&workspace_path, &metadata_root, request).await
 }
 
 #[tauri::command]

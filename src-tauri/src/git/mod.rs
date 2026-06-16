@@ -1089,6 +1089,63 @@ impl GitState {
             });
         }
 
+        let metadata_worktree_path = repo.path().join(MACRO_WORKTREE_DIR_NAME);
+        match repo.find_worktree(MACRO_WORKTREE_NAME) {
+            Ok(metadata_worktree) => {
+                let registered_path = metadata_worktree.path().to_path_buf();
+                let removed_registered_path = remove_macro_path_if_present(&registered_path)?;
+                let mut prune_opts = git2::WorktreePruneOptions::new();
+                prune_opts.valid(true);
+                if let Err(err) = metadata_worktree.prune(Some(&mut prune_opts)) {
+                    result.warnings.push(format!(
+                        "Failed to prune Macro metadata worktree '{}': {}",
+                        MACRO_WORKTREE_NAME, err
+                    ));
+                }
+                result.removed_metadata_worktree = removed_registered_path;
+            }
+            Err(err) if err.code() == ErrorCode::NotFound => {}
+            Err(err) => {
+                result.warnings.push(format!(
+                    "Failed to inspect Macro metadata worktree '{}': {}",
+                    MACRO_WORKTREE_NAME, err
+                ));
+            }
+        }
+
+        if remove_macro_path_if_present(&metadata_worktree_path)? {
+            result.removed_metadata_worktree = true;
+        }
+
+        if remove_macro_path_if_present(&workdir.join(LEGACY_METADATA_DIR_NAME))? {
+            result.removed_metadata_worktree = true;
+        }
+
+        match repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local) {
+            Ok(mut branch) => match branch.delete() {
+                Ok(()) => {
+                    result.removed_macro_branch = true;
+                }
+                Err(err) => {
+                    result.warnings.push(format!(
+                        "Failed to delete local Macro metadata branch '{}': {}",
+                        MACRO_BRANCH_NAME, err
+                    ));
+                }
+            },
+            Err(err) if err.code() == ErrorCode::NotFound => {}
+            Err(err) => {
+                result.warnings.push(format!(
+                    "Failed to inspect local Macro metadata branch '{}': {}",
+                    MACRO_BRANCH_NAME, err
+                ));
+            }
+        }
+
+        if let Ok(mut metadata_roots) = self.inner.metadata_roots.lock() {
+            metadata_roots.remove(&canonicalize_for_cache(workdir));
+        }
+
         Ok(result)
     }
 }
@@ -1779,7 +1836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_debug_reset_macro_project_artifacts_preserves_shared_metadata() {
+    fn test_debug_reset_macro_project_artifacts_removes_local_macro_metadata() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
         let state = GitState::new();
@@ -1792,6 +1849,8 @@ mod tests {
         let metadata_worktree = state
             .ensure_macro_metadata_worktree(&repo)
             .expect("metadata worktree");
+        fs::write(temp.path().join(".macro").join("legacy.txt"), "legacy")
+            .expect("write legacy metadata");
 
         assert!(task_worktree.exists());
         assert!(metadata_worktree.exists());
@@ -1805,15 +1864,17 @@ mod tests {
             .expect("debug reset");
 
         assert!(report.removed_task_worktrees > 0);
-        assert!(!report.removed_metadata_worktree);
-        assert!(!report.removed_macro_branch);
+        assert!(report.removed_metadata_worktree);
+        assert!(report.removed_macro_branch);
         assert!(!task_worktree.exists());
-        assert!(metadata_worktree.exists());
+        assert!(!metadata_worktree.exists());
+        assert!(!temp.path().join(".macro").exists());
         assert!(repo.find_worktree("taskdebug-reset").is_err());
-        assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_ok());
+        assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_err());
         assert!(repo
             .find_branch(MACRO_BRANCH_NAME, BranchType::Local)
-            .is_ok());
+            .is_err());
+        assert!(temp.path().join("README.md").exists());
     }
 
     #[test]

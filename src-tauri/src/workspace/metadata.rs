@@ -105,6 +105,8 @@ pub struct WorkspaceProjectRegistryReconcileSkippedDto {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProjectRegistryReconcileReportDto {
     pub status: String,
+    #[serde(default)]
+    pub discovered_projects: Vec<ProjectDto>,
     pub added_projects: Vec<ProjectDto>,
     pub skipped_projects: Vec<WorkspaceProjectRegistryReconcileSkippedDto>,
     pub duplicate_paths: Vec<String>,

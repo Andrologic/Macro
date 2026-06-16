@@ -74,6 +74,7 @@ type ProjectContextRecord = {
 
 type RegistryReconcileReportRecord = {
   status: string;
+  discoveredProjects: ProjectRecord[];
   addedProjects: ProjectRecord[];
   skippedProjects: Array<{
     projectId?: string | null;
@@ -395,6 +396,7 @@ const workspaceRecoverMissingMetadataMock = mock(async () => ({
 const buildUnchangedRegistryReconcileReport =
   (): RegistryReconcileReportRecord => ({
     status: 'unchanged',
+    discoveredProjects: [],
     addedProjects: [],
     skippedProjects: [],
     duplicatePaths: [],
@@ -765,45 +767,28 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
-  it('recovers metadata locally without pulling when the initial bootstrap fails', async () => {
+  it('does not recover metadata automatically when the initial bootstrap fails', async () => {
     tauriAvailable = true;
-    const recoveredGroup = buildProjectGroup({
-      id: 'group-recovered',
-      projects: [
-        {
-          id: 'project-recovered',
-          name: 'Recovered',
-          path: '/repos/recovered',
-          gitFlowSettings: { baseBranch: 'develop' },
-        },
-      ],
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      throw new Error('metadata missing');
     });
-    getAppBootstrapMock
-      .mockImplementationOnce(async () => {
-        throw new Error('metadata missing');
-      })
-      .mockImplementationOnce(async () => ({
-        plan: null,
-        standaloneProjects: [],
-        projectGroups: [recoveredGroup],
-        planNodes: [],
-        predictedBranches: [],
-      }));
 
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initializeCritical();
 
-    expect(workspaceRecoverMissingMetadataMock.mock.calls).toHaveLength(1);
-    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
-      attemptPull: false,
-    });
+    expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(
+      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
+    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectGroups).toHaveLength(0);
-    expect(useAppStore.getState().standaloneProjects).toHaveLength(1);
-    expect(useAppStore.getState().standaloneProjects[0]?.id).toBe('project-recovered');
-    expect(useAppStore.getState().lastError).toBeNull();
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
+    expect(useAppStore.getState().lastError).toContain(
+      'Macro opened an empty shell',
+    );
   });
 
-  it('restores a remembered standalone project missing from workspace metadata before loading @macro plans', async () => {
+  it('does not restore a remembered standalone project missing from workspace metadata during startup', async () => {
     tauriAvailable = true;
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
@@ -897,6 +882,7 @@ describe('useAppStore architect plan resolution', () => {
         bootstrapStandaloneProjects = [currentProject];
         return {
           status: 'reconciled',
+          discoveredProjects: [],
           addedProjects: [currentProject],
           skippedProjects: [],
           duplicatePaths: [],
@@ -937,99 +923,40 @@ describe('useAppStore architect plan resolution', () => {
     await useAppStore.getState().initialize();
 
     expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
-    expect(workspaceReconcileProjectRegistryFromHintsMock).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
     expect(
       workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).toHaveBeenCalledTimes(1);
-    expect(
-      (workspaceReconcileProjectRegistryFromHintsMock.mock.calls as unknown[][])[0][0],
-    ).toMatchObject({
-      projects: [
-        {
-          projectId: currentProject.id,
-          groupId: null,
-          name: currentProject.name,
-          path: currentProject.path,
-        },
-      ],
-    });
-    expect(useAppStore.getState().standaloneProjects).toHaveLength(1);
-    expect(useAppStore.getState().standaloneProjects[0]).toMatchObject({
-      id: currentProject.id,
-      name: currentProject.name,
-      path: currentProject.path,
-    });
+    ).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
     expect(useAppStore.getState().selectedGroupId).toBeNull();
-    expect(useAppStore.getState().selectedProjectId).toBe(currentProject.id);
-    expect(useAppStore.getState().activeArchitectPlanId).toBe(
-      visiblePhysicalPlan.id,
-    );
-    expect(useAppStore.getState().activePlanContext?.id).toBe(
-      visiblePhysicalPlan.id,
-    );
-    expect(useAppStore.getState().activePlanContext?.targetBranch).toBe('main');
-    expect(useAppStore.getState().planNodes).toEqual([
-      expect.objectContaining({
-        id: 'node-catalogue',
-        projectId: currentProject.id,
-        projectIds: [currentProject.id],
-        artifactContracts: [
-          expect.objectContaining({
-            id: 'migration-map',
-            title: 'Migration map',
-          }),
-        ],
-      }),
-    ]);
-    expect(useAppStore.getState().predictedBranches).toEqual([
-      expect.objectContaining({
-        id: 'branch-catalogue',
-        projectId: currentProject.id,
-      }),
-    ]);
-    expect(needsStoreState.hydrateNeedsForPlan).toHaveBeenCalledWith(
-      visiblePhysicalPlan.id,
-      restoredNeeds,
-    );
-    expect(
-      useAppStore.getState().pendingArchitectPlanActivationPayload,
-    ).toMatchObject({
-      conversationId: 'architect-conversation-refonte',
-      chatMessages: restoredChatMessages,
-      plan: {
-        id: visiblePhysicalPlan.id,
-        projectId: currentProject.id,
-        projectIds: [currentProject.id],
+    expect(useAppStore.getState().selectedProjectId).toBeNull();
+    expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
+    expect(useAppStore.getState().activePlanContext).toBeNull();
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(useAppStore.getState().predictedBranches).toEqual([]);
+    expect(needsStoreState.hydrateNeedsForPlan).not.toHaveBeenCalled();
+    expect(useAppStore.getState().pendingArchitectPlanActivationPayload).toBeNull();
+    expect(taskRefreshSnapshots).toEqual([
+      {
+        selectedProjectId: null,
+        activeArchitectPlanId: null,
+        planNodeProjectIds: [],
+        planNodeArtifactContractIds: [],
+        pendingPlanProjectIds: [],
+        visiblePlanIds: [],
       },
-    });
-    expect(taskStoreState.refreshFromPlan).toHaveBeenCalled();
-    const lastTaskRefreshSnapshot =
-      taskRefreshSnapshots[taskRefreshSnapshots.length - 1];
-    expect(lastTaskRefreshSnapshot).toEqual({
-      selectedProjectId: currentProject.id,
-      activeArchitectPlanId: visiblePhysicalPlan.id,
-      planNodeProjectIds: [currentProject.id],
-      planNodeArtifactContractIds: ['migration-map'],
-      pendingPlanProjectIds: [currentProject.id],
-      visiblePlanIds: [visiblePhysicalPlan.id],
-    });
-    expect(
-      Array.from(
-        new Set(
-          useAppStore
-            .getState()
-            .visibleArchitectPlans.map((plan: { id: string }) => plan.id),
-        ),
-      ),
-    ).toEqual([visiblePhysicalPlan.id]);
-    expect(useAppStore.getState().architectPlanCatalogScopedProjectIds).toEqual([
-      currentProject.id,
+    ]);
+    expect(useAppStore.getState().visibleArchitectPlans).toEqual([]);
+    expect(useAppStore.getState().macroEnabledProjects).toEqual([
+      expect.objectContaining({
+        projectId: currentProject.id,
+        name: currentProject.name,
+        path: currentProject.path,
+      }),
     ]);
   });
 
-  it('keeps remembered project recovery hints when registry reconciliation is temporarily unavailable', async () => {
+  it('keeps remembered project hints without reconciling them automatically', async () => {
     tauriAvailable = true;
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
@@ -1051,15 +978,13 @@ describe('useAppStore architect plan resolution', () => {
         lastOpenedAt: '2026-06-05T08:00:00.000Z',
       },
     ];
-    workspaceReconcileProjectRegistryFromHintsMock.mockImplementation(
-      async () => {
-        throw new Error('registry temporarily unavailable');
-      },
-    );
-
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initialize();
 
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(
+      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
+    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().standaloneProjects).toEqual([]);
     expect(useAppStore.getState().selectedProjectId).toBeNull();
     expect(useAppStore.getState().macroEnabledProjects).toEqual([
@@ -1072,7 +997,7 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().recentProjects).toEqual([]);
   });
 
-  it('restores discovered sibling @macro projects when preferences no longer contain recovery hints', async () => {
+  it('does not restore discovered sibling @macro projects automatically', async () => {
     tauriAvailable = true;
     const knownGroup = buildProjectGroup({
       id: 'group-sysml',
@@ -1086,46 +1011,26 @@ describe('useAppStore architect plan resolution', () => {
         },
       ],
     });
-    const discoveredProject: ProjectRecord = {
-      id: 'project-lplr-app-1780329499166',
-      name: 'octan_sales',
-      path: '/repos/octan_sales',
-      gitFlowSettings: { baseBranch: 'main' },
-    };
     bootstrapProjectGroups = [knownGroup];
     bootstrapStandaloneProjects = [];
     preferenceValues.recentProjects = [];
     preferenceValues.macroEnabledProjects = [];
     preferenceValues.lastOpenProjectPath = null;
-    workspaceReconcileProjectRegistryFromKnownParentDirsMock.mockImplementation(
-      async (): Promise<RegistryReconcileReportRecord> => {
-        bootstrapStandaloneProjects = [discoveredProject];
-        return {
-          status: 'reconciled',
-          addedProjects: [discoveredProject],
-          skippedProjects: [],
-          duplicatePaths: [],
-          invalidPaths: [],
-        };
-      },
-    );
-
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initialize();
 
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
     expect(
       workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).toHaveBeenCalledTimes(1);
-    expect(useAppStore.getState().standaloneProjects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: discoveredProject.id,
-          name: discoveredProject.name,
-          path: discoveredProject.path,
-        }),
-      ]),
-    );
+    ).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects).toEqual([
+      expect.objectContaining({
+        id: 'project-sysml',
+        name: 'sysml-drone-demo',
+        path: '/repos/sysml-drone-demo',
+      }),
+    ]);
+    expect(useAppStore.getState().projectGroups).toEqual([]);
   });
 
   it('opens an empty degraded shell when bootstrap and local recovery fail', async () => {
@@ -1133,16 +1038,15 @@ describe('useAppStore architect plan resolution', () => {
     getAppBootstrapMock.mockImplementation(async () => {
       throw new Error('metadata corrupt');
     });
-    workspaceRecoverMissingMetadataMock.mockImplementation(async () => {
-      throw new Error('local recovery blocked');
-    });
 
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initializeCritical();
 
-    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
-      attemptPull: false,
-    });
+    expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(
+      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
+    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectGroups).toEqual([]);
     expect(useAppStore.getState().lastError).toContain(
       'Macro opened an empty shell',
