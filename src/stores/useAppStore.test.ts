@@ -406,10 +406,6 @@ const workspaceReconcileProjectRegistryFromHintsMock = mock(
   async (): Promise<RegistryReconcileReportRecord> =>
     buildUnchangedRegistryReconcileReport()
 );
-const workspaceReconcileProjectRegistryFromKnownParentDirsMock = mock(
-  async (): Promise<RegistryReconcileReportRecord> =>
-    buildUnchangedRegistryReconcileReport()
-);
 const ensureProjectGroupPlanMock = mock(async () => {
   if (ensureProjectGroupPlanResult?.plan) {
     planById.set(
@@ -585,8 +581,6 @@ const registerUseAppStoreMocks = async () => {
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
     workspaceReconcileProjectRegistryFromHints:
       workspaceReconcileProjectRegistryFromHintsMock,
-    workspaceReconcileProjectRegistryFromKnownParentDirs:
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
   }));
 
   registerMockModulePair('../utils/devLogger', () => ({
@@ -658,11 +652,6 @@ describe('useAppStore architect plan resolution', () => {
     }));
     workspaceReconcileProjectRegistryFromHintsMock.mockClear();
     workspaceReconcileProjectRegistryFromHintsMock.mockImplementation(
-      async (): Promise<RegistryReconcileReportRecord> =>
-        buildUnchangedRegistryReconcileReport()
-    );
-    workspaceReconcileProjectRegistryFromKnownParentDirsMock.mockClear();
-    workspaceReconcileProjectRegistryFromKnownParentDirsMock.mockImplementation(
       async (): Promise<RegistryReconcileReportRecord> =>
         buildUnchangedRegistryReconcileReport()
     );
@@ -778,9 +767,6 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
-    expect(
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectGroups).toHaveLength(0);
     expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
     expect(useAppStore.getState().lastError).toContain(
@@ -924,9 +910,6 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
-    expect(
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
     expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBeNull();
@@ -982,9 +965,6 @@ describe('useAppStore architect plan resolution', () => {
     await useAppStore.getState().initialize();
 
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
-    expect(
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().standaloneProjects).toEqual([]);
     expect(useAppStore.getState().selectedProjectId).toBeNull();
     expect(useAppStore.getState().macroEnabledProjects).toEqual([
@@ -1020,9 +1000,6 @@ describe('useAppStore architect plan resolution', () => {
     await useAppStore.getState().initialize();
 
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
-    expect(
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().standaloneProjects).toEqual([
       expect.objectContaining({
         id: 'project-sysml',
@@ -1044,9 +1021,6 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
     expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
-    expect(
-      workspaceReconcileProjectRegistryFromKnownParentDirsMock,
-    ).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectGroups).toEqual([]);
     expect(useAppStore.getState().lastError).toContain(
       'Macro opened an empty shell',

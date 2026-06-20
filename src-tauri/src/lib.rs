@@ -424,7 +424,6 @@ pub fn run() {
             commands::workspace::workspace_recover_missing_metadata,
             commands::workspace::workspace_discover_recoverable_projects,
             commands::workspace::workspace_reconcile_project_registry_from_hints,
-            commands::workspace::workspace_reconcile_project_registry_from_known_parent_dirs,
             commands::workspace::workspace_get_active_root,
             commands::workspace::workspace_architect_list_plans,
             commands::workspace::workspace_architect_activate_plan_head,
@@ -611,5 +610,17 @@ mod frontend_log_tests {
 
         assert_eq!(truncated.chars().count(), FRONTEND_LOG_MESSAGE_LIMIT + 3);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn project_registry_sibling_reconcile_command_is_not_registered() {
+        let source = include_str!("lib.rs");
+        let removed_command = concat!(
+            "workspace_",
+            "reconcile_project_registry_from_",
+            "known_parent_dirs"
+        );
+
+        assert!(!source.contains(removed_command));
     }
 }
