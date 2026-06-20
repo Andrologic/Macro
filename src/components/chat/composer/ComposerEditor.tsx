@@ -377,7 +377,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
               data-shortcut-chat-input="true"
               className={cn(
                 'flex-1 min-w-[100px] bg-transparent border-0 outline-none text-sm text-foreground',
-                'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-1 leading-[1.35]',
+                'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-[6.5px] leading-[1.35]',
                 '[&_.composer-editor-paragraph]:m-0 [&_.composer-editor-paragraph]:min-h-[1.35em]',
                 !editable && 'opacity-50 cursor-not-allowed',
                 className
@@ -385,7 +385,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
             />
           }
           placeholder={
-            <div className="pointer-events-none absolute top-0 left-0 px-1 py-1 text-sm leading-[1.35] text-muted-foreground select-none">
+            <div className="pointer-events-none absolute top-0 left-0 px-1 py-[6.5px] text-sm leading-[1.35] text-muted-foreground select-none">
               {placeholder}
             </div>
           }
