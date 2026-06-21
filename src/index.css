@@ -791,6 +791,32 @@
   filter: drop-shadow(0 0 3px rgb(var(--primary) / 0.28));
 }
 
+@keyframes strategyGraphFlowPulse {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.72);
+  }
+  22% {
+    opacity: var(--strategy-graph-flow-peak-opacity, 0.42);
+  }
+  72% {
+    opacity: calc(var(--strategy-graph-flow-peak-opacity, 0.42) * 0.86);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.strategy-graph-flow-pulse {
+  animation: strategyGraphFlowPulse 2.35s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.strategy-graph-flow-pulse--static {
+  animation: none;
+  opacity: var(--strategy-graph-flow-peak-opacity, 0.18);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-status-awaiting-response__wave {
     animation: none;
@@ -807,6 +833,11 @@
     animation: none;
     opacity: 0.72;
     stroke-dashoffset: 0;
+  }
+
+  .strategy-graph-flow-pulse {
+    animation: none;
+    opacity: min(var(--strategy-graph-flow-peak-opacity, 0.42), 0.42);
   }
 }
 
