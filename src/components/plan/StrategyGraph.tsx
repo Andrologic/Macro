@@ -184,6 +184,117 @@ const branchCardStatusTone: Record<BranchCardStatus, string> = {
   mixed: 'bg-muted text-muted-foreground',
 };
 
+type EdgeFlowTone = 'normal' | 'active' | 'waiting' | 'complete' | 'blocked' | 'pending';
+
+interface EdgeFlowPresentation {
+  tone: EdgeFlowTone;
+  duration: string;
+  opacity: number;
+  width: number;
+  shouldAnimate: boolean;
+}
+
+const BLOCKED_EDGE_TASK_STATUSES = new Set<TaskStatus>(['Blocked', 'Failed']);
+const ACTIVE_EDGE_TASK_STATUSES = new Set<TaskStatus>(['InProgress', 'InReview']);
+const WAITING_EDGE_TASK_STATUSES = new Set<TaskStatus>(['AwaitingResponse']);
+const BLOCKED_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'blocked',
+  'failed',
+  'merge_blocked',
+  'merge_failed',
+]);
+const ACTIVE_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'running',
+  'in_review',
+  'merging',
+  'merge_partial',
+]);
+const WAITING_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'awaiting_response',
+]);
+
+const resolveEdgeFlowPresentation = (
+  _sourceNode: Pick<PlanNode, 'id' | 'status'>,
+  _targetNode: Pick<PlanNode, 'id' | 'status'>,
+  sourceTaskStatus: TaskStatus,
+  targetTaskStatus: TaskStatus,
+  sourceState: TaskStatusIndicatorState,
+  targetState: TaskStatusIndicatorState,
+): EdgeFlowPresentation => {
+  if (
+    BLOCKED_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    BLOCKED_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    BLOCKED_EDGE_INDICATOR_STATES.has(sourceState) ||
+    BLOCKED_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'blocked',
+      duration: '0s',
+      opacity: 0.18,
+      width: 36,
+      shouldAnimate: false,
+    };
+  }
+
+  if (
+    WAITING_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    WAITING_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    WAITING_EDGE_INDICATOR_STATES.has(sourceState) ||
+    WAITING_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'waiting',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (
+    ACTIVE_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    ACTIVE_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    ACTIVE_EDGE_INDICATOR_STATES.has(sourceState) ||
+    ACTIVE_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'active',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (sourceTaskStatus === 'Completed' && targetTaskStatus === 'Completed') {
+    return {
+      tone: 'complete',
+      duration: '3.1s',
+      opacity: 0.22,
+      width: 38,
+      shouldAnimate: false,
+    };
+  }
+
+  if (sourceTaskStatus === 'Pending' && targetTaskStatus === 'Pending') {
+    return {
+      tone: 'pending',
+      duration: '2.8s',
+      opacity: 0.3,
+      width: 40,
+      shouldAnimate: true,
+    };
+  }
+
+  return {
+    tone: 'normal',
+    duration: '2.35s',
+    opacity: 0.42,
+    width: 44,
+    shouldAnimate: true,
+  };
+};
+
 type GroupedBranchCardSource = PredictedBranch & {
   logicalLabel: string;
 };
@@ -517,6 +628,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
+  const graphFlowIdPrefix = React.useId().replace(/:/g, '');
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const [branchSearch, setBranchSearch] = useState('');
   const [branchStatusFilter, setBranchStatusFilter] = useState<'all' | PlanNodeStatus>('all');
@@ -1157,6 +1269,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     };
   }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectRegistry, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
 
+  const graphNodeById = useMemo(
+    () => new Map(layoutData.nodes.map((node) => [node.id, node])),
+    [layoutData.nodes]
+  );
+
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
       taskStatusById.get(nodeId) ?? mapPlanNodeStatusToTaskStatus(nodeStatus),
@@ -1475,30 +1592,108 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       height={layoutData.height}
       className="block select-none"
     >
+      <defs>
+        <linearGradient id={`${graphFlowIdPrefix}-flow-sheen`} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="rgb(125 211 252)" stopOpacity="0" />
+          <stop offset="34%" stopColor="rgb(125 211 252)" stopOpacity="0.1" />
+          <stop offset="52%" stopColor="rgb(255 255 255)" stopOpacity="0.48" />
+          <stop offset="72%" stopColor="rgb(var(--primary))" stopOpacity="0.16" />
+          <stop offset="100%" stopColor="rgb(var(--primary))" stopOpacity="0" />
+        </linearGradient>
+        <filter id={`${graphFlowIdPrefix}-flow-blur`} x="-260%" y="-260%" width="620%" height="620%">
+          <feGaussianBlur stdDeviation="1.2" result="blur" />
+          <feColorMatrix
+            in="blur"
+            type="matrix"
+            values="0 0 0 0 0.45 0 0 0 0 0.78 0 0 0 0 1 0 0 0 0.28 0"
+            result="glow"
+          />
+          <feMerge>
+            <feMergeNode in="glow" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
       {layoutData.edges.map((edge) => {
         const dy = edge.y2 - edge.y1;
         const controlY1 = edge.y1 + dy * 0.5;
         const controlY2 = edge.y2 - dy * 0.5;
 
-        const isRelated = hoveredNodeData && (
-          edge.source === hoveredNodeId || edge.target === hoveredNodeId
-        );
+        const relationKind =
+          hoveredNodeData && edge.target === hoveredNodeId
+            ? 'required'
+            : hoveredNodeData && edge.source === hoveredNodeId
+              ? 'unlocked'
+              : null;
+        const isRelated = relationKind !== null;
 
+        const pathD = `M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`;
+        const motionPathId = `${graphFlowIdPrefix}-flow-path-${edge.source.replace(/[^a-zA-Z0-9_-]/g, '-')}-${edge.target.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
         const strokeColor = isRelated ? 'stroke-primary' : 'stroke-border';
         const opacity = isRelated || !hoveredNodeId ? 0.6 : 0.2;
         const width = isRelated ? 2 : 1.5;
+        const flowHeight = 3.6;
+        const sourceNode = graphNodeById.get(edge.source);
+        const targetNode = graphNodeById.get(edge.target);
+        const flowPresentation =
+          sourceNode && targetNode
+            ? resolveEdgeFlowPresentation(
+                sourceNode,
+                targetNode,
+                getNodeTaskStatus(sourceNode.id, sourceNode.status),
+                getNodeTaskStatus(targetNode.id, targetNode.status),
+                getNodeIndicatorState(sourceNode),
+                getNodeIndicatorState(targetNode),
+              )
+            : null;
+        const flowStyle = flowPresentation
+          ? ({
+              '--strategy-graph-flow-peak-opacity': String(flowPresentation.opacity),
+            } as React.CSSProperties)
+          : undefined;
 
         return (
-          <path
-            key={`${edge.source}-${edge.target}`}
-            data-graph-edge-source={edge.source}
-            data-graph-edge-target={edge.target}
-            d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`}
-            fill="none"
-            className={cn('transition-all duration-300', strokeColor)}
-            strokeWidth={width}
-            strokeOpacity={opacity}
-          />
+          <g key={`${edge.source}-${edge.target}`}>
+            <path
+              data-graph-edge-source={edge.source}
+              data-graph-edge-target={edge.target}
+              data-graph-edge-relation={relationKind ?? undefined}
+              data-graph-edge-flow-tone={isRelated ? flowPresentation?.tone : undefined}
+              data-graph-edge-flow-animated={
+                isRelated && flowPresentation ? String(flowPresentation.shouldAnimate) : undefined
+              }
+              id={motionPathId}
+              d={pathD}
+              fill="none"
+              className={cn('transition-all duration-300', strokeColor)}
+              strokeWidth={width}
+              strokeOpacity={opacity}
+            />
+            {isRelated && flowPresentation && (
+              <g
+                className={cn(
+                  'strategy-graph-flow-pulse',
+                  !flowPresentation.shouldAnimate && 'strategy-graph-flow-pulse--static'
+                )}
+                style={flowStyle}
+              >
+                <rect
+                  x={-flowPresentation.width / 2}
+                  y={-flowHeight / 2}
+                  width={flowPresentation.width}
+                  height={flowHeight}
+                  rx={flowHeight / 2}
+                  fill={`url(#${graphFlowIdPrefix}-flow-sheen)`}
+                  filter={`url(#${graphFlowIdPrefix}-flow-blur)`}
+                />
+                {flowPresentation.shouldAnimate && (
+                  <animateMotion dur={flowPresentation.duration} repeatCount="indefinite" rotate="auto">
+                    <mpath href={`#${motionPathId}`} />
+                  </animateMotion>
+                )}
+              </g>
+            )}
+          </g>
         );
       })}
 

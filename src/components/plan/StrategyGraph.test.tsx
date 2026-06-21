@@ -847,6 +847,209 @@ describe('StrategyGraph', () => {
     ).not.toBeNull();
   });
 
+  const renderStatusEdgeGraph = async (
+    nodes: MockPlanNode[],
+    taskStatuses: Record<string, TaskStatus>,
+    hoverNodeId: string,
+  ) => {
+    seedStores('Pending', { includeConversation: false, selectedConversationId: null });
+    useAppStore.setState({
+      activePlanContext: null,
+      planNodes: nodes,
+      predictedBranches: [],
+    });
+    useTaskStore.setState({
+      tasks: nodes.map((node, index) => ({
+        id: node.id,
+        title: node.title,
+        status: taskStatuses[node.id] ?? 'Pending',
+        task_source: 'architect',
+        draft: false,
+        archived_at: null,
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        assigned_branch: `feature/${node.id}`,
+        blocked_by: [],
+        dependencies: node.dependencies,
+        is_blocked: (taskStatuses[node.id] ?? 'Pending') === 'Blocked',
+        plan_id: 'plan-1',
+        plan_title: 'Plan One',
+        sequence_index: index,
+        execution_targets: [{ projectId: 'project-1' }],
+      })),
+    });
+
+    await act(async () => {
+      root?.render(<StrategyGraph />);
+      await flushRender();
+    });
+
+    const graphNode = document.querySelector(
+      `[data-graph-node-id="${hoverNodeId}"]`
+    ) as SVGGElement | null;
+    expect(graphNode).not.toBeNull();
+
+    Object.defineProperty(graphNode!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 120,
+        y: 120,
+        top: 120,
+        left: 120,
+        right: 144,
+        bottom: 144,
+        width: 24,
+        height: 24,
+        toJSON: () => ({}),
+      }),
+    });
+
+    await act(async () => {
+      graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+      await flushRender();
+    });
+  };
+
+  it('marks completed-to-pending graph edge flow as normal and animated', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Foundation',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Follow-up',
+          type: 'task',
+          status: 'pending',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Completed', 'task-b': 'Pending' },
+      'task-b',
+    );
+
+    const edge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    expect(edge?.getAttribute('data-graph-edge-flow-tone')).toBe('normal');
+    expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('true');
+    expect(edge?.getAttribute('stroke-opacity')).toBe('0.6');
+    expect(edge?.getAttribute('stroke-width')).toBe('2');
+  });
+
+  it('disables motion on graph edge flow when either endpoint is blocked or failed', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Blocked source',
+          type: 'task',
+          status: 'blocked',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Dependent',
+          type: 'task',
+          status: 'pending',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Blocked', 'task-b': 'Pending' },
+      'task-b',
+    );
+
+    const edge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    expect(edge?.getAttribute('data-graph-edge-flow-tone')).toBe('blocked');
+    expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('false');
+    expect(document.querySelector('animateMotion')).toBeNull();
+  });
+
+  it('uses waiting graph edge flow when either endpoint awaits a response', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Foundation',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Needs response',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Completed', 'task-b': 'AwaitingResponse' },
+      'task-b',
+    );
+
+    const edge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    expect(edge?.getAttribute('data-graph-edge-flow-tone')).toBe('waiting');
+    expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('true');
+  });
+
+  it('keeps upstream and downstream hovered graph edges at matching base opacity and width', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Upstream',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Middle',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-c',
+          title: 'Downstream',
+          type: 'task',
+          status: 'pending',
+          dependencies: ['task-b'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Completed', 'task-b': 'InProgress', 'task-c': 'Pending' },
+      'task-b',
+    );
+
+    const upstreamEdge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    const downstreamEdge = document.querySelector(
+      '[data-graph-edge-source="task-b"][data-graph-edge-target="task-c"]'
+    );
+    expect(upstreamEdge?.getAttribute('stroke-opacity')).toBe('0.6');
+    expect(downstreamEdge?.getAttribute('stroke-opacity')).toBe('0.6');
+    expect(upstreamEdge?.getAttribute('stroke-width')).toBe('2');
+    expect(downstreamEdge?.getAttribute('stroke-width')).toBe('2');
+  });
+
   it('shows the lock only inside the tooltip for frozen graph nodes', async () => {
     seedStores('InProgress');
     useAppStore.setState({
