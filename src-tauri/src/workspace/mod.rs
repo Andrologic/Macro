@@ -5088,7 +5088,7 @@ fn choose_recovery_project_id(ids: Vec<String>) -> Option<String> {
     ranked.into_iter().map(|(id, _)| id).next()
 }
 
-fn discover_project_registry_recovery_hints_from_known_parent_dirs(
+fn discover_recoverable_project_hints(
     workspace_path: &Path,
     state: &WorkspaceState,
     max_children_per_root: usize,
@@ -5154,7 +5154,7 @@ fn discover_project_registry_recovery_hints_from_known_parent_dirs(
     }
 
     tracing::info!(
-        action = "project_registry_known_parent_discovery_scanned",
+        action = "project_registry_recoverable_project_discovery_scanned",
         root_count = roots.len(),
         known_path_count = known_paths.len(),
         scanned_child_count,
@@ -5298,7 +5298,7 @@ pub async fn discover_recoverable_projects(
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
     let state = load_raw_state(metadata_root).await?.unwrap_or_default();
     let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
-    let hints = discover_project_registry_recovery_hints_from_known_parent_dirs(
+    let hints = discover_recoverable_project_hints(
         workspace_path,
         &state,
         max_children_per_root,
@@ -5327,49 +5327,6 @@ pub async fn discover_recoverable_projects(
         discovered_project_count = report.discovered_projects.len(),
         status = %report.status,
         "Workspace registry recoverable project discovery completed without mutating metadata."
-    );
-    Ok(report)
-}
-
-pub async fn reconcile_project_registry_from_known_parent_dirs(
-    workspace_path: &Path,
-    metadata_root: &Path,
-    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
-) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
-    let state = load_raw_state(metadata_root).await?.unwrap_or_default();
-    let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
-    let projects = discover_project_registry_recovery_hints_from_known_parent_dirs(
-        workspace_path,
-        &state,
-        max_children_per_root,
-    );
-
-    if projects.is_empty() {
-        tracing::info!(
-            action = "project_registry_reconcile_known_parent_dirs_unchanged",
-            max_children_per_root,
-            "No recoverable @macro sibling repositories were discovered for registry repair."
-        );
-        return Ok(WorkspaceProjectRegistryReconcileReportDto {
-            status: "unchanged".to_string(),
-            ..WorkspaceProjectRegistryReconcileReportDto::default()
-        });
-    }
-
-    let report = reconcile_project_registry_from_hints(
-        workspace_path,
-        metadata_root,
-        WorkspaceReconcileProjectRegistryFromHintsRequestDto { projects },
-    )
-    .await?;
-    tracing::warn!(
-        action = "project_registry_reconcile_known_parent_dirs_completed",
-        added_project_count = report.added_projects.len(),
-        skipped_project_count = report.skipped_projects.len(),
-        duplicate_path_count = report.duplicate_paths.len(),
-        invalid_path_count = report.invalid_paths.len(),
-        status = %report.status,
-        "Workspace registry repair from known parent directories completed."
     );
     Ok(report)
 }

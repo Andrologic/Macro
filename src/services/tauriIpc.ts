@@ -2740,19 +2740,6 @@ export async function workspaceReconcileProjectRegistryFromHints(params: {
   );
 }
 
-export async function workspaceReconcileProjectRegistryFromKnownParentDirs(params: {
-  maxChildrenPerRoot?: number;
-} = {}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
-  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
-    "workspace_reconcile_project_registry_from_known_parent_dirs",
-    {
-      request: {
-        maxChildrenPerRoot: params.maxChildrenPerRoot ?? null,
-      },
-    },
-  );
-}
-
 export async function workspaceCreateManualFeatureDraft(params: {
   taskId: string;
   conversationId: string;
