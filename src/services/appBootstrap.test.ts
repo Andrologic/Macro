@@ -15,7 +15,6 @@ describe('appBootstrap', () => {
   let initializeProviders: ReturnType<typeof mock>;
   let restoreChatSelectionAfterProviderInit: ReturnType<typeof mock>;
   let initializeShortcuts: ReturnType<typeof mock>;
-  let checkSession: ReturnType<typeof mock>;
   let preloadModeComponents: ReturnType<typeof mock>;
 
   beforeEach(() => {
@@ -54,9 +53,6 @@ describe('appBootstrap', () => {
     initializeShortcuts = mock(async () => {
       callOrder.push('shortcuts');
     });
-    checkSession = mock(async () => {
-      callOrder.push('auth');
-    });
     preloadModeComponents = mock(async () => {
       callOrder.push('preload');
     });
@@ -75,7 +71,6 @@ describe('appBootstrap', () => {
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
-      checkSession,
       getCurrentMode: () => 'Chat',
       preloadModeComponents,
       scheduleLowPriority: (run) => {
@@ -101,7 +96,6 @@ describe('appBootstrap', () => {
     expect(initializeChat.mock.calls.length).toBe(1);
     expect(resumeApp.mock.calls.length).toBe(1);
     expect(resumeTasks.mock.calls.length).toBe(1);
-    expect(checkSession.mock.calls.length).toBe(1);
     expect(initializeShortcuts.mock.calls.length).toBe(1);
     expect(initializeTerminal.mock.calls.length).toBe(1);
     expect(preloadModeComponents.mock.calls.length).toBe(1);
@@ -156,7 +150,6 @@ describe('appBootstrap', () => {
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
-      checkSession,
       getCurrentMode: () => 'Chat',
       preloadModeComponents,
       scheduleLowPriority: (run) => {
@@ -198,7 +191,6 @@ describe('appBootstrap', () => {
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
-      checkSession,
       getCurrentMode: () => 'Implement',
       preloadModeComponents,
       scheduleLowPriority: (run) => {
@@ -242,7 +234,6 @@ describe('appBootstrap', () => {
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
-      checkSession,
       getCurrentMode: () => 'Chat',
       preloadModeComponents,
       scheduleLowPriority: (run) => {
@@ -294,7 +285,6 @@ describe('appBootstrap', () => {
       initializeProviders,
       restoreChatSelectionAfterProviderInit,
       initializeShortcuts,
-      checkSession,
       getCurrentMode: () => 'Chat',
       preloadModeComponents,
       scheduleLowPriority: (run) => {

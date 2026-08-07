@@ -187,6 +187,14 @@ fn path_is_inside(parent: &Path, child: &Path) -> bool {
     child.starts_with(parent)
 }
 
+#[cfg(windows)]
+fn command_prompt_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(path.as_ref())
+        .to_string()
+}
+
 fn path_has_ignored_discovery_component(path: &Path) -> bool {
     path.components().any(|component| match component {
         Component::Normal(value) => {
@@ -1472,6 +1480,16 @@ pub async fn skills_run_script(
             "bash".to_string(),
             vec![script.to_string_lossy().to_string()],
         ),
+        #[cfg(windows)]
+        Some("cmd") | Some("bat") => (
+            "cmd.exe".to_string(),
+            vec![
+                "/D".to_string(),
+                "/C".to_string(),
+                "call".to_string(),
+                command_prompt_path(&script),
+            ],
+        ),
         _ => (script.to_string_lossy().to_string(), Vec::new()),
     };
     command_args.extend(args);
@@ -1497,8 +1515,15 @@ pub async fn skills_run_script(
         .stderr(Stdio::piped())
         .env_clear();
     command.kill_on_drop(true);
-    if let Ok(path) = std::env::var("PATH") {
-        command.env("PATH", path);
+    let preserved_env_vars = if cfg!(windows) {
+        ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"].as_slice()
+    } else {
+        ["PATH"].as_slice()
+    };
+    for key in preserved_env_vars {
+        if let Ok(value) = std::env::var(key) {
+            command.env(key, value);
+        }
     }
 
     let result = timeout(Duration::from_millis(timeout_ms), command.output()).await;
@@ -2148,8 +2173,13 @@ mod tests {
             "Regle de reference: utiliser un ton concis.",
         )
         .expect("write reference");
-        fs::write(skill_dir.join("scripts/check.sh"), "echo \"script ok\"\n")
-            .expect("write script");
+        #[cfg(windows)]
+        let (check_script_path, check_script_content) =
+            ("scripts/check.cmd", "@echo off\r\necho script ok\r\n");
+        #[cfg(not(windows))]
+        let (check_script_path, check_script_content) =
+            ("scripts/check.sh", "echo \"script ok\"\n");
+        fs::write(skill_dir.join(check_script_path), check_script_content).expect("write script");
 
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
@@ -2186,7 +2216,7 @@ mod tests {
 
         let script = skills_run_script(
             skill_id,
-            "scripts/check.sh".to_string(),
+            check_script_path.to_string(),
             vec![],
             Some(5_000),
             false,
@@ -2195,7 +2225,13 @@ mod tests {
         )
         .await
         .expect("script");
-        assert_eq!(script.exit_code, Some(0));
+        assert_eq!(
+            script.exit_code,
+            Some(0),
+            "stdout: {:?}\nstderr: {:?}",
+            script.stdout,
+            script.stderr
+        );
         assert_eq!(script.stdout.trim(), "script ok");
     }
 
@@ -2325,12 +2361,23 @@ mod tests {
             "---\nname: runner\ndescription: Runs local scripts\n---\n",
         )
         .expect("write skill");
-        fs::write(skill_dir.join("scripts/slow.sh"), "sleep 2\n").expect("write slow");
-        fs::write(
-            skill_dir.join("scripts/noisy.sh"),
-            "printf 'x%.0s' {1..21050}\n",
-        )
-        .expect("write noisy");
+        #[cfg(windows)]
+        let (slow_script_path, slow_script_content) = (
+            "scripts/slow.cmd",
+            "@echo off\r\nping 127.0.0.1 -n 3 > nul\r\n",
+        );
+        #[cfg(not(windows))]
+        let (slow_script_path, slow_script_content) = ("scripts/slow.sh", "sleep 2\n");
+        #[cfg(windows)]
+        let (noisy_script_path, noisy_script_content) = (
+            "scripts/noisy.cmd",
+            "@echo off\r\npowershell -NoProfile -Command \"$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(30000, 25); Write-Host -NoNewline ('x' * 21050)\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (noisy_script_path, noisy_script_content) =
+            ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
+        fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
+        fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
             project_name: "Project".to_string(),
@@ -2350,7 +2397,7 @@ mod tests {
 
         let timed_out = skills_run_script(
             skill_id.clone(),
-            "scripts/slow.sh".to_string(),
+            slow_script_path.to_string(),
             vec![],
             Some(1_000),
             false,
@@ -2359,12 +2406,16 @@ mod tests {
         )
         .await
         .expect("timeout response");
-        assert!(timed_out.timed_out);
+        assert!(
+            timed_out.timed_out,
+            "stdout: {:?}\nstderr: {:?}\nexit_code: {:?}",
+            timed_out.stdout, timed_out.stderr, timed_out.exit_code
+        );
         assert!(timed_out.stderr.contains("timed out"));
 
         let truncated = skills_run_script(
             skill_id,
-            "scripts/noisy.sh".to_string(),
+            noisy_script_path.to_string(),
             vec![],
             Some(5_000),
             false,

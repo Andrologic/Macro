@@ -551,8 +551,8 @@ export default defineConfig(({ command }) => {
       // Modern CSS minification
       cssMinify: 'esbuild',
 
-      // Reduce chunk size warnings
-      chunkSizeWarningLimit: 1000,
+      // Macro's desktop shell intentionally keeps the primary app surface bundled.
+      chunkSizeWarningLimit: 1200,
 
       // Disable source maps in production for smaller builds
       sourcemap: false,

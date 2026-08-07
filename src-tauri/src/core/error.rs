@@ -76,10 +76,6 @@ pub enum BackendError {
     #[error("Resource pressure: {message}")]
     ResourcePressure { message: String },
 
-    #[error("Index error: {message}")]
-    #[allow(dead_code)]
-    Index { message: String },
-
     #[error("AI provider error: {message}")]
     #[allow(dead_code)]
     AI { message: String },
@@ -127,7 +123,6 @@ impl BackendError {
             BackendError::FilesystemInvalidPath { .. } => "FilesystemInvalidPath",
             BackendError::FilesystemDiskFull { .. } => "FilesystemDiskFull",
             BackendError::ResourcePressure { .. } => "RESOURCE_PRESSURE",
-            BackendError::Index { .. } => "Index",
             BackendError::AI { .. } => "AI",
             BackendError::Config { .. } => "Config",
             BackendError::NotFound(_) => "NotFound",
@@ -161,7 +156,6 @@ impl BackendError {
             | BackendError::FilesystemInvalidPath { message }
             | BackendError::FilesystemDiskFull { message }
             | BackendError::ResourcePressure { message }
-            | BackendError::Index { message }
             | BackendError::AI { message }
             | BackendError::Config { message }
             | BackendError::Internal { message } => message,
@@ -315,9 +309,6 @@ mod tests {
             message: "test".to_string(),
         };
         let _ = BackendError::Filesystem {
-            message: "test".to_string(),
-        };
-        let _ = BackendError::Index {
             message: "test".to_string(),
         };
         let _ = BackendError::AI {

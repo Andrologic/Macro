@@ -1126,7 +1126,6 @@ interface AppStore {
   projectAddOperation: ProjectAddOperation | null;
   settingsOpen: boolean;
   activeSettingsTab: SettingsTab; // Added
-  accountOpen: boolean;
   projectModalOpen: boolean;
   projectModalGroupId: string | null;
   projectGitFlowModalProjectId: string | null;
@@ -1143,6 +1142,7 @@ interface AppStore {
   isProjectSwitching: boolean;
   metadataAutoPush: boolean;
   metadataMissingUpstreamPolicy: MetadataMissingUpstreamPolicy;
+  inAppNotificationsEnabled: boolean;
   notificationChannelModes: NotificationChannelModes;
   metadataSyncState: MetadataSyncState;
   metadataSyncError: string | null;
@@ -1229,6 +1229,7 @@ interface AppStore {
     category: NotificationCategory,
     mode: NotificationChannelMode,
   ) => void;
+  setInAppNotificationsEnabled: (enabled: boolean) => void;
   setMetadataSyncStatus: (params: {
     state: MetadataSyncState;
     error?: string | null;
@@ -1265,8 +1266,6 @@ interface AppStore {
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
-  openAccount: () => void;
-  closeAccount: () => void;
   openProjectModal: (groupId?: string | null) => void;
   closeProjectModal: () => void;
   openProjectGitFlowModal: (projectId: string) => void;
@@ -1418,7 +1417,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectAddOperation: null,
   settingsOpen: false,
   activeSettingsTab: "general",
-  accountOpen: false,
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
@@ -1438,6 +1436,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isProjectSwitching: false,
   metadataAutoPush: false,
   metadataMissingUpstreamPolicy: "ask",
+  inAppNotificationsEnabled: true,
   notificationChannelModes: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   metadataSyncState: "clean",
   metadataSyncError: null,
@@ -1594,6 +1593,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       void savePreference(PREF_KEYS.NOTIFICATION_CHANNEL_MODES, nextModes);
       return { notificationChannelModes: nextModes };
     });
+  },
+
+  setInAppNotificationsEnabled: (enabled) => {
+    set({ inAppNotificationsEnabled: enabled });
+    void savePreference(PREF_KEYS.IN_APP_NOTIFICATIONS_ENABLED, enabled);
   },
 
   setMetadataSyncStatus: ({
@@ -3602,10 +3606,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   closeSettings: () => set({ settingsOpen: false }),
   setSettingsTab: (tab) => set({ activeSettingsTab: tab }),
 
-  openAccount: () => set({ accountOpen: true }),
-
-  closeAccount: () => set({ accountOpen: false }),
-
   openProjectModal: (groupId = null) =>
     set({ projectModalOpen: true, projectModalGroupId: groupId }),
 
@@ -4372,6 +4372,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         macroEnabledProjects,
         metadataAutoPush,
         metadataMissingUpstreamPolicy,
+        inAppNotificationsEnabled,
         notificationChannelModes,
         storedProjectSwitchPolicy,
         sessionContext,
@@ -4394,6 +4395,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         loadPreference<MetadataMissingUpstreamPolicy>(
           PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY,
         ),
+        loadPreference<boolean>(PREF_KEYS.IN_APP_NOTIFICATIONS_ENABLED),
         loadPreference<NotificationChannelModes>(
           PREF_KEYS.NOTIFICATION_CHANNEL_MODES,
         ),
@@ -4614,6 +4616,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         metadataAutoPush,
         metadataMissingUpstreamPolicy:
           metadataMissingUpstreamPolicy === "ignore" ? "ignore" : "ask",
+        inAppNotificationsEnabled: inAppNotificationsEnabled !== false,
         notificationChannelModes: sanitizeNotificationChannelModes(
           notificationChannelModes,
         ),

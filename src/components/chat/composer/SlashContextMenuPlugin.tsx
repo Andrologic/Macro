@@ -28,7 +28,7 @@ import { useTaskStore } from '../../../stores/useTaskStore';
 import { resolveProjectExecutionContext } from '../../../services/projectExecutionContext';
 import { searchWorkspaceFiles } from '../../../services/workspaceFileSearch';
 import type { Citation } from '../../../stores/useCitationsStore';
-import type { ContextRefKind, Need, SkillManifest, WorkspaceFileReference } from '../../../types';
+import type { ContextRefKind, Need, Project, SkillManifest, WorkspaceFileReference } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
@@ -74,6 +74,7 @@ interface SlashContextUsageRecord {
 const SLASH_CONTEXT_USAGE_KEY = 'macro.slashContextUsage.v1';
 const MAX_SLASH_ITEMS = 8;
 const SLASH_MENU_WIDTH = 448;
+const EMPTY_STANDALONE_PROJECTS: Project[] = [];
 
 const loadSlashContextUsage = (): Record<string, SlashContextUsageRecord> => {
   if (typeof window === 'undefined') return {};
@@ -178,7 +179,8 @@ export const SlashContextMenuPlugin: React.FC = () => {
   );
 
   const mode = useAppStore((state) => state.mode);
-  const standaloneProjects = useAppStore((state) => state.standaloneProjects ?? []);
+  const standaloneProjects =
+    useAppStore((state) => state.standaloneProjects) ?? EMPTY_STANDALONE_PROJECTS;
   const projectGroups = useAppStore((state) => state.projectGroups);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);

@@ -10,7 +10,9 @@ Les seules sources de verite a utiliser en priorite sont :
 
 ## Documents conserves
 
-- `analysis.md` : historique de la phase de decouverte produit, utile pour retrouver certaines hypotheses initiales et decisions de cadrage.
+Aucun document produit historique n'est conserve ici. Les anciennes hypotheses
+sur des capacites futures ont ete retirees pour eviter qu'elles soient lues
+comme des capacites de la ligne 0.1.
 
 ## Documents retires
 

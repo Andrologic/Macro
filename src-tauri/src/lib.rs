@@ -15,7 +15,6 @@ mod fs;
 pub mod git;
 
 mod ai;
-mod index;
 pub mod project_path;
 mod tool_host;
 pub mod workspace;

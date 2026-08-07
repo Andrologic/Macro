@@ -350,7 +350,7 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations: [],
       toolDefinitions: [],
-      modelContextWindowTokens: 32_000,
+      modelContextWindowTokens: 1000,
       mode: 'blocking',
       estimateSerializedPayloadTokens,
       countProviderInputItems: false,
@@ -366,7 +366,7 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations: [],
       toolDefinitions: [],
-      modelContextWindowTokens: 32_000,
+      modelContextWindowTokens: 1000,
       mode: 'blocking',
       estimateSerializedPayloadTokens,
       countProviderInputItems: false,
@@ -383,8 +383,8 @@ describe('buildCompactedMessagesForRequest', () => {
       orderedMessages,
       citations: [],
       toolDefinitions: [],
-      modelContextWindowTokens: 32_000,
-      mode: 'blocking',
+      modelContextWindowTokens: 1000,
+      mode: 'manual',
       forceCompaction: true,
       forcePrune: true,
       estimateSerializedPayloadTokens,
@@ -858,7 +858,7 @@ describe('buildCompactedMessagesForRequest', () => {
   it('invalidates v3 checkpoints when source passage content changes', async () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the parser.'),
-      makeMessage('a1', 'assistant', 'Parser uses createParser.', {
+      makeMessage('a1', 'assistant', `Parser uses createParser.\n${'parser context detail\n'.repeat(240)}`, {
         hidden_context:
           '<tool_context tool="read" detail="src/parser.ts">\nFILE: src/parser.ts\nconst parser = createParser();\n</tool_context>',
       }),
@@ -890,7 +890,7 @@ describe('buildCompactedMessagesForRequest', () => {
       modelContextWindowTokens: 1000,
       contextLimitSource: 'provider_metadata',
       isContextLimitAuthoritative: true,
-      mode: 'blocking',
+      mode: 'manual',
       forceCompaction: true,
       generateSummary: async () => 'Current objective: answer from parser context.',
     });

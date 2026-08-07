@@ -23,10 +23,6 @@ mod tests {
             message: "test".to_string(),
         };
 
-        let _ = BackendError::Index {
-            message: "test".to_string(),
-        };
-
         let _ = BackendError::AI {
             message: "test".to_string(),
         };
@@ -166,9 +162,6 @@ mod tests {
             },
             BackendError::ResourcePressure {
                 message: "too many open files".to_string(),
-            },
-            BackendError::Index {
-                message: "index".to_string(),
             },
             BackendError::AI {
                 message: "ai".to_string(),

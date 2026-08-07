@@ -48,7 +48,7 @@ export const DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT: InformationalNo
   tone: 'info',
   title: i18n.t(
     'settings.notificationsDebug.defaults.informational.title',
-    'Background indexing finished'
+    'Background work finished'
   ),
   description: i18n.t(
     'settings.notificationsDebug.defaults.informational.description',
