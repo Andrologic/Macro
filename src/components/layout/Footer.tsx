@@ -538,7 +538,9 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
                 <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-muted-foreground">
                   <Icon name="git-branch" size={12} className="shrink-0 text-blue-400" />
                   <span className="truncate">{entry.branch}</span>
-                  <span className="shrink-0 text-muted-foreground/70">from</span>
+                  <span className="shrink-0 text-muted-foreground/70">
+                    {t('footer.sync.from', 'from')}
+                  </span>
                   <span className="truncate">{entry.upstreamBranch}</span>
                   {!entry.isClean && !entry.mergeInProgress && (
                     <span className="ml-auto shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
