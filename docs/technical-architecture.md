@@ -135,14 +135,12 @@ Le backend desktop utilise principalement :
 
 ### 4.3 Transports
 
-Macro supporte deux transports logiques cote application :
+Le produit 0.1 supporte un transport cote application :
 
 - `desktop`
-- `remote`
 
 Le transport `desktop` passe par Tauri IPC.
-Le transport `remote` passe par HTTP vers un kernel distant.
-Dans la ligne 0.1, `desktop` est le transport principal supporte. `remote` existe en premiere version pour le bootstrap workspace, le catalogue de taches, certains etats Git et l'execution d'outils distante, mais ne couvre pas encore toute la surface desktop.
+Une fondation HTTP distante existe dans le code a titre experimental, mais elle n'est ni exposee ni supportee comme capacite produit en 0.1. Elle pourra servir a une future ligne remote sans modifier le contrat desktop actuel.
 
 ---
 
@@ -249,7 +247,6 @@ D'autres stores portent des responsabilites ciblees :
 - `useProviderStore` pour les providers et modeles IA
 - `useToolsStore` pour les outils internes et MCP
 - `useSkillsStore` pour la decouverte, les preferences et les activations de skills
-- `useAuthStore` pour les futurs usages lies au compte
 
 ### 6.5 Principe d'orchestration
 
@@ -359,7 +356,6 @@ Les blocs principaux sont :
 - `workspace/`
 - `commands/`
 - `ai/`
-- `index/`
 
 ### 9.2 `core`
 
@@ -415,12 +411,6 @@ Le module `ai` porte :
 
 Cette couche est encore partiellement utilisee selon les flux, mais fait partie de l'architecture cible.
 
-### 9.8 `index`
-
-Le module `index` prepare la couche d'indexation et de recherche.
-
-Il existe dans l'architecture, meme si son usage produit n'est pas encore completement active.
-
 ---
 
 ## 10. Persistance
@@ -435,7 +425,6 @@ Elle stocke notamment :
 - messages
 - settings
 - cache local de workspace
-- jobs d'index
 - references de depots Git et worktrees
 
 ### 10.2 Persistance locale frontend
@@ -664,7 +653,9 @@ Le backend bloque les chemins hors skill, les traversals, les fichiers caches no
 
 `allowed-tools` est expose comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
 
-### 14.5 Transport remote
+### 14.5 Fondation de transport remote (experimentale)
+
+Cette couche reste interne et hors du contrat produit 0.1. Les details ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
 
 Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local. La deduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
 
@@ -707,13 +698,15 @@ Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestrati
 
 ---
 
-## 16. Backend distant et kernel headless
+## 16. Fondation experimentale : backend distant et kernel headless
+
+Cette section documente du code exploratoire interne. Ce code n'est pas expose comme mode produit, n'est pas supporte en 0.1 et ne constitue pas un engagement de compatibilite.
 
 ### 16.1 Role du kernel headless
 
-Le kernel headless est la version sans GUI du backend Macro.
+Le prototype de kernel headless est une version sans GUI du backend Macro.
 
-Il doit permettre a un client Macro distant de :
+Il explore la possibilite pour un futur client Macro distant de :
 
 - recuperer l'etat du workspace
 - recuperer les taches
@@ -745,21 +738,19 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
-Cette surface remote est volontairement minimale en 0.1 et ne remplace pas encore toutes les commandes IPC desktop.
+Cette surface HTTP est une fondation experimentale incomplete. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
 Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
-### 16.3 Authentification
+### 16.3 Protection experimentale
 
 Le kernel headless peut etre protege par un bearer token.
 
-Cette securisation est la base du modele de connexion distante, meme si le modele complet de compte et d'abonnement depasse l'etat courant du code.
+Ce token protege uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
 ### 16.4 Position architecturale
 
-Le kernel headless n'est pas un service annexe.
-
-Il constitue la base de :
+Si cette exploration devient un jour une capacite produit, elle pourrait servir de base a :
 
 - l'execution distante
 - la continuite entre plusieurs clients

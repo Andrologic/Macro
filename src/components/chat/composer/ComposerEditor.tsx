@@ -1,7 +1,6 @@
-import React, { useEffect, useImperativeHandle, forwardRef, useRef, useCallback } from 'react';
+import React, { useEffect, useImperativeHandle, forwardRef, useRef, useCallback, useMemo } from 'react';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
-import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import {
@@ -33,6 +32,7 @@ import { MentionNode, $createMentionNode, type MentionSurface } from './MentionN
 import { MentionPlugin } from './MentionPlugin';
 import { LexicalComposer } from './SafeLexicalComposer';
 import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
+import { ComposerHistoryPlugin } from './ComposerHistoryPlugin';
 
 // ------ Types ------
 
@@ -199,6 +199,14 @@ export const getCollapsedComposerSelectionTextPosition = (): {
   };
 };
 
+export const shouldUsePromptHistoryForPosition = (
+  position: { offset: number; total: number } | null,
+  direction: 'up' | 'down'
+): boolean => {
+  if (!position) return false;
+  return direction === 'up' ? position.offset === 0 : position.offset === position.total;
+};
+
 // ------ Inner component that accesses the editor ------
 
 const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
@@ -214,6 +222,12 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   }, ref) => {
     const [editor] = useLexicalComposerContext();
     const textRef = useRef('');
+    const onPromptHistoryRef = useRef(onPromptHistory);
+    const hasPromptHistory = Boolean(onPromptHistory);
+
+    useEffect(() => {
+      onPromptHistoryRef.current = onPromptHistory;
+    }, [onPromptHistory]);
 
     // Editable state
     useEffect(() => {
@@ -335,39 +349,39 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
 
     // Prompt history via ArrowUp (when cursor at start)
     useEffect(() => {
-      if (!onPromptHistory) return;
+      if (!hasPromptHistory) return;
       return editor.registerCommand(
         KEY_ARROW_UP_COMMAND,
         (event: KeyboardEvent) => {
           const position = getCollapsedComposerSelectionTextPosition();
-          if (position?.offset === 0) {
+          if (shouldUsePromptHistoryForPosition(position, 'up')) {
             event.preventDefault();
-            onPromptHistory('up');
+            onPromptHistoryRef.current?.('up');
             return true;
           }
           return false;
         },
         COMMAND_PRIORITY_HIGH
       );
-    }, [editor, onPromptHistory]);
+    }, [editor, hasPromptHistory]);
 
     // Prompt history via ArrowDown (when cursor at end)
     useEffect(() => {
-      if (!onPromptHistory) return;
+      if (!hasPromptHistory) return;
       return editor.registerCommand(
         KEY_ARROW_DOWN_COMMAND,
         (event: KeyboardEvent) => {
           const position = getCollapsedComposerSelectionTextPosition();
-          if (position && position.offset === position.total) {
+          if (shouldUsePromptHistoryForPosition(position, 'down')) {
             event.preventDefault();
-            onPromptHistory('down');
+            onPromptHistoryRef.current?.('down');
             return true;
           }
           return false;
         },
         COMMAND_PRIORITY_HIGH
       );
-    }, [editor, onPromptHistory]);
+    }, [editor, hasPromptHistory]);
 
     return (
       <>
@@ -396,7 +410,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           ignoreSelectionChange
           ignoreHistoryMergeTagChange={false}
         />
-        <HistoryPlugin />
+        <ComposerHistoryPlugin />
         {syncContextRefs && <MentionPlugin />}
         {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
       </>
@@ -432,7 +446,7 @@ class ComposerLexicalErrorBoundary extends React.Component<
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   (props, ref) => {
-    const initialConfig = {
+    const initialConfig = useMemo(() => ({
       namespace: 'MacroComposer',
       theme: composerTheme,
       nodes: [MentionNode],
@@ -440,7 +454,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       onError: (error: Error) => {
         console.error('[ComposerEditor]', error);
       },
-    };
+    }), []);
 
     return (
       <LexicalComposer initialConfig={initialConfig}>

@@ -69,8 +69,7 @@
     "selectProject": "Wählen Sie Projekt aus",
     "toggleLeftPanel": "Linken Bereich umschalten",
     "toggleRightPanel": "Rechtes Feld umschalten",
-    "settings": "Einstellungen",
-    "account": "Konto"
+    "settings": "Einstellungen"
   },
   "onboarding": {
     "open": "Onboarding öffnen",
@@ -790,7 +789,9 @@
     "inAppNotificationsScopedDesc": "Steuert nicht kategorisierte In-App-Benachrichtigungen, die nicht von den folgenden Kanalregeln abgedeckt werden.",
     "notificationChannels": "Benachrichtigungskanäle",
     "notificationChannelsDesc": "Wählen Sie, wie jedes wichtige Workflow-Ereignis zugestellt werden soll: Toast, Desktop, beides oder aus.",
+    "notificationChannelsUnsupportedDesc": "Desktop-Benachrichtigungen sind in dieser Laufzeit nicht verfügbar. Wählen Sie In-App oder aus.",
     "desktopNotificationsPermissionHint": "Macro fragt beim ersten zulässigen Hintergrundereignis nach der Berechtigung für Desktop-Benachrichtigungen.",
+    "desktopNotificationsUnsupportedHint": "Desktop-Benachrichtigungen sind in dieser Laufzeit nicht verfügbar. Benachrichtigungen werden stattdessen in der App angezeigt.",
     "notificationCategoryTaskAttention": "Aufgaben mit Handlungsbedarf",
     "notificationCategoryTaskAttentionDesc": "Fehlende Branches oder andere Aufgabenprobleme, die eine ausdrückliche Benutzeraktion erfordern.",
     "notificationCategoryTaskRunCompleted": "Abgeschlossene Aufgabenbefehle",
@@ -1607,26 +1608,6 @@
       "refreshFailed": "MCP-Tools konnten nicht aktualisiert werden.",
       "serverDeleted": "MCP-Server gelöscht."
     }
-  },
-  "account": {
-    "title": "Konto",
-    "signIn": "Anmelden",
-    "signOut": "Abmelden",
-    "email": "E-Mail",
-    "password": "Passwort",
-    "profile": "Profil",
-    "preferences": "Präferenzen",
-    "currentPreferences": "Aktuelle Einstellungen",
-    "userId": "Benutzer-ID",
-    "memberSince": "Mitglied seit",
-    "lastUpdated": "Zuletzt aktualisiert",
-    "quickActions": "Schnelle Aktionen",
-    "changePassword": "Passwort ändern",
-    "manageApiKeys": "API-Schlüssel verwalten",
-    "exportData": "Daten exportieren",
-    "dangerZone": "Gefahrenzone",
-    "inAppNotifications": "In-App-Benachrichtigungen",
-    "emailUpdates": "E-Mail-Updates"
   },
   "errors": {
     "generic": "Etwas ist schief gelaufen",

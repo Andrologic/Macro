@@ -1,4 +1,4 @@
-import type { FrontendLogLevel, FrontendLogParams } from './tauriIpc';
+import { frontendLog, type FrontendLogLevel, type FrontendLogParams } from './tauriIpc';
 
 type FrontendLogForwarder = (params: FrontendLogParams) => void | Promise<void>;
 export type { FrontendLogParams };
@@ -22,9 +22,7 @@ const MAX_LOG_MESSAGE_LENGTH = 8_000;
 const VITE_OPTIMIZE_DEP_RELOAD_KEY = 'macro:vite-optimize-dep-reload';
 
 const defaultForwardLog: FrontendLogForwarder = (params) => {
-  void import('./tauriIpc')
-    .then(({ frontendLog }) => frontendLog(params))
-    .catch(() => undefined);
+  void frontendLog(params).catch(() => undefined);
 };
 
 const truncate = (value: string, maxLength = MAX_LOG_MESSAGE_LENGTH): string =>

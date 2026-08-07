@@ -126,10 +126,6 @@ const registerAppMocks = () => {
     default: () => null,
   }));
 
-  mock.module('./components/modals/AccountModal', () => ({
-    default: () => null,
-  }));
-
   mock.module('./components/modals/ProjectModal', () => ({
     default: () => null,
   }));

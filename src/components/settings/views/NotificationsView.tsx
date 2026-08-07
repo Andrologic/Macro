@@ -8,6 +8,7 @@ import React, {
 import { useTranslation } from 'react-i18next';
 import {
   getDesktopNotificationStatus,
+  isDesktopNotificationRuntimeSupported,
   initializeDesktopNotifications,
   subscribeDesktopNotificationStatus,
 } from '../../../services/desktopNotifications';
@@ -17,7 +18,6 @@ import {
   getAllowedNotificationChannelModes,
   type NotificationChannelMode,
 } from '../../../services/notificationChannels';
-import { useAuthStore } from '../../../stores/useAuthStore';
 import { useAppStore } from '../../../stores/useAppStore';
 import { useNotificationCenterStore } from '../../../stores/useNotificationCenterStore';
 import { isDevelopmentBuild } from '../../../utils/devLogger';
@@ -28,7 +28,6 @@ import { InformationalNotificationTemplate } from '../../ui/notifications/Inform
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
 import { Textarea } from '../../ui/Textarea';
-import { notify } from '../../ui/toastService';
 import {
   DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT,
   DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT,
@@ -105,8 +104,12 @@ const summarizeBlueprintResult = (
 
 export const NotificationsView: React.FC = () => {
   const { t } = useTranslation();
-  const user = useAuthStore((state) => state.user);
-  const updatePreferences = useAuthStore((state) => state.updatePreferences);
+  const inAppNotificationsEnabled = useAppStore(
+    (state) => state.inAppNotificationsEnabled
+  );
+  const setInAppNotificationsEnabled = useAppStore(
+    (state) => state.setInAppNotificationsEnabled
+  );
   const notificationChannelModes = useAppStore((state) => state.notificationChannelModes);
   const setNotificationChannelMode = useAppStore((state) => state.setNotificationChannelMode);
   const notificationCenterItems = useNotificationCenterStore((state) => state.items);
@@ -116,7 +119,6 @@ export const NotificationsView: React.FC = () => {
     getDesktopNotificationStatus,
     getDesktopNotificationStatus
   );
-  const [isUpdatingInAppNotifications, setIsUpdatingInAppNotifications] = useState(false);
   const [pendingDebugActionId, setPendingDebugActionId] = useState<string | null>(null);
   const [debugStatusMessage, setDebugStatusMessage] = useState<string | null>(null);
   const [informationalDraft, setInformationalDraft] =
@@ -135,7 +137,7 @@ export const NotificationsView: React.FC = () => {
     void initializeDesktopNotifications();
   }, [t]);
 
-  const inAppNotificationsEnabled = user?.preferences.notifications !== false;
+  const desktopRuntimeSupported = isDesktopNotificationRuntimeSupported();
   const desktopRuntimeLabel = desktopNotificationStatus === 'granted'
     ? t('settings.desktopNotificationsStatusAllowed', 'Allowed')
     : desktopNotificationStatus === 'denied'
@@ -159,32 +161,18 @@ export const NotificationsView: React.FC = () => {
         title: t(NOTIFICATION_CATEGORY_DEFINITIONS[category].titleKey),
         description: t(NOTIFICATION_CATEGORY_DEFINITIONS[category].descriptionKey),
         mode: notificationChannelModes[category],
-        allowedModes: getAllowedNotificationChannelModes(category),
+        allowedModes: getAllowedNotificationChannelModes(category).filter(
+          (mode) => desktopRuntimeSupported || (mode !== 'desktop' && mode !== 'both')
+        ),
+        displayedMode:
+          !desktopRuntimeSupported &&
+          (notificationChannelModes[category] === 'desktop' ||
+            notificationChannelModes[category] === 'both')
+            ? 'toast'
+            : notificationChannelModes[category],
       })),
-    [notificationChannelModes, t]
+    [desktopRuntimeSupported, notificationChannelModes, t]
   );
-
-  const handleInAppNotificationsChange = async (checked: boolean) => {
-    if (!user) {
-      return;
-    }
-
-    setIsUpdatingInAppNotifications(true);
-    try {
-      await updatePreferences({ notifications: checked });
-    } catch (error) {
-      notify.error(
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : t(
-              'settings.inAppNotificationsUpdateFailed',
-              'Failed to update in-app notification preferences'
-            )
-      );
-    } finally {
-      setIsUpdatingInAppNotifications(false);
-    }
-  };
 
   const runDebugAction = useCallback(
     async (actionId: string, work: () => Promise<string>) => {
@@ -361,8 +349,7 @@ export const NotificationsView: React.FC = () => {
             </div>
             <Switch
               checked={inAppNotificationsEnabled}
-              onCheckedChange={(checked) => void handleInAppNotificationsChange(checked)}
-              disabled={!user || isUpdatingInAppNotifications}
+              onCheckedChange={setInAppNotificationsEnabled}
             />
           </div>
 
@@ -373,10 +360,14 @@ export const NotificationsView: React.FC = () => {
               {t('settings.notificationChannels', 'Notification channels')}
             </label>
             <p className="text-xs text-muted-foreground">
-              {t(
-                'settings.notificationChannelsDesc',
-                'Choose how each important workflow event should be delivered: toast, desktop, both, or off.'
-              )}
+                {t(
+                  desktopRuntimeSupported
+                    ? 'settings.notificationChannelsDesc'
+                    : 'settings.notificationChannelsUnsupportedDesc',
+                  desktopRuntimeSupported
+                    ? 'Choose how each important workflow event should be delivered: toast, desktop, both, or off.'
+                    : 'Desktop delivery is unavailable in this runtime. Choose in-app toast or off.'
+                )}
             </p>
             <p className="text-xs text-muted-foreground">
               {t('settings.desktopNotificationsRuntime', 'Runtime status')}:{' '}
@@ -384,8 +375,12 @@ export const NotificationsView: React.FC = () => {
             </p>
             <p className="text-xs text-muted-foreground">
               {t(
-                'settings.desktopNotificationsPermissionHint',
-                'Macro asks for desktop notification permission the first time an eligible background notification is sent.'
+                desktopRuntimeSupported
+                  ? 'settings.desktopNotificationsPermissionHint'
+                  : 'settings.desktopNotificationsUnsupportedHint',
+                desktopRuntimeSupported
+                  ? 'Macro asks for desktop notification permission the first time an eligible background notification is sent.'
+                  : 'Desktop notifications are unavailable in this runtime. Notification delivery falls back to in-app toasts.'
               )}
             </p>
           </div>
@@ -406,7 +401,7 @@ export const NotificationsView: React.FC = () => {
                 </div>
                 <div className="w-40 shrink-0">
                   <Select
-                    value={row.mode}
+                    value={row.displayedMode}
                     onChange={(event) =>
                       setNotificationChannelMode(
                         row.category,

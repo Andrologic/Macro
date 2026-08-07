@@ -1148,31 +1148,3 @@ export interface GitCommit {
   is_branch_point?: boolean;
   task_id?: string;
 }
-
-export interface UserPreferences {
-  theme: ThemeMode;
-  language: Language;
-  notifications: boolean;
-  emailUpdates: boolean;
-}
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  avatar?: string;
-  preferences: UserPreferences;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Session {
-  user: User;
-  token: string;
-  expires_at: string;
-}
-
-export interface AuthCredentials {
-  email: string;
-  password: string;
-}

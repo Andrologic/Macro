@@ -124,6 +124,7 @@ struct PendingCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedShellKind {
     Posix,
+    #[cfg_attr(windows, allow(dead_code))]
     Fish,
     #[cfg_attr(not(windows), allow(dead_code))]
     PowerShell,

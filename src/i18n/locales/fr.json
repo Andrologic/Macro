@@ -69,8 +69,7 @@
     "selectProject": "Sélectionnez un projet",
     "toggleLeftPanel": "Basculer le panneau gauche",
     "toggleRightPanel": "Basculer le panneau droit",
-    "settings": "Paramètres",
-    "account": "Compte"
+    "settings": "Paramètres"
   },
   "onboarding": {
     "open": "Ouvrir l'onboarding",
@@ -789,7 +788,9 @@
     "inAppNotificationsScopedDesc": "Contrôler les notifications intégrées non catégorisées qui ne sont pas couvertes par les règles de canaux ci-dessous.",
     "notificationChannels": "Canaux de notification",
     "notificationChannelsDesc": "Choisissez comment chaque événement important du workflow doit être diffusé : toast, bureau, les deux ou désactivé.",
+    "notificationChannelsUnsupportedDesc": "Les notifications bureau ne sont pas disponibles dans ce runtime. Choisissez un toast in-app ou désactivé.",
     "desktopNotificationsPermissionHint": "Macro demande l’autorisation des notifications bureau lors du premier envoi admissible quand l’application est en arrière-plan.",
+    "desktopNotificationsUnsupportedHint": "Les notifications bureau ne sont pas disponibles dans ce runtime. Les notifications sont redirigées vers les messages in-app.",
     "notificationCategoryTaskAttention": "Demandes d’attention sur les tâches",
     "notificationCategoryTaskAttentionDesc": "Branches manquantes ou autres problèmes de tâche nécessitant une action explicite.",
     "notificationCategoryTaskRunCompleted": "Commandes de tâche terminées",
@@ -861,7 +862,7 @@
       },
       "defaults": {
         "informational": {
-          "title": "Indexation en arrière-plan terminée",
+          "title": "Traitement en arrière-plan terminé",
           "description": "Tout est à jour."
         },
         "actionable": {
@@ -1606,26 +1607,6 @@
       "refreshFailed": "Impossible d’actualiser les outils MCP.",
       "serverDeleted": "Serveur MCP supprimé."
     }
-  },
-  "account": {
-    "title": "Compte",
-    "signIn": "Connectez-vous",
-    "signOut": "Se déconnecter",
-    "email": "Courriel",
-    "password": "Mot de passe",
-    "profile": "Profil",
-    "preferences": "Préférences",
-    "currentPreferences": "Préférences actuelles",
-    "userId": "Identifiant utilisateur",
-    "memberSince": "Membre depuis",
-    "lastUpdated": "Dernière mise à jour",
-    "quickActions": "Actions rapides",
-    "changePassword": "Changer le mot de passe",
-    "manageApiKeys": "Gérer les clés API",
-    "exportData": "Exporter des données",
-    "dangerZone": "Zone dangereuse",
-    "inAppNotifications": "Notifications dans l'application",
-    "emailUpdates": "Mises à jour par courrier électronique"
   },
   "errors": {
     "generic": "Quelque chose s'est mal passé",

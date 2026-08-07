@@ -69,8 +69,7 @@
     "selectProject": "프로젝트 선택",
     "toggleLeftPanel": "왼쪽 패널 전환",
     "toggleRightPanel": "오른쪽 패널 전환",
-    "settings": "설정",
-    "account": "계정"
+    "settings": "설정"
   },
   "onboarding": {
     "open": "온보딩 열기",
@@ -790,7 +789,9 @@
     "inAppNotificationsScopedDesc": "아래 채널 규칙에 포함되지 않는 미분류 앱 내 알림을 제어합니다.",
     "notificationChannels": "알림 채널",
     "notificationChannelsDesc": "중요한 각 워크플로 이벤트를 토스트, 데스크톱, 둘 다 또는 끔으로 전달할지 선택합니다.",
+    "notificationChannelsUnsupportedDesc": "이 런타임에서는 데스크톱 알림을 사용할 수 없습니다. 앱 내 토스트 또는 끄기를 선택하세요.",
     "desktopNotificationsPermissionHint": "Macro는 자격이 있는 백그라운드 알림을 처음 보낼 때 데스크톱 알림 권한을 요청합니다.",
+    "desktopNotificationsUnsupportedHint": "이 런타임에서는 데스크톱 알림을 사용할 수 없습니다. 알림은 앱 내 토스트로 표시됩니다.",
     "notificationCategoryTaskAttention": "작업 주의 필요",
     "notificationCategoryTaskAttentionDesc": "누락된 브랜치 등 명시적인 사용자 조치가 필요한 작업 문제입니다.",
     "notificationCategoryTaskRunCompleted": "작업 명령 실행 완료",
@@ -1607,26 +1608,6 @@
       "refreshFailed": "MCP 도구를 새로 고치지 못했습니다.",
       "serverDeleted": "MCP 서버가 삭제되었습니다."
     }
-  },
-  "account": {
-    "title": "계정",
-    "signIn": "로그인",
-    "signOut": "로그아웃",
-    "email": "이메일",
-    "password": "비밀번호",
-    "profile": "윤곽",
-    "preferences": "환경설정",
-    "currentPreferences": "현재 환경설정",
-    "userId": "사용자 ID",
-    "memberSince": "이후 회원",
-    "lastUpdated": "마지막 업데이트",
-    "quickActions": "빠른 작업",
-    "changePassword": "비밀번호 변경",
-    "manageApiKeys": "API 키 관리",
-    "exportData": "데이터 내보내기",
-    "dangerZone": "위험지대",
-    "inAppNotifications": "인앱 알림",
-    "emailUpdates": "이메일 업데이트"
   },
   "errors": {
     "generic": "문제가 발생했습니다.",

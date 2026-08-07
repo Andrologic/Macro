@@ -572,9 +572,8 @@ async fn wait_for_wsl_command(
         timeout(timeout_duration, &mut wait_future)
             .await
             .map_err(|_| BackendError::Git {
-                message:
-                    "Git detection timed out. Check WSL or add the project as read-only."
-                        .to_string(),
+                message: "Git detection timed out. Check WSL or add the project as read-only."
+                    .to_string(),
             })?
             .map_err(|error| BackendError::Git {
                 message: format!("Failed to run WSL command: {}", error),
@@ -5316,9 +5315,11 @@ pub async fn discover_recoverable_projects(
 
     for hint in hints {
         let resolved_path = resolve_project_path(workspace_path, &hint.path);
-        report
-            .discovered_projects
-            .push(project_from_recovery_hint(&hint, &resolved_path, workspace_path));
+        report.discovered_projects.push(project_from_recovery_hint(
+            &hint,
+            &resolved_path,
+            workspace_path,
+        ));
     }
 
     tracing::info!(
@@ -7156,12 +7157,16 @@ mod tests {
     }
 
     fn commit_all(repo_root: &Path, message: &str) -> Oid {
-        let add_status = background_command("git")
+        let add_output = background_command("git")
             .current_dir(repo_root)
-            .args(["add", "-A", "."])
-            .status()
+            .args(["-c", "core.autocrlf=false", "add", "-A", "."])
+            .output()
             .expect("git add");
-        assert!(add_status.success());
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
 
         let commit_output = background_command("git")
             .current_dir(repo_root)
@@ -8264,10 +8269,7 @@ mod tests {
         assert_eq!(report.discovered_projects[0].name, "octan_sales");
         assert_eq!(before, after);
         assert!(persisted.standalone_projects.is_empty());
-        assert_eq!(
-            persisted.project_groups[0].projects[0].id,
-            "project-sysml"
-        );
+        assert_eq!(persisted.project_groups[0].projects[0].id, "project-sysml");
     }
 
     #[tokio::test]
@@ -8332,7 +8334,12 @@ mod tests {
         let all_project_ids = loaded
             .standalone_projects
             .iter()
-            .chain(loaded.project_groups.iter().flat_map(|group| group.projects.iter()))
+            .chain(
+                loaded
+                    .project_groups
+                    .iter()
+                    .flat_map(|group| group.projects.iter()),
+            )
             .map(|project| project.id.as_str())
             .collect::<Vec<_>>();
 
