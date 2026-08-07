@@ -48,7 +48,7 @@ Create a local `.env` file only when you need to override defaults.
 ```env
 VITE_BACKEND_TRANSPORT=desktop
 
-# Remote backend, used when VITE_BACKEND_TRANSPORT=remote
+# Experimental internal prototype; not a Macro 0.1 product mode
 VITE_REMOTE_API_BASE_URL=http://localhost:8787
 VITE_REMOTE_API_PREFIX=/api/v1
 VITE_REMOTE_WORKSPACE_ID=
@@ -59,8 +59,8 @@ VITE_REMOTE_TIMEOUT_MS=15000
 Transport notes:
 
 - `desktop` is the default and requires the Tauri IPC runtime.
-- `remote` switches the frontend service layer to the remote provider.
-- Remote mode is intentionally minimal in the 0.1 line.
+- `remote` is an internal experimental transport used to exercise future-facing code.
+- It is not exposed, available, or supported as a Macro 0.1 product mode.
 
 ## Local Provider Configuration
 

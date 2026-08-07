@@ -20,8 +20,6 @@ The following areas are useful to report but may not receive immediate fixes dur
 
 - Linux and Windows desktop packaging;
 - weekly prerelease builds;
-- remote transport and browser-only operation;
-- headless kernel workflows;
 - custom provider edge cases;
 - uncommon Git branch conventions or repository layouts.
 
@@ -37,7 +35,7 @@ Helpful reports include:
 
 - Macro version or commit;
 - operating system and architecture;
-- whether you are running Vite, Tauri dev, a packaged app, or headless mode;
+- whether you are running Vite, Tauri dev, or a packaged app;
 - provider type if the issue involves AI;
 - concise reproduction steps;
 - expected and actual behavior;

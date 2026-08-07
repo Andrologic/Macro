@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   archiveArchitectPlan,
@@ -80,6 +80,14 @@ import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMe
 interface PlanSelectorProps {
   className?: string;
 }
+
+const bumpPatchVersion = (version: string | null): string | null => {
+  const normalized = normalizeVersionSlug(version);
+  if (!normalized) return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(normalized);
+  if (!match) return normalized;
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}${match[4] || ''}`;
+};
 
 interface PlanSelectorAsyncContext {
   targetBranch: string;
@@ -616,15 +624,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
-  const bumpPatchVersion = (version: string | null): string | null => {
-    const normalized = normalizeVersionSlug(version);
-    if (!normalized) return null;
-    const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(normalized);
-    if (!match) return normalized;
-    return `${match[1]}.${match[2]}.${Number(match[3]) + 1}${match[4] || ''}`;
-  };
-
-  const buildTypedPlanGitFlowMetadata = async (
+  const buildTypedPlanGitFlowMetadata = useCallback(async (
     planKind: Exclude<ArchitectPlanKind, 'feature'>,
     projectIds: string[],
     fallbackBranchSlug: string,
@@ -678,8 +678,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         projects: gitFlowProjects,
       },
     };
-  };
+  }, [getProjectById]);
 
+  const handleCreatePlanRef = useRef<((planKind?: ArchitectPlanKind) => Promise<void>) | null>(null);
   const handleCreatePlan = async (planKind: ArchitectPlanKind = 'feature') => {
     if (creatingPlanKind) {
       return;
@@ -782,7 +783,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
     } catch (err) {
-      if (openReplicaRepair(err, () => handleCreatePlan(planKind))) {
+      if (openReplicaRepair(err, async () => {
+        await handleCreatePlanRef.current?.(planKind);
+      })) {
         return;
       }
       const message = resolveOperationMessage(
@@ -796,6 +799,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setCreatingPlanKind(null);
     }
   };
+
+  useEffect(() => {
+    handleCreatePlanRef.current = handleCreatePlan;
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -836,7 +843,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
       if (plans.length === 0 && canCreatePlanForScope && !creatingPlanKind) {
-        void handleCreatePlan('feature');
+        void handleCreatePlanRef.current?.('feature');
         return;
       }
       setIsOpen(true);
@@ -849,7 +856,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [
     canCreatePlanForScope,
     creatingPlanKind,
-    handleCreatePlan,
     hasLoadedPlans,
     isLoading,
     plans.length,

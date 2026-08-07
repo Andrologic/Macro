@@ -6,6 +6,7 @@ const windowInstance = new Window({
   width: 1280,
   height: 720,
 });
+windowInstance.document.write('<!doctype html><html><head></head><body></body></html>');
 
 const assignGlobal = (key: string, value: unknown) => {
   Object.defineProperty(globalThis, key, {

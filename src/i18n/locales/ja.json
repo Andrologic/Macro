@@ -69,8 +69,7 @@
     "selectProject": "プロジェクトの選択",
     "toggleLeftPanel": "左パネルを切り替えます",
     "toggleRightPanel": "右パネルを切り替えます",
-    "settings": "設定",
-    "account": "アカウント"
+    "settings": "設定"
   },
   "onboarding": {
     "open": "オンボーディングを開く",
@@ -790,7 +789,9 @@
     "inAppNotificationsScopedDesc": "以下のチャネル設定の対象外となる、未分類のアプリ内通知を制御します。",
     "notificationChannels": "通知チャネル",
     "notificationChannelsDesc": "重要なワークフローイベントごとに、トースト、デスクトップ、両方、またはオフのどれで配信するかを選択します。",
+    "notificationChannelsUnsupportedDesc": "このランタイムではデスクトップ通知を利用できません。アプリ内トーストまたはオフを選択してください。",
     "desktopNotificationsPermissionHint": "Macro は、対象となるバックグラウンド通知を最初に送信するときにデスクトップ通知の許可を求めます。",
+    "desktopNotificationsUnsupportedHint": "このランタイムではデスクトップ通知を利用できません。通知はアプリ内トーストに切り替わります。",
     "notificationCategoryTaskAttention": "タスクの対応が必要な通知",
     "notificationCategoryTaskAttentionDesc": "不足しているブランチなど、明示的な操作が必要なタスクの問題です。",
     "notificationCategoryTaskRunCompleted": "タスクコマンドの完了",
@@ -1607,26 +1608,6 @@
       "refreshFailed": "MCP ツールを更新できませんでした。",
       "serverDeleted": "MCP サーバーを削除しました。"
     }
-  },
-  "account": {
-    "title": "アカウント",
-    "signIn": "サインイン",
-    "signOut": "サインアウト",
-    "email": "電子メール",
-    "password": "パスワード",
-    "profile": "プロフィール",
-    "preferences": "設定",
-    "currentPreferences": "現在の設定",
-    "userId": "ユーザーID",
-    "memberSince": "以来のメンバー",
-    "lastUpdated": "最終更新日",
-    "quickActions": "クイックアクション",
-    "changePassword": "パスワードを変更する",
-    "manageApiKeys": "APIキーを管理する",
-    "exportData": "データのエクスポート",
-    "dangerZone": "危険地帯",
-    "inAppNotifications": "アプリ内通知",
-    "emailUpdates": "更新情報をメールで送信"
   },
   "errors": {
     "generic": "何か問題が発生しました",

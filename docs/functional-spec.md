@@ -14,7 +14,7 @@ Ce document n'est pas un plan d'implementation.
 Les ecarts entre la cible et l'etat courant, les phases de livraison et les priorites relevent de `docs/roadmap.md`.
 
 Sauf mention explicite contraire, les exigences de ce document decrivent le comportement produit attendu, y compris quand certaines capacites ne sont pas encore entierement stabilisees dans l'application.
-Pour la ligne 0.1, le contrat public prioritaire reste le workflow desktop local-first. Les capacites remote, mobile, compte et abonnement decrites ici sont des cibles produit ou des zones best-effort tant qu'elles ne sont pas promues explicitement par la roadmap et les notes de support.
+Pour la ligne 0.1, le contrat public est le workflow desktop local-first. Le remote et le mobile sont des pistes futures, non disponibles et non supportees dans le produit actuel. Macro 0.1 n'expose ni compte applicatif ni abonnement.
 
 ---
 
@@ -387,7 +387,6 @@ Exemples :
 - navigation projet
 - visualisation de diff
 - reglage de l'application
-- consultation de compte
 
 ---
 
@@ -845,9 +844,9 @@ Toute execution de script doit passer par la politique d'approbation Macro des o
 
 Les chemins hors dossier skill, traversals, fichiers caches non autorises et symlinks sortants doivent etre refuses.
 
-### 18.5 Remote et cloud
+### 18.5 Cible future : remote et cloud
 
-Un runtime remote peut exposer les skills sans filesystem local lisible par le frontend. Le contrat provider utilise les operations :
+Cette section decrit un contrat technique potentiel pour une future ligne remote. Elle ne correspond a aucune capacite produit disponible en 0.1. Un runtime remote pourrait exposer les skills sans filesystem local lisible par le frontend avec les operations :
 
 - `POST /skills/list`
 - `POST /skills/get`
@@ -888,7 +887,7 @@ Dans la ligne 0.1, cette continuite reste une cible produit : le support stable 
 
 ### 19.3 Perimetre des notifications
 
-Le systeme de notification fait partie de la cible produit meme s'il n'est pas encore entierement implemente.
+Le systeme de notification desktop fait partie du produit actuel. L'activation globale des notifications in-app est une preference locale, sans compte applicatif. Chaque categorie importante peut aussi etre configuree par canal.
 
 Les notifications doivent au minimum couvrir :
 - besoin d'attention sur une tache
@@ -896,20 +895,21 @@ Les notifications doivent au minimum couvrir :
 - execution bloquee
 - execution terminee
 
+Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doivent pas etre proposes et une configuration bureau deja persistee doit retomber sur une notification in-app plutot que perdre l'evenement.
+
 ---
 
-## 20. Kernel distant et continuite d'execution
+## 20. Cible future : kernel distant et continuite d'execution
 
-### 20.1 Le kernel distant est une capacite produit
+### 20.1 Perimetre
 
-Le kernel distant fait partie de la specification produit, et pas seulement de l'architecture technique.
+Le kernel distant n'est pas une capacite du produit 0.1. Aucun mode remote ne doit etre presente comme disponible ou supporte dans l'application actuelle.
 
-Son role est de permettre a l'execution Macro de continuer independamment d'une seule session GUI locale.
-Dans la ligne 0.1, le kernel distant existe comme socle technique minimal et reste best-effort par rapport au workflow desktop local-first.
+Une future ligne produit pourra permettre a l'execution Macro de continuer independamment d'une seule session GUI locale. La fondation presente dans le depot reste experimentale et interne jusque-la.
 
 ### 20.2 Resultats fonctionnels attendus
 
-Le kernel doit rendre possibles :
+Un futur kernel produit devra rendre possibles :
 - l'execution distante des IA
 - la continuite entre plusieurs machines desktop
 - l'execution continue sur une machine dediee ou un serveur heberge
@@ -917,7 +917,7 @@ Le kernel doit rendre possibles :
 
 ### 20.3 Scenarios utilisateurs cibles
 
-Le produit doit supporter au minimum les scenarios suivants :
+Une future ligne remote pourra viser les scenarios suivants :
 
 - l'utilisateur demarre sur un desktop puis reprend la supervision sur un laptop
 - l'utilisateur quitte son poste et poursuit la supervision depuis mobile

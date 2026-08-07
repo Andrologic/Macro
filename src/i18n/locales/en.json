@@ -69,8 +69,7 @@
     "selectProject": "Select Project",
     "toggleLeftPanel": "Toggle left panel",
     "toggleRightPanel": "Toggle right panel",
-    "settings": "Settings",
-    "account": "Account"
+    "settings": "Settings"
   },
   "onboarding": {
     "open": "Open onboarding",
@@ -729,7 +728,9 @@
     "inAppNotificationsUpdateFailed": "Failed to update in-app notification preferences",
     "notificationChannels": "Notification channels",
     "notificationChannelsDesc": "Choose how each important workflow event should be delivered: toast, desktop, both, or off.",
+    "notificationChannelsUnsupportedDesc": "Desktop delivery is unavailable in this runtime. Choose in-app toast or off.",
     "desktopNotificationsPermissionHint": "Macro asks for desktop notification permission the first time an eligible background notification is sent.",
+    "desktopNotificationsUnsupportedHint": "Desktop notifications are unavailable in this runtime. Notification delivery falls back to in-app toasts.",
     "notificationCategoryTaskAttention": "Task attention requests",
     "notificationCategoryTaskAttentionDesc": "Missing branches or other task issues that require an explicit user action.",
     "notificationCategoryTaskRunCompleted": "Task command runs completed",
@@ -801,7 +802,7 @@
       },
       "defaults": {
         "informational": {
-          "title": "Background indexing finished",
+          "title": "Background work finished",
           "description": "Everything is up to date."
         },
         "actionable": {
@@ -1607,26 +1608,6 @@
       "refreshFailed": "Failed to refresh MCP tools.",
       "serverDeleted": "MCP server deleted."
     }
-  },
-  "account": {
-    "title": "Account",
-    "signIn": "Sign In",
-    "signOut": "Sign out",
-    "email": "Email",
-    "password": "Password",
-    "profile": "Profile",
-    "preferences": "Preferences",
-    "currentPreferences": "Current Preferences",
-    "userId": "User ID",
-    "memberSince": "Member since",
-    "lastUpdated": "Last updated",
-    "quickActions": "Quick Actions",
-    "changePassword": "Change password",
-    "manageApiKeys": "Manage API keys",
-    "exportData": "Export data",
-    "dangerZone": "Danger Zone",
-    "inAppNotifications": "In-app notifications",
-    "emailUpdates": "Email updates"
   },
   "errors": {
     "generic": "Something went wrong",

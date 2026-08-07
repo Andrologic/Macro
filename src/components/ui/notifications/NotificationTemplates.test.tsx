@@ -10,7 +10,7 @@ describe('notification templates', () => {
     const informationalMarkup = renderToStaticMarkup(
       <InformationalNotificationTemplate
         tone="info"
-        title="Background indexing finished"
+        title="Background work finished"
         description="Everything is up to date."
       />
     );

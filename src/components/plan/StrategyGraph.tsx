@@ -56,7 +56,7 @@ import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState
 import { ArtifactDiffModal } from '../modals/ArtifactDiffModal';
 import { cn } from '../../utils/cn';
 import { useElementSize } from '../../hooks/useElementSize';
-import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
+import type { PlanNode, PlanNodeStatus, PredictedBranch, Project, ProjectGroup, TaskStatus } from '../../types';
 import {
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
@@ -183,6 +183,8 @@ const branchCardStatusTone: Record<BranchCardStatus, string> = {
   merged: 'bg-emerald-500/10 text-emerald-500',
   mixed: 'bg-muted text-muted-foreground',
 };
+
+const EMPTY_STANDALONE_PROJECTS: Project[] = [];
 
 type EdgeFlowTone = 'normal' | 'active' | 'waiting' | 'complete' | 'blocked' | 'pending';
 
@@ -595,7 +597,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
       selectedTaskId: state.selectedTaskId,
-      standaloneProjects: state.standaloneProjects ?? [],
+      standaloneProjects: state.standaloneProjects ?? EMPTY_STANDALONE_PROJECTS,
       projectGroups: state.projectGroups,
       planNodes: state.planNodes,
       predictedBranches: state.predictedBranches,

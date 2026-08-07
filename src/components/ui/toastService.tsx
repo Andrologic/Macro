@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
 import i18n from '../../i18n';
-import { maybeSendDesktopNotification } from '../../services/desktopNotifications';
+import {
+  isDesktopNotificationRuntimeSupported,
+  maybeSendDesktopNotification,
+} from '../../services/desktopNotifications';
 import {
   DEFAULT_NOTIFICATION_CHANNEL_MODES,
   isDesktopChannelMode,
@@ -10,7 +13,6 @@ import {
   type NotificationCategory,
 } from '../../services/notificationChannels';
 import { useAppStore } from '../../stores/useAppStore';
-import { useAuthStore } from '../../stores/useAuthStore';
 import {
   useNotificationCenterStore,
   type NotificationLevel,
@@ -146,7 +148,7 @@ useNotificationCenterStore.subscribe((state, previousState) => {
 });
 
 const uncategorizedNotificationsEnabled = (): boolean =>
-  useAuthStore.getState().user?.preferences.notifications !== false;
+  useAppStore.getState().inAppNotificationsEnabled !== false;
 
 const getTrackableDescription = (data: NotificationOptions | undefined): unknown =>
   data?.description;
@@ -311,11 +313,20 @@ const getNotificationChannelMode = (options?: NotificationOptions) => {
     return null;
   }
 
-  return sanitizeNotificationChannelMode(
+  const configuredMode = sanitizeNotificationChannelMode(
     category,
     useAppStore.getState().notificationChannelModes[category] ??
       DEFAULT_NOTIFICATION_CHANNEL_MODES[category]
   );
+
+  if (
+    !isDesktopNotificationRuntimeSupported() &&
+    (configuredMode === 'desktop' || configuredMode === 'both')
+  ) {
+    return 'toast';
+  }
+
+  return configuredMode;
 };
 
 const isToastEnabledForNotification = (options?: NotificationOptions): boolean => {

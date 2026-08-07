@@ -6,9 +6,7 @@ import type { Toaster as ToasterComponent } from './Toaster';
 import type * as ToastServiceModule from './toastService';
 import type * as ToastBatchControllerModule from './toastBatchController';
 import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
-import type { useAuthStore as UseAuthStoreHook } from '../../stores/useAuthStore';
 import type { useNotificationCenterStore as UseNotificationCenterStoreHook } from '../../stores/useNotificationCenterStore';
-import type { User } from '../../types';
 import type { NotificationChannelModes } from '../../services/notificationChannels';
 
 interface LocalStorageMock {
@@ -72,6 +70,7 @@ const sonnerToastMock = Object.assign(
 const SonnerToasterMock = mock((_props?: unknown) => undefined);
 
 const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
+let desktopNotificationRuntimeSupported = true;
 
 const defaultNotificationChannelModes: NotificationChannelModes = {
   task_attention_required: 'both',
@@ -95,6 +94,7 @@ const registerToasterMocks = () => {
 
   mock.module('../../services/desktopNotifications', () => ({
     maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
+    isDesktopNotificationRuntimeSupported: () => desktopNotificationRuntimeSupported,
     sendDesktopNotificationPreview: maybeSendDesktopNotificationMock,
     getDesktopNotificationStatus: () => 'granted' as const,
     initializeDesktopNotifications: async () => undefined,
@@ -111,7 +111,6 @@ let clearToastBatch!: typeof ToastBatchControllerModule.clearToastBatch;
 let getToastBatchSnapshot!: typeof ToastBatchControllerModule.getToastBatchSnapshot;
 let registerToastInBatch!: typeof ToastBatchControllerModule.registerToastInBatch;
 let useAppStore!: typeof UseAppStoreHook;
-let useAuthStore!: typeof UseAuthStoreHook;
 let useNotificationCenterStore!: typeof UseNotificationCenterStoreHook;
 let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
 let importCounter = 0;
@@ -124,11 +123,6 @@ const loadToasterModules = async () => {
   const appStoreModule = await import(`../../stores/useAppStore.ts?toaster-store-test=${importCounter}`);
   mock.module('../../stores/useAppStore', () => ({
     ...appStoreModule,
-  }));
-
-  const authStoreModule = await import(`../../stores/useAuthStore.ts?toaster-auth-store-test=${importCounter}`);
-  mock.module('../../stores/useAuthStore', () => ({
-    ...authStoreModule,
   }));
 
   const notificationCenterStoreModule = await import(
@@ -159,24 +153,9 @@ const loadToasterModules = async () => {
     registerToastInBatch,
   } = toastBatchControllerModule);
   ({ useAppStore } = appStoreModule);
-  ({ useAuthStore } = authStoreModule);
   ({ useNotificationCenterStore } = notificationCenterStoreModule);
   initialAppStoreState = useAppStore.getState();
 };
-
-const buildUser = (notifications: boolean): User => ({
-  id: 'user-1',
-  email: 'user@example.com',
-  name: 'Demo User',
-  preferences: {
-    theme: 'dark',
-    language: 'en',
-    notifications,
-    emailUpdates: false,
-  },
-  created_at: '2026-03-20T12:00:00.000Z',
-  updated_at: '2026-03-20T12:00:00.000Z',
-});
 
 const renderCustomToastAt = (index = -1): string => {
   const renderToast =
@@ -197,6 +176,7 @@ describe('toast wrapper', () => {
 
   beforeEach(async () => {
     await loadToasterModules();
+    desktopNotificationRuntimeSupported = true;
     localStorageMock.clear();
     clearToastBatch();
     useNotificationCenterStore.setState({
@@ -206,14 +186,8 @@ describe('toast wrapper', () => {
     useAppStore.setState({
       ...useAppStore.getState(),
       notificationChannelModes: defaultNotificationChannelModes,
+      inAppNotificationsEnabled: true,
       activeThemeId: 'macro-dark',
-    });
-    useAuthStore.setState({
-      authStatus: 'authenticated',
-      user: buildUser(true),
-      session: null,
-      isLoading: false,
-      lastError: null,
     });
 
     sonnerToastMock.mockReset();
@@ -709,9 +683,7 @@ describe('toast wrapper', () => {
   });
 
   it('routes categorized notifications to the desktop channel only', () => {
-    useAuthStore.setState({
-      user: buildUser(false),
-    });
+    useAppStore.setState({ inAppNotificationsEnabled: false });
 
     const result = toast.success('Commands completed', {
       description: '3 repositories executed successfully.',
@@ -730,6 +702,19 @@ describe('toast wrapper', () => {
       body: '3 repositories executed successfully.',
       notificationKey: 'task:run:1',
     });
+  });
+
+  it('falls back to an in-app toast when desktop notifications are unavailable', () => {
+    desktopNotificationRuntimeSupported = false;
+
+    toast.success('Commands completed', {
+      notification: {
+        category: 'task_run_completed',
+      },
+    });
+
+    expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
+    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
   });
 
   it('routes categorized notifications to the toast channel only', () => {
@@ -789,9 +774,7 @@ describe('toast wrapper', () => {
   });
 
   it('allows categorized toast delivery even when uncategorized in-app notifications are disabled', () => {
-    useAuthStore.setState({
-      user: buildUser(false),
-    });
+    useAppStore.setState({ inAppNotificationsEnabled: false });
 
     toast.warning('Missing base branch', {
       notification: {
@@ -847,9 +830,7 @@ describe('toast wrapper', () => {
   });
 
   it('blocks visible toasts and history when in-app notifications are disabled', () => {
-    useAuthStore.setState({
-      user: buildUser(false),
-    });
+    useAppStore.setState({ inAppNotificationsEnabled: false });
 
     expect(toast.info('Muted info')).toBe('notifications-disabled');
     expect(toast.success('Muted success')).toBe('notifications-disabled');

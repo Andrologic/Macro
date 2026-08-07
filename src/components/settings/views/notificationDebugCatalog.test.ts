@@ -66,7 +66,7 @@ describe('notificationDebugCatalog', () => {
 
     expect(DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT).toEqual({
       tone: 'info',
-      title: 'Background indexing finished',
+      title: 'Background work finished',
       description: 'Everything is up to date.',
     });
     expect(DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT).toEqual({
