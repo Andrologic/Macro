@@ -349,7 +349,7 @@ export const NotificationsView: React.FC = () => {
         <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium text-foreground">
+              <label htmlFor="in-app-notifications" className="text-sm font-medium text-foreground">
                 {t('settings.inAppNotifications', 'In-app Notifications')}
               </label>
               <p className="text-xs text-muted-foreground">
@@ -360,7 +360,9 @@ export const NotificationsView: React.FC = () => {
               </p>
             </div>
             <Switch
+              id="in-app-notifications"
               checked={inAppNotificationsEnabled}
+              aria-label={t('settings.inAppNotifications', 'In-app Notifications')}
               onCheckedChange={(checked) => void handleInAppNotificationsChange(checked)}
               disabled={!user || isUpdatingInAppNotifications}
             />
@@ -892,6 +894,10 @@ export const NotificationsView: React.FC = () => {
                         </div>
                         <Switch
                           checked={actionableDraft.actions[0]?.dismissOnSuccess !== false}
+                          aria-label={t(
+                            'settings.notificationsDebug.fields.primaryDismissOnSuccess',
+                            'Primary dismiss on success'
+                          )}
                           onCheckedChange={(checked) =>
                             updateActionableDraftAction(0, { dismissOnSuccess: checked })
                           }
@@ -987,6 +993,10 @@ export const NotificationsView: React.FC = () => {
                             </div>
                             <Switch
                               checked={actionableDraft.actions[1]?.dismissOnSuccess !== false}
+                              aria-label={t(
+                                'settings.notificationsDebug.fields.secondaryDismissOnSuccess',
+                                'Secondary dismiss on success'
+                              )}
                               onCheckedChange={(checked) =>
                                 updateActionableDraftAction(1, { dismissOnSuccess: checked })
                               }

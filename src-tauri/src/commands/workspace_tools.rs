@@ -2,13 +2,15 @@ use super::{
     apply_patch_hunks_to_content, build_post_write_response, command_error,
     commit_pending_file_changes_atomically, compute_line_change_stats, format_with_line_numbers,
     fs, join_text_lines, json_arg_bool, json_arg_string, json_arg_u32, parse_apply_patch,
-    resolve_validated_tool_path, CommandResult, ParsedPatchOperation, PendingFileChange,
+    resolve_validated_tool_path, CommandError, CommandResult, ParsedPatchOperation,
+    PendingFileChange,
 };
 use crate::core::tool_policy::validate_tool_execution;
 use glob::Pattern;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +73,152 @@ pub(crate) fn mount_workspace_path(mount: &WorkspaceProjectMount) -> CommandResu
             ))
         })?;
     Ok(PathBuf::from(raw))
+}
+
+fn canonicalize_headless_allowed_roots(
+    allowed_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, CommandError> {
+    if allowed_roots.is_empty() {
+        return Err(command_error(
+            "Headless execution has no allowed filesystem roots.",
+        ));
+    }
+
+    let mut canonical_roots = Vec::with_capacity(allowed_roots.len());
+    for root in allowed_roots {
+        let canonical_root = root.canonicalize().map_err(|error| {
+            command_error(format!(
+                "Headless allowed root is not accessible: {} ({})",
+                root.display(),
+                error
+            ))
+        })?;
+        if !canonical_root.is_dir() {
+            return Err(command_error(format!(
+                "Headless allowed root is not a directory: {}",
+                root.display()
+            )));
+        }
+        if !canonical_roots.contains(&canonical_root) {
+            canonical_roots.push(canonical_root);
+        }
+    }
+    Ok(canonical_roots)
+}
+
+fn canonicalize_headless_path(
+    path: &Path,
+    allowed_roots: &[PathBuf],
+    description: &str,
+) -> Result<PathBuf, CommandError> {
+    let canonical_roots = canonicalize_headless_allowed_roots(allowed_roots)?;
+    let canonical_path = path.canonicalize().map_err(|error| {
+        command_error(format!(
+            "{} is not accessible: {} ({})",
+            description,
+            path.display(),
+            error
+        ))
+    })?;
+    if !canonical_path.is_dir() {
+        return Err(command_error(format!(
+            "{} must be a directory: {}",
+            description,
+            path.display()
+        )));
+    }
+    if !canonical_roots
+        .iter()
+        .any(|root| canonical_path == *root || canonical_path.starts_with(root))
+    {
+        return Err(command_error(format!(
+            "{} is outside the explicitly allowed headless roots: {}",
+            description,
+            path.display()
+        )));
+    }
+    Ok(canonical_path)
+}
+
+fn validate_mount_identifier(value: &str, field: &str) -> Result<String, CommandError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return Err(command_error(format!(
+            "Headless mount {} must be a single non-empty path component.",
+            field
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validate and canonicalize project mounts received by the headless API.
+///
+/// The desktop path is already operating on user-selected state. Headless
+/// requests, however, can supply mounts over the network, so every mount must
+/// resolve to an existing directory below an explicitly configured root.
+pub fn validate_headless_project_mounts(
+    mounts: &[WorkspaceProjectMount],
+    allowed_roots: &[PathBuf],
+) -> Result<Vec<WorkspaceProjectMount>, CommandError> {
+    let _ = canonicalize_headless_allowed_roots(allowed_roots)?;
+    let mut project_ids = HashSet::new();
+    let mut mount_names = HashSet::new();
+    let mut validated = Vec::with_capacity(mounts.len());
+
+    for mount in mounts {
+        let project_id = validate_mount_identifier(&mount.project_id, "project_id")?;
+        let mount_name = validate_mount_identifier(&mount.mount_name, "mount_name")?;
+        if !project_ids.insert(project_id.to_lowercase()) {
+            return Err(command_error(format!(
+                "Duplicate headless mount project_id: {}",
+                project_id
+            )));
+        }
+        if !mount_names.insert(mount_name.to_lowercase()) {
+            return Err(command_error(format!(
+                "Duplicate headless mount_name: {}",
+                mount_name
+            )));
+        }
+
+        let workspace_path = mount_workspace_path(mount)?;
+        let canonical_workspace =
+            canonicalize_headless_path(&workspace_path, allowed_roots, "Headless project mount")?;
+        let mut sanitized = mount.clone();
+        sanitized.project_id = project_id;
+        sanitized.mount_name = mount_name;
+        sanitized.workspace_path = Some(canonical_workspace.to_string_lossy().to_string());
+        validated.push(sanitized);
+    }
+
+    Ok(validated)
+}
+
+/// Validate the optional workspace override used by a headless tool request.
+/// Relative paths retain the same workspace-root semantics as the normal
+/// workspace tool dispatcher.
+pub fn validate_headless_workspace_path(
+    raw_path: Option<&str>,
+    workspace_root: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<Option<String>, CommandError> {
+    let Some(raw_path) = raw_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let requested_path = PathBuf::from(raw_path);
+    let candidate = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        workspace_root.join(requested_path)
+    };
+    let canonical =
+        canonicalize_headless_path(&candidate, allowed_roots, "Headless workspace path")?;
+    Ok(Some(canonical.to_string_lossy().to_string()))
 }
 
 fn project_mount_aliases(mount: &WorkspaceProjectMount) -> Vec<String> {
@@ -916,7 +1064,8 @@ pub(crate) async fn execute_virtual_workspace_tool(
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_virtual_workspace_tool, resolve_virtual_mount_target, ResolvedMountTarget,
+        execute_virtual_workspace_tool, resolve_virtual_mount_target,
+        validate_headless_project_mounts, validate_headless_workspace_path, ResolvedMountTarget,
         VirtualWorkspaceContext, WorkspaceProjectMount,
     };
     use serde_json::json;
@@ -984,6 +1133,80 @@ mod tests {
 
         assert_eq!(resolved.mount.project_id, "api");
         assert_eq!(resolved.relative_path, "src/main.rs");
+    }
+
+    #[test]
+    fn validate_headless_mounts_canonicalizes_paths_below_allowed_root() {
+        let allowed = TempDir::new().expect("allowed root");
+        let project = allowed.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "project-1".to_string(),
+            mount_name: "project".to_string(),
+            workspace_path: Some(project.to_string_lossy().to_string()),
+            display_name: Some("Project".to_string()),
+            is_read_only: false,
+        }];
+
+        let validated = validate_headless_project_mounts(&mounts, &[allowed.path().to_path_buf()])
+            .expect("mount below allowed root");
+
+        assert_eq!(
+            validated[0].workspace_path.as_deref(),
+            Some(
+                project
+                    .canonicalize()
+                    .expect("canonical project path")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_headless_mounts_rejects_symlink_outside_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let allowed = TempDir::new().expect("allowed root");
+        let outside = TempDir::new().expect("outside root");
+        let link = allowed.path().join("linked-project");
+        symlink(outside.path(), &link).expect("project symlink");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "project-1".to_string(),
+            mount_name: "project".to_string(),
+            workspace_path: Some(link.to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }];
+
+        let error = validate_headless_project_mounts(&mounts, &[allowed.path().to_path_buf()])
+            .expect_err("external mount must be rejected");
+
+        assert!(error.message.contains("outside the explicitly allowed"));
+    }
+
+    #[test]
+    fn validate_headless_workspace_path_keeps_relative_paths_inside_root() {
+        let allowed = TempDir::new().expect("allowed root");
+        let project = allowed.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+
+        let validated = validate_headless_workspace_path(
+            Some("project"),
+            allowed.path(),
+            &[allowed.path().to_path_buf()],
+        )
+        .expect("workspace path")
+        .expect("workspace path present");
+
+        assert_eq!(
+            validated,
+            project
+                .canonicalize()
+                .expect("canonical project path")
+                .to_string_lossy()
+        );
     }
 
     #[tokio::test]

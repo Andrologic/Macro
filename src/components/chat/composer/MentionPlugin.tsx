@@ -51,7 +51,7 @@ export const MentionPlugin: React.FC = () => {
           (node) =>
             $isMentionNode(node) &&
             node.getKind() === ref.kind &&
-            (node.getRefId() === ref.id || node.getTitle() === ref.title)
+            node.getRefId() === ref.id
         );
         if (existingMention) {
           return;
@@ -89,7 +89,7 @@ export const MentionPlugin: React.FC = () => {
             if (
               $isMentionNode(node) &&
               node.getKind() === insertedRef.kind &&
-              (node.getRefId() === insertedRef.id || node.getTitle() === insertedRef.title)
+              node.getRefId() === insertedRef.id
             ) {
               node.remove();
               break;

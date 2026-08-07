@@ -42,14 +42,88 @@ use sqlx::SqlitePool;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use tauri::State;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::sync::watch;
+use tokio::time::{timeout, Duration};
 
-pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
-const DB_INIT_WAIT_RETRIES: usize = 300;
-const DB_INIT_WAIT_DELAY_MS: u64 = 50;
+const DB_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Debug)]
+pub enum DbInitializationState {
+    Initializing,
+    Ready(SqlitePool),
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct DbPool {
+    state: watch::Sender<DbInitializationState>,
+}
+
+impl Default for DbPool {
+    fn default() -> Self {
+        let (state, _) = watch::channel(DbInitializationState::Initializing);
+        Self { state }
+    }
+}
+
+impl DbPool {
+    pub fn set_initializing(&self) {
+        self.state.send_replace(DbInitializationState::Initializing);
+    }
+
+    pub fn set_ready(&self, pool: SqlitePool) {
+        self.state.send_replace(DbInitializationState::Ready(pool));
+    }
+
+    pub fn set_failed(&self, message: impl Into<String>) {
+        self.state
+            .send_replace(DbInitializationState::Failed(message.into()));
+    }
+
+    pub fn current(&self) -> DbInitializationState {
+        self.state.borrow().clone()
+    }
+
+    pub fn ready_pool(&self) -> Option<SqlitePool> {
+        match self.current() {
+            DbInitializationState::Ready(pool) => Some(pool),
+            DbInitializationState::Initializing | DbInitializationState::Failed(_) => None,
+        }
+    }
+
+    async fn wait_until_ready(&self) -> CommandResult<SqlitePool> {
+        let mut receiver = self.state.subscribe();
+        let wait = async {
+            loop {
+                match receiver.borrow().clone() {
+                    DbInitializationState::Ready(pool) => return Ok(pool),
+                    DbInitializationState::Failed(message) => {
+                        return Err(command_error(format!(
+                            "Database initialization failed: {message}"
+                        )))
+                    }
+                    DbInitializationState::Initializing => {}
+                }
+
+                receiver.changed().await.map_err(|_| {
+                    command_error("Database initialization state channel closed unexpectedly.")
+                })?;
+            }
+        };
+
+        timeout(DB_INIT_WAIT_TIMEOUT, wait).await.map_err(|_| {
+            command_error("Database is still initializing. Please retry in a moment.")
+        })?
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbInitializationStatusDto {
+    pub status: String,
+    pub message: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -73,29 +147,48 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
 }
 
 pub(crate) async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePool> {
-    for attempt in 0..DB_INIT_WAIT_RETRIES {
-        {
-            let pool_guard = pool.lock().await;
-            if let Some(pool) = pool_guard.as_ref() {
-                return Ok(pool.clone());
-            }
-        }
+    pool.wait_until_ready().await
+}
 
-        if attempt == 20 || attempt == 100 || attempt == 200 {
-            tracing::warn!(
-                attempt = attempt + 1,
-                waited_ms = (attempt + 1) as u64 * DB_INIT_WAIT_DELAY_MS,
-                "Database pool is still initializing"
-            );
-        }
+#[tauri::command]
+pub async fn db_get_initialization_status(
+    pool: State<'_, DbPool>,
+) -> CommandResult<DbInitializationStatusDto> {
+    let (status, message) = match pool.current() {
+        DbInitializationState::Initializing => ("initializing", None),
+        DbInitializationState::Ready(_) => ("ready", None),
+        DbInitializationState::Failed(message) => ("failed", Some(message)),
+    };
+    Ok(DbInitializationStatusDto {
+        status: status.to_string(),
+        message,
+    })
+}
 
-        if attempt + 1 < DB_INIT_WAIT_RETRIES {
-            sleep(Duration::from_millis(DB_INIT_WAIT_DELAY_MS)).await;
+#[tauri::command]
+pub async fn db_retry_initialize(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+) -> CommandResult<DbInitializationStatusDto> {
+    if matches!(pool.current(), DbInitializationState::Ready(_)) {
+        return db_get_initialization_status(pool).await;
+    }
+
+    pool.set_initializing();
+    match crate::db::init_db(&app).await {
+        Ok(sqlite_pool) => pool.set_ready(sqlite_pool),
+        Err(error) => {
+            let message = error.to_string();
+            pool.set_failed(message.clone());
+            return Err(command_error(format!(
+                "Database initialization failed: {message}"
+            )));
         }
     }
 
-    Err(CommandError {
-        message: "Database not initialized yet. Please retry in a moment.".to_string(),
+    Ok(DbInitializationStatusDto {
+        status: "ready".to_string(),
+        message: None,
     })
 }
 
@@ -1953,14 +2046,15 @@ fn build_wsl_external_open_command(
 ) -> CommandResult<ExternalLaunchCommand> {
     match action {
         ExternalOpenAction::Editor => {
-            let binary = match app_id {
-                "vscode" => "code",
-                "vscode-insiders" => "code-insiders",
-                "vscodium" => "codium",
-                _ => return Err(command_error(
-                    "VS Code with Remote WSL is required to open a WSL project in the editor.",
-                )),
-            };
+            let binary =
+                match app_id {
+                    "vscode" => "code",
+                    "vscode-insiders" => "code-insiders",
+                    "vscodium" => "codium",
+                    _ => return Err(command_error(
+                        "VS Code with Remote WSL is required to open a WSL project in the editor.",
+                    )),
+                };
             Ok(ExternalLaunchCommand {
                 program: windows_binary_program(binary)?,
                 args: vec![
@@ -4069,6 +4163,7 @@ pub struct DbCreateMessageParams {
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
     context_refs_json: Option<String>,
+    completion_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -4104,6 +4199,7 @@ pub async fn db_create_message(
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
+            completion_reason: params.completion_reason,
         },
     )
     .await
@@ -4135,6 +4231,7 @@ pub struct DbUpdateMessageParams {
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
     context_refs_json: Option<String>,
+    completion_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -4156,6 +4253,7 @@ pub async fn db_update_message(
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
             context_refs_json: params.context_refs_json,
+            completion_reason: params.completion_reason,
         },
     )
     .await
@@ -4171,6 +4269,102 @@ pub async fn db_delete_messages_after(
     let pool = get_pool(&pool).await?;
 
     repository::delete_messages_after(&pool, &conversation_id, &after_message_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_list_conversation_citations(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Vec<ConversationCitation>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::list_conversation_citations(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_conversation_citation_content(
+    pool: State<'_, DbPool>,
+    id: String,
+) -> CommandResult<Option<String>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_conversation_citation_content(&pool, &id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_upsert_conversation_citation(
+    pool: State<'_, DbPool>,
+    input: UpsertConversationCitationInput,
+) -> CommandResult<ConversationCitation> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_conversation_citation(&pool, input)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_citation(
+    pool: State<'_, DbPool>,
+    id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_citation(&pool, &id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_citations(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_citations(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<ConversationToolboxStateRecord>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_conversation_toolbox_state(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_upsert_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    input: UpsertConversationToolboxStateInput,
+) -> CommandResult<ConversationToolboxStateRecord> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_conversation_toolbox_state(&pool, input)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_toolbox_state(&pool, &conversation_id)
         .await
         .map_err(CommandError::from)
 }
@@ -4734,7 +4928,7 @@ mod tests {
         apply_patch_hunks_to_content, apply_provider_api_key_change, binary_candidates,
         commit_pending_file_changes_atomically, execute_workspace_tool, external_launch_visibility,
         parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, ExternalOpenAction, ParsedPatchOperation,
+        resolve_workspace_for_tool_path, DbPool, ExternalOpenAction, ParsedPatchOperation,
         PendingFileChange,
     };
     use crate::core::process::ProcessLaunchVisibility;
@@ -4751,6 +4945,34 @@ mod tests {
     #[cfg(target_os = "windows")]
     static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn db_pool_propagates_failure_without_polling() {
+        let pool = DbPool::default();
+        pool.set_failed("migration failed");
+
+        let error = pool.wait_until_ready().await.expect_err("failed state");
+        assert!(error.message.contains("migration failed"));
+    }
+
+    #[tokio::test]
+    async fn db_pool_wakes_waiters_when_initialization_becomes_ready() {
+        let pool = DbPool::default();
+        let ready_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("db pool");
+        let state = pool.clone();
+        let expected_pool = ready_pool.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            state.set_ready(ready_pool);
+        });
+
+        let resolved = pool.wait_until_ready().await.expect("ready state");
+        assert_eq!(resolved.size(), expected_pool.size());
+    }
 
     async fn test_provider_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

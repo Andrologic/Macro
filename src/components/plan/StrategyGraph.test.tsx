@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -375,6 +375,22 @@ const loadStrategyGraphModule = async () => {
       validatePlanAndProvisionBranchesMock(params),
   }));
 
+  const actualPlanArtifactService = await import(
+    `../../services/architectPlanArtifactService.ts?strategy-graph-artifacts=${importCounter}`
+  );
+  const planArtifactServiceMock = {
+    ...actualPlanArtifactService,
+    listPlanArtifactOverview: mock(async () => ({ entries: [], expected: [] })),
+  };
+  mock.module('../../services/architectPlanArtifactService', () => planArtifactServiceMock);
+  mock.module('../../services/architectPlanArtifactService.ts', () => planArtifactServiceMock);
+
+  const planRuntimeServiceMock = {
+    persistArchitectPlanStrategyPreview: mock(async () => undefined),
+  };
+  mock.module('../../services/architectPlanRuntimeService', () => planRuntimeServiceMock);
+  mock.module('../../services/architectPlanRuntimeService.ts', () => planRuntimeServiceMock);
+
   mock.module('../../services/architectStrategyMutationGuard', () => ({
     applyStrategyMutationPreview: (params: unknown) =>
       applyStrategyMutationPreviewMock(params as { preview: AppStoreState['strategyMutationPreview'] }),
@@ -415,11 +431,7 @@ const loadStrategyGraphModule = async () => {
 
 const flushRender = async () => {
   await Promise.resolve();
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => resolve());
-    });
-  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
 };
 
@@ -610,13 +622,16 @@ describe('StrategyGraph', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
+    await loadStrategyGraphModule();
+  });
+
+  beforeEach(() => {
     validatePlanAndProvisionBranchesMock.mockClear();
     applyStrategyMutationPreviewMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     resetState();
-    await loadStrategyGraphModule();
     container = document.createElement('div');
     container.style.height = '800px';
     container.style.width = '1000px';
@@ -625,16 +640,15 @@ describe('StrategyGraph', () => {
   });
 
   afterEach(async () => {
-    await act(async () => {
+    act(() => {
       root?.unmount();
-      await flushRender();
     });
+    await flushRender();
     container?.remove();
     container = null;
     root = null;
     document.body.innerHTML = '';
     resetState();
-    mock.restore();
   });
 
   afterAll(() => {
@@ -644,10 +658,10 @@ describe('StrategyGraph', () => {
   it('renders a fixed dot for idle prompt nodes', async () => {
     seedStores('Pending');
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(
       document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
@@ -657,10 +671,10 @@ describe('StrategyGraph', () => {
   it('explains that needs must be identified before an empty strategy can be generated', async () => {
     seedEmptyStrategy([]);
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain(
       'Identify and validate needs before generating the strategy.'
@@ -676,10 +690,10 @@ describe('StrategyGraph', () => {
       },
     ]);
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain(
       'Clarify needs if useful, or generate the strategy now.'
@@ -695,10 +709,10 @@ describe('StrategyGraph', () => {
       },
     ]);
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain(
       'The needs are ready. Generate the strategy when you want Macro to create the task graph.'
@@ -782,10 +796,10 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelector('[data-graph-node-id="plan-finalization:plan-1"]')).not.toBeNull();
     expect(
@@ -806,10 +820,10 @@ describe('StrategyGraph', () => {
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(3);
     expect(document.querySelector('[data-branch-task="plan-finalization:plan-1"]')).toBeNull();
@@ -818,10 +832,10 @@ describe('StrategyGraph', () => {
   it('renders a pulsing dot when the linked task awaits a response', async () => {
     seedStores('AwaitingResponse');
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const indicator = document.body.querySelector(
       '[data-task-status-indicator-state="awaiting_response"]'
@@ -837,10 +851,10 @@ describe('StrategyGraph', () => {
   it('renders a spinner when the linked task is streaming', async () => {
     seedStores('InProgress', { isStreaming: true });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(
       document.body.querySelector('[data-task-status-indicator-state="running"]')
@@ -879,10 +893,10 @@ describe('StrategyGraph', () => {
       })),
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const graphNode = document.querySelector(
       `[data-graph-node-id="${hoverNodeId}"]`
@@ -904,10 +918,10 @@ describe('StrategyGraph', () => {
       }),
     });
 
-    await act(async () => {
+    act(() => {
       graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
-      await flushRender();
     });
+    await flushRender();
   };
 
   it('marks completed-to-pending graph edge flow as normal and animated', async () => {
@@ -1062,10 +1076,10 @@ describe('StrategyGraph', () => {
       },
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.querySelector('[data-icon="lock"], .lucide-lock')).toBeNull();
 
@@ -1089,10 +1103,10 @@ describe('StrategyGraph', () => {
       }),
     });
 
-    await act(async () => {
+    act(() => {
       graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.querySelector('[data-icon="lock"], .lucide-lock')).not.toBeNull();
     expect(document.body.textContent).toContain('Locked');
@@ -1128,10 +1142,10 @@ describe('StrategyGraph', () => {
       ),
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const graphNode = Array.from(document.querySelectorAll('g')).find(
       (element) => (element as SVGGElement).style?.cursor === 'pointer'
@@ -1153,10 +1167,10 @@ describe('StrategyGraph', () => {
       }),
     });
 
-    await act(async () => {
+    act(() => {
       graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain('Expected artifacts');
     expect(document.body.textContent).toContain('Audit findings');
@@ -1169,10 +1183,10 @@ describe('StrategyGraph', () => {
   it('omits the expected artifact section when graph nodes have no contracts', async () => {
     seedStores('Pending');
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const graphNode = Array.from(document.querySelectorAll('g')).find(
       (element) => (element as SVGGElement).style?.cursor === 'pointer'
@@ -1194,10 +1208,10 @@ describe('StrategyGraph', () => {
       }),
     });
 
-    await act(async () => {
+    act(() => {
       graphNode?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).not.toContain('Expected artifacts');
   });
@@ -1234,20 +1248,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     const taskElement = document.querySelector('[data-branch-task="task-1"]');
     const taskText = taskElement?.textContent || '';
@@ -1318,20 +1332,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(2);
@@ -1388,20 +1402,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain('Architect node');
     expect(document.body.textContent).toContain('Locked');
@@ -1426,12 +1440,12 @@ describe('StrategyGraph', () => {
       }),
     });
 
-    await act(async () => {
+    act(() => {
       lockedBadge?.dispatchEvent(
         new window.MouseEvent('mouseover', { bubbles: true })
       );
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain('Started work');
     expect(document.body.textContent).toContain(
@@ -1642,20 +1656,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain('Checkout API');
     expect(document.body.textContent).toContain('Wire API');
@@ -1808,20 +1822,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     const branchCards = document.querySelectorAll('[data-branch-card="true"]');
     expect(branchCards).toHaveLength(2);
@@ -1840,22 +1854,22 @@ describe('StrategyGraph', () => {
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     };
 
-    await act(async () => {
+    act(() => {
       if (searchInput) {
         setInputValue(searchInput, 'Shared');
       }
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(0);
 
-    await act(async () => {
+    act(() => {
       if (searchInput) {
         setInputValue(searchInput, '');
       }
-      await flushRender();
     });
+    await flushRender();
 
     const statusFilter = document.querySelector('select') as HTMLSelectElement | null;
     expect(statusFilter).not.toBeNull();
@@ -1876,12 +1890,12 @@ describe('StrategyGraph', () => {
       select.dispatchEvent(new window.Event('change', { bubbles: true }));
     };
 
-    await act(async () => {
+    act(() => {
       if (statusFilter) {
         setSelectValue(statusFilter, 'completed');
       }
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(0);
@@ -2034,20 +2048,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.body.textContent).toContain('Web task');
@@ -2115,20 +2129,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-branch-task]')).toHaveLength(1);
@@ -2227,20 +2241,20 @@ describe('StrategyGraph', () => {
       ],
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Branches')
     );
     expect(branchesButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       branchesButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(2);
     expect(document.body.textContent).toContain('Feature checkout');
@@ -2270,10 +2284,10 @@ describe('StrategyGraph', () => {
       },
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     expect(document.body.textContent).toContain('Regeneration preview');
     expect(document.body.textContent).toContain('Architect node');
@@ -2286,10 +2300,10 @@ describe('StrategyGraph', () => {
     );
     expect(applyButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       applyButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(applyStrategyMutationPreviewMock).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().strategyMutationPreview).toBeNull();
@@ -2335,10 +2349,10 @@ describe('StrategyGraph', () => {
       },
     });
 
-    await act(async () => {
+    act(() => {
       root?.render(<StrategyGraph />);
-      await flushRender();
     });
+    await flushRender();
 
     const validateButton = Array.from(
       document.body.querySelectorAll('button')
@@ -2346,10 +2360,10 @@ describe('StrategyGraph', () => {
 
     expect(validateButton).not.toBeUndefined();
 
-    await act(async () => {
+    act(() => {
       validateButton?.click();
-      await flushRender();
     });
+    await flushRender();
 
     expect(validatePlanAndProvisionBranchesMock).toHaveBeenCalledWith({
       branchName: 'develop',

@@ -1,6 +1,6 @@
 {
   "name": "macro",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0",
   "description": "Local-first desktop environment for agentic software work.",
   "author": "Andrologic",
   "license": "AGPL-3.0-or-later",
@@ -43,6 +43,7 @@
     "tauri:build:dmg:mac-arm64:test": "APPLE_SIGNING_IDENTITY=\"-\" NODE_ENV=production bun dev/tauri-cli.mjs build --target aarch64-apple-darwin --bundles app,dmg",
     "tauri:build:dmg:mac-universal:test": "APPLE_SIGNING_IDENTITY=\"-\" NODE_ENV=production bun dev/tauri-cli.mjs build --target universal-apple-darwin --bundles app,dmg",
     "tauri:build:debug": "bun dev/tauri-cli.mjs build --debug",
+    "tauri:headless": "cargo run --manifest-path src-tauri/Cargo.toml --example macro-headless",
     "mac:verify-bundle": "bun ./dev/verify-macos-bundle.mjs",
     "install:tauri": "bun install && cd src-tauri && cargo build --release",
     "clean": "rm -rf dist node_modules src-tauri/target src-tauri/binaries bun.lockb .vite",
@@ -56,7 +57,7 @@
     "version:sync": "bun dev/version/sync.mjs",
     "version:check": "bun dev/version/check.mjs",
     "version:bump": "bun dev/version/bump.mjs",
-    "ci": "bun install --frozen-lockfile && bun run version:check && bun run repo:check-binaries && bun run typecheck && bun run lint && bun run i18n:audit && bun run test && cargo test --manifest-path src-tauri/Cargo.toml && bun run build && bun run bundle:check"
+    "ci": "bun install --frozen-lockfile && bun run version:check && bun run repo:check-binaries && bun run typecheck && bun run lint && bun run i18n:audit && bun run test && cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1 && cargo check --manifest-path src-tauri/Cargo.toml --example macro-headless --locked && bun run build && bun run bundle:check"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.2",
@@ -86,6 +87,7 @@
     "@tauri-apps/plugin-store": "2.4.2",
     "@types/highlight.js": "10.1.0",
     "@xyflow/react": "12.10.2",
+    "chevrotain": "11.1.2",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "codemirror": "6.0.2",
@@ -94,9 +96,10 @@
     "i18next-browser-languagedetector": "8.2.1",
     "jotai": "2.20.0",
     "katex": "0.16.28",
+    "langium": "4.2.0",
     "lexical": "0.40.0",
     "lucide-react": "0.563.0",
-    "mermaid": "11.14.0",
+    "mermaid": "11.15.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-i18next": "16.6.6",
@@ -128,9 +131,10 @@
     "happy-dom": "20.9.0",
     "postcss": "8.5.14",
     "tailwindcss": "3.4.0",
+    "terser": "5.49.0",
     "typescript-eslint": "8.59.2",
     "typescript": "5.9.3",
-    "vite": "7.3.2"
+    "vite": "7.3.6"
   },
   "overrides": {
     "@codemirror/autocomplete": "6.20.2",
@@ -141,13 +145,17 @@
     "@codemirror/state": "6.6.0",
     "@codemirror/view": "6.43.0",
     "brace-expansion": "1.1.13",
-    "dompurify": "3.4.2",
+    "@babel/core": "7.29.7",
+    "dompurify": "3.4.11",
+    "esbuild": "0.28.1",
     "flatted": "3.4.2",
+    "js-yaml": "4.3.0",
     "lodash-es": "4.18.1",
     "picomatch": "4.0.4",
     "postcss": "8.5.14",
     "rollup": "4.60.3",
     "uuid": "14.0.0",
+    "ws": "8.21.0",
     "yaml": "2.8.4"
   },
   "trustedDependencies": [

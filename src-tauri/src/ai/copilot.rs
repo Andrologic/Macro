@@ -28,6 +28,7 @@ use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{watch, Mutex};
+use uuid::Uuid;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -45,6 +46,25 @@ const COPILOT_DEFAULT_DEVICE_URL: &str = "https://github.com/login/device";
 const DEFAULT_COPILOT_SEND_TIMEOUT_MS: i64 = 30 * 60 * 1000;
 const MIN_COPILOT_SEND_TIMEOUT_MS: i64 = 60 * 1000;
 const DOWNLOAD_PROGRESS_GRANULARITY_BYTES: u64 = 1_048_576;
+const MAX_REQUEST_ID_LENGTH: usize = 128;
+
+pub(crate) fn validate_request_id(request_id: &str) -> Result<(), String> {
+    if request_id.is_empty()
+        || request_id.len() > MAX_REQUEST_ID_LENGTH
+        || request_id == "."
+        || request_id == ".."
+        || !request_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return Err(
+            "Invalid request ID. Request IDs may contain only ASCII letters, digits, '.', '-' or '_'."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct BridgeHealthResult {
@@ -1434,6 +1454,52 @@ fn cleanup_old_managed_versions(
     Ok(())
 }
 
+struct DirectoryCleanupGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl DirectoryCleanupGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DirectoryCleanupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn remove_runtime_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn restore_previous_runtime(final_dir: &Path, backup_dir: &Path) -> Result<(), String> {
+    remove_runtime_path(final_dir)?;
+    if backup_dir.exists() {
+        fs::rename(backup_dir, final_dir)
+            .map_err(|error| format!("Failed to restore previous Copilot runtime: {}", error))?;
+    }
+    Ok(())
+}
+
 async fn install_runtime_archive(
     app_handle: &AppHandle,
     pool: &SqlitePool,
@@ -1443,12 +1509,15 @@ async fn install_runtime_archive(
     asset: &CopilotRuntimeAsset,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
+    validate_request_id(request_id)?;
     let temp_root = copilot_temp_root(app_handle)?;
-    let request_root = temp_root.join(format!("download-{}", request_id));
+    let install_id = Uuid::new_v4().simple().to_string();
+    let request_root = temp_root.join(format!("download-{}", install_id));
     if request_root.exists() {
-        let _ = fs::remove_dir_all(&request_root);
+        remove_runtime_path(&request_root)?;
     }
     fs::create_dir_all(&request_root).map_err(|error| error.to_string())?;
+    let request_cleanup = DirectoryCleanupGuard::new(request_root.clone());
 
     let archive_path = request_root.join("runtime.tgz");
     let extract_root = request_root.join("extract");
@@ -1586,14 +1655,13 @@ async fn install_runtime_archive(
     )?;
 
     let final_dir = managed_runtime_dir(app_handle, platform_key, asset)?;
-    let staging_dir = final_dir.with_extension(format!("staging-{}", request_id));
+    let staging_dir = final_dir.with_extension(format!("staging-{}", install_id));
+    let backup_dir = final_dir.with_extension(format!("backup-{}", install_id));
     if staging_dir.exists() {
-        let _ = fs::remove_dir_all(&staging_dir);
-    }
-    if final_dir.exists() {
-        let _ = fs::remove_dir_all(&final_dir);
+        remove_runtime_path(&staging_dir)?;
     }
     fs::create_dir_all(&staging_dir).map_err(|error| error.to_string())?;
+    let mut staging_cleanup = DirectoryCleanupGuard::new(staging_dir.clone());
 
     let final_binary = staging_dir.join(&asset.binary_name);
     fs::copy(&extracted_binary, &final_binary)
@@ -1609,13 +1677,51 @@ async fn install_runtime_archive(
     }
 
     copy_license_to_runtime(app_handle, &staging_dir)?;
-    fs::rename(&staging_dir, &final_dir)
-        .map_err(|error| format!("Failed to finalize Copilot runtime install: {}", error))?;
+    let had_previous_runtime = final_dir.exists();
+    if had_previous_runtime {
+        fs::rename(&final_dir, &backup_dir).map_err(|error| {
+            format!(
+                "Failed to stage the previous Copilot runtime for replacement: {}",
+                error
+            )
+        })?;
+    }
+
+    if let Err(error) = fs::rename(&staging_dir, &final_dir) {
+        let restore_error = if had_previous_runtime {
+            restore_previous_runtime(&final_dir, &backup_dir).err()
+        } else {
+            None
+        };
+        return Err(match restore_error {
+            Some(restore_error) => format!(
+                "Failed to finalize Copilot runtime install: {} Runtime rollback failed: {}",
+                error, restore_error
+            ),
+            None => format!("Failed to finalize Copilot runtime install: {}", error),
+        });
+    }
+    staging_cleanup.disarm();
 
     let final_binary_path = final_dir.join(&asset.binary_name);
-    write_managed_runtime_metadata(pool, platform_key, &final_binary_path, asset).await?;
+    if let Err(error) =
+        write_managed_runtime_metadata(pool, platform_key, &final_binary_path, asset).await
+    {
+        let rollback_error = restore_previous_runtime(&final_dir, &backup_dir).err();
+        return Err(match rollback_error {
+            Some(rollback_error) => format!(
+                "Failed to persist Copilot runtime metadata: {} Runtime rollback failed: {}",
+                error, rollback_error
+            ),
+            None => format!("Failed to persist Copilot runtime metadata: {}", error),
+        });
+    }
+
+    if had_previous_runtime {
+        let _ = remove_runtime_path(&backup_dir);
+    }
     cleanup_old_managed_versions(app_handle, platform_key, &asset.version)?;
-    let _ = fs::remove_dir_all(&request_root);
+    drop(request_cleanup);
     Ok(())
 }
 
@@ -1657,10 +1763,6 @@ pub async fn start_runtime_download(
                 &mut cancel_rx,
             )
             .await?;
-            {
-                let mut tasks = state_for_task.download_tasks.lock().await;
-                tasks.remove(&request_for_task);
-            }
             let status =
                 get_status_inner(&app_for_task, &pool_for_task, &provider_for_task, false).await?;
             emit_download_complete(
@@ -1689,8 +1791,19 @@ pub async fn start_runtime_download(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.download_tasks.lock().await;
-        tasks.remove(&request_for_task);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&request_for_task)
+                    .map(|task| task.handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&request_for_task);
+        }
     });
 
     let mut tasks = ai_state.download_tasks.lock().await;
@@ -1931,8 +2044,19 @@ pub async fn start_auth(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.auth_tasks.lock().await;
-        tasks.remove(&request_for_task);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&request_for_task)
+                    .map(|task| task.handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&request_for_task);
+        }
     });
 
     let mut tasks = ai_state.auth_tasks.lock().await;
@@ -2044,10 +2168,21 @@ pub async fn stream_chat(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.stream_tasks.lock().await;
-        tasks.remove(&task_request_id);
-        let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
-        tool_writers.remove(&task_request_id);
+        let is_current_task = task_id
+            .map(|task_id| {
+                tasks
+                    .get(&task_request_id)
+                    .map(|handle| handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if is_current_task {
+            tasks.remove(&task_request_id);
+            let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
+            tool_writers.remove(&task_request_id);
+        }
     });
 
     let mut tasks = ai_state.stream_tasks.lock().await;
@@ -2056,12 +2191,13 @@ pub async fn stream_chat(
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
+    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await?;
     {
         let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
         tool_writers.remove(request_id);
     }
 
-    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await
+    Ok(())
 }
 
 pub async fn submit_tool_result(
@@ -2254,6 +2390,7 @@ async fn stream_chat_inner(
                             reasoning_summary,
                             tool_traces,
                             hidden_context,
+                            completion_reason: None,
                         },
                     )
                     .map_err(|error| error.to_string())?;
@@ -2333,26 +2470,7 @@ async fn stream_chat_inner(
         return Err("Macro AI runtime exited unexpectedly.".to_string());
     }
 
-    app_handle
-        .emit(
-            "ai:done",
-            AiStreamDoneEvent {
-                request_id: request.request_id,
-                output_text: String::new(),
-                tool_calls: Vec::new(),
-                response_id: None,
-                output_items: None,
-                provider_input_items: None,
-                provider_turn_state: None,
-                reasoning_summary: None,
-                tool_traces: None,
-                hidden_context: None,
-            },
-        )
-        .map_err(|error| error.to_string())?;
-    timeline.emit("done");
-
-    Ok(())
+    Err("Macro AI runtime exited without a completion event.".to_string())
 }
 
 #[cfg(test)]
@@ -2368,6 +2486,14 @@ mod tests {
             normalize_copilot_send_timeout_ms(Some(2_400_000)),
             2_400_000
         );
+    }
+
+    #[test]
+    fn request_id_validation_rejects_path_traversal() {
+        assert!(validate_request_id("req-123").is_ok());
+        assert!(validate_request_id("../runtime").is_err());
+        assert!(validate_request_id("runtime\\stage").is_err());
+        assert!(validate_request_id("/").is_err());
     }
 
     #[test]

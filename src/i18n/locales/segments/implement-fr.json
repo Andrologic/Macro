@@ -342,7 +342,7 @@
     "deletedChangeReadOnly": "Les fichiers supprimés sont en lecture seule pendant la review. Restaurez-les via le flow de tâche.",
     "revertChangesFailed": "Impossible d'annuler les changements."
   },
-  "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+  "taskCommandsManualDraftUnsupported": "Envoyez un premier message pour préparer la branche, le worktree et le terminal de cette fonctionnalité.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
   "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
   "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
@@ -484,5 +484,8 @@
   "diffModalCrashedTitle": "Impossible de garder ce diff ouvert",
   "diffModalCrashedDescription": "Le panneau des changements continue de fonctionner. Réessayez le visualiseur de diff ou fermez ce fichier.",
   "diffRenderFailedTitle": "Impossible d’afficher ce diff",
-  "diffRenderFailedDescription": "Le panneau des changements est resté ouvert. Fermez ce fichier et réessayez, ou inspectez directement le fichier."
+  "diffRenderFailedDescription": "Le panneau des changements est resté ouvert. Fermez ce fichier et réessayez, ou inspectez directement le fichier.",
+  "reviewBeforeValidation": "Ouvrez chaque diff en attente avant de valider les changements.",
+  "reviewArtifactBeforeValidation": "Ouvrez cet artefact avant de le valider.",
+  "taskCommandsPlanMutationActive": "Arrêtez les commandes de tâches actives avant d’archiver ou de supprimer ce plan."
 }

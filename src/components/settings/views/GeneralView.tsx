@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
@@ -42,6 +42,7 @@ export const GeneralView: React.FC = () => {
     const [chatMaxTurnsDraft, setChatMaxTurnsDraft] = useState(
         String(CHAT_MAX_TURNS_DEFAULT)
     );
+    const chatMaxTurnsTouchedRef = useRef(false);
     const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
 
     useEffect(() => {
@@ -74,7 +75,7 @@ export const GeneralView: React.FC = () => {
         let cancelled = false;
 
         void loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS).then((maxTurns) => {
-            if (cancelled) {
+            if (cancelled || chatMaxTurnsTouchedRef.current) {
                 return;
             }
 
@@ -97,6 +98,7 @@ export const GeneralView: React.FC = () => {
     }, []);
 
     const commitChatMaxTurnsDraft = () => {
+        chatMaxTurnsTouchedRef.current = true;
         if (!isChatMaxTurnsEnabled) {
             setChatMaxTurnsDraft(String(chatMaxTurns));
             return;
@@ -123,6 +125,7 @@ export const GeneralView: React.FC = () => {
     };
 
     const updateChatMaxTurnsEnabled = (enabled: boolean) => {
+        chatMaxTurnsTouchedRef.current = true;
         setIsChatMaxTurnsEnabled(enabled);
         if (enabled) {
             const nextValue = normalizeChatMaxTurns(chatMaxTurns);
@@ -288,7 +291,10 @@ export const GeneralView: React.FC = () => {
                                     step={1}
                                     value={chatMaxTurnsDraft}
                                     disabled={!isChatMaxTurnsEnabled}
-                                    onChange={(event) => setChatMaxTurnsDraft(event.target.value)}
+                                    onChange={(event) => {
+                                        chatMaxTurnsTouchedRef.current = true;
+                                        setChatMaxTurnsDraft(event.target.value);
+                                    }}
                                     onBlur={commitChatMaxTurnsDraft}
                                     onKeyDown={handleChatMaxTurnsKeyDown}
                                     className="w-28"

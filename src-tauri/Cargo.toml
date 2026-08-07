@@ -1,12 +1,17 @@
 [package]
 name = "macro"
-version = "0.1.0-rc.8"
+version = "0.1.0"
 description = "Local-first desktop environment for agentic software work."
 authors = ["Andrologic"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Andrologic/Macro"
 edition = "2021"
 default-run = "macro"
+autobins = false
+
+[[bin]]
+name = "macro"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -79,3 +84,6 @@ objc2 = "0.6.3"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSThread", "objc2-core-foundation"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSView", "NSWindow"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

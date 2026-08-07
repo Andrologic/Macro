@@ -1,4 +1,6 @@
-use super::auth::{build_authorize_url, spawn_browser_auth_callback_server};
+use super::auth::{
+    build_authorize_url, spawn_browser_auth_callback_server, validate_browser_callback,
+};
 use super::models::{build_provider_models, model_supports_plan};
 use super::session::{
     build_provider_auth_metadata, build_token_claims, decode_jwt_payload,
@@ -7,13 +9,13 @@ use super::session::{
 use super::stream::{
     build_responses_request, extract_completed_reasoning_summary,
     extract_function_call_from_output_item, extract_output_text_from_output_item,
-    extract_reasoning_summary_from_output_item, extract_response_id,
-    normalize_provider_input_items_for_replay,
+    extract_reasoning_summary_from_output_item, extract_response_id, extract_sse_data,
+    normalize_provider_input_items_for_replay, SseParser,
 };
 use super::types::{
     auth_flow_error_from_persist, AiChatMessage, AiChatMessageContent, AiChatRequest,
-    ModelsCacheEntry, ModelsCacheReasoningLevel, PersistChatGptSessionError, PkceCodes,
-    CHATGPT_CALLBACK_PORT, CHATGPT_CANCEL_PATH,
+    BrowserAuthCallbackQuery, ModelsCacheEntry, ModelsCacheReasoningLevel,
+    PersistChatGptSessionError, PkceCodes, CHATGPT_CALLBACK_PORT, CHATGPT_CANCEL_PATH,
 };
 use crate::secrets::ChatGptSecret;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -465,6 +467,51 @@ fn normalize_provider_input_items_strips_ids_and_normalizes_message_parts() {
 }
 
 #[test]
+fn sse_parser_handles_multiline_data_and_all_line_endings() {
+    assert_eq!(
+        extract_sse_data("event: message\r\ndata: first\r\ndata: second"),
+        Some("first\nsecond".to_string())
+    );
+
+    let mut parser = SseParser::default();
+    assert!(parser
+        .push(b"data: first\r")
+        .expect("first chunk")
+        .is_empty());
+    assert!(parser
+        .push(b"\ndata: second\r\r")
+        .expect("second chunk")
+        .is_empty());
+    assert_eq!(
+        parser.finish().expect("flush"),
+        vec!["data: first\ndata: second".to_string()]
+    );
+}
+
+#[test]
+fn sse_parser_flushes_final_event_and_preserves_split_utf8() {
+    let bytes = "data: café\n".as_bytes();
+    let split_at = bytes
+        .iter()
+        .position(|byte| *byte == b'\xc3')
+        .expect("multibyte character")
+        + 1;
+    let mut parser = SseParser::default();
+    assert!(parser
+        .push(&bytes[..split_at])
+        .expect("first chunk")
+        .is_empty());
+    assert!(parser
+        .push(&bytes[split_at..])
+        .expect("second chunk")
+        .is_empty());
+    assert_eq!(
+        parser.finish().expect("flush"),
+        vec!["data: café".to_string()]
+    );
+}
+
+#[test]
 fn extract_output_text_from_output_item_reads_completed_message_items() {
     let item = json!({
         "id": "msg_123",
@@ -665,6 +712,19 @@ fn persist_secret_errors_map_to_secret_persist_failed() {
 
     assert_eq!(error.code, "secret_persist_failed");
     assert_eq!(error.message, "Secret write failed");
+}
+
+#[test]
+fn browser_callback_rejects_invalid_state_before_oauth_error() {
+    let query = BrowserAuthCallbackQuery {
+        code: None,
+        state: Some("attacker-state".to_string()),
+        error: Some("access_denied".to_string()),
+        error_description: Some("The user denied access.".to_string()),
+    };
+
+    let error = validate_browser_callback(&query, "expected-state").expect_err("invalid state");
+    assert_eq!(error.code, "callback_invalid");
 }
 
 #[tokio::test]

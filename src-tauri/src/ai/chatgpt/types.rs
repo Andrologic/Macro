@@ -125,6 +125,8 @@ pub struct AiStreamDoneEvent {
     pub tool_traces: Option<Vec<AiToolTrace>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -451,6 +451,136 @@ describe('TaskQueue', () => {
     expect(activateTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('suppresses a stale merge-runtime error on a Pending task without an active merge runtime', async () => {
+    seedStores('Pending');
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale failed merge summaries after a task is reopened', async () => {
+    seedTasks([
+      makeTask('task-1', 'InProgress', {
+        title: 'Reopened task',
+        merge_workflow_summary: {
+          kind: 'task_completion',
+          phase: 'failed',
+          taskStatus: 'Failed',
+          repositoryCount: 2,
+          mergedRepositoryCount: 0,
+          blockedRepositoryCount: 0,
+          unresolvedRepositoryCount: 2,
+          updatedAt: '2026-04-23T09:00:00.000Z',
+          message: 'Automatic merge failed',
+        },
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_failed"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a worktree-style error on a dependency-blocked task', async () => {
+    seedTasks([makeTask('task-1', 'Pending', {
+      is_blocked: true,
+      blocked_by: ['task-0'],
+      blocked_by_task_ids: ['task-0'],
+    })]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a merge-runtime error when a task has an active failed merge runtime', async () => {
+    seedTasks([makeTask('task-1', 'Failed', {
+      is_blocked: false,
+    })]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': {
+          taskId: 'task-1',
+          kind: 'task_completion',
+          phase: 'failed',
+          taskStatus: 'Failed',
+          review: {
+            taskId: 'task-1',
+            title: 'Task 1',
+            taskSource: 'standalone',
+            planId: null,
+            planTitle: null,
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Resolve the repository blockers before retrying the merge.',
+          lastLoadedAt: '2026-04-22T10:00:00.000Z',
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes the toast notification key to the selected task id', async () => {
+    seedStores('Pending');
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot create a task worktree for feature/demo because that branch is still checked out in the primary repository and has uncommitted changes',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const options = notifyMock.actionRequired.mock.calls[0]?.[1] as { notificationKey?: string };
+    expect(options?.notificationKey).toContain('implement-task-error:task-1:');
+  });
+
   it('sends read-only scope warnings to an actionable notification instead of rendering inline', async () => {
     seedStores('Pending');
     const setSelectedProject = mock(() => undefined);

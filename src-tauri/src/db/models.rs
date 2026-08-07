@@ -34,6 +34,7 @@ pub struct Message {
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +80,36 @@ pub struct ChatSnapshot {
 pub struct ChatBootstrapSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages_by_conversation_id: HashMap<String, Vec<Message>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationCitation {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub r#type: String,
+    pub scope: String,
+    pub source: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub content: Option<String>,
+    pub url: Option<String>,
+    pub favicon: Option<String>,
+    pub path: Option<String>,
+    pub language: Option<String>,
+    pub size_bytes: Option<i32>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationToolboxStateRecord {
+    pub conversation_id: String,
+    pub composer_context_refs_json: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +253,7 @@ pub struct CreateMessageInput {
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +263,35 @@ pub struct ImportMessageInput {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    pub completion_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertConversationCitationInput {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub r#type: String,
+    pub scope: String,
+    pub source: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub content: Option<String>,
+    pub url: Option<String>,
+    pub favicon: Option<String>,
+    pub path: Option<String>,
+    pub language: Option<String>,
+    pub size_bytes: Option<i32>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertConversationToolboxStateInput {
+    pub conversation_id: String,
+    pub composer_context_refs_json: String,
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -294,9 +294,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
     () =>
       resolveTaskMergeWorkflowPresentationState(
         mergeWorkflowRuntime,
-        task.merge_workflow_summary ?? null
+        task.merge_workflow_summary ?? null,
+        task.status
       ),
-    [mergeWorkflowRuntime, task.merge_workflow_summary]
+    [mergeWorkflowRuntime, task.merge_workflow_summary, task.status]
   );
   const indicatorState = resolveTaskStatusIndicatorState(
     task.status,
@@ -816,7 +817,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       notify.error(
         t(
           'implement.manualFeatureMissingProjects',
-          'No editable project is available for this selection.'
+          'No editable project is available for the current scope.'
         )
       );
       return;
@@ -863,7 +864,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
     const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
       mergeWorkflowRuntime,
-      task.merge_workflow_summary ?? null
+      task.merge_workflow_summary ?? null,
+      task.status
     );
     const repositoryDescriptors = getTaskRepositoryDescriptors(
       task,
@@ -986,13 +988,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       }),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const scopedActionableProjectIds = useMemo(
-    () => getScopedActionableProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
+  const scopedActionableProjectIds = getScopedActionableProjectIds(
+    { standaloneProjects, projectGroups },
+    selectedGroupId,
+    selectedProjectId
   );
-  const scopedReadOnlyProjectIds = useMemo(
-    () => getScopedReadOnlyProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
+  const scopedReadOnlyProjectIds = getScopedReadOnlyProjectIds(
+    { standaloneProjects, projectGroups },
+    selectedGroupId,
+    selectedProjectId
   );
   const workspaceState = resolveProjectWorkspaceState({
     standaloneProjects,
@@ -1001,13 +1005,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedProjectId,
   });
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const scopedReadOnlyProjects = useMemo(
-    () =>
-      scopedReadOnlyProjectIds
-        .map((projectId) => getProjectById(projectId))
-        .filter((project): project is NonNullable<typeof project> => Boolean(project)),
-    [getProjectById, scopedReadOnlyProjectIds]
-  );
+  const scopedReadOnlyProjects = scopedReadOnlyProjectIds
+    .map((projectId) => getProjectById(projectId))
+    .filter((project): project is NonNullable<typeof project> => Boolean(project));
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope =
     scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
@@ -1016,19 +1016,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     : firstReadOnlyProject?.readOnlyReason === 'missing_initial_commit'
       ? t('projects.createInitialCommitAction', 'Create initial commit')
       : t('projects.projectSettings', 'Project settings');
-
-  const openReadOnlyProjectSettings = useCallback(() => {
-    if (!firstReadOnlyProject || projectManagementDisabled) {
-      return;
-    }
-    setSelectedProject(firstReadOnlyProject.id);
-    openProjectGitFlowModal(firstReadOnlyProject.id);
-  }, [
-    firstReadOnlyProject,
-    openProjectGitFlowModal,
-    projectManagementDisabled,
-    setSelectedProject,
-  ]);
 
   useEffect(() => {
     if (!isReadOnlyOnlyScope) {
@@ -1051,6 +1038,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       'Implementation needs at least one editable project. Read-only projects stay available for navigation, search, and context.'
     );
     const canOpenSettings = Boolean(firstReadOnlyProject) && !projectManagementDisabled;
+    const openReadOnlyProjectSettings = () => {
+      if (!firstReadOnlyProject || projectManagementDisabled) {
+        return;
+      }
+      setSelectedProject(firstReadOnlyProject.id);
+      openProjectGitFlowModal(firstReadOnlyProject.id);
+    };
 
     if (canOpenSettings) {
       notify.actionRequired(title, {
@@ -1079,9 +1073,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     isReadOnlyOnlyScope,
     projectManagementDisabled,
     readOnlyCtaLabel,
-    openReadOnlyProjectSettings,
+    openProjectGitFlowModal,
     selectedGroupId,
     selectedProjectId,
+    setSelectedProject,
     t,
   ]);
 
@@ -1654,6 +1649,55 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () => selectedTaskForError ? retargetTaskForCurrentScope(selectedTaskForError) : null,
     [retargetTaskForCurrentScope, selectedTaskForError]
   );
+  const activeTaskMergeRuntime = selectedTaskForError
+    ? mergeWorkflowRuntimeByTaskId[selectedTaskForError.id] ?? null
+    : null;
+  const activeMergePresentation = selectedTaskForError
+    ? resolveTaskMergeWorkflowPresentationState(
+        activeTaskMergeRuntime,
+        selectedTaskForError.merge_workflow_summary ?? null,
+        selectedTaskForError.status
+      )
+    : null;
+  const activeMergePhase = activeMergePresentation?.phase
+    ?? null;
+  const hasActiveMergeFailurePresentation = activeMergePhase === 'failed'
+    || activeMergePhase === 'blocked'
+    || activeMergePhase === 'partial'
+    || activeMergePhase === 'merging';
+  const isTaskErrorRelevantForSelection = (error: string | null | undefined): {
+    isConfigurationError: boolean;
+    isMergeRuntimeError: boolean;
+  } => {
+    if (!error) {
+      return { isConfigurationError: false, isMergeRuntimeError: false };
+    }
+    const normalized = error.toLowerCase();
+    const isConfigurationError = normalized.includes('worktree')
+      || normalized.includes('base branch')
+      || normalized.includes('task workspace')
+      || normalized.includes('branch is still checked out');
+    const isMergeRuntimeError = normalized.includes('merge')
+      || normalized.includes('diverged')
+      || normalized.includes('non-fast-forward')
+      || normalized.includes('conflict')
+      || normalized.includes('uncommitted changes');
+    return { isConfigurationError, isMergeRuntimeError };
+  };
+  const taskErrorRelevance = taskError ? isTaskErrorRelevantForSelection(taskError) : null;
+  const taskErrorMatchesSelection = Boolean(
+    taskError
+    && taskErrorRelevance
+    && selectedTaskForError
+    && (
+      (taskErrorRelevance.isConfigurationError
+        && selectedTaskForError.status !== 'Completed'
+        && !selectedTaskForError.archived_at)
+      || (taskErrorRelevance.isMergeRuntimeError
+        && hasActiveMergeFailurePresentation
+        && !selectedTaskForError.is_blocked)
+    )
+  );
   const taskErrorPresentation = useMemo(
     () =>
       taskError
@@ -1704,9 +1748,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       lastErrorToastRef.current = taskError;
       return;
     }
-    if (taskError === lastErrorToastRef.current) return;
+    if (!taskErrorMatchesSelection) {
+      lastErrorToastRef.current = null;
+      return;
+    }
+    const dedupeKey = `${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
+    if (dedupeKey === lastErrorToastRef.current) return;
 
-    lastErrorToastRef.current = taskError;
+    lastErrorToastRef.current = dedupeKey;
     const nextStep = taskErrorPresentation.nextStep
       ? `${t('errors.nextStep', 'Next step')}: ${taskErrorPresentation.nextStep}`
       : null;
@@ -1733,7 +1782,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
     const notificationKey = isResourcePressureError
       ? getTooManyOpenFilesNotificationKey()
-      : `implement-task-error:${taskError}`;
+      : `implement-task-error:${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
 
     if (canOpenProjectSettings || canRetry || canRepairMetadata) {
       notify.actionRequired(taskErrorPresentation.title, {
@@ -1790,6 +1839,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     handleTaskErrorAction,
     missingBaseBranchIssue?.message,
     refreshFromPlan,
+    taskErrorMatchesSelection,
   ]);
 
   if (isWorkspaceMissing) {

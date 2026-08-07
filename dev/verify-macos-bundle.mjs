@@ -180,6 +180,11 @@ const manifestPath = join(resourcesDir, 'copilot-runtime-manifest.json');
 const licensePath = join(resourcesDir, 'licenses', 'github-copilot-cli-LICENSE.md');
 const runtimePath = join(macosDir, 'macro-ai-runtime');
 const mainExecutablePath = await findMainExecutable(macosDir);
+const bundledFiles = await run('find', [appPath, '-type', 'f', '-print']);
+
+if (/(^|\/)macro-headless(?:$|[-.])/m.test(bundledFiles)) {
+  throw new Error(`macro-headless must not be packaged in ${appPath}`);
+}
 
 await assertExists(appPath, 'macOS app bundle');
 await assertExists(manifestPath, 'Copilot runtime manifest');
@@ -189,5 +194,4 @@ await assertExecutable(runtimePath, 'Macro AI runtime sidecar');
 await assertBinaryArchitectures(runtimePath, 'Macro AI runtime sidecar', architectures);
 await assertBinaryArchitectures(mainExecutablePath, 'Macro app executable', architectures);
 await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
-
 console.log(`OK codesign verification passed: ${appPath}`);

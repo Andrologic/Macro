@@ -52,6 +52,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     syncContextRefs = true,
   }, ref) => {
     const [LoadedEditor, setLoadedEditor] = useState<ComposerEditorComponent | null>(null);
+    const [loadFailed, setLoadFailed] = useState(false);
     const loadedEditorRef = useRef<ComposerEditorHandle>(null);
     const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
     const fallbackTextRef = useRef(initialText);
@@ -65,6 +66,15 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           return;
         }
         setLoadedEditor(() => module.ComposerEditor as ComposerEditorComponent);
+      }).catch((error: unknown) => {
+        if (!isMounted) {
+          return;
+        }
+        setLoadFailed(true);
+        console.error(
+          '[LazyComposerEditor] Failed to load the rich composer; keeping the textarea fallback.',
+          error,
+        );
       });
 
       return () => {
@@ -151,7 +161,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
       },
     }), [onTextChange]);
 
-    if (LoadedEditor) {
+    if (LoadedEditor && !loadFailed) {
       return (
         <LoadedEditor
           ref={loadedEditorRef}

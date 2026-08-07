@@ -9,6 +9,8 @@ interface SearchBarProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onC
   placeholder?: string;
   className?: string;
   showClear?: boolean;
+  inputId?: string;
+  inputAriaLabel?: string;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
@@ -17,6 +19,9 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   placeholder = i18n.t('common.searchPlaceholder', 'Search...'),
   className,
   showClear = true,
+  inputId,
+  inputAriaLabel,
+  'aria-label': containerAriaLabel,
   ...props
 }) => {
   const handleClear = () => {
@@ -32,17 +37,21 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         className
       )}
       {...props}
+      aria-label={containerAriaLabel}
     >
       <Icon name="search" size={16} className="text-muted-foreground flex-shrink-0 mx-1" />
       <input
+        id={inputId}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-label={inputAriaLabel ?? placeholder}
         className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
       />
       {showClear && value && (
         <button
+          type="button"
           onClick={handleClear}
           className="flex-shrink-0 p-0.5 hover:bg-accent rounded transition-colors mx-1"
           aria-label={i18n.t('common.clearSearch', 'Clear search')}

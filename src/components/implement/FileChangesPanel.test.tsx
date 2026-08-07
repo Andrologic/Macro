@@ -308,6 +308,18 @@ const buildRepository = (reviewedMain: boolean): ReviewRepositoryState => ({
   lastCommitHash: null,
 });
 
+const reviewAllPendingFileDiffs = async () => {
+  for (const fileName of ['main.ts', 'child.ts']) {
+    const fileButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes(fileName));
+    expect(fileButton).toBeDefined();
+    act(() => {
+      fileButton?.click();
+    });
+    await flushRender();
+  }
+};
+
 const buildArtifactPlan = (): ArchitectPlanRecord => ({
   id: 'plan-1',
   slug: 'plan-1',
@@ -737,6 +749,7 @@ describe('FileChangesPanel', () => {
     const revertButtons = buttons.filter((button) => button.getAttribute('aria-label') === 'Revert');
 
     expect(validateButtons.length).toBeGreaterThan(0);
+    expect(validateButtons.every((button) => button.disabled)).toBe(true);
     expect(revertButtons.length).toBeGreaterThan(0);
     expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]').length).toBeGreaterThan(0);
     document.body.querySelectorAll('[data-pending-validation-indicator="true"]').forEach((indicator) => {
@@ -756,6 +769,11 @@ describe('FileChangesPanel', () => {
     });
     expect(document.body.textContent).not.toContain('{{pending}}');
     expect(document.body.textContent).not.toContain('{{validated}}');
+
+    await reviewAllPendingFileDiffs();
+    const enabledValidateButtons = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.getAttribute('aria-label') === 'Validate' && !button.disabled);
+    expect(enabledValidateButtons.length).toBeGreaterThan(0);
 
     await act(async () => {
       validateButtons[0]?.click();
@@ -904,6 +922,8 @@ describe('FileChangesPanel', () => {
     });
 
     expect(document.body.querySelector('[data-artifact-diff-modal="true"]')?.getAttribute('data-artifact-id')).toBe('api-contract');
+
+    await reviewAllPendingFileDiffs();
 
     const validateButton = Array.from(document.body.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('Validate changes')) as HTMLButtonElement | undefined;
@@ -1188,6 +1208,9 @@ describe('FileChangesPanel', () => {
     const validateButton = Array.from(document.body.querySelectorAll('button'))
       .find((button) => button.textContent?.trim() === 'Validate changes');
     expect(validateButton).toBeDefined();
+    expect(validateButton?.disabled).toBe(true);
+    await reviewAllPendingFileDiffs();
+    expect(validateButton?.disabled).toBe(false);
     loadCurrentChangesMock.mockClear();
 
     await act(async () => {
@@ -1625,6 +1648,62 @@ describe('FileChangesPanel', () => {
     expect(finishTaskMock).toHaveBeenCalledWith('task-1');
     expect(commitStagedChangesMock).not.toHaveBeenCalled();
     expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
+  });
+
+  it('protects Finish task from double clicks while the merge is in flight', async () => {
+    const repository: ReviewRepositoryState = {
+      ...buildRepository(true),
+      id: 'project-1::repo-1',
+      changes: [],
+      selectedChangeId: null,
+      stats: {
+        pendingVisibleFileCount: 0,
+        validatedStagedFileCount: 0,
+        additions: 0,
+        deletions: 0,
+      },
+      stagedPaths: [],
+      commitState: 'committed',
+    };
+    seedStores(repository, {
+      taskOverrides: {
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            worktreeKey: 'repo-1',
+          },
+        ],
+      },
+    });
+
+    let resolveFinishTask: (() => void) | null = null;
+    finishTaskMock.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveFinishTask = resolve;
+    }));
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const finishButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Finish task') as HTMLButtonElement | undefined;
+    expect(finishButton).toBeDefined();
+
+    act(() => {
+      finishButton?.click();
+      finishButton?.click();
+    });
+    await flushRender();
+
+    expect(finishTaskMock).toHaveBeenCalledTimes(1);
+    expect(finishButton?.disabled).toBe(true);
+
+    await act(async () => {
+      resolveFinishTask?.();
+      await flushRender();
+    });
   });
 
   it('renders the dedicated plan finalization panel instead of loading file changes', async () => {

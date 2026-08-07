@@ -14,6 +14,8 @@ For the 0.1 release line, support is focused on the desktop workflow.
 Stable GitHub releases include a universal macOS DMG, a Windows NSIS installer,
 Linux AppImage/deb/rpm packages, checksums, and GitHub source archives. The
 macOS package is signed, notarized, and runs on Apple Silicon and Intel Macs.
+The Windows installer is Authenticode-signed, and the Linux packages are smoke
+tested on the release runner before their checksums are generated.
 
 After installing, configure your AI providers from the app settings. Macro does
 not require provider keys to launch, but agentic workflows need at least one
@@ -99,7 +101,8 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 ```
 
 Official releases use stable `x.y.z` versions only. The GitHub release workflow
-builds Windows with NSIS and Linux with AppImage, deb, and rpm packages.
+builds and smoke-tests Windows with NSIS and Linux with AppImage, deb, and rpm
+packages. The `macro-headless` development binary is never included.
 
 ## Provider Keys And Local Secrets
 

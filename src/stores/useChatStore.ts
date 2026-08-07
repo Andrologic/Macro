@@ -20,8 +20,11 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
+  Need,
   PendingToolApproval,
   PersistedContextReference,
+  PlanNode,
+  PredictedBranch,
   ProviderTurnState,
   Project,
   ProjectGroup,
@@ -1102,6 +1105,8 @@ interface ChatStore {
   >;
   skillTurnFeedbackByMessageId: Record<string, SkillTurnFeedback | undefined>;
   architectPlanNamingRecovery: ArchitectPlanNamingRecoveryState | null;
+  pendingComposerDraftByConversationId: Record<string, string>;
+  composerDraftsByContextKey: Record<string, ComposerDraft>;
   addMessage: (message: ChatMessage) => void;
   clearLastError: () => void;
   updateMessageContent: (messageId: string, content: string) => void;
@@ -1167,6 +1172,14 @@ interface ChatStore {
       providerContext?: ConversationContextDiagnosticsProviderContext;
     },
   ) => Promise<void>;
+  setComposerDraft: (conversationId: string, text: string) => void;
+  peekComposerDraft: (conversationId: string) => string | null;
+  consumeComposerDraft: (conversationId: string) => string | null;
+  acknowledgeComposerDraft: (conversationId: string) => void;
+  saveComposerDraftForContext: (contextKey: string, draft: ComposerDraft) => void;
+  getComposerDraftForContext: (contextKey: string) => ComposerDraft | null;
+  clearComposerDraftForContext: (contextKey: string) => void;
+  migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string) => void;
   approvePendingToolApprovalForConversation: (conversationId: string) => void;
@@ -1237,6 +1250,10 @@ interface ChatStore {
     descriptionOverride?: string,
   ) => Promise<void>;
   composerContextRefs: ContextReference[];
+  replaceComposerContextRefs: (
+    refs: ContextReference[],
+    conversationId?: string | null,
+  ) => void;
   addComposerContextRef: (ref: ContextReference) => void;
   removeComposerContextRef: (id: string, kind: ContextRefKind) => void;
   clearComposerContextRefs: () => void;
@@ -1263,6 +1280,12 @@ interface ResolvedConversationForContext {
   targetBranch?: string;
   fallbackProjectId?: string | null;
   fallbackGroupId?: string | null;
+}
+
+export interface ComposerDraft {
+  text: string;
+  images: MessageImageAttachment[];
+  contextRefs: ContextReference[];
 }
 
 const buildChatContextKey = (
@@ -2906,6 +2929,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await loadPromise;
     } finally {
       messageLoadPromisesByConversationId.delete(conversationId);
+    }
+  };
+
+  const hydrateConversationCitationsIfAvailable = async (
+    conversationId: string,
+  ): Promise<void> => {
+    const hydrate =
+      useCitationsStore.getState().hydrateConversationCitations;
+    if (typeof hydrate === "function") {
+      await hydrate(conversationId);
+    }
+  };
+
+  const clearConversationCitationsIfAvailable = (
+    conversationId: string,
+  ): void => {
+    const clear =
+      useCitationsStore.getState().clearConversationCitations;
+    if (typeof clear === "function") {
+      clear(conversationId);
+    }
+  };
+
+  const clearConversationCitationsBulkIfAvailable = (
+    conversationIds: string[],
+  ): void => {
+    const clearBulk =
+      useCitationsStore.getState().clearConversationCitationsBulk;
+    if (typeof clearBulk === "function") {
+      clearBulk(conversationIds);
     }
   };
 
@@ -4614,6 +4667,56 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getCitationBody = (citation: Citation): string =>
     (citation.content || citation.snippet || "").trim();
 
+  const normalizeSourcePassageText = (value: string): string =>
+    value.replace(/\s+/g, " ").trim();
+
+  const citationContainsSourcePassage = (
+    citation: Citation,
+    normalizedPassage: string,
+  ): boolean =>
+    [citation.content, citation.snippet]
+      .filter((value): value is string => typeof value === "string")
+      .some((value) =>
+        normalizeSourcePassageText(value).includes(normalizedPassage),
+      );
+
+  const isSourcePassagePresentInConversationContext = async (
+    conversationId: string,
+    passage: string,
+  ): Promise<boolean> => {
+    const normalizedPassage = normalizeSourcePassageText(passage);
+    if (!normalizedPassage) return false;
+    const citationsState = useCitationsStore.getState();
+    const contextCitations =
+      citationsState.getConversationContextCitations(conversationId);
+    if (
+      contextCitations.some((citation) =>
+        citationContainsSourcePassage(citation, normalizedPassage),
+      )
+    ) {
+      return true;
+    }
+
+    for (const citation of contextCitations) {
+      if (typeof citation.content === "string") continue;
+      const loadedCitation =
+        await useCitationsStore.getState().ensureCitationContentLoaded(citation.id);
+      if (
+        loadedCitation &&
+        citationContainsSourcePassage(loadedCitation, normalizedPassage)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const truncateInjectedContextSnippet = (value: string): string => {
+    const limit = 4000;
+    return value.length > limit ? `${value.slice(0, limit)}…` : value;
+  };
+
   const isFileContextRef = (
     ref: ContextReference | PersistedContextReference,
   ): ref is (ContextReference | PersistedContextReference) & { kind: "file" } =>
@@ -4706,6 +4809,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (result.is_binary) {
         return `FILE: ${getFileRefPath(ref)}\nSOURCE: WORKSPACE\n\nBinary file (${result.size} bytes, encoding=${result.encoding}).`;
       }
+      // Record the read content on the conversation's context citation so
+      // mark_source_passage provenance validation can match passages from
+      // workspace files (addCitation dedupes file citations by path).
+      useCitationsStore.getState().addCitation({
+        type: "file",
+        scope: "context",
+        source: getFileRefPath(ref),
+        title: ref.title || getFileRefPath(ref),
+        path: getFileRefPath(ref),
+        content: result.content,
+        messageId: `workspace-read-${Date.now()}`,
+        conversationId,
+      });
       return `FILE: ${getFileRefPath(ref)}\nSOURCE: WORKSPACE\nLANGUAGE: ${result.language}\n\n${result.content}`;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -4758,19 +4874,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }`;
     }
 
-    const matchedCitationHasContent = Boolean(match?.content?.trim());
+    const hydratedMatch = match
+      ? await useCitationsStore.getState().ensureCitationContentLoaded(match.id)
+      : null;
+    const matchForRead = hydratedMatch ?? match;
+    const matchedCitationHasContent = Boolean(matchForRead?.content?.trim());
     if (matchedFileRef && !matchedCitationHasContent) {
       return readWorkspaceFileRef(conversationId, matchedFileRef);
     }
 
-    if (!match) {
+    if (!matchForRead) {
       return `File not found in context: "${requestedRaw}". Available files: ${
         available.join(", ") || "none"
       }`;
     }
 
-    const label = match.path || match.title || match.source;
-    const content = getCitationBody(match);
+    const label = matchForRead.path || matchForRead.title || matchForRead.source;
+    const content = getCitationBody(matchForRead);
     const base = content
       ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
       : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
@@ -4785,10 +4905,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const normalizeSourcePassageKind = (value: unknown): SourcePassageKind | undefined =>
     value === "interesting" || value === "used" ? value : undefined;
 
-  const readConversationSources = (
+  const readConversationSources = async (
     conversationId: string,
     args: Record<string, unknown>,
-  ): string => {
+  ): Promise<string> => {
     const rawKind = typeof args.kind === "string" ? args.kind : "all";
     const kind = rawKind === "interesting" || rawKind === "used" ? rawKind : "all";
     const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
@@ -4797,7 +4917,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? Math.min(50, Math.max(1, Math.floor(args.limit)))
         : 50;
     const includeSnippet = args.include_snippet !== false;
-    const citations = useCitationsStore
+    let citations = useCitationsStore
       .getState()
       .getConversationSourceCitations(conversationId)
       .filter((citation) => {
@@ -4817,6 +4937,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
           .some((value) => String(value).toLowerCase().includes(query));
       })
       .slice(0, limit);
+
+    if (includeSnippet) {
+      citations = (
+        await Promise.all(
+          citations.map((citation) =>
+            useCitationsStore
+              .getState()
+              .ensureCitationContentLoaded(citation.id),
+          ),
+        )
+      ).filter((citation): citation is Citation => Boolean(citation));
+    }
 
     if (citations.length === 0) {
       return "No source passages available.";
@@ -5361,6 +5493,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         snippet: fetched.snippet,
         content: fetched.content,
         url: fetched.url,
+        favicon: fetched.favicon,
         messageId: assistantMessageId,
         conversationId,
       });
@@ -5390,6 +5523,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!title || !passage) {
         return "Missing title or passage for mark_source_passage.";
       }
+      if (!(await isSourcePassagePresentInConversationContext(conversationId, passage))) {
+        return "Error executing tool mark_source_passage: passage is not present in any read source content.";
+      }
       const kind = normalizeSourcePassageKind(args.kind) || "used";
       const citationId = useCitationsStore.getState().addSourcePassage({
         conversationId,
@@ -5405,7 +5541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (normalizedToolName === "read_sources") {
-      return readConversationSources(conversationId, args);
+      return await readConversationSources(conversationId, args);
     }
 
     if (normalizedToolName === "edit_source_passage") {
@@ -5582,7 +5718,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           command,
           timeoutMs:
             typeof args.timeout_ms === "number"
-              ? Math.max(1, Math.floor(args.timeout_ms))
+              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
               : null,
         });
         return JSON.stringify(session, null, 2);
@@ -5697,6 +5833,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "path" in ref.data
           ? (ref.data as WorkspaceFileReference)
           : null;
+      const source =
+        ref.kind === "source" &&
+        ref.data &&
+        typeof ref.data === "object"
+          ? (ref.data as Citation)
+          : null;
       return {
         id: ref.id,
         kind: ref.kind,
@@ -5718,9 +5860,270 @@ export const useChatStore = create<ChatStore>((set, get) => {
               projectName: file.projectName ?? null,
             }
           : {}),
+        ...(source
+          ? {
+              snippet: source.content || source.snippet,
+              sourceLabel: source.source,
+              url: source.url,
+            }
+          : {}),
       } satisfies PersistedContextReference;
     });
     return persisted.length > 0 ? persisted : undefined;
+  };
+
+  const isPersistedContextRefKind = (value: string): value is ContextRefKind =>
+    value === "need" ||
+    value === "plan-node" ||
+    value === "predicted-branch" ||
+    value === "skill" ||
+    value === "file" ||
+    value === "source";
+
+  const parsePersistedContextRefsJson = (
+    raw: string | null | undefined,
+  ): PersistedContextReference[] => {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((item): item is PersistedContextReference => {
+        if (!item || typeof item !== "object") return false;
+        const candidate = item as Partial<PersistedContextReference>;
+        return (
+          typeof candidate.id === "string" &&
+          typeof candidate.kind === "string" &&
+          isPersistedContextRefKind(candidate.kind) &&
+          typeof candidate.title === "string"
+        );
+      });
+    } catch {
+      return [];
+    }
+  };
+
+  const createFallbackSkillManifest = (
+    ref: PersistedContextReference,
+  ): SkillManifest => {
+    const rootPath =
+      ref.source?.rootPath ||
+      ref.location?.uri ||
+      ref.skillFilePath ||
+      ref.id;
+    return {
+      id: ref.id,
+      name: ref.title,
+      description: ref.subtitle ?? "",
+      rootPath,
+      skillFilePath: ref.skillFilePath ?? null,
+      location: ref.location ?? { kind: "local", uri: rootPath },
+      source: ref.source ?? { kind: "global", rootPath },
+      resources: [],
+      scripts: [],
+      contentHash: ref.contentHash,
+      validationErrors: [],
+      isValid: true,
+    };
+  };
+
+  const rebuildComposerContextRef = (
+    conversationId: string,
+    ref: PersistedContextReference,
+  ): ContextReference | null => {
+    const appState = useAppStore.getState();
+    if (ref.kind === "source") {
+      const citation = useCitationsStore
+        .getState()
+        .citations.find(
+          (candidate) =>
+            candidate.id === ref.id &&
+            candidate.conversationId === conversationId,
+        );
+      if (!citation) return null;
+      return {
+        id: citation.id,
+        kind: "source",
+        title: citation.title,
+        subtitle: citation.source,
+        data: citation,
+      };
+    }
+
+    if (ref.kind === "file") {
+      const path = ref.path || ref.relativePath || ref.title;
+      const file: WorkspaceFileReference = {
+        id: ref.id,
+        path,
+        relativePath: ref.relativePath || path,
+        projectId: ref.projectId ?? null,
+        projectName: ref.projectName ?? null,
+      };
+      return {
+        id: ref.id,
+        kind: "file",
+        title: ref.title,
+        subtitle: ref.subtitle,
+        data: file,
+      };
+    }
+
+    if (ref.kind === "skill") {
+      const skill =
+        useSkillsStore.getState().skills.find((candidate) => candidate.id === ref.id) ??
+        createFallbackSkillManifest(ref);
+      return {
+        id: ref.id,
+        kind: "skill",
+        title: ref.title || skill.name,
+        subtitle: ref.subtitle,
+        data: skill,
+      };
+    }
+
+    if (ref.kind === "need") {
+      const need =
+        useNeedsStore.getState().needs.find((candidate) => candidate.id === ref.id) ??
+        ({
+          id: ref.id,
+          title: ref.title,
+          description: ref.subtitle ?? "",
+          category: "other",
+          status: "identified",
+          priority: "medium",
+          tags: [],
+          createdAt: "",
+          updatedAt: "",
+        } satisfies Need);
+      return {
+        id: ref.id,
+        kind: "need",
+        title: ref.title || need.title,
+        subtitle: ref.subtitle,
+        data: need,
+      };
+    }
+
+    if (ref.kind === "plan-node") {
+      const planNode =
+        appState.planNodes.find((candidate) => candidate.id === ref.id) ??
+        ({
+          id: ref.id,
+          title: ref.title,
+          description: ref.subtitle,
+          type: "task",
+          status: "pending",
+          dependencies: [],
+        } satisfies PlanNode);
+      return {
+        id: ref.id,
+        kind: "plan-node",
+        title: ref.title || planNode.title,
+        subtitle: ref.subtitle,
+        data: planNode,
+      };
+    }
+
+    const branch =
+      appState.predictedBranches.find((candidate) => candidate.id === ref.id) ??
+      ({
+        id: ref.id,
+        name: ref.title,
+        color: "#64748b",
+        parentBranch: null,
+        projectId: ref.projectId ?? "",
+        taskIds: [],
+        status: "pending",
+      } satisfies PredictedBranch);
+    return {
+      id: ref.id,
+      kind: "predicted-branch",
+      title: ref.title || branch.name,
+      subtitle: ref.subtitle,
+      data: branch,
+    };
+  };
+
+  const restoreComposerContextRefsFromPersisted = (
+    conversationId: string,
+    persistedRefs: PersistedContextReference[],
+  ): ContextReference[] => {
+    const seen = new Set<string>();
+    return persistedRefs
+      .map((ref) => rebuildComposerContextRef(conversationId, ref))
+      .filter((ref): ref is ContextReference => {
+        if (!ref) return false;
+        const key = `${ref.kind}:${ref.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  };
+
+  const persistComposerContextRefsForConversation = (
+    conversationId: string | null | undefined,
+    refs: ContextReference[],
+  ): void => {
+    if (!conversationId || !tauriIpc.isTauriAvailable()) return;
+
+    const persistedRefs = persistableContextRefs(refs) ?? [];
+    const persist = async () => {
+      if (persistedRefs.length === 0) {
+        if (typeof tauriIpc.deleteConversationToolboxState === "function") {
+          await tauriIpc.deleteConversationToolboxState(conversationId);
+        }
+        return;
+      }
+      if (typeof tauriIpc.upsertConversationToolboxState === "function") {
+        await tauriIpc.upsertConversationToolboxState({
+          conversation_id: conversationId,
+          composer_context_refs_json: JSON.stringify(persistedRefs),
+          timestamp: new Date().toISOString(),
+        });
+      }
+    };
+
+    void persist().catch((error) => {
+      console.warn("[chat] Failed to persist toolbox state:", error);
+    });
+  };
+
+  const deleteConversationToolboxStateIfAvailable = async (
+    conversationId: string,
+  ): Promise<void> => {
+    if (!tauriIpc.isTauriAvailable()) return;
+    if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
+    try {
+      await tauriIpc.deleteConversationToolboxState(conversationId);
+    } catch (error) {
+      console.warn("[chat] Failed to delete toolbox state:", error);
+    }
+  };
+
+  const hydrateConversationToolboxStateIfAvailable = async (
+    conversationId: string,
+  ): Promise<void> => {
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+    if (typeof tauriIpc.getConversationToolboxState !== "function") {
+      return;
+    }
+    try {
+      const record = await tauriIpc.getConversationToolboxState(conversationId);
+      if (get().selectedConversationId !== conversationId) {
+        return;
+      }
+      const persistedRefs = parsePersistedContextRefsJson(
+        record?.composer_context_refs_json,
+      );
+      const composerContextRefs = restoreComposerContextRefsFromPersisted(
+        conversationId,
+        persistedRefs,
+      );
+      set({ composerContextRefs });
+    } catch (error) {
+      console.warn("[chat] Failed to hydrate toolbox state:", error);
+    }
   };
 
   const getSkillFeedbackAction = (warning: string): SkillTurnFeedbackItem["action"] | undefined => {
@@ -5875,14 +6278,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const blocks: string[] = [];
 
         if (citations.length > 0) {
+          let contextIndex = 0;
+          let sourceIndex = 0;
           const contextBlock = citations
-            .map((c, i) => {
-              const kind =
-                c.scope === "source" ? "Important Source" : "Context";
-              return `[${kind} ${i + 1}: ${c.title}]\n${c.snippet || c.source || ""}`;
+            .map((c) => {
+              if (c.scope === "source") {
+                sourceIndex += 1;
+                return `[Important Source ${sourceIndex}: ${c.title}] (citation_id=${c.id}, kind=${c.kind || "used"}, source=${c.source})`;
+              }
+              contextIndex += 1;
+              return `[Context ${contextIndex}: ${c.title}]\n${truncateInjectedContextSnippet(c.snippet || c.source || "")}`;
             })
             .join("\n\n---\n\n");
-          blocks.push(`CONTEXT INFORMATION:\n\n${contextBlock}`);
+          const readSourcesHint =
+            sourceIndex > 0
+              ? "\n\nUse read_sources to review the full text of saved Important Source passages."
+              : "";
+          blocks.push(`CONTEXT INFORMATION:\n\n${contextBlock}${readSourcesHint}`);
         }
 
         const skillActivationAvailable = allowedToolIds.includes("skill_activate");
@@ -5908,6 +6320,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 } else if ("data" in ref && "projectName" in ref.data && ref.data.projectName) {
                   lines.push(`Project: ${ref.data.projectName}`);
                 }
+              }
+              if (ref.kind === "source") {
+                const snippet =
+                  ("snippet" in ref && ref.snippet) ||
+                  ("data" in ref && "content" in ref.data && ref.data.content) ||
+                  ("data" in ref && "snippet" in ref.data && ref.data.snippet) ||
+                  "";
+                const sourceLabel =
+                  ("sourceLabel" in ref && ref.sourceLabel) ||
+                  ("data" in ref && "source" in ref.data && ref.data.source) ||
+                  ref.subtitle;
+                const url =
+                  ("url" in ref && ref.url) ||
+                  ("data" in ref && "url" in ref.data && ref.data.url);
+                lines.push(`Passage: ${snippet}`);
+                if (sourceLabel) lines.push(`Source: ${sourceLabel}`);
+                if (url) lines.push(`URL: ${url}`);
+                return lines.join("\n");
               }
               if ("data" in ref && "description" in ref.data && ref.data.description) {
                 lines.push(`Description: ${ref.data.description}`);
@@ -6027,7 +6457,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (allowedToolIds.includes("edit_source_passage")) {
       systemInstructions.push(
-        "Use edit_source_passage only when the user asks to update, reclassify, or delete saved source passages.",
+        'Use edit_source_passage to reclassify saved source passages from kind="interesting" to kind="used" at the end of your answer when you actually used them. Use action="update" or action="delete" only when the user explicitly asks to update or delete saved source passages.',
       );
     }
     if (allowedToolIds.includes("question")) {
@@ -11399,6 +11829,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationApprovalGrantsByConversationId: {},
     skillTurnFeedbackByMessageId: {},
     architectPlanNamingRecovery: null,
+    pendingComposerDraftByConversationId: {},
+    composerDraftsByContextKey: {},
     composerContextRefs: [],
 
     addMessage: (message) => {
@@ -11918,23 +12350,55 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     },
 
-    addComposerContextRef: (ref) =>
+    replaceComposerContextRefs: (refs, conversationId) => {
+      const nextRefs = refs.map((ref) => ({ ...ref }));
+      set({ composerContextRefs: nextRefs });
+      if (conversationId) {
+        persistComposerContextRefsForConversation(conversationId, nextRefs);
+      }
+    },
+
+    addComposerContextRef: (ref) => {
+      let nextRefs: ContextReference[] | null = null;
       set((state) => {
         const exists = state.composerContextRefs.some(
           (r) => r.id === ref.id && r.kind === ref.kind,
         );
         if (exists) return state;
-        return { composerContextRefs: [...state.composerContextRefs, ref] };
-      }),
+        nextRefs = [...state.composerContextRefs, ref];
+        return { composerContextRefs: nextRefs };
+      });
+      if (nextRefs) {
+        persistComposerContextRefsForConversation(
+          get().selectedConversationId,
+          nextRefs,
+        );
+      }
+    },
 
-    removeComposerContextRef: (id, kind) =>
-      set((state) => ({
-        composerContextRefs: state.composerContextRefs.filter(
+    removeComposerContextRef: (id, kind) => {
+      let nextRefs: ContextReference[] | null = null;
+      set((state) => {
+        nextRefs = state.composerContextRefs.filter(
           (r) => !(r.id === id && r.kind === kind),
-        ),
-      })),
+        );
+        return { composerContextRefs: nextRefs };
+      });
+      if (nextRefs) {
+        persistComposerContextRefsForConversation(
+          get().selectedConversationId,
+          nextRefs,
+        );
+      }
+    },
 
-    clearComposerContextRefs: () => set({ composerContextRefs: [] }),
+    clearComposerContextRefs: () => {
+      set({ composerContextRefs: [] });
+      persistComposerContextRefsForConversation(
+        get().selectedConversationId,
+        [],
+      );
+    },
 
     reconcileProjectRegistry: (validGroupIds, validProjectIds) => {
       const validGroupIdSet = new Set(validGroupIds);
@@ -11973,6 +12437,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       set({ restoreStatus: "resolving", lastError: null });
       await ensureMessagesLoadedForConversation(conversationId);
+      await hydrateConversationCitationsIfAvailable(conversationId);
+      await hydrateConversationToolboxStateIfAvailable(conversationId);
       await getConversationCompactionState(conversationId);
       await runAiSelectionRestore({
         mode,
@@ -12034,6 +12500,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ensuredConversation.conversationId,
           );
           await ensureMessagesLoadedForConversation(
+            ensuredConversation.conversationId,
+          );
+          await hydrateConversationCitationsIfAvailable(
+            ensuredConversation.conversationId,
+          );
+          await hydrateConversationToolboxStateIfAvailable(
             ensuredConversation.conversationId,
           );
           await runAiSelectionRestore({
@@ -12104,12 +12576,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const isCurrentRequest = () => {
         const state = get();
-      return (
-        state.selectionRequestId === requestId &&
-        state.activeContextKey === contextKey &&
-        isChatContextKeyCurrent(contextKey)
-      );
-    };
+        return (
+          state.selectionRequestId === requestId &&
+          state.activeContextKey === contextKey &&
+          isChatContextKeyCurrent(contextKey)
+        );
+      };
 
       try {
         const resolution = await resolveConversationForCurrentContext(
@@ -12179,6 +12651,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
           );
           await ensureMessagesLoadedForConversation(conversationId);
+          await hydrateConversationCitationsIfAvailable(conversationId);
+          if (!isCurrentRequest()) {
+            return get().selectedConversationId;
+          }
+          await hydrateConversationToolboxStateIfAvailable(conversationId);
+          if (!isCurrentRequest()) {
+            return get().selectedConversationId;
+          }
           await getConversationCompactionState(conversationId);
           await runAiSelectionRestore({
             mode,
@@ -12301,7 +12781,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       stopConversationRuntimeLocally(conversationId);
       await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      await deleteConversationToolboxStateIfAvailable(conversationId);
       conversationCompactionStateCache.delete(conversationId);
+      clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
     },
@@ -12338,6 +12820,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
+        await Promise.all(
+          uniqueIds.map((conversationId) =>
+            deleteConversationToolboxStateIfAvailable(conversationId),
+          ),
+        );
+        clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
           removeConversationSelectionData(conversationId);
@@ -12377,6 +12865,92 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     refreshConversationContextDiagnostics: (conversationId, options) =>
       refreshConversationContextDiagnostics(conversationId, options),
+
+    setComposerDraft: (conversationId, text) => {
+      set((state) => ({
+        pendingComposerDraftByConversationId: {
+          ...state.pendingComposerDraftByConversationId,
+          [conversationId]: text,
+        },
+      }));
+    },
+
+    consumeComposerDraft: (conversationId) => {
+      const draft = get().pendingComposerDraftByConversationId[conversationId];
+      if (draft === undefined) {
+        return null;
+      }
+      set((state) => {
+        if (!(conversationId in state.pendingComposerDraftByConversationId)) {
+          return state;
+        }
+        const next = { ...state.pendingComposerDraftByConversationId };
+        delete next[conversationId];
+        return { pendingComposerDraftByConversationId: next };
+      });
+      return draft;
+    },
+
+    peekComposerDraft: (conversationId) => {
+      return get().pendingComposerDraftByConversationId[conversationId] ?? null;
+    },
+
+    acknowledgeComposerDraft: (conversationId) => {
+      set((state) => {
+        if (!(conversationId in state.pendingComposerDraftByConversationId)) {
+          return state;
+        }
+        const next = { ...state.pendingComposerDraftByConversationId };
+        delete next[conversationId];
+        return { pendingComposerDraftByConversationId: next };
+      });
+    },
+
+    saveComposerDraftForContext: (contextKey, draft) => {
+      if (!contextKey) return;
+      set((state) => ({
+        composerDraftsByContextKey: {
+          ...state.composerDraftsByContextKey,
+          [contextKey]: {
+            text: draft.text,
+            images: [...draft.images],
+            contextRefs: draft.contextRefs.map((ref) => ({ ...ref })),
+          },
+        },
+      }));
+    },
+
+    getComposerDraftForContext: (contextKey) => {
+      const draft = get().composerDraftsByContextKey[contextKey];
+      return draft
+        ? {
+            text: draft.text,
+            images: [...draft.images],
+            contextRefs: draft.contextRefs.map((ref) => ({ ...ref })),
+          }
+        : null;
+    },
+
+    clearComposerDraftForContext: (contextKey) => {
+      set((state) => {
+        if (!(contextKey in state.composerDraftsByContextKey)) return state;
+        const next = { ...state.composerDraftsByContextKey };
+        delete next[contextKey];
+        return { composerDraftsByContextKey: next };
+      });
+    },
+
+    migrateComposerDraftContext: (fromContextKey, toContextKey) => {
+      if (!fromContextKey || !toContextKey || fromContextKey === toContextKey) return;
+      set((state) => {
+        const draft = state.composerDraftsByContextKey[fromContextKey];
+        if (!draft) return state;
+        const next = { ...state.composerDraftsByContextKey };
+        delete next[fromContextKey];
+        next[toContextKey] = draft;
+        return { composerDraftsByContextKey: next };
+      });
+    },
 
     getPendingToolApproval: (conversationId) =>
       get().pendingToolApprovalByConversationId[conversationId] ?? null,

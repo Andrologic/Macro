@@ -33,7 +33,7 @@ use tauri::utils::config::Color;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
@@ -246,7 +246,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppQuitState::default())
-        .manage(Arc::new(Mutex::new(None)) as DbPool)
+        .manage(DbPool::default())
         .manage(AiState::default())
         .manage(GitState::new())
         .manage(commands::workspace::ProjectOperationStore::default())
@@ -341,12 +341,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => {
-                        let mut pool_guard = pool_state.lock().await;
-                        *pool_guard = Some(pool.clone());
-                        drop(pool_guard);
+                        pool_state.set_ready(pool);
                         tracing::info!("Database initialized successfully");
                     }
                     Err(e) => {
+                        pool_state.set_failed(e.to_string());
                         tracing::error!("Failed to initialize database: {}", e);
                     }
                 }
@@ -356,6 +355,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // Database commands
+            commands::db_get_initialization_status,
+            commands::db_retry_initialize,
             frontend_log,
             show_main_window,
             window_close,
@@ -388,6 +389,14 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_list_conversation_citations,
+            commands::db_get_conversation_citation_content,
+            commands::db_upsert_conversation_citation,
+            commands::db_delete_conversation_citation,
+            commands::db_delete_conversation_citations,
+            commands::db_get_conversation_toolbox_state,
+            commands::db_upsert_conversation_toolbox_state,
+            commands::db_delete_conversation_toolbox_state,
             commands::db_get_architect_plan_conversation_sync,
             commands::db_get_architect_plan_conversation_sync_for_plan,
             commands::db_upsert_architect_plan_conversation_sync,

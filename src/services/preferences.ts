@@ -325,6 +325,13 @@ const LEGACY_IMPLEMENT_EXECUTION_MODE_KEY = "implementExecutionMode";
 const LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY =
   "architectToolAutonomyProfile";
 
+const cancelDebouncedSave = (key: PrefKey): void => {
+  const timer = debouncedSaveTimers.get(key);
+  if (!timer) return;
+  clearTimeout(timer);
+  debouncedSaveTimers.delete(key);
+};
+
 const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
   typeof value === "string" &&
   (TOOL_RISK_LEVELS as readonly string[]).includes(value);
@@ -452,6 +459,7 @@ const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
  * Save a preference value
  */
 export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
+  cancelDebouncedSave(key);
   // Always mirror to localStorage synchronously for crash/close resilience
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
   emitPreferenceChange(key, value);
@@ -479,10 +487,7 @@ export function savePreferenceDebounced<T>(
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
   emitPreferenceChange(key, value);
 
-  const existingTimer = debouncedSaveTimers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
+  cancelDebouncedSave(key);
 
   const timer = setTimeout(() => {
     debouncedSaveTimers.delete(key);
@@ -510,6 +515,14 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
 
     const store = await getStore();
     if (store) {
+      const latestLocalValue = localStorage.getItem(localStorageKey);
+      if (latestLocalValue !== null) {
+        const parsedLatestValue = JSON.parse(latestLocalValue) as T;
+        if (isValidPreferenceValue(key, parsedLatestValue)) {
+          return parsedLatestValue;
+        }
+      }
+
       const value = await store.get<T>(key);
       if (
         value !== null &&
@@ -555,6 +568,11 @@ export async function loadPersistedPreference<T>(
 
     const store = await getStore();
     if (store) {
+      const latestLocalValue = localStorage.getItem(localStorageKey);
+      if (latestLocalValue !== null) {
+        return JSON.parse(latestLocalValue) as T;
+      }
+
       const value = await store.get<T>(key);
       return value !== null && value !== undefined ? value : undefined;
     }
@@ -600,16 +618,23 @@ export async function savePreferences(
  * Clear all preferences (reset to defaults)
  */
 export async function clearPreferences(): Promise<void> {
+  debouncedSaveTimers.forEach((timer) => clearTimeout(timer));
+  debouncedSaveTimers.clear();
+
+  const persistedKeys = new Set([
+    ...Object.values(PREF_KEYS),
+    LEGACY_IMPLEMENT_EXECUTION_MODE_KEY,
+    LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY,
+  ]);
+  persistedKeys.forEach((key) => {
+    localStorage.removeItem(`macro_${key}`);
+  });
+
   try {
     const store = await getStore();
     if (store) {
       await store.clear();
       await store.save();
-    } else {
-      // Clear localStorage fallback
-      Object.keys(PREF_KEYS).forEach((key) => {
-        localStorage.removeItem(`macro_${key}`);
-      });
     }
   } catch (error) {
     console.error("Failed to clear preferences:", error);

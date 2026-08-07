@@ -67,6 +67,8 @@ const persistChatModeToolSettings = (settings: Record<string, boolean>): void =>
   localStorage.setItem(CHAT_MODE_TOOL_SETTINGS_KEY, JSON.stringify(settings));
 };
 
+let settingsMutationVersion = 0;
+
 interface ToolsStore {
   // Internal Tools
   internalTools: Record<string, Tool>;
@@ -110,6 +112,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   saving: false,
 
   loadSettings: async () => {
+    const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
       const [toolsDto, mcpServersDto] = await Promise.all([
@@ -144,14 +147,42 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
           }
         });
       });
-      persistChatModeToolSettings(chatToolStates);
+      const currentState = get();
+      const shouldPreserveLocalState = hydrationVersion !== settingsMutationVersion;
+      const nextChatToolStates = shouldPreserveLocalState
+        ? currentState.chatToolStates
+        : chatToolStates;
+      const nextInternalTools = shouldPreserveLocalState
+        ? Object.fromEntries(
+            Object.entries(loadedTools).map(([toolId, loadedTool]) => {
+              const currentTool = currentState.internalTools[toolId];
+              if (!currentTool) return [toolId, loadedTool];
+              const enabled = isToolEnabledState(currentTool);
+              return [
+                toolId,
+                {
+                  ...loadedTool,
+                  status: enabled ? 'enabled' : 'disabled',
+                  config: { ...loadedTool.config, enabled },
+                },
+              ];
+            })
+          ) as Record<string, Tool>
+        : loadedTools;
+      const loadedMcpServers = Object.values(mcpServersDto.servers)
+        .filter((server): server is MCPServer => Boolean(server && typeof server === 'object' && 'id' in server))
+        .map(normalizeMCPServer);
+      const nextMcpServers =
+        shouldPreserveLocalState && currentState.mcpServers.length > 0
+          ? currentState.mcpServers
+          : loadedMcpServers;
+
+      persistChatModeToolSettings(nextChatToolStates);
 
       set({
-        internalTools: loadedTools,
-        chatToolStates,
-        mcpServers: Object.values(mcpServersDto.servers)
-          .filter((server): server is MCPServer => Boolean(server && typeof server === 'object' && 'id' in server))
-          .map(normalizeMCPServer),
+        internalTools: nextInternalTools,
+        chatToolStates: nextChatToolStates,
+        mcpServers: nextMcpServers,
         isLoading: false,
       });
     } catch (error) {
@@ -163,6 +194,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   toggleTool: async (toolId: string) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const currentTools = get().internalTools;
@@ -210,6 +242,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   toggleMCPServer: async (serverId: string) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const currentServers = get().mcpServers;
@@ -247,6 +280,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   upsertMCPServer: async (server: MCPServer) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const normalized = normalizeMCPServer(server);
@@ -263,6 +297,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   removeMCPServer: async (serverId: string) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const nextServers = get().mcpServers.filter((server) => server.id !== serverId);
@@ -274,6 +309,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   refreshMCPServerTools: async (serverId: string) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     const currentServers = get().mcpServers;
     const server = currentServers.find((s) => s.id === serverId);
@@ -322,6 +358,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   saveAll: async (tools?: Record<string, boolean>, servers?: Record<string, any>) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const state = get();
@@ -358,6 +395,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   resetToDefaults: async () => {
+    settingsMutationVersion += 1;
     set({ isLoading: true, lastError: null });
     try {
       await Promise.all([
@@ -382,6 +420,8 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     const state = get();
     const tool = state.internalTools[toolId];
     if (!tool || !isVisibleChatTool(tool) || isLockedTool(tool)) return;
+
+    settingsMutationVersion += 1;
 
     const nextEnabled = !(state.chatToolStates[toolId] ?? isToolEnabledState(tool));
     const nextStates = { ...state.chatToolStates };

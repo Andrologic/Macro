@@ -209,6 +209,17 @@ const installStoreMock = () => {
     useNeedsStore,
   }));
 
+  const citationsState = {
+    citations: [],
+  };
+  const useCitationsStore = ((selector?: (state: typeof citationsState) => unknown) =>
+    selector ? selector(citationsState) : citationsState) as typeof import('../../../stores/useCitationsStore').useCitationsStore;
+  useCitationsStore.getState = () =>
+    citationsState as unknown as ReturnType<typeof useCitationsStore.getState>;
+  mock.module('../../../stores/useCitationsStore', () => ({
+    useCitationsStore,
+  }));
+
   openSettingsMock = mock((_tab?: string) => undefined);
   const appState = {
     mode: 'Implement',
@@ -554,6 +565,79 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['']);
+  });
+
+  it('preserves context refs when imperative text replacement removes mention nodes', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    const ref = {
+      kind: 'skill',
+      id: 'global:agents:repo-auditor:hash',
+      title: 'repo-auditor',
+      data: buildSkill('global:agents:repo-auditor:hash', { name: 'repo-auditor' }),
+    } as const;
+    composerContextRefs = [ref];
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    removeComposerContextRef.mockClear();
+    await act(async () => {
+      editorRef.current?.setText('A replacement without the mention');
+      await Promise.resolve();
+    });
+
+    expect(removeComposerContextRef).not.toHaveBeenCalled();
+    expect(composerContextRefs).toEqual([ref]);
+  });
+
+  it('removes a mention by its stable id when titles are not unique', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    const ref = {
+      kind: 'skill',
+      id: 'global:agents:first-skill:hash',
+      title: 'Shared title',
+      data: buildSkill('global:agents:first-skill:hash', { name: 'Shared title' }),
+    } as const;
+    composerContextRefs = [ref];
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('[skill: Shared title]');
+      await Promise.resolve();
+    });
+
+    const removeButton = container.querySelector(
+      '[data-context-reference-kind="skill"] button',
+    );
+    expect(removeButton).not.toBeNull();
+    await act(async () => {
+      removeButton?.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(removeComposerContextRef).toHaveBeenCalledWith(ref.id, ref.kind);
   });
 
   it('removes composer refs with hyphenated kinds and ids without leaving a chip', async () => {

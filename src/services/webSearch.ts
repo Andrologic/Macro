@@ -22,6 +22,7 @@ export interface WebFetchResult {
   title: string;
   snippet: string;
   content: string;
+  favicon?: string;
 }
 
 export interface TavilySearchResult {
@@ -221,6 +222,124 @@ export function getFaviconUrl(url: string): string {
   }
 }
 
+const FALLBACK_FAVICON_PATH = '/favicon.ico';
+const MAX_FAVICON_BYTES = 512 * 1024;
+
+function resolveAbsoluteUrl(value: string, baseUrl: string): string | null {
+  try {
+    const resolved = new URL(value, baseUrl);
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return null;
+    return resolved.href;
+  } catch {
+    return null;
+  }
+}
+
+function getFaviconCandidates(html: string, pageUrl: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (href: string | null | undefined) => {
+    if (!href) return;
+    const resolved = resolveAbsoluteUrl(href, pageUrl);
+    if (!resolved || seen.has(resolved)) return;
+    seen.add(resolved);
+    candidates.push(resolved);
+  };
+
+  if (typeof DOMParser !== 'undefined') {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    Array.from(doc.querySelectorAll<HTMLLinkElement>('link[rel][href]'))
+      .filter((link) => /\b(?:apple-touch-icon|icon|shortcut icon)\b/i.test(link.rel))
+      .forEach((link) => addCandidate(link.getAttribute('href')));
+  } else {
+    const linkPattern = /<link\b[^>]*>/gi;
+    const relPattern = /\brel\s*=\s*["']?([^"'\s>]+(?:\s+[^"'\s>]+)*)/i;
+    const hrefPattern = /\bhref\s*=\s*["']?([^"'\s>]+)/i;
+    for (const match of html.matchAll(linkPattern)) {
+      const tag = match[0];
+      const rel = tag.match(relPattern)?.[1] ?? '';
+      if (!/\b(?:apple-touch-icon|icon|shortcut icon)\b/i.test(rel)) continue;
+      addCandidate(tag.match(hrefPattern)?.[1]);
+    }
+  }
+
+  addCandidate(FALLBACK_FAVICON_PATH);
+  return candidates;
+}
+
+function guessFaviconMimeType(url: string): string | null {
+  const pathname = (() => {
+    try {
+      return new URL(url).pathname.toLowerCase();
+    } catch {
+      return url.toLowerCase();
+    }
+  })();
+
+  if (pathname.endsWith('.svg')) return 'image/svg+xml';
+  if (pathname.endsWith('.png')) return 'image/png';
+  if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) return 'image/jpeg';
+  if (pathname.endsWith('.gif')) return 'image/gif';
+  if (pathname.endsWith('.webp')) return 'image/webp';
+  if (pathname.endsWith('.ico')) return 'image/x-icon';
+  return null;
+}
+
+function normalizeFaviconMimeType(contentType: string | null, url: string): string | null {
+  const normalized = contentType?.split(';')[0]?.trim().toLowerCase() || '';
+  if (normalized.startsWith('image/')) return normalized;
+
+  const guessed = guessFaviconMimeType(url);
+  if (
+    guessed &&
+    (!normalized ||
+      normalized === 'application/octet-stream' ||
+      normalized === 'binary/octet-stream' ||
+      normalized === 'text/plain')
+  ) {
+    return guessed;
+  }
+
+  return null;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function fetchFaviconDataUrl(pageUrl: string, html: string): Promise<string | undefined> {
+  for (const faviconUrl of getFaviconCandidates(html, pageUrl)) {
+    try {
+      const response = await tauriFetch(faviconUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.8',
+          'User-Agent': 'Macro/1.0 (+https://macro.app)',
+        },
+      });
+
+      if (!response.ok) continue;
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_FAVICON_BYTES) continue;
+
+      const mimeType = normalizeFaviconMimeType(response.headers.get('content-type'), faviconUrl);
+      if (!mimeType) continue;
+
+      return `data:${mimeType};base64,${arrayBufferToBase64(arrayBuffer)}`;
+    } catch {
+      // Favicons are decorative. Page fetching should still succeed without one.
+    }
+  }
+  return undefined;
+}
+
 function normalizeUrl(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) return trimmed;
@@ -229,13 +348,17 @@ function normalizeUrl(input: string): string {
 
 function htmlToText(html: string): { title: string; content: string } {
   if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '')
+      .replace(/\s+/g, ' ')
+      .trim();
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<title[\s\S]*?<\/title>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-    return { title: '', content: text };
+    return { title, content: text };
   }
 
   const parser = new DOMParser();
@@ -266,7 +389,7 @@ export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Seuls les liens HTTP/HTTPS sont supportes');
+    throw new Error('Seuls les liens HTTP/HTTPS sont supportés');
   }
 
   const response = await tauriFetch(normalizedUrl, {
@@ -278,18 +401,20 @@ export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
   });
 
   if (!response.ok) {
-    throw new Error(`Impossible de recuperer la page (${response.status})`);
+    throw new Error(`Impossible de récupérer la page (${response.status})`);
   }
 
   const html = await response.text();
   const { title, content } = htmlToText(html);
   const snippet = content.slice(0, 350);
+  const favicon = await fetchFaviconDataUrl(normalizedUrl, html);
 
   return {
     url: normalizedUrl,
     title: title || extractDomain(normalizedUrl),
     snippet,
     content: content.slice(0, 12000),
+    favicon,
   };
 }
 

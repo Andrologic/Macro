@@ -2,7 +2,7 @@ use super::models::*;
 use super::DbError;
 use super::DbResult;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePool;
+use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 
@@ -164,14 +164,14 @@ fn truncate_last_message(content: &str) -> String {
     }
 }
 
-pub async fn refresh_conversation_metadata(
-    pool: &SqlitePool,
-    conversation_id: &str,
-    updated_at_override: Option<&str>,
+async fn refresh_conversation_metadata_with_connection(
+    connection: &mut SqliteConnection,
+    conversation_id: String,
+    updated_at_override: Option<String>,
 ) -> DbResult<()> {
     let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
-        .bind(conversation_id)
-        .fetch_one(pool)
+        .bind(&conversation_id)
+        .fetch_one(&mut *connection)
         .await?;
 
     let latest_row = sqlx::query(
@@ -183,8 +183,8 @@ pub async fn refresh_conversation_metadata(
         LIMIT 1
         "#,
     )
-    .bind(conversation_id)
-    .fetch_optional(pool)
+    .bind(&conversation_id)
+    .fetch_optional(&mut *connection)
     .await?;
 
     let last_message = latest_row
@@ -192,7 +192,7 @@ pub async fn refresh_conversation_metadata(
         .map(|row| truncate_last_message(&row.get::<String, _>("content")));
     let fallback_updated_at = chrono::Utc::now().to_rfc3339();
     let updated_at = updated_at_override
-        .map(str::to_string)
+        .clone()
         .or_else(|| {
             latest_row
                 .as_ref()
@@ -210,8 +210,8 @@ pub async fn refresh_conversation_metadata(
     .bind(last_message.as_deref())
     .bind(count)
     .bind(&updated_at)
-    .bind(conversation_id)
-    .execute(pool)
+    .bind(&conversation_id)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
@@ -548,7 +548,7 @@ pub async fn update_git_worktree_project_access(
 pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
         FROM messages
         WHERE conversation_id = ?
         ORDER BY created_at ASC, id ASC
@@ -573,6 +573,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
             provider_input_items_json: row.get("provider_input_items_json"),
             provider_turn_state_json: row.get("provider_turn_state_json"),
             context_refs_json: row.get("context_refs_json"),
+            completion_reason: row.get("completion_reason"),
         })
         .collect();
 
@@ -582,7 +583,7 @@ pub async fn list_messages(pool: &SqlitePool, conversation_id: &str) -> DbResult
 pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
+        SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
         FROM messages
         ORDER BY created_at ASC, id ASC
         "#,
@@ -605,6 +606,7 @@ pub async fn list_all_messages(pool: &SqlitePool) -> DbResult<Vec<Message>> {
             provider_input_items_json: row.get("provider_input_items_json"),
             provider_turn_state_json: row.get("provider_turn_state_json"),
             context_refs_json: row.get("context_refs_json"),
+            completion_reason: row.get("completion_reason"),
         })
         .collect();
 
@@ -673,7 +675,7 @@ pub async fn get_chat_bootstrap_snapshot(
         let placeholders = vec!["?"; unique_preload_ids.len()].join(", ");
         let query = format!(
             r#"
-            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json
+            SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason
             FROM messages
             WHERE conversation_id IN ({})
             ORDER BY conversation_id ASC, created_at ASC, id ASC
@@ -699,6 +701,7 @@ pub async fn get_chat_bootstrap_snapshot(
                 provider_input_items_json: row.get("provider_input_items_json"),
                 provider_turn_state_json: row.get("provider_turn_state_json"),
                 context_refs_json: row.get("context_refs_json"),
+                completion_reason: row.get("completion_reason"),
             };
             messages_by_conversation_id
                 .entry(message.conversation_id.clone())
@@ -722,6 +725,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
 
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         r#"
         INSERT INTO messages (
@@ -736,9 +740,10 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
             hidden_context,
             provider_input_items_json,
             provider_turn_state_json,
-            context_refs_json
+            context_refs_json,
+            completion_reason
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -753,10 +758,17 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .bind(&input.provider_input_items_json)
     .bind(&input.provider_turn_state_json)
     .bind(&input.context_refs_json)
-    .execute(pool)
+    .bind(&input.completion_reason)
+    .execute(&mut *transaction)
     .await?;
 
-    refresh_conversation_metadata(pool, &input.conversation_id, Some(&now)).await?;
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        input.conversation_id.clone(),
+        Some(now.clone()),
+    )
+    .await?;
+    transaction.commit().await?;
 
     Ok(Message {
         id,
@@ -771,6 +783,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
         provider_input_items_json: input.provider_input_items_json,
         provider_turn_state_json: input.provider_turn_state_json,
         context_refs_json: input.context_refs_json,
+        completion_reason: input.completion_reason,
     })
 }
 
@@ -798,9 +811,10 @@ pub async fn import_messages(
                 hidden_context,
                 provider_input_items_json,
                 provider_turn_state_json,
-                context_refs_json
+                context_refs_json,
+                completion_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)
             ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -810,6 +824,7 @@ pub async fn import_messages(
         .bind(&message.role)
         .bind(&message.content)
         .bind(&message.created_at)
+        .bind(&message.completion_reason)
         .execute(&mut *transaction)
         .await?;
 
@@ -831,46 +846,16 @@ pub async fn import_messages(
             provider_input_items_json: None,
             provider_turn_state_json: None,
             context_refs_json: None,
+            completion_reason: message.completion_reason,
         });
     }
 
-    if let Some(last_created_at) = last_created_at.as_deref() {
-        let count: i32 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
-                .bind(conversation_id)
-                .fetch_one(&mut *transaction)
-                .await?;
-        let latest_row = sqlx::query(
-            r#"
-            SELECT content, created_at
-            FROM messages
-            WHERE conversation_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            "#,
+    if last_created_at.is_some() {
+        refresh_conversation_metadata_with_connection(
+            &mut *transaction,
+            conversation_id.to_string(),
+            None,
         )
-        .bind(conversation_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let last_message = latest_row
-            .as_ref()
-            .map(|row| truncate_last_message(&row.get::<String, _>("content")));
-        let updated_at = latest_row
-            .as_ref()
-            .map(|row| row.get::<String, _>("created_at"))
-            .unwrap_or_else(|| last_created_at.to_string());
-        sqlx::query(
-            r#"
-            UPDATE conversations
-            SET last_message = ?, message_count = ?, updated_at = ?
-            WHERE id = ?
-            "#,
-        )
-        .bind(last_message.as_deref())
-        .bind(count)
-        .bind(&updated_at)
-        .bind(conversation_id)
-        .execute(&mut *transaction)
         .await?;
     }
     transaction.commit().await?;
@@ -888,6 +873,7 @@ pub struct UpdateMessageContentInput<'a> {
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
     pub context_refs_json: Option<String>,
+    pub completion_reason: Option<String>,
 }
 
 pub async fn update_message_content(
@@ -904,18 +890,20 @@ pub async fn update_message_content(
         provider_input_items_json,
         provider_turn_state_json,
         context_refs_json,
+        completion_reason,
     } = input;
 
+    let mut transaction = pool.begin().await?;
     let conversation_id: Option<String> =
         sqlx::query_scalar("SELECT conversation_id FROM messages WHERE id = ?")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *transaction)
             .await?;
 
     sqlx::query(
         r#"
         UPDATE messages
-        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?, context_refs_json = ?
+        SET content = ?, turn_id = COALESCE(?, turn_id), token_count = ?, tool_traces_json = ?, hidden_context = ?, provider_input_items_json = ?, provider_turn_state_json = ?, context_refs_json = ?, completion_reason = COALESCE(?, completion_reason)
         WHERE id = ?
         "#,
     )
@@ -927,13 +915,17 @@ pub async fn update_message_content(
     .bind(provider_input_items_json)
     .bind(provider_turn_state_json)
     .bind(context_refs_json)
+    .bind(completion_reason)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
 
     if let Some(conversation_id) = conversation_id {
-        refresh_conversation_metadata(pool, &conversation_id, None).await?;
+        refresh_conversation_metadata_with_connection(&mut *transaction, conversation_id, None)
+            .await?;
     }
+
+    transaction.commit().await?;
 
     Ok(())
 }
@@ -943,9 +935,10 @@ pub async fn delete_messages_after(
     conversation_id: &str,
     after_message_id: &str,
 ) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
     let row = sqlx::query("SELECT created_at FROM messages WHERE id = ?")
         .bind(after_message_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *transaction)
         .await?;
 
     let created_at: String = row.get("created_at");
@@ -961,9 +954,281 @@ pub async fn delete_messages_after(
     .bind(&created_at)
     .bind(&created_at)
     .bind(after_message_id)
+    .execute(&mut *transaction)
+    .await?;
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+
+    Ok(())
+}
+
+// ============ CONVERSATION CITATIONS ============
+
+fn map_conversation_citation_row(row: sqlx::sqlite::SqliteRow) -> ConversationCitation {
+    ConversationCitation {
+        id: row.get("id"),
+        conversation_id: row.get("conversation_id"),
+        message_id: row.get("message_id"),
+        r#type: row.get("type"),
+        scope: row.get("scope"),
+        source: row.get("source"),
+        title: row.get("title"),
+        snippet: row.get("snippet"),
+        content: row.get("content"),
+        url: row.get("url"),
+        favicon: row.get("favicon"),
+        path: row.get("path"),
+        language: row.get("language"),
+        size_bytes: row.get("size_bytes"),
+        kind: row.get("kind"),
+        reason: row.get("reason"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn require_non_empty(value: &str, field: &str) -> DbResult<()> {
+    if value.trim().is_empty() {
+        return Err(DbError::Validation(format!("{} is required", field)));
+    }
+    Ok(())
+}
+
+pub async fn list_conversation_citations(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Vec<ConversationCitation>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, conversation_id, message_id, type, scope, source, title,
+               snippet, NULL AS content, url, favicon, path, language, size_bytes,
+               kind, reason, created_at, updated_at
+        FROM conversation_citations
+        WHERE conversation_id = ?
+        ORDER BY updated_at DESC, id ASC
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_conversation_citation_row)
+        .collect())
+}
+
+pub async fn get_conversation_citation_content(
+    pool: &SqlitePool,
+    id: &str,
+) -> DbResult<Option<String>> {
+    let row = sqlx::query(
+        r#"
+        SELECT content
+        FROM conversation_citations
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.and_then(|row| row.get("content")))
+}
+
+pub async fn upsert_conversation_citation(
+    pool: &SqlitePool,
+    input: UpsertConversationCitationInput,
+) -> DbResult<ConversationCitation> {
+    require_non_empty(&input.id, "id")?;
+    require_non_empty(&input.conversation_id, "conversation_id")?;
+    require_non_empty(&input.message_id, "message_id")?;
+    require_non_empty(&input.r#type, "type")?;
+    require_non_empty(&input.scope, "scope")?;
+    require_non_empty(&input.source, "source")?;
+    require_non_empty(&input.title, "title")?;
+
+    let now = input
+        .timestamp
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+    sqlx::query(
+        r#"
+        INSERT INTO conversation_citations (
+            id, conversation_id, message_id, type, scope, source, title,
+            snippet, content, url, favicon, path, language, size_bytes,
+            kind, reason, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            conversation_id = excluded.conversation_id,
+            message_id = excluded.message_id,
+            type = excluded.type,
+            scope = excluded.scope,
+            source = excluded.source,
+            title = excluded.title,
+            snippet = excluded.snippet,
+            content = COALESCE(excluded.content, conversation_citations.content),
+            url = excluded.url,
+            favicon = excluded.favicon,
+            path = excluded.path,
+            language = excluded.language,
+            size_bytes = excluded.size_bytes,
+            kind = excluded.kind,
+            reason = excluded.reason,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.id)
+    .bind(&input.conversation_id)
+    .bind(&input.message_id)
+    .bind(&input.r#type)
+    .bind(&input.scope)
+    .bind(&input.source)
+    .bind(&input.title)
+    .bind(&input.snippet)
+    .bind(&input.content)
+    .bind(&input.url)
+    .bind(&input.favicon)
+    .bind(&input.path)
+    .bind(&input.language)
+    .bind(input.size_bytes)
+    .bind(&input.kind)
+    .bind(&input.reason)
+    .bind(&now)
+    .bind(&now)
     .execute(pool)
     .await?;
-    refresh_conversation_metadata(pool, conversation_id, None).await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT id, conversation_id, message_id, type, scope, source, title,
+               snippet, content, url, favicon, path, language, size_bytes,
+               kind, reason, created_at, updated_at
+        FROM conversation_citations
+        WHERE id = ?
+        "#,
+    )
+    .bind(&input.id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_conversation_citation_row(row))
+}
+
+pub async fn delete_conversation_citation(pool: &SqlitePool, id: &str) -> DbResult<()> {
+    sqlx::query("DELETE FROM conversation_citations WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn delete_conversation_citations(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<()> {
+    sqlx::query("DELETE FROM conversation_citations WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+// ============ CONVERSATION TOOLBOX STATE ============
+
+fn map_conversation_toolbox_state_row(
+    row: sqlx::sqlite::SqliteRow,
+) -> ConversationToolboxStateRecord {
+    ConversationToolboxStateRecord {
+        conversation_id: row.get("conversation_id"),
+        composer_context_refs_json: row.get("composer_context_refs_json"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+pub async fn get_conversation_toolbox_state(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<Option<ConversationToolboxStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT conversation_id, composer_context_refs_json, created_at, updated_at
+        FROM conversation_toolbox_state
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_conversation_toolbox_state_row))
+}
+
+pub async fn upsert_conversation_toolbox_state(
+    pool: &SqlitePool,
+    input: UpsertConversationToolboxStateInput,
+) -> DbResult<ConversationToolboxStateRecord> {
+    require_non_empty(&input.conversation_id, "conversation_id")?;
+    require_non_empty(
+        &input.composer_context_refs_json,
+        "composer_context_refs_json",
+    )?;
+
+    let now = input
+        .timestamp
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+    sqlx::query(
+        r#"
+        INSERT INTO conversation_toolbox_state (
+            conversation_id, composer_context_refs_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            composer_context_refs_json = excluded.composer_context_refs_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&input.conversation_id)
+    .bind(&input.composer_context_refs_json)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT conversation_id, composer_context_refs_json, created_at, updated_at
+        FROM conversation_toolbox_state
+        WHERE conversation_id = ?
+        "#,
+    )
+    .bind(&input.conversation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_conversation_toolbox_state_row(row))
+}
+
+pub async fn delete_conversation_toolbox_state(
+    pool: &SqlitePool,
+    conversation_id: &str,
+) -> DbResult<()> {
+    sqlx::query("DELETE FROM conversation_toolbox_state WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -2645,6 +2910,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: "Second by id".to_string(),
                     created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
                 },
                 ImportMessageInput {
                     id: "msg-a".to_string(),
@@ -2652,6 +2918,7 @@ mod tests {
                     role: "user".to_string(),
                     content: "First by id".to_string(),
                     created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
                 },
             ],
         )
@@ -2666,6 +2933,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "Do not preload".to_string(),
                 created_at: "2026-03-19T00:01:00.000Z".to_string(),
+                completion_reason: None,
             }],
         )
         .await
@@ -2702,6 +2970,7 @@ mod tests {
                     role: "user".to_string(),
                     content: "Keep me".to_string(),
                     created_at: created_at.clone(),
+                    completion_reason: None,
                 },
                 ImportMessageInput {
                     id: "msg-2".to_string(),
@@ -2709,6 +2978,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: "Delete me".to_string(),
                     created_at: created_at.clone(),
+                    completion_reason: None,
                 },
                 ImportMessageInput {
                     id: "msg-3".to_string(),
@@ -2716,6 +2986,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: "Delete me too".to_string(),
                     created_at,
+                    completion_reason: None,
                 },
             ],
         )
@@ -2740,6 +3011,234 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn conversation_citations_crud_and_cascade_with_conversation() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Sources").await;
+
+        let created = upsert_conversation_citation(
+            &pool,
+            UpsertConversationCitationInput {
+                id: "cite-1".to_string(),
+                conversation_id: conversation.id.clone(),
+                message_id: "message-1".to_string(),
+                r#type: "source_passage".to_string(),
+                scope: "source".to_string(),
+                source: "notes.md".to_string(),
+                title: "Original".to_string(),
+                snippet: Some("Saved passage".to_string()),
+                content: Some("Saved passage".to_string()),
+                url: None,
+                favicon: None,
+                path: Some("notes.md".to_string()),
+                language: Some("markdown".to_string()),
+                size_bytes: Some(14),
+                kind: Some("interesting".to_string()),
+                reason: Some("Worth saving".to_string()),
+                timestamp: Some("2026-07-04T12:00:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("insert citation");
+
+        assert_eq!(created.id, "cite-1");
+        assert_eq!(created.kind.as_deref(), Some("interesting"));
+
+        let updated = upsert_conversation_citation(
+            &pool,
+            UpsertConversationCitationInput {
+                id: "cite-1".to_string(),
+                conversation_id: conversation.id.clone(),
+                message_id: "message-2".to_string(),
+                r#type: "source_passage".to_string(),
+                scope: "source".to_string(),
+                source: "notes.md".to_string(),
+                title: "Updated".to_string(),
+                snippet: Some("Saved passage".to_string()),
+                content: Some("Saved passage".to_string()),
+                url: None,
+                favicon: None,
+                path: Some("notes.md".to_string()),
+                language: Some("markdown".to_string()),
+                size_bytes: Some(14),
+                kind: Some("used".to_string()),
+                reason: Some("Used in answer".to_string()),
+                timestamp: Some("2026-07-04T12:01:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("update citation");
+
+        assert_eq!(updated.created_at, "2026-07-04T12:00:00Z");
+        assert_eq!(updated.updated_at, "2026-07-04T12:01:00Z");
+        assert_eq!(updated.title, "Updated");
+        assert_eq!(updated.kind.as_deref(), Some("used"));
+
+        let listed = list_conversation_citations(&pool, &conversation.id)
+            .await
+            .expect("list citations");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "cite-1");
+        assert_eq!(listed[0].content, None);
+        assert_eq!(
+            get_conversation_citation_content(&pool, "cite-1")
+                .await
+                .expect("citation content")
+                .as_deref(),
+            Some("Saved passage")
+        );
+
+        let metadata_only = upsert_conversation_citation(
+            &pool,
+            UpsertConversationCitationInput {
+                id: "cite-1".to_string(),
+                conversation_id: conversation.id.clone(),
+                message_id: "message-2".to_string(),
+                r#type: "source_passage".to_string(),
+                scope: "source".to_string(),
+                source: "notes.md".to_string(),
+                title: "Metadata only".to_string(),
+                snippet: Some("Lightweight passage".to_string()),
+                content: None,
+                url: None,
+                favicon: None,
+                path: Some("notes.md".to_string()),
+                language: Some("markdown".to_string()),
+                size_bytes: Some(14),
+                kind: Some("used".to_string()),
+                reason: Some("Metadata refreshed".to_string()),
+                timestamp: Some("2026-07-04T12:01:30Z".to_string()),
+            },
+        )
+        .await
+        .expect("metadata-only update citation");
+
+        assert_eq!(metadata_only.title, "Metadata only");
+        assert_eq!(
+            get_conversation_citation_content(&pool, "cite-1")
+                .await
+                .expect("citation content after metadata-only update")
+                .as_deref(),
+            Some("Saved passage")
+        );
+
+        delete_conversation_citation(&pool, "cite-1")
+            .await
+            .expect("delete citation");
+        assert!(list_conversation_citations(&pool, &conversation.id)
+            .await
+            .expect("list after delete")
+            .is_empty());
+
+        upsert_conversation_citation(
+            &pool,
+            UpsertConversationCitationInput {
+                id: "cite-cascade".to_string(),
+                conversation_id: conversation.id.clone(),
+                message_id: "message-3".to_string(),
+                r#type: "web".to_string(),
+                scope: "context".to_string(),
+                source: "https://example.com".to_string(),
+                title: "Example".to_string(),
+                snippet: Some("Example snippet".to_string()),
+                content: Some("Example content".to_string()),
+                url: Some("https://example.com".to_string()),
+                favicon: None,
+                path: None,
+                language: None,
+                size_bytes: None,
+                kind: None,
+                reason: None,
+                timestamp: Some("2026-07-04T12:02:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("insert cascade citation");
+
+        delete_conversation(&pool, &conversation.id)
+            .await
+            .expect("delete conversation");
+        assert!(list_conversation_citations(&pool, &conversation.id)
+            .await
+            .expect("list after conversation delete")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn conversation_toolbox_state_crud_and_cascade_with_conversation() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Toolbox").await;
+
+        let created = upsert_conversation_toolbox_state(
+            &pool,
+            UpsertConversationToolboxStateInput {
+                conversation_id: conversation.id.clone(),
+                composer_context_refs_json: r#"[{"id":"cite-1","kind":"source","title":"Source"}]"#
+                    .to_string(),
+                timestamp: Some("2026-07-04T13:00:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("insert toolbox state");
+
+        assert_eq!(created.conversation_id, conversation.id);
+        assert_eq!(created.created_at, "2026-07-04T13:00:00Z");
+        assert_eq!(created.updated_at, "2026-07-04T13:00:00Z");
+
+        let updated = upsert_conversation_toolbox_state(
+            &pool,
+            UpsertConversationToolboxStateInput {
+                conversation_id: conversation.id.clone(),
+                composer_context_refs_json:
+                    r#"[{"id":"file-1","kind":"file","title":"README.md"}]"#.to_string(),
+                timestamp: Some("2026-07-04T13:01:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("update toolbox state");
+
+        assert_eq!(updated.created_at, "2026-07-04T13:00:00Z");
+        assert_eq!(updated.updated_at, "2026-07-04T13:01:00Z");
+        assert!(updated.composer_context_refs_json.contains("README.md"));
+
+        let loaded = get_conversation_toolbox_state(&pool, &conversation.id)
+            .await
+            .expect("get toolbox state")
+            .expect("toolbox state");
+        assert_eq!(
+            loaded.composer_context_refs_json,
+            updated.composer_context_refs_json
+        );
+
+        delete_conversation_toolbox_state(&pool, &conversation.id)
+            .await
+            .expect("delete toolbox state");
+        assert!(get_conversation_toolbox_state(&pool, &conversation.id)
+            .await
+            .expect("get after delete")
+            .is_none());
+
+        upsert_conversation_toolbox_state(
+            &pool,
+            UpsertConversationToolboxStateInput {
+                conversation_id: conversation.id.clone(),
+                composer_context_refs_json:
+                    r#"[{"id":"cite-2","kind":"source","title":"Source 2"}]"#.to_string(),
+                timestamp: Some("2026-07-04T13:02:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("insert cascade toolbox state");
+
+        delete_conversation(&pool, &conversation.id)
+            .await
+            .expect("delete conversation");
+        assert!(get_conversation_toolbox_state(&pool, &conversation.id)
+            .await
+            .expect("get after conversation delete")
+            .is_none());
     }
 
     #[tokio::test]

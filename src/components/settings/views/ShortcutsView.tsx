@@ -275,6 +275,10 @@ export const ShortcutsView: React.FC = () => {
                             </div>
                             <Switch
                               checked={promptHistoryNavigationMode === 'shortcut_only'}
+                              aria-label={t(
+                                'shortcuts.promptHistoryBehavior',
+                                'Prompt history behavior'
+                              )}
                               onCheckedChange={(checked) =>
                                 setPromptHistoryNavigationMode(checked ? 'shortcut_only' : 'contextual_arrows')
                               }

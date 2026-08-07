@@ -32,8 +32,11 @@ export interface NormalizeProjectRegistryResult {
   report: ProjectRegistryRepairReport;
 }
 
-const normalizePath = (value: string): string =>
-  value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const normalizePath = (value: string): string => {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  const isWindowsPath = /^(?:[a-z]:\/|\/\/)/i.test(normalized);
+  return isWindowsPath ? normalized.toLowerCase() : normalized;
+};
 
 const isSyntheticGroupId = (value: string | null | undefined): boolean =>
   Boolean(value && value.startsWith('session-group-'));

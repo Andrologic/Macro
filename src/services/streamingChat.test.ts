@@ -193,6 +193,26 @@ describe('streamingChat Architect tool contracts', () => {
   });
 });
 
+describe('streamingChat SSE parsing', () => {
+  it('joins multiline data fields and preserves the SSE field rules', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.extractSseData('event: message\r\ndata: first\r\ndata: second'),
+    ).toBe('first\nsecond');
+  });
+
+  it('flushes an unterminated final event across chunk boundaries', async () => {
+    const { __testables } = await loadStreamingChat();
+    const parser = __testables.createSseEventParser();
+
+    expect(parser.push('data: {"choices":[')).toEqual([]);
+    expect(parser.push(']}\r')).toEqual([]);
+    expect(parser.push('\ndata: tail')).toEqual([]);
+    expect(parser.flush()).toEqual(['data: {"choices":[]}\ndata: tail']);
+  });
+});
+
 describe('streamingChat tool rendering helpers', () => {
   beforeEach(() => {
     mock.restore();

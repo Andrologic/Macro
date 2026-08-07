@@ -157,7 +157,8 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
                       typeof resolveTaskMergeWorkflowPresentationState
                     >[1];
                   }
-                ).merge_workflow_summary ?? null
+                ).merge_workflow_summary ?? null,
+                task.status
               );
               const indicatorState = resolveTaskStatusIndicatorState(
                 task.status,

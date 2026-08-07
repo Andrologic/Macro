@@ -3,6 +3,7 @@ import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/t
 import {
   clearRemoteRuntimeCapabilityOverrides,
   DESKTOP_IPC_UNAVAILABLE_MESSAGE,
+  getServiceRuntimeCapabilities,
   resolveServiceRuntime,
   resolveServiceRuntimeCapabilities,
   setRemoteRuntimeCapabilityOverrides,
@@ -63,8 +64,23 @@ describe('serviceRuntime', () => {
       taskMutation: false,
       implementExecution: false,
       taskProjectCommands: false,
-      skills: true,
+      skills: false,
       skillScripts: false,
+      skillCreation: false,
+    });
+  });
+
+  it('keeps an explicitly selected remote transport when Tauri is available', () => {
+    const runtime = resolveServiceRuntime({
+      env: {
+        VITE_BACKEND_TRANSPORT: 'remote',
+      },
+      tauriAvailable: true,
+    });
+
+    expect(runtime).toMatchObject({
+      effectiveTransport: 'remote',
+      effectiveProvider: 'remote',
     });
   });
 
@@ -98,6 +114,36 @@ describe('serviceRuntime', () => {
     expect(resolveServiceRuntimeCapabilities(runtime)).toMatchObject({
       skills: false,
       skillScripts: true,
+    });
+  });
+
+  it('reports no capabilities when desktop IPC is unavailable and remote was not selected', () => {
+    expect(getServiceRuntimeCapabilities({
+      env: {
+        VITE_BACKEND_TRANSPORT: 'desktop',
+      },
+      tauriAvailable: false,
+    })).toEqual({
+      bootstrap: false,
+      taskCatalog: false,
+      gitTree: false,
+      gitHistory: false,
+      toolPolicy: false,
+      toolValidation: false,
+      toolExecution: false,
+      toolSettings: false,
+      mcpServerSettings: false,
+      projectMutation: false,
+      projectGitSetupPreview: false,
+      projectAccessPreview: false,
+      gitWorktrees: false,
+      gitFilePreview: false,
+      taskMutation: false,
+      implementExecution: false,
+      taskProjectCommands: false,
+      skills: false,
+      skillScripts: false,
+      skillCreation: false,
     });
   });
 });

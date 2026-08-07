@@ -23,25 +23,67 @@ fn resolve_absolute(path: &Path, workspace: &Path) -> Result<(PathBuf, PathBuf)>
     Ok((abs_path, canonical_workspace))
 }
 
-// Basic helper 2: Validate parent directory (core of write/create security)
-fn validate_parent(abs_path: &Path, canonical_workspace: &Path) -> Result<PathBuf> {
-    let parent = abs_path.parent().ok_or_else(|| BackendError::Filesystem {
-        message: format!("Path {:?} has no parent directory", abs_path),
-    })?;
-    let canonical_parent = parent
-        .canonicalize()
-        .map_err(|_| BackendError::FilesystemNotFound {
-            message: format!("Parent directory {:?} does not exist", parent),
-        })?;
-    if !canonical_parent.starts_with(canonical_workspace) {
-        return Err(BackendError::FilesystemPathOutsideWorkspace {
-            message: format!(
-                "Parent of path {:?} is outside workspace {:?}",
-                abs_path, canonical_workspace
-            ),
-        });
+// Find the closest existing ancestor without trusting any missing path component.
+// Canonicalizing only the immediate parent is insufficient for writes such as
+// `link/new/file.txt` when `link` points outside the workspace and `new` does not
+// exist yet.
+fn nearest_existing_ancestor(abs_path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let mut ancestor = abs_path.to_path_buf();
+
+    loop {
+        match ancestor.canonicalize() {
+            Ok(canonical_ancestor) => return Ok((ancestor, canonical_ancestor)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().map(Path::to_path_buf).ok_or_else(|| {
+                    BackendError::FilesystemNotFound {
+                        message: format!("No existing ancestor found for {:?}", abs_path),
+                    }
+                })?;
+            }
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!("Failed to canonicalize path {:?}: {}", ancestor, error),
+                    source: error,
+                })
+            }
+        }
     }
-    Ok(canonical_parent)
+}
+
+fn ensure_within_workspace(
+    path: &Path,
+    canonical_workspace: &Path,
+    description: &str,
+) -> Result<()> {
+    if path.starts_with(canonical_workspace) {
+        return Ok(());
+    }
+
+    Err(BackendError::FilesystemPathOutsideWorkspace {
+        message: format!(
+            "{} {:?} is outside workspace {:?}",
+            description, path, canonical_workspace
+        ),
+    })
+}
+
+fn reconstruct_missing_path(
+    abs_path: &Path,
+    existing_ancestor: &Path,
+    canonical_ancestor: &Path,
+    canonical_workspace: &Path,
+) -> Result<PathBuf> {
+    let missing_suffix = abs_path.strip_prefix(existing_ancestor).map_err(|_| {
+        BackendError::FilesystemInvalidPath {
+            message: format!(
+                "Could not resolve missing path components for {:?}",
+                abs_path
+            ),
+        }
+    })?;
+    let candidate = normalize_path(&canonical_ancestor.join(missing_suffix));
+    ensure_within_workspace(&candidate, canonical_workspace, "Path")?;
+    Ok(candidate)
 }
 
 /// Resolve path to absolute path, checks if path is within workspace using `canonicalize`
@@ -68,14 +110,14 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Fichier n'existe pas : on valide le parent et on reconstruit le chemin
-            let canonical_parent = validate_parent(&abs_path, &canonical_workspace)?;
-            let file_name = abs_path
-                .file_name()
-                .ok_or_else(|| BackendError::Filesystem {
-                    message: "Invalid file path".to_string(),
-                })?;
-            Ok(normalize_path(&canonical_parent.join(file_name)))
+            let (existing_ancestor, canonical_ancestor) = nearest_existing_ancestor(&abs_path)?;
+            ensure_within_workspace(&canonical_ancestor, &canonical_workspace, "Ancestor")?;
+            reconstruct_missing_path(
+                &abs_path,
+                &existing_ancestor,
+                &canonical_ancestor,
+                &canonical_workspace,
+            )
         }
         Err(e) => Err(BackendError::Io {
             message: format!("Failed to canonicalize path {:?}: {}", abs_path, e),
@@ -86,8 +128,8 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 
 /// Validate path for write operations
 /// Similar to `validate_path` but handles non-existent files
-/// Checks if parent directory exists and is within workspace
-/// Returns the target path (not canonicalized, since file doesn't exist)
+/// Checks the closest existing ancestor directory and ensures it is within the
+/// workspace before returning the target path.
 /// Prevents creating files in restricted locations
 /// # Arguments
 /// * `path` - The input path to validate
@@ -97,24 +139,30 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
 pub fn validate_path_for_write(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
 
-    // To write, we just check that the parent is clean if it exists
-    // If the parent doesn't exist yet, allow it as long as it stays within the workspace
-    match validate_parent(&abs_path, &canonical_workspace) {
-        Ok(_) => Ok(normalize_path(&abs_path)),
-        Err(BackendError::FilesystemNotFound { .. }) => {
+    match abs_path.canonicalize() {
+        Ok(canonical_path) => {
+            // Keep the lexical target for existing symlinks so callers that
+            // inspect symlink metadata retain their current behavior, but
+            // validate where the symlink resolves before allowing a write.
+            ensure_within_workspace(&canonical_path, &canonical_workspace, "Path")?;
             let normalized = normalize_path(&abs_path);
-            if normalized.starts_with(&canonical_workspace) {
-                Ok(normalized)
-            } else {
-                Err(BackendError::FilesystemPathOutsideWorkspace {
-                    message: format!(
-                        "Path {:?} is outside workspace {:?}",
-                        normalized, canonical_workspace
-                    ),
-                })
-            }
+            ensure_within_workspace(&normalized, &canonical_workspace, "Path")?;
+            Ok(normalized)
         }
-        Err(e) => Err(e),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (existing_ancestor, canonical_ancestor) = nearest_existing_ancestor(&abs_path)?;
+            ensure_within_workspace(&canonical_ancestor, &canonical_workspace, "Ancestor")?;
+            reconstruct_missing_path(
+                &abs_path,
+                &existing_ancestor,
+                &canonical_ancestor,
+                &canonical_workspace,
+            )
+        }
+        Err(error) => Err(BackendError::Io {
+            message: format!("Failed to canonicalize path {:?}: {}", abs_path, error),
+            source: error,
+        }),
     }
 }
 
@@ -512,6 +560,27 @@ mod tests {
         assert!(result.is_ok());
 
         cleanup_workspace(&workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_path_for_write_rejects_missing_path_through_external_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_workspace("write_symlink_missing");
+        let outside_dir = setup_workspace("write_symlink_missing_outside");
+        let link_path = workspace.join("linked");
+        symlink(&outside_dir, &link_path).unwrap();
+
+        let result = validate_path_for_write(Path::new("linked/new/nested.txt"), &workspace);
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+
+        cleanup_workspace(&workspace);
+        cleanup_workspace(&outside_dir);
     }
 
     #[test]

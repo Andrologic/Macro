@@ -55,7 +55,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 };
 
 const MARKDOWN_CONTEXT_MENTION_PATTERN =
-  /\[(need|skill|file|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+  /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 let blockKeySeed = 0;
 
@@ -263,6 +263,7 @@ const normalizeContextKind = (kind: string): ContextRefKind => {
   if (
     normalized === 'need' ||
     normalized === 'file' ||
+    normalized === 'source' ||
     normalized === 'plan-node' ||
     normalized === 'predicted-branch'
   ) {

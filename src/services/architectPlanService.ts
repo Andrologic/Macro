@@ -270,14 +270,15 @@ export const getArchitectPlanCrudCapabilities = (
   plan: Pick<ArchitectPlanRecord | ArchitectPlanSummary, 'status'>
 ): ArchitectPlanCrudCapabilities => {
   const isDeleted = plan.status === 'deleted';
+  const isArchived = plan.status === 'archived';
   const isDraft = plan.status === 'draft';
   return {
-    canArchive: !isDeleted && plan.status !== 'archived',
-    canRestore: plan.status === 'archived',
-    canDelete: plan.status === 'archived',
+    canArchive: !isDeleted && !isArchived,
+    canRestore: isArchived,
+    canDelete: isArchived,
     canPurgeLegacyDeleted: isDeleted,
     deleteRequiresCleanup: PLAN_DELETE_CLEANUP_STATUS_SET.has(plan.status),
-    canEditDetails: !isDeleted,
+    canEditDetails: !isDeleted && !isArchived,
     canEditDraftContent: isDraft,
     canEditSlug: isDraft,
     canEditScope: isDraft,
@@ -4129,6 +4130,12 @@ const assertPlanReplicaSetWritable = (
   replicaSet: ArchitectPlanReplicaSet,
   action: string
 ): void => {
+  if (replicaSet.canonical.plan.status === 'archived') {
+    throw new Error(
+      `Cannot ${action} archived plan ${replicaSet.canonical.plan.id}. Restore the plan before editing it.`
+    );
+  }
+
   const missingProjectIds = replicaSet.canonical.plan.missingProjectIds || [];
   if (missingProjectIds.length === 0) {
     return;
@@ -4668,8 +4675,15 @@ export const updateArchitectPlan = async (input: {
   if (!replicaSet) {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
-  assertPlanReplicaSetWritable(replicaSet, 'update');
   const existing = replicaSet.canonical.plan;
+  const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
+  const isRestoringArchivedPlan =
+    existing.status === 'archived' &&
+    isArchitectPlanRestorableStatus(input.status) &&
+    inputKeys.every((key) => key === 'status' || key === 'setActive');
+  if (!isRestoringArchivedPlan) {
+    assertPlanReplicaSetWritable(replicaSet, 'update');
+  }
   const isCanonicalPlan = isCanonicalArchitectPlan(existing);
 
   if (!isCanonicalPlan && input.title && input.title.trim().toLowerCase() !== existing.title.trim().toLowerCase()) {
@@ -5082,8 +5096,12 @@ export const setActiveArchitectPlan = async (
     const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
       registrySnapshot,
     }, deps);
-    if (!replicaSet || replicaSet.canonical.plan.status === 'deleted') {
-      throw new Error(`Cannot activate missing or deleted plan: ${planId}`);
+    if (
+      !replicaSet ||
+      replicaSet.canonical.plan.status === 'deleted' ||
+      replicaSet.canonical.plan.status === 'archived'
+    ) {
+      throw new Error(`Cannot activate missing, deleted, or archived plan: ${planId}`);
     }
 
     await Promise.all(

@@ -705,6 +705,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     ? t('common.restore', 'Restore')
     : t('common.archive', 'Archive');
   const archiveButtonIcon = showArchived ? 'rotate-ccw' : 'archive';
+  const selectedCountLabel = t('chat.selectedCount', '{{count}} selected', { count: selectedIds.size });
+  const selectAllLabel = t('common.selectAll', 'Select all');
+  const deleteSelectedLabel = t('common.delete', 'Delete');
+  const cancelSelectionLabel = t('common.cancel', 'Cancel');
   const footerButtonLabel = showArchived
     ? t('chat.activeConversations', 'Conversations')
     : t('chat.archives', 'Archives');
@@ -736,30 +740,32 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
         <div className="px-3 py-2 border-b border-border">
           {isMultiSelectMode ? (
-            <div className="overflow-x-auto overflow-y-hidden">
-              <div className="flex min-w-max items-center gap-2 pr-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="min-w-24 flex-1 truncate text-xs font-medium text-muted-foreground">
+                {selectedCountLabel}
+              </span>
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
                 <button
                   onClick={handleToggleSelectAll}
                   type="button"
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={visibleConversationIds.length === 0 || isBulkDeleting}
+                  title={selectAllLabel}
+                  aria-label={selectAllLabel}
+                  aria-pressed={isAllVisibleSelected}
                 >
-                  <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={12} />
-                  <span className="whitespace-nowrap">{t('common.selectAll', 'Select all')}</span>
+                  <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={14} />
                 </button>
 
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {t('chat.selectedCount', '{{count}} selected', { count: selectedIds.size })}
-                </span>
                 <button
                   onClick={handleBulkArchiveAction}
                   type="button"
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   title={archiveButtonLabel}
+                  aria-label={archiveButtonLabel}
                 >
-                  <Icon name={archiveButtonIcon} size={12} />
-                  <span className="whitespace-nowrap">{archiveButtonLabel}</span>
+                  <Icon name={archiveButtonIcon} size={14} />
                 </button>
                 <button
                   type="button"
@@ -768,19 +774,20 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                     setIsBulkDeleteOpen(true);
                   }}
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={t('common.delete', 'Delete')}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={deleteSelectedLabel}
+                  aria-label={deleteSelectedLabel}
                 >
-                  <Icon name="trash" size={12} />
-                  <span className="whitespace-nowrap">{t('common.delete', 'Delete')}</span>
+                  <Icon name="trash" size={14} />
                 </button>
                 <button
                   type="button"
                   onClick={exitMultiSelectMode}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title={cancelSelectionLabel}
+                  aria-label={cancelSelectionLabel}
                 >
-                  <Icon name="x" size={12} />
-                  <span className="whitespace-nowrap">{t('common.cancel', 'Cancel')}</span>
+                  <Icon name="x" size={14} />
                 </button>
               </div>
             </div>

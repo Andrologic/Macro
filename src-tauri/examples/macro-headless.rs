@@ -1,12 +1,15 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use macro_lib::commands::workspace_tools::{
+    validate_headless_project_mounts, validate_headless_workspace_path,
+};
 use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
 use macro_lib::core::error::BackendError;
 use macro_lib::core::load_config;
@@ -22,11 +25,12 @@ use macro_lib::workspace::metadata::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone)]
 struct HeadlessState {
     bearer_token: Option<String>,
+    allowed_roots: Vec<PathBuf>,
     workspace_path: PathBuf,
     git_state: GitState,
 }
@@ -70,6 +74,119 @@ struct ToolExecuteRequest {
 #[derive(Debug, Serialize)]
 struct ApiError {
     message: String,
+}
+
+const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 6] = [
+    "http://localhost:4173",
+    "http://localhost:5173",
+    "http://127.0.0.1:4173",
+    "http://127.0.0.1:5173",
+    "http://tauri.localhost",
+    "tauri://localhost",
+];
+
+fn normalize_bearer_token(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn parse_listen_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
+    let trimmed = host.trim();
+    let unwrapped = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    let ip = unwrapped.parse::<IpAddr>().or_else(|_| {
+        if unwrapped.eq_ignore_ascii_case("localhost") {
+            Ok(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        } else {
+            Err(format!(
+                "MACRO_HEADLESS_HOST must be an IP address or localhost: {}",
+                host
+            ))
+        }
+    })?;
+    Ok(SocketAddr::new(ip, port))
+}
+
+fn validate_listen_security(addr: SocketAddr, bearer_token: Option<&str>) -> Result<(), String> {
+    if addr.ip().is_loopback() || bearer_token.is_some_and(|token| !token.is_empty()) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Refusing non-loopback headless listener {} without MACRO_HEADLESS_BEARER_TOKEN",
+        addr
+    ))
+}
+
+fn configured_headless_allowed_roots(workspace_path: &PathBuf) -> Result<Vec<PathBuf>, String> {
+    let mut configured = vec![workspace_path.clone()];
+    if let Ok(raw_roots) = std::env::var("MACRO_HEADLESS_ALLOWED_ROOTS") {
+        configured
+            .extend(std::env::split_paths(&raw_roots).filter(|path| !path.as_os_str().is_empty()));
+    }
+
+    let mut canonical_roots = Vec::new();
+    for root in configured {
+        let canonical = root.canonicalize().map_err(|error| {
+            format!(
+                "Headless allowed root is not accessible: {} ({})",
+                root.display(),
+                error
+            )
+        })?;
+        if !canonical.is_dir() {
+            return Err(format!(
+                "Headless allowed root is not a directory: {}",
+                root.display()
+            ));
+        }
+        if !canonical_roots.contains(&canonical) {
+            canonical_roots.push(canonical);
+        }
+    }
+    Ok(canonical_roots)
+}
+
+fn configured_cors_origins() -> Result<Vec<HeaderValue>, String> {
+    let mut origins = DEFAULT_HEADLESS_CORS_ORIGINS
+        .iter()
+        .map(|origin| (*origin).to_string())
+        .collect::<Vec<_>>();
+    if let Ok(raw_origins) = std::env::var("MACRO_HEADLESS_CORS_ORIGINS") {
+        for origin in raw_origins.split(',').map(str::trim) {
+            if origin.is_empty() {
+                continue;
+            }
+            if origin == "*" {
+                return Err(
+                    "MACRO_HEADLESS_CORS_ORIGINS must not contain the wildcard origin (*)"
+                        .to_string(),
+                );
+            }
+            if !origins.iter().any(|configured| configured == origin) {
+                origins.push(origin.to_string());
+            }
+        }
+    }
+
+    origins
+        .into_iter()
+        .map(|origin| {
+            HeaderValue::from_str(&origin)
+                .map_err(|error| format!("Invalid headless CORS origin '{}': {}", origin, error))
+        })
+        .collect()
+}
+
+fn headless_cors_layer() -> Result<CorsLayer, String> {
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(configured_cors_origins()?))
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]))
 }
 
 fn backend_error_to_status(error: &BackendError) -> StatusCode {
@@ -174,11 +291,16 @@ fn unauthorized_response() -> impl IntoResponse {
     )
 }
 
-async fn health() -> Json<HealthResponse> {
+async fn health(State(state): State<Arc<HeadlessState>>, headers: HeaderMap) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
     Json(HealthResponse {
         status: "ok",
         service: "macro-headless",
     })
+    .into_response()
 }
 
 async fn tool_mode_policy(
@@ -211,11 +333,43 @@ async fn tool_validate(
 async fn tool_execute(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Json(payload): Json<ToolExecuteRequest>,
+    Json(mut payload): Json<ToolExecuteRequest>,
 ) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
+
+    payload.workspace_path = match validate_headless_workspace_path(
+        payload.workspace_path.as_deref(),
+        &state.workspace_path,
+        &state.allowed_roots,
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    message: error.message,
+                }),
+            )
+                .into_response()
+        }
+    };
+    payload.project_mounts = match payload.project_mounts.as_deref() {
+        Some(mounts) => match validate_headless_project_mounts(mounts, &state.allowed_roots) {
+            Ok(mounts) => Some(mounts),
+            Err(error) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ApiError {
+                        message: error.message,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        None => None,
+    };
 
     match execute_workspace_tool(
         state.workspace_path.clone(),
@@ -475,12 +629,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|raw| raw.parse::<u16>().ok())
         .unwrap_or(8787);
-    let bearer_token = std::env::var("MACRO_HEADLESS_BEARER_TOKEN").ok();
+    let addr = parse_listen_addr(&host, port)?;
+    let bearer_token = normalize_bearer_token(std::env::var("MACRO_HEADLESS_BEARER_TOKEN").ok());
+    validate_listen_security(addr, bearer_token.as_deref())?;
     let config = load_config()?;
+    let workspace_path = config
+        .workspace_path
+        .canonicalize()
+        .map_err(|error| format!("Headless workspace path is not accessible: {}", error))?;
+    let allowed_roots = configured_headless_allowed_roots(&workspace_path)?;
 
     let state = Arc::new(HeadlessState {
         bearer_token,
-        workspace_path: config.workspace_path,
+        allowed_roots,
+        workspace_path,
         git_state: GitState::new(),
     });
 
@@ -535,9 +697,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(project_git_commits),
         )
         .with_state(state)
-        .layer(CorsLayer::permissive());
+        .layer(headless_cors_layer()?);
 
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     tracing::info!("macro-headless listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

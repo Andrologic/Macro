@@ -15,9 +15,7 @@ const run = async (args) => {
     stderr: 'inherit',
   });
   const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    process.exit(exitCode);
-  }
+  return exitCode;
 };
 
 const collectTestFiles = async () => {
@@ -39,6 +37,16 @@ const collectTestFiles = async () => {
 
 const testFiles = await collectTestFiles();
 
+const failedFiles = [];
 for (const file of testFiles) {
-  await run([file]);
+  const exitCode = await run([file]);
+  if (exitCode !== 0) {
+    failedFiles.push(file);
+  }
+}
+
+if (failedFiles.length > 0) {
+  console.error(`\n${failedFiles.length} test file(s) failed:`);
+  failedFiles.forEach((file) => console.error(`- ${file}`));
+  process.exit(1);
 }

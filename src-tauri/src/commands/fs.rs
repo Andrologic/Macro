@@ -2361,6 +2361,31 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn test_write_nested_missing_path_through_external_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_empty_workspace();
+        let outside = setup_empty_workspace();
+        symlink(outside.path(), workspace.path().join("linked")).expect("create external symlink");
+
+        let result = write_file_internal(
+            workspace.path(),
+            "linked/new/nested.txt".to_string(),
+            "must not escape".to_string(),
+            Some(true),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemPathOutsideWorkspace { .. })
+        ));
+        assert!(!outside.path().join("new/nested.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn test_write_readonly_directory() {
         use std::os::unix::fs::PermissionsExt;
 

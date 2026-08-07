@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_SMART_COMMIT_PROMPT,
   PREF_KEYS,
@@ -52,6 +52,7 @@ const DEFAULT_PROMPT_STATE = createDefaultPromptState();
 
 export const PromptsView: React.FC = () => {
   const [prompts, setPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
+  const promptsTouchedRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -61,13 +62,22 @@ export const PromptsView: React.FC = () => {
         ...PROMPT_EDITOR_KEYS,
       ]);
 
+      if (cancelled || promptsTouchedRef.current) {
+        return;
+      }
+
       setPrompts({
         ...DEFAULT_PROMPT_STATE,
         ...storedPrompts,
       });
     };
 
+    let cancelled = false;
     void loadPromptValues();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const hasAnyModifiedPrompt = useMemo(
@@ -77,6 +87,7 @@ export const PromptsView: React.FC = () => {
   );
 
   const handlePromptChange = (key: PromptEditorKey, value: string) => {
+    promptsTouchedRef.current = true;
     setPrompts((current) => ({
       ...current,
       [key]: value,
@@ -88,6 +99,7 @@ export const PromptsView: React.FC = () => {
   };
 
   const handleSave = async () => {
+    promptsTouchedRef.current = true;
     setIsSaving(true);
     setSaveSuccess(false);
 
@@ -100,6 +112,7 @@ export const PromptsView: React.FC = () => {
   };
 
   const handleRestoreAll = () => {
+    promptsTouchedRef.current = true;
     setPrompts(createDefaultPromptState());
   };
 

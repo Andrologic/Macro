@@ -342,7 +342,7 @@
     "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。",
     "revertChangesFailed": "変更を元に戻せませんでした。"
   },
-  "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+  "taskCommandsManualDraftUnsupported": "最初のメッセージを送信して、この機能のブランチ、ワークツリー、ターミナルを準備してください。",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
   "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
   "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
@@ -484,5 +484,8 @@
   "diffModalCrashedTitle": "この diff を開いたままにできませんでした",
   "diffModalCrashedDescription": "変更パネルはまだ実行中です。diff ビューアを再試行するか、このファイルを閉じてください。",
   "diffRenderFailedTitle": "この diff を表示できませんでした",
-  "diffRenderFailedDescription": "変更パネルは開いたままです。このファイルを閉じて再試行するか、ファイルを直接確認してください。"
+  "diffRenderFailedDescription": "変更パネルは開いたままです。このファイルを閉じて再試行するか、ファイルを直接確認してください。",
+  "reviewBeforeValidation": "変更を検証する前に、保留中の各差分を開いてください。",
+  "reviewArtifactBeforeValidation": "検証する前にこの成果物を開いてください。",
+  "taskCommandsPlanMutationActive": "このプランをアーカイブまたは削除する前に、実行中のタスクコマンドを停止してください。"
 }

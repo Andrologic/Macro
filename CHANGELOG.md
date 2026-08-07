@@ -6,6 +6,33 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.0
+
+### Added
+
+- Added the production headless runtime example with explicit workspace roots, authentication outside loopback, and restrictive CORS controls.
+- Added broader regression coverage for task orchestration, provider state, chat streaming, file review, preferences, accessibility, and workspace recovery.
+
+### Changed
+
+- Promoted the application manifests and release documentation from the release-candidate line to the stable `0.1.0` release.
+- Hardened task and plan lifecycle handling so active operations cannot race with archive, deletion, cancellation, or worktree cleanup.
+- Made database migrations atomic and enabled SQLite foreign-key enforcement on every connection.
+- Made local CI deterministic by running filesystem-sensitive Rust tests serially.
+
+### Fixed
+
+- Fixed fragmented UTF-8 and incomplete-event handling in OpenAI-compatible and ChatGPT SSE streams.
+- Fixed OAuth state validation and secret rollback when ChatGPT session persistence fails.
+- Fixed Copilot runtime installation recovery and request identifier validation.
+- Fixed workspace path confinement through symbolic links and canonicalized headless mounts under explicitly allowed roots.
+- Fixed stale provider, preference, shortcut, skill, and tool hydration from overwriting newer local state.
+
+### Security
+
+- Headless bearer authentication is mandatory when binding outside loopback.
+- Workspace reads, writes, and headless mounts reject paths that escape their authorized roots through symbolic links.
+
 ## 0.1.0-rc.8
 
 ### Added

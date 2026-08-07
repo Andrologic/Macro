@@ -113,14 +113,14 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ## Release Workflow
 
 GitHub releases are created by `.github/workflows/release.yml`. The workflow
-runs only from `main`, validates that `package.json` contains a stable `x.y.z`
-version, builds macOS, Windows, and Linux packages, then creates a GitHub
-Release draft for manual review.
+runs from a stable `vX.Y.Z` tag, or manually from `main`, validates that
+`package.json` contains the same stable `x.y.z` version, builds macOS, Windows,
+and Linux packages, then creates a GitHub Release draft for manual review.
 
-The current `0.1.0-rc.8` version must be bumped to a stable version such as
-`0.1.0` before the next official release. Windows and Linux release packages are
-built in GitHub Actions; local macOS universal builds remain available for
-smoke testing.
+The current `0.1.0` version is eligible for an official release once its
+matching `v0.1.0` tag is created. Windows and Linux release packages are built
+in GitHub Actions; local macOS universal builds remain available for smoke
+testing.
 
 ## Validation
 

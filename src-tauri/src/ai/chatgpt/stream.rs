@@ -13,8 +13,11 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
-use std::time::Instant;
+use std::str;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Default, Clone)]
 struct StreamingCompletionAccumulator {
@@ -68,8 +71,17 @@ pub async fn stream_chat(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.stream_tasks.lock().await;
-        tasks.remove(&task_request_id);
+        if let Some(task_id) = task_id {
+            let is_current_task = tasks
+                .get(&task_request_id)
+                .map(|handle| handle.id() == task_id)
+                .unwrap_or(false);
+            if is_current_task {
+                tasks.remove(&task_request_id);
+            }
+        }
     });
 
     let mut tasks = ai_state.stream_tasks.lock().await;
@@ -120,23 +132,25 @@ async fn stream_chat_inner(
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut parser = SseParser::default();
     let mut saw_completed = false;
     let mut completion_accumulator = StreamingCompletionAccumulator::default();
     let mut emitted_first_provider_event = false;
     let mut emitted_first_token = false;
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => {
+                return Err(format!(
+                    "ChatGPT stream was idle for more than {} seconds.",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                ));
+            }
+        };
         let chunk = chunk.map_err(|error| format!("Failed to read ChatGPT stream: {}", error))?;
-        let text = String::from_utf8_lossy(&chunk);
-        buffer.push_str(&text);
-        if buffer.contains("\r\n") {
-            buffer = buffer.replace("\r\n", "\n");
-        }
-
-        while let Some(split_index) = buffer.find("\n\n") {
-            let event = buffer[..split_index].to_string();
-            buffer = buffer[split_index + 2..].to_string();
+        for event in parser.push(&chunk)? {
             if !emitted_first_provider_event {
                 emitted_first_provider_event = true;
                 timeline.emit("first_provider_event");
@@ -154,14 +168,14 @@ async fn stream_chat_inner(
         }
     }
 
-    if !buffer.trim().is_empty() {
+    for event in parser.finish()? {
         if !emitted_first_provider_event {
             timeline.emit("first_provider_event");
         }
         let completed = process_sse_event(
             &app_handle,
             &request,
-            &buffer,
+            &event,
             &mut completion_accumulator,
             started_at,
             &mut emitted_first_token,
@@ -188,6 +202,7 @@ async fn stream_chat_inner(
                     reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
+                    completion_reason: Some("completed".to_string()),
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -234,6 +249,108 @@ async fn send_chatgpt_request(
         .map_err(|error| format!("Failed to send ChatGPT request: {}", error))
 }
 
+#[derive(Debug, Default)]
+pub(super) struct SseParser {
+    input: String,
+    event: String,
+    utf8_tail: Vec<u8>,
+}
+
+impl SseParser {
+    pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, String> {
+        self.append_utf8(chunk)?;
+        Ok(self.drain_events(false))
+    }
+
+    pub(super) fn finish(&mut self) -> Result<Vec<String>, String> {
+        if !self.utf8_tail.is_empty() {
+            return Err("ChatGPT stream ended with invalid UTF-8.".to_string());
+        }
+
+        Ok(self.drain_events(true))
+    }
+
+    fn append_utf8(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let mut bytes = std::mem::take(&mut self.utf8_tail);
+        bytes.extend_from_slice(chunk);
+
+        match str::from_utf8(&bytes) {
+            Ok(text) => self.input.push_str(text),
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                self.input.push_str(
+                    str::from_utf8(&bytes[..valid_up_to])
+                        .expect("valid UTF-8 prefix should decode"),
+                );
+                if error.error_len().is_some() {
+                    return Err("ChatGPT stream contained invalid UTF-8.".to_string());
+                }
+                self.utf8_tail.extend_from_slice(&bytes[valid_up_to..]);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn drain_events(&mut self, flush: bool) -> Vec<String> {
+        let mut events = Vec::new();
+        loop {
+            let Some((line_end, terminator_len)) = self.find_line_end(flush) else {
+                break;
+            };
+            let line = self.input[..line_end].to_string();
+            self.input.drain(..line_end + terminator_len);
+            if line.is_empty() {
+                self.dispatch_event(&mut events);
+            } else {
+                self.append_line(&line);
+            }
+        }
+
+        if flush {
+            if !self.input.is_empty() {
+                let line = std::mem::take(&mut self.input);
+                self.append_line(&line);
+            }
+            self.dispatch_event(&mut events);
+        }
+
+        events
+    }
+
+    fn find_line_end(&self, flush: bool) -> Option<(usize, usize)> {
+        let bytes = self.input.as_bytes();
+        for index in 0..bytes.len() {
+            match bytes[index] {
+                b'\n' => return Some((index, 1)),
+                b'\r' => {
+                    if index + 1 == bytes.len() && !flush {
+                        return None;
+                    }
+                    let terminator_len =
+                        usize::from(index + 1 < bytes.len() && bytes[index + 1] == b'\n') + 1;
+                    return Some((index, terminator_len));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn append_line(&mut self, line: &str) {
+        if !self.event.is_empty() {
+            self.event.push('\n');
+        }
+        self.event.push_str(line);
+    }
+
+    fn dispatch_event(&mut self, events: &mut Vec<String>) {
+        if !self.event.is_empty() {
+            events.push(std::mem::take(&mut self.event));
+        }
+    }
+}
+
 fn process_sse_event(
     app_handle: &AppHandle,
     request: &AiChatRequest,
@@ -242,17 +359,9 @@ fn process_sse_event(
     started_at: Instant,
     emitted_first_token: &mut bool,
 ) -> Result<bool, String> {
-    let mut payload = String::new();
-    for line in raw_event.lines() {
-        let trimmed = line.trim_end();
-        if let Some(rest) = trimmed.strip_prefix("data:") {
-            payload.push_str(rest.trim_start());
-        }
-    }
-
-    if payload.is_empty() {
+    let Some(payload) = extract_sse_data(raw_event) else {
         return Ok(false);
-    }
+    };
     if payload == "[DONE]" {
         return Ok(false);
     }
@@ -386,6 +495,7 @@ fn process_sse_event(
                         reasoning_summary,
                         tool_traces: None,
                         hidden_context: None,
+                        completion_reason: Some("completed".to_string()),
                     },
                 )
                 .map_err(|error| error.to_string())?;
@@ -395,6 +505,19 @@ fn process_sse_event(
         "response.incomplete" => Err("Incomplete response returned by ChatGPT.".to_string()),
         _ => Ok(false),
     }
+}
+
+pub(super) fn extract_sse_data(raw_event: &str) -> Option<String> {
+    let data_lines = raw_event
+        .split('\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let data = line.strip_prefix("data:")?;
+            Some(data.strip_prefix(' ').unwrap_or(data).to_string())
+        })
+        .collect::<Vec<_>>();
+
+    (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
 fn normalize_tool_definition(raw_tool: &Value) -> Result<Value, String> {

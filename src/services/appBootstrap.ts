@@ -11,6 +11,10 @@ import { useTaskStore } from '../stores/useTaskStore';
 import { useTerminalStore } from '../stores/useTerminalStore';
 import { useToolsStore } from '../stores/useToolsStore';
 import { devLogger } from '../utils/devLogger';
+import {
+  getDatabaseInitializationStatus,
+  isTauriAvailable,
+} from './tauriIpc';
 
 type InitPriority = 'critical' | 'high' | 'normal' | 'low';
 
@@ -35,6 +39,7 @@ export interface AppBootstrapSnapshot {
 }
 
 interface AppBootstrapDependencies {
+  initializeDatabaseCritical?: () => Promise<void>;
   initializeAppCritical: () => Promise<void>;
   resumeAppAfterInitialize: () => Promise<void>;
   initializeChatCritical: () => Promise<void>;
@@ -181,6 +186,24 @@ export const createAppBootstrapController = (
         startupError: null,
       }));
 
+      if (dependencies.initializeDatabaseCritical) {
+        const databaseOk = await initWithTracking(
+          'Database Critical',
+          dependencies.initializeDatabaseCritical,
+          'critical',
+          { fatal: true }
+        );
+        if (!databaseOk) {
+          updateSnapshotForRun(activeRunId, (current) => ({
+            ...current,
+            phase: 'error',
+            critical: false,
+            ready: false,
+          }));
+          return;
+        }
+      }
+
       const appCriticalOk = await initWithTracking(
         'App Critical',
         dependencies.initializeAppCritical,
@@ -306,7 +329,29 @@ export const createAppBootstrapController = (
   };
 };
 
+const waitForDatabaseInitialization = async (): Promise<void> => {
+  if (!isTauriAvailable()) {
+    return;
+  }
+
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    const status = await getDatabaseInitializationStatus();
+    if (status.status === 'ready') {
+      return;
+    }
+    if (status.status === 'failed') {
+      throw new Error(status.message || 'Database initialization failed.');
+    }
+    if (Date.now() >= deadline) {
+      throw new Error('Database is still initializing after 15 seconds.');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
+
 const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
+  initializeDatabaseCritical: waitForDatabaseInitialization,
   initializeAppCritical: useAppStore.getState().initializeCritical,
   resumeAppAfterInitialize: useAppStore.getState().resumeAfterInitialize,
   initializeChatCritical: useChatStore.getState().initializeCritical,

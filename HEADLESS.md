@@ -10,8 +10,7 @@ release note says otherwise.
 From the repository root:
 
 ```bash
-cd src-tauri
-cargo run --bin macro-headless
+bun run tauri:headless
 ```
 
 By default, the kernel listens on:
@@ -24,8 +23,16 @@ By default, the kernel listens on:
 
 - `MACRO_HEADLESS_HOST` - bind host, default `127.0.0.1`.
 - `MACRO_HEADLESS_PORT` - bind port, default `8787`.
-- `MACRO_HEADLESS_BEARER_TOKEN` - optional bearer token. When set, requests must
-  include `Authorization: Bearer <token>`.
+- `MACRO_HEADLESS_BEARER_TOKEN` - bearer token. It is optional for the default
+  loopback listener, but required for any non-loopback listener. Requests must
+  include `Authorization: Bearer <token>` when authentication is enabled.
+- `MACRO_HEADLESS_ALLOWED_ROOTS` - optional path-list of additional directory
+  roots that headless project mounts may use. The configured Macro workspace
+  directory is always allowed; mount paths must resolve to existing directories
+  below one of these roots.
+- `MACRO_HEADLESS_CORS_ORIGINS` - optional comma-separated list of additional
+  exact browser origins allowed by CORS. Wildcard origins are rejected. Common
+  local Vite and Tauri origins are allowed by default.
 
 ## Available Endpoints
 
