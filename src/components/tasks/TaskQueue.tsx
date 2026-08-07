@@ -974,10 +974,31 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     };
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
-  const scopedProjectIds = useMemo(
-    () => getScopedProjectIds({ standaloneProjects, projectGroups }, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
-  );
+  const scopedProjectState = useMemo(() => {
+    const projectRegistry = { standaloneProjects, projectGroups };
+    const projectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
+    const actionableProjectIds = getScopedActionableProjectIds(
+      projectRegistry,
+      selectedGroupId,
+      selectedProjectId
+    );
+    const readOnlyProjectIds = getScopedReadOnlyProjectIds(
+      projectRegistry,
+      selectedGroupId,
+      selectedProjectId
+    );
+    const readOnlyProjects = readOnlyProjectIds
+      .map((projectId) => getProjectById(projectId))
+      .filter((project): project is NonNullable<typeof project> => Boolean(project));
+
+    return {
+      projectIds,
+      actionableProjectIds,
+      readOnlyProjectIds,
+      readOnlyProjects,
+    };
+  }, [getProjectById, projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]);
+  const scopedProjectIds = scopedProjectState.projectIds;
   const retargetTaskForCurrentScope = useCallback(
     (task: ImplementTask): ImplementTask =>
       retargetTaskForProjectSelection(task, {
@@ -988,16 +1009,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       }),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const scopedActionableProjectIds = getScopedActionableProjectIds(
-    { standaloneProjects, projectGroups },
-    selectedGroupId,
-    selectedProjectId
-  );
-  const scopedReadOnlyProjectIds = getScopedReadOnlyProjectIds(
-    { standaloneProjects, projectGroups },
-    selectedGroupId,
-    selectedProjectId
-  );
+  const scopedActionableProjectIds = scopedProjectState.actionableProjectIds;
+  const scopedReadOnlyProjectIds = scopedProjectState.readOnlyProjectIds;
   const workspaceState = resolveProjectWorkspaceState({
     standaloneProjects,
     projectGroups,
@@ -1005,9 +1018,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedProjectId,
   });
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const scopedReadOnlyProjects = scopedReadOnlyProjectIds
-    .map((projectId) => getProjectById(projectId))
-    .filter((project): project is NonNullable<typeof project> => Boolean(project));
+  const scopedReadOnlyProjects = scopedProjectState.readOnlyProjects;
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope =
     scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;

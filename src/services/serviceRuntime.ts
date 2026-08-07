@@ -35,7 +35,7 @@ export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE = 'REMOTE_UNSUPPORTED_IN_REMOTE_M
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE =
   'This action is not available in remote mode yet.';
 export const DESKTOP_IPC_UNAVAILABLE_MESSAGE =
-  'Desktop transport requires Tauri IPC; use VITE_BACKEND_TRANSPORT=remote for web/mobile runtimes.';
+  'Macro desktop features require Tauri IPC. Run the Tauri desktop app; remote mode is not available in Macro 0.1.';
 
 const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   bootstrap: true,

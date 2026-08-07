@@ -14,7 +14,7 @@ Il couvre :
 Ce document n'est pas une roadmap et n'est pas une specification fonctionnelle.
 
 La cible fonctionnelle du produit est definie dans `docs/functional-spec.md`.
-Les évolutions à venir et les écarts avec l'état courant relèvent de `docs/roadmap.md`.
+Les evolutions a venir et les ecarts avec l'etat courant relevent de `docs/roadmap.md`.
 
 ---
 
@@ -24,7 +24,7 @@ Macro est une application desktop construite autour d'un frontend React TypeScri
 
 L'architecture repose sur quatre principes :
 
-- local-first par défaut
+- local-first par defaut
 - separation stricte entre surface produit et details d'implementation
 - transport interchangeable entre backend desktop et backend distant
 - preservation d'un historique de travail auditable via la persistence locale et la branche metadata
@@ -32,8 +32,8 @@ L'architecture repose sur quatre principes :
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
 - desktop local avec backend Tauri embarque
-- client desktop connecte à un kernel distant
-- client web/mobile connecte à un kernel distant
+- client desktop connecte a un kernel distant
+- client web/mobile connecte a un kernel distant
 
 ---
 
@@ -46,30 +46,30 @@ La couche interface est composee du frontend React dans `src/`.
 Elle est responsable de :
 - l'affichage des modes et des panneaux
 - la gestion des interactions utilisateur
-- la visualisation des plans, tâches, diffs et etats
-- la configuration des providers, outils et préférences
+- la visualisation des plans, taches, diffs et etats
+- la configuration des providers, outils et preferences
 
 Le frontend ne doit pas contenir la logique bas niveau du systeme de fichiers, de Git ou de la persistence native.
 
-### 3.2 Couche état client
+### 3.2 Couche etat client
 
-La couche état client est principalement basee sur Zustand.
+La couche etat client est principalement basee sur Zustand.
 
 Elle est responsable de :
-- l'état global de l'application
+- l'etat global de l'application
 - les contextes de projet, plan et conversation
-- l'état des tâches, changements de fichiers et outils
-- la synchronisation des préférences locales cote client
+- l'etat des taches, changements de fichiers et outils
+- la synchronisation des preferences locales cote client
 
 Les stores centralisent les decisions d'orchestration cote interface.
 
 ### 3.3 Couche services frontend
 
-La couche services frontend encapsule les accès aux sources de donnees et aux outils.
+La couche services frontend encapsule les acces aux sources de donnees et aux outils.
 
 Elle fournit :
 - une abstraction de provider (`ipc`, `remote`)
-- des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'exécution d'outils
+- des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
 
 Elle a pour role d'isoler le reste de l'interface des details du transport.
 
@@ -82,7 +82,7 @@ Il sert de pont entre :
 - les commandes natives Rust
 - les plugins natifs Tauri
 
-Cette couche permet l'accès natif a :
+Cette couche permet l'acces natif a :
 - la fenetre desktop
 - les dialogues systeme
 - le store natif
@@ -95,13 +95,13 @@ Le backend Rust est contenu dans `src-tauri/`.
 
 Il fournit les capacites natives suivantes :
 - base de donnees SQLite
-- accès systeme de fichiers
+- acces systeme de fichiers
 - integration Git
 - gestion du workspace
 - validation de politique d'outils
-- exécution d'outils de workspace
+- execution d'outils de workspace
 - providers IA cote backend
-- kernel headless HTTP pour l'exécution distante
+- kernel headless HTTP pour l'execution distante
 
 ---
 
@@ -135,14 +135,12 @@ Le backend desktop utilise principalement :
 
 ### 4.3 Transports
 
-Macro supporte deux transports logiques cote application :
+Le produit 0.1 supporte un transport cote application :
 
 - `desktop`
-- `remote`
 
 Le transport `desktop` passe par Tauri IPC.
-Le transport `remote` passe par HTTP vers un kernel distant.
-Dans la ligne 0.1, `desktop` est le transport principal supporte. `remote` existe en premiere version pour le bootstrap workspace, le catalogue de tâches, certains etats Git et l'exécution d'outils distante, mais ne couvre pas encore toute la surface desktop.
+Une fondation HTTP distante existe dans le code a titre experimental, mais elle n'est ni exposee ni supportee comme capacite produit en 0.1. Elle pourra servir a une future ligne remote sans modifier le contrat desktop actuel.
 
 ---
 
@@ -153,8 +151,8 @@ Dans la ligne 0.1, `desktop` est le transport principal supporte. `remote` exist
 Le frontend est organise autour de :
 
 - `components/` pour les surfaces UI
-- `stores/` pour l'état global
-- `services/` pour la logique d'accès et d'orchestration
+- `stores/` pour l'etat global
+- `services/` pour la logique d'acces et d'orchestration
 - `hooks/` pour les comportements transverses
 - `types/` pour les types applicatifs
 
@@ -164,7 +162,7 @@ L'application n'utilise pas un routage classique base sur des pages.
 
 Le coeur de l'interface repose sur un routage par mode qui affecte les panneaux gauche, centre et droit selon le contexte actif.
 
-Cette responsabilite est concentrée dans le routeur de mode.
+Cette responsabilite est concentree dans le routeur de mode.
 
 ### 5.3 Decoupage des panneaux
 
@@ -180,13 +178,13 @@ Le centre reste principalement occupe par la conversation et la coordination du 
 
 ### 5.4 Initialisation
 
-Le frontend initialise ses stores par priorités afin de reduire le cout de demarrage percu.
+Le frontend initialise ses stores par priorites afin de reduire le cout de demarrage percu.
 
 L'initialisation se fait en plusieurs niveaux :
 
 - bootstrap critique de l'application
 - session utilisateur et contexte
-- donnees coeur comme chat et tâches
+- donnees coeur comme chat et taches
 - configuration et providers en basse priorite
 
 ### 5.5 Lazy loading
@@ -209,11 +207,11 @@ Le but est de limiter le cout du bundle initial et d'accelerer l'affichage du sh
 Il gere notamment :
 
 - le mode actif
-- la sélection du groupe et du projet
+- la selection du groupe et du projet
 - le plan courant
 - les plan nodes et predicted branches
-- les panneaux, modales et préférences globales
-- l'état de sync metadata
+- les panneaux, modales et preferences globales
+- l'etat de sync metadata
 - le changement de contexte projet
 
 ### 6.2 `useChatStore`
@@ -233,11 +231,11 @@ Le store porte aussi une partie de la logique d'orchestration entre chat et mode
 
 `useTaskStore` gere :
 
-- les tâches derivees de la stratégie
+- les taches derivees de la strategie
 - leur activation
-- leurs transitions d'état
-- la relation entre tâche, branche et worktree
-- la persistance du statut d'exécution dans les metadata du plan
+- leurs transitions d'etat
+- la relation entre tache, branche et worktree
+- la persistance du statut d'execution dans les metadata du plan
 
 ### 6.4 Stores specialises
 
@@ -248,14 +246,13 @@ D'autres stores portent des responsabilites ciblees :
 - `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modeles IA
 - `useToolsStore` pour les outils internes et MCP
-- `useSkillsStore` pour la découverte, les préférences et les activations de skills
-- `useAuthStore` pour les futurs usages lies au compte
+- `useSkillsStore` pour la decouverte, les preferences et les activations de skills
 
 ### 6.5 Principe d'orchestration
 
 Le frontend ne doit pas dupliquer les decisions metier dans plusieurs composants.
 
-La logique transverse doit être concentrée dans :
+La logique transverse doit etre concentree dans :
 
 - les stores
 - les services
@@ -272,12 +269,12 @@ Les composants doivent surtout afficher, recueillir des intentions utilisateur e
 La couche `services/index.ts` selectionne dynamiquement le provider de donnees selon :
 
 - le transport cible (`desktop` ou `remote`)
-- la disponibilité effective du runtime Tauri
+- la disponibilite effective du runtime Tauri
 
 Cette abstraction permet :
 
 - d'utiliser Tauri en mode desktop
-- de parler à un backend distant sans reecrire le reste de l'application
+- de parler a un backend distant sans reecrire le reste de l'application
 
 ### 7.2 Services de domaine
 
@@ -359,7 +356,6 @@ Les blocs principaux sont :
 - `workspace/`
 - `commands/`
 - `ai/`
-- `index/`
 
 ### 9.2 `core`
 
@@ -386,7 +382,7 @@ Le module `fs` porte :
 - la lecture et l'ecriture de fichiers
 - la validation des chemins
 - le support du watcher de fichiers
-- la résolution spéciale du workspace metadata
+- la resolution speciale du workspace metadata
 
 ### 9.5 `git`
 
@@ -404,7 +400,7 @@ Le module `workspace` porte :
 - le bootstrap du workspace
 - la liste des groupes et projets
 - la persistence du fichier `workspace.json`
-- les opérations de creation, import, renommage, archivage et fermeture de projets
+- les operations de creation, import, renommage, archivage et fermeture de projets
 
 ### 9.7 `ai`
 
@@ -414,12 +410,6 @@ Le module `ai` porte :
 - les implementations OpenAI, Anthropic et local
 
 Cette couche est encore partiellement utilisee selon les flux, mais fait partie de l'architecture cible.
-
-### 9.8 `index`
-
-Le module `index` prepare la couche d'indexation et de recherche.
-
-Il existe dans l'architecture, meme si son usage produit n'est pas encore completement active.
 
 ---
 
@@ -435,16 +425,15 @@ Elle stocke notamment :
 - messages
 - settings
 - cache local de workspace
-- jobs d'index
 - references de depots Git et worktrees
 
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistence locale legere pour :
 
-- certaines préférences
-- les selections de modèle par contexte
-- l'état de session local
+- certaines preferences
+- les selections de modele par contexte
+- l'etat de session local
 - certains fallback de plans
 - des donnees temporaires de pieces jointes
 
@@ -483,9 +472,9 @@ Les plans sont stockes dans une structure de type :
 - `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
 - `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
 
-Les artefacts de relais de tâches sont separes du dossier `tasks/<task-id>/`, qui reste reserve aux rendus générés comme `planned.md` et `executed.md`.
+Les artefacts de relais de taches sont separes du dossier `tasks/<task-id>/`, qui reste reserve aux rendus generes comme `planned.md` et `executed.md`.
 
-`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement a marquer la revue de l'artefact pour la tâche consommatrice courante.
+`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement a marquer la revue de l'artefact pour la tache consommatrice courante.
 
 ### 11.2 Raison de cette structure
 
@@ -493,7 +482,7 @@ Cette structure sert a :
 
 - conserver une representation machine des plans
 - conserver une representation lisible par humain
-- permettre une auditabilite fine tâche par tâche
+- permettre une auditabilite fine tache par tache
 - rendre la metadata consultable meme hors de l'application
 
 ### 11.3 Relation avec le frontend
@@ -501,7 +490,7 @@ Cette structure sert a :
 Le frontend lit, ecrit et synchronise cette structure via :
 
 - les services de planification
-- le service d'artefacts de plan, qui calcule la fermeture transitive des dependances et applique les droits de lecture/ecriture par tâche
+- le service d'artefacts de plan, qui calcule la fermeture transitive des dependances et applique les droits de lecture/ecriture par tache
 - les commandes FS avec scope metadata
 - les commandes Git de sync `@macro`
 
@@ -515,7 +504,7 @@ L'architecture Git de Macro repose sur trois niveaux principaux :
 
 - branche de base de developpement
 - branches d'integration de plan
-- branches de feature ou d'exécution
+- branches de feature ou d'execution
 
 ### 12.2 Branches de plan
 
@@ -523,31 +512,31 @@ Pour le travail planifie, Macro utilise une branche d'integration dediee au plan
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
-Macro ajoute au rendu et à la file Implement une tâche de finalisation synthetique. Elle depend des feuilles non archivees de la stratégie et n'est pas persistee comme un noeud Architect.
+Macro ajoute au rendu et a la file Implement une tache de finalisation synthetique. Elle depend des feuilles non archivees de la strategie et n'est pas persistee comme un noeud Architect.
 
 ### 12.3 Branches de feature
 
-Les tâches de la stratégie peuvent être réparties sur plusieurs branches de feature rattachées au plan afin de :
+Les taches de la strategie peuvent etre reparties sur plusieurs branches de feature rattachees au plan afin de :
 
 - maximiser le parallelisme
 - conserver des lots de travail plus petits
 - limiter les changements trop larges
 
-Chaque tâche executable dispose de sa propre branche de feature par sous-projet editable.
+Chaque tache executable dispose de sa propre branche de feature par sous-projet editable.
 
-Les dependances entre tâches expriment le sequentiel ; elles ne sont pas modelees par la reutilisation d'une meme branche.
+Les dependances entre taches expriment le sequentiel ; elles ne sont pas modelees par la reutilisation d'une meme branche.
 
-Une fois valide, le travail d'une tâche est merge vers la branche d'integration du plan. Les tâches dependantes demarrent ensuite depuis cette branche de plan mise à jour.
+Une fois valide, le travail d'une tache est merge vers la branche d'integration du plan. Les taches dependantes demarrent ensuite depuis cette branche de plan mise a jour.
 
 ### 12.4 Worktrees
 
-Les worktrees permettent d'isoler l'exécution par tâche.
+Les worktrees permettent d'isoler l'execution par tache.
 
 Ils sont utilises pour :
 
-- éviter de tout faire dans un seul arbre de travail
-- permettre plusieurs executions en parallèle
-- conserver une separation nette entre contextes d'exécution
+- eviter de tout faire dans un seul arbre de travail
+- permettre plusieurs executions en parallele
+- conserver une separation nette entre contextes d'execution
 
 ### 12.5 Branche `@macro`
 
@@ -558,7 +547,7 @@ Elle est synchronisee separatement du code metier.
 Le systeme doit pouvoir :
 
 - s'assurer de son existence
-- connaitre son état de divergence
+- connaitre son etat de divergence
 - committer les metadata si necessaire
 - push et pull cette branche
 
@@ -569,12 +558,12 @@ La sync metadata est geree comme une couche distincte de la sync du code.
 Cette separation permet :
 
 - de ne pas melanger l'historique produit avec l'historique source classique
-- d'exposer un état clair dans l'interface
-- de gérer les conflits metadata de façon explicite
+- d'exposer un etat clair dans l'interface
+- de gerer les conflits metadata de facon explicite
 
 ---
 
-## 13. Outils, politiques d'accès et exécution
+## 13. Outils, politiques d'acces et execution
 
 ### 13.1 Politique par mode
 
@@ -586,11 +575,11 @@ Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
 - Chat reste plus restreint
-- Implement a accès a davantage d'outils de workspace et Git
+- Implement a acces a davantage d'outils de workspace et Git
 
-### 13.2 Validation d'exécution
+### 13.2 Validation d'execution
 
-Avant exécution d'un outil, Macro peut valider :
+Avant execution d'un outil, Macro peut valider :
 
 - si l'outil est autorise dans le mode courant
 - si le chemin cible est autorise
@@ -598,13 +587,13 @@ Avant exécution d'un outil, Macro peut valider :
 
 ### 13.3 Execution de workspace tools
 
-La couche d'exécution d'outils encapsule :
+La couche d'execution d'outils encapsule :
 
-- la résolution du bon workspace
+- la resolution du bon workspace
 - la difference entre scope normal et scope metadata
 - le fallback entre transport Tauri et transport distant
 
-Cette couche unifie l'exécution des outils cote produit.
+Cette couche unifie l'execution des outils cote produit.
 
 ---
 
@@ -614,26 +603,26 @@ Cette couche unifie l'exécution des outils cote produit.
 
 Les skills sont une couche de contexte agent distincte de MCP.
 
-Une skill fournit des instructions reutilisables a l'agent. Elle ne crée pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
+Une skill fournit des instructions reutilisables a l'agent. Elle ne cree pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
 
 ### 14.2 Format local
 
 La version locale supporte des dossiers contenant :
 
-- `SKILL.md` prioritaire, avec `skill.md` accepté en mode compatibilité
+- `SKILL.md` prioritaire, avec `skill.md` accepte en mode compatibilite
 - frontmatter YAML AgentSkills avec `name`, `description`, `license`, `compatibility`, `allowed-tools` et `metadata`
 - dossiers optionnels `references/`, `assets/` et `scripts/`
 
-Les sources supportées en 0.1 sont :
+Les sources supportees en 0.1 sont :
 
 - `.agents/skills`, `.codex/skills`, `.opencode/skills`, `.opencode/skill` et `.claude/skills` dans les projets visibles par Macro
 - `~/.agents/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills`, `~/.opencode/skill` et `~/.claude/skills` pour les skills utilisateur globales
 
-La découverte ignore les dossiers cachés internes, `.git`, `node_modules`, les racines symlinkées et applique des limites de profondeur et de volume. La validation sépare `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
+La decouverte ignore les dossiers caches internes, `.git`, `node_modules`, les racines symlinkees et applique des limites de profondeur et de volume. La validation separe `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
 
-Le validateur suit la logique `skills-ref` pour les noms : comparaison après normalisation Unicode NFKC, lettres/chiffres Unicode acceptés avec tirets, et lowercase Unicode. Les écarts d'usage courants (uppercase, underscores, tirets en début/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` génère le diagnostic `unexpected_frontmatter_field`.
+Le validateur suit la logique `skills-ref` pour les noms : comparaison apres normalisation Unicode NFKC, lettres/chiffres Unicode acceptes avec tirets, et lowercase Unicode. Les ecarts d'usage courants (uppercase, underscores, tirets en debut/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` genere le diagnostic `unexpected_frontmatter_field`.
 
-Les collisions sont résolues de façon déterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposée au catalogue agent et à la résolution `$skill-name`. Les skills shadowed restent listées dans Settings et peuvent être chargées par sélection explicite/id exact.
+Les collisions sont resolues de facon deterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposee au catalogue agent et a la resolution `$skill-name`. Les skills shadowed restent listees dans Settings et peuvent etre chargees par selection explicite/id exact.
 
 ### 14.3 Chargement progressif
 
@@ -645,34 +634,36 @@ Le chargement doit rester progressif :
 - les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
 - les scripts de `scripts/` sont executes via `skill_run_script`
 
-`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dedupliquees par conversation et rechargees seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistres aupres du modèle que lorsqu'une skill activée et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts actives et un niveau de risque compatible.
+`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dedupliquees par conversation et rechargees seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistres aupres du modele que lorsqu'une skill activee et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts actives et un niveau de risque compatible.
 
-Les préférences d'activation sont persistees comme préférences Macro cote client, pas dans les dossiers de skills.
+Les preferences d'activation sont persistees comme preferences Macro cote client, pas dans les dossiers de skills.
 
-### 14.4 Sécurité
+### 14.4 Securite
 
-Les skills découvertes sont désactivées par défaut.
+Les skills decouvertes sont desactivees par defaut.
 
-L'exécution de scripts exige :
+L'execution de scripts exige :
 
-- skill activée
+- skill activee
 - skill marquee comme trusted
 - scripts actives pour cette skill
-- passage par la politique d'approbation d'outils à risque
+- passage par la politique d'approbation d'outils a risque
 
-Le backend bloque les chemins hors skill, les traversals, les fichiers cachés non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectés par défaut, avec timeout, sortie tronquée et répertoire temporaire par défaut.
+Le backend bloque les chemins hors skill, les traversals, les fichiers caches non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectes par defaut, avec timeout, sortie tronquee et repertoire temporaire par defaut.
 
 `allowed-tools` est expose comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
 
-### 14.5 Transport remote
+### 14.5 Fondation de transport remote (experimentale)
 
-Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilité UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilégier quand le runtime n'est pas local. La déduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
+Cette couche reste interne et hors du contrat produit 0.1. Les details ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
 
-Le provider remote expose les opérations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le prefixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolerant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime courant ne supporte pas la capacité precise.
+Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local. La deduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
 
-Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le prefixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolerant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime courant ne supporte pas la capacite precise.
 
-La surface complète reste supportee par le desktop local via Tauri IPC.
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des reglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par defaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+
+La surface complete reste supportee par le desktop local via Tauri IPC.
 
 ---
 
@@ -686,44 +677,46 @@ Cette couche s'occupe de :
 
 - envoyer le contexte conversationnel
 - recevoir les tokens ou chunks
-- mettre à jour la conversation en cours
+- mettre a jour la conversation en cours
 - annuler un stream si necessaire
 
 ### 15.2 Couplage avec les plans
 
-En mode Architect, certaines actions conversationnelles declenchent une sync metadata à la fin du stream.
+En mode Architect, certaines actions conversationnelles declenchent une sync metadata a la fin du stream.
 
-L'objectif est d'ancrer les changements de plan dans la branche metadata de façon reguliere.
+L'objectif est d'ancrer les changements de plan dans la branche metadata de facon reguliere.
 
 ### 15.3 Couplage avec le mode Implement
 
 En mode Implement, le chat sert aussi de couche d'interaction pour :
 
-- les clarifications de tâche
+- les clarifications de tache
 - les questions de l'IA
-- le kickoff d'exécution
+- le kickoff d'execution
 
 Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestration utilisateur.
 
 ---
 
-## 16. Backend distant et kernel headless
+## 16. Fondation experimentale : backend distant et kernel headless
 
-### 16.1 Rôle du kernel headless
+Cette section documente du code exploratoire interne. Ce code n'est pas expose comme mode produit, n'est pas supporte en 0.1 et ne constitue pas un engagement de compatibilite.
 
-Le kernel headless est la version sans GUI du backend Macro.
+### 16.1 Role du kernel headless
 
-Il doit permettre à un client Macro distant de :
+Le prototype de kernel headless est une version sans GUI du backend Macro.
 
-- récupérer l'état du workspace
-- récupérer les tâches
+Il explore la possibilite pour un futur client Macro distant de :
+
+- recuperer l'etat du workspace
+- recuperer les taches
 - interroger les politiques d'outils
-- exécuter certains outils
-- consulter l'état Git
+- executer certains outils
+- consulter l'etat Git
 
 ### 16.2 Exposition HTTP
 
-Le kernel headless expose une API HTTP basée sur axum.
+Le kernel headless expose une API HTTP basee sur axum.
 
 Cette API couvre au minimum :
 
@@ -745,23 +738,21 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
-Cette surface remote est volontairement minimale en 0.1 et ne remplace pas encore toutes les commandes IPC desktop.
+Cette surface HTTP est une fondation experimentale incomplete. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
-Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la découverte, l'activation et la lecture de ressources; `skillScripts` pour l'exécution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
+Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
-### 16.3 Authentification
+### 16.3 Protection experimentale
 
-Le kernel headless peut être protégé par un bearer token.
+Le kernel headless peut etre protege par un bearer token.
 
-Cette securisation est la base du modèle de connexion distante, meme si le modèle complet de compte et d'abonnement depasse l'état courant du code.
+Ce token protege uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
 ### 16.4 Position architecturale
 
-Le kernel headless n'est pas un service annexe.
+Si cette exploration devient un jour une capacite produit, elle pourrait servir de base a :
 
-Il constitue la base de :
-
-- l'exécution distante
+- l'execution distante
 - la continuite entre plusieurs clients
 - la supervision mobile future
 - les offres eventuelles d'hebergement dedie
@@ -776,7 +767,7 @@ Le frontend depend notamment de variables d'environnement pour :
 
 - choisir le provider de donnees
 - choisir le transport backend
-- configurer l'accès au backend distant
+- configurer l'acces au backend distant
 
 ### 17.2 Configuration backend
 
@@ -788,13 +779,13 @@ Le backend Rust charge une configuration runtime pour :
 
 ### 17.3 Configuration utilisateur
 
-Les préférences utilisateur sont réparties entre :
+Les preferences utilisateur sont reparties entre :
 
 - persistence locale frontend
 - settings backend
 - configurations providers et modeles
 - regles de workflow Git et d'automatisation
-- préférences de skills activees, trusted et scripts
+- preferences de skills activees, trusted et scripts
 
 ---
 
@@ -811,7 +802,7 @@ Le present document ne doit pas decrire en detail :
 
 - la philosophie produit generale
 - les workflows utilisateur comme contrat principal
-- les priorités de developpement
+- les priorites de developpement
 
 Ces sujets appartiennent respectivement a :
 
@@ -822,14 +813,14 @@ Ces sujets appartiennent respectivement a :
 
 ## 19. Regles de maintenance du document
 
-Ce document doit être mis à jour lorsque :
+Ce document doit etre mis a jour lorsque :
 
 - une couche architecturale change
 - un transport ou un flux de donnees change
 - une responsabilite systeme change de place
 - un mecanisme de persistance ou de sync change
 
-Ce document ne doit pas être mis à jour pour :
+Ce document ne doit pas etre mis a jour pour :
 
 - des ajustements purement visuels
 - des details d'UX sans impact d'architecture

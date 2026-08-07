@@ -55,9 +55,6 @@ regex = "1"
 notify = "6"
 walkdir = "2"
 
-# Indexing (placeholder - will add tree-sitter later)
-# tree-sitter = "0.20"
-
 # AI
 reqwest = { version = "0.11", features = ["stream", "json"] }
 futures = "0.3"

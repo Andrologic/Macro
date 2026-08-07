@@ -2,7 +2,6 @@ import { preloadModePanels } from '../components/layout/modePanelLoaders';
 import type { AppMode } from '../types';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
 import { useAppStore } from '../stores/useAppStore';
-import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
@@ -51,7 +50,6 @@ interface AppBootstrapDependencies {
   initializeProviders: () => Promise<void>;
   restoreChatSelectionAfterProviderInit: () => Promise<void>;
   initializeShortcuts: () => Promise<void>;
-  checkSession: () => Promise<void>;
   getCurrentMode: () => AppMode;
   preloadModeComponents: (mode: AppMode) => Promise<void>;
   scheduleLowPriority: (run: () => void) => void;
@@ -251,7 +249,6 @@ export const createAppBootstrapController = (
         initWithTracking('Task Resume', dependencies.resumeTasksAfterInitialize, 'high', {
           warningOnly: true,
         }),
-        initWithTracking('Auth Session', dependencies.checkSession, 'high'),
       ]).then(() => {
         if (!dependencies.isPageShuttingDown()) {
           updateSnapshotForRun(activeRunId, (current) => ({ ...current, high: true }));
@@ -364,7 +361,6 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
   restoreChatSelectionAfterProviderInit:
     useChatStore.getState().reapplySelectionForCurrentContext,
   initializeShortcuts: useShortcutsStore.getState().initialize,
-  checkSession: useAuthStore.getState().checkSession,
   getCurrentMode: () => useAppStore.getState().mode,
   preloadModeComponents: async (mode) => {
     const state = useAppStore.getState();

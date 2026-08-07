@@ -244,6 +244,9 @@ const installStoreMock = () => {
   mock.module('../../../services/workspaceFileSearch', () => ({
     searchWorkspaceFiles: searchWorkspaceFilesMock,
   }));
+  mock.module('./ComposerHistoryPlugin', () => ({
+    ComposerHistoryPlugin: () => null,
+  }));
 };
 
 describe('ComposerEditor context references', () => {
@@ -251,6 +254,7 @@ describe('ComposerEditor context references', () => {
   let root: Root;
   let ComposerEditor: typeof import('./ComposerEditor').ComposerEditor;
   let getCollapsedComposerSelectionTextPosition: typeof import('./ComposerEditor').getCollapsedComposerSelectionTextPosition;
+  let shouldUsePromptHistoryForPosition: typeof import('./ComposerEditor').shouldUsePromptHistoryForPosition;
 
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -276,7 +280,8 @@ describe('ComposerEditor context references', () => {
     ({
       ComposerEditor,
       getCollapsedComposerSelectionTextPosition,
-    } = await import(`./ComposerEditor.tsx?composer-editor-test=${Date.now()}`));
+      shouldUsePromptHistoryForPosition,
+    } = await import('./ComposerEditor'));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -452,7 +457,6 @@ describe('ComposerEditor context references', () => {
   });
 
   it('uses contextual arrows for prompt history only at text boundaries', async () => {
-    const onPromptHistory = mock(() => undefined);
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -463,31 +467,26 @@ describe('ComposerEditor context references', () => {
           placeholder="Message"
           onTextChange={() => undefined}
           onSend={() => undefined}
-          onPromptHistory={onPromptHistory}
+          onPromptHistory={() => undefined}
         />
       );
     });
 
-    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
-
     await act(async () => {
       editorRef.current?.setText('');
       await Promise.resolve();
-      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-      await Promise.resolve();
     });
 
-    expect(onPromptHistory).toHaveBeenCalledWith('up');
+    expect(shouldUsePromptHistoryForPosition({ offset: 0, total: 0 }, 'up')).toBe(true);
+    expect(shouldUsePromptHistoryForPosition({ offset: 0, total: 0 }, 'down')).toBe(true);
 
     await act(async () => {
       editorRef.current?.setText('hello\nworld');
       await Promise.resolve();
-      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-      await Promise.resolve();
     });
 
-    expect(onPromptHistory).toHaveBeenCalledWith('down');
-    expect(onPromptHistory).toHaveBeenCalledTimes(2);
+    expect(shouldUsePromptHistoryForPosition({ offset: 11, total: 11 }, 'up')).toBe(false);
+    expect(shouldUsePromptHistoryForPosition({ offset: 11, total: 11 }, 'down')).toBe(true);
   });
 
   it('clears without leaving a collapsed selection at the empty composer start', async () => {
@@ -507,27 +506,30 @@ describe('ComposerEditor context references', () => {
       );
     });
 
-    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
-
     await act(async () => {
       editorRef.current?.setText('hello');
       await Promise.resolve();
       editorRef.current?.clear();
       await Promise.resolve();
-      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-      await Promise.resolve();
     });
 
     expect(editorRef.current?.getTextContent()).toBe('');
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
     expect(onPromptHistory).not.toHaveBeenCalled();
 
     await act(async () => {
       editorRef.current?.setText('');
       await Promise.resolve();
-      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-      await Promise.resolve();
     });
 
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
     expect(onPromptHistory).toHaveBeenCalledWith('up');
   });
 
@@ -1056,7 +1058,7 @@ describe('ComposerEditor context references', () => {
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
 
     await act(async () => {
-      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
 

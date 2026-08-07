@@ -1,9 +1,8 @@
-# Headless Kernel
+# Experimental Headless Kernel
 
-Macro includes an early headless backend kernel for remote and no-GUI workflows.
-In the 0.1 release line, the desktop app remains the primary supported product
-surface. Headless and remote transport workflows are best-effort unless a
-release note says otherwise.
+This document describes an internal, experimental foundation for future remote
+and no-GUI work. It is not exposed as a Macro 0.1 product feature, is not part
+of the supported release surface, and may change without compatibility guarantees.
 
 ## Run The Kernel
 

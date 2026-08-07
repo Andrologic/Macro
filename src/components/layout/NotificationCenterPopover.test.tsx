@@ -51,7 +51,7 @@ describe('NotificationCenterPopover', () => {
           id: 'info-item',
           level: 'info',
           variant: 'informational',
-          title: 'Background indexing finished',
+          title: 'Background work finished',
           description: 'Everything is up to date.',
           createdAt: '2026-04-12T09:00:00.000Z',
           readAt: null,
@@ -140,7 +140,7 @@ describe('NotificationCenterPopover', () => {
 
     const surfaces = document.body.querySelectorAll('[data-notification-surface="true"]');
     expect(surfaces).toHaveLength(2);
-    expect(document.body.textContent).toContain('Background indexing finished');
+    expect(document.body.textContent).toContain('Background work finished');
     expect(document.body.textContent).toContain('Base branch missing');
     expect(document.body.textContent).toContain('Create');
     expect(document.body.textContent).toContain('Open settings');
@@ -333,7 +333,7 @@ describe('NotificationCenterPopover', () => {
     });
 
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
-    expect(document.body.textContent).not.toContain('Background indexing finished');
+    expect(document.body.textContent).not.toContain('Background work finished');
 
     const clearAllButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent === 'Clear all'

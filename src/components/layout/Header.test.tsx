@@ -16,7 +16,6 @@ type AppStoreState = {
   mode: AppMode;
   setMode: (mode: AppMode) => void;
   openSettings: () => void;
-  openAccount: () => void;
   uiZoomMode: 'auto' | 'override';
   uiZoomLevel: number;
   selectedGroupId: string | null;
@@ -138,7 +137,6 @@ describe('Header', () => {
       mode: 'Architect',
       setMode: () => undefined,
       openSettings: () => undefined,
-      openAccount: () => undefined,
       uiZoomMode: 'auto',
       uiZoomLevel: 1,
       selectedGroupId: 'group-1',

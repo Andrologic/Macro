@@ -7,6 +7,7 @@ import { PanelResizer } from "./components/layout/PanelResizer";
 import { ModeRouter } from "./components/layout/ModeRouter";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
+import { notify } from "./components/ui/toastService";
 import { useAppStore } from "./stores/useAppStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -25,7 +26,6 @@ import type {
 
 const DiffModal = lazy(() => import("./components/modals/DiffModal"));
 const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
-const AccountModal = lazy(() => import("./components/modals/AccountModal"));
 const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
 const ProjectGitFlowModal = lazy(
   () => import("./components/modals/ProjectGitFlowModal"),
@@ -354,51 +354,39 @@ const App: React.FC = () => {
     }
     lastRecoveryToastKeyRef.current = toastKey;
 
-    let cancelled = false;
-
-    void import("./components/ui/toastService").then(({ notify }) => {
-      if (cancelled) {
-        return;
-      }
-
-      if (metadataRecoveryReport.status === "restored_from_history") {
-        notify.success(
-          metadataRecoveryReport.restoredCommit
-            ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
-            : "Metadata @macro restored from history",
-          {
-            description:
-              metadataRecoveryReport.message ||
-              "Macro restored the latest valid metadata snapshot before loading the workspace.",
-          },
-        );
-        return;
-      }
-
-      if (metadataRecoveryReport.status === "reconstructed_from_hints") {
-        notify.info("Metadata @macro reconfigured from local projects", {
+    if (metadataRecoveryReport.status === "restored_from_history") {
+      notify.success(
+        metadataRecoveryReport.restoredCommit
+          ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
+          : "Metadata @macro restored from history",
+        {
           description:
             metadataRecoveryReport.message ||
-            "Macro rebuilt a minimal metadata state from locally known projects.",
-        });
-        return;
-      }
+            "Macro restored the latest valid metadata snapshot before loading the workspace.",
+        },
+      );
+      return;
+    }
 
-      if (
-        metadataRecoveryReport.status === "blocked_dirty" ||
-        metadataRecoveryReport.status === "blocked_conflict"
-      ) {
-        notify.warning("Automatic @macro recovery skipped", {
-          description:
-            metadataRecoveryReport.message ||
-            "Macro detected local metadata blockers and did not apply recovery automatically.",
-        });
-      }
-    });
+    if (metadataRecoveryReport.status === "reconstructed_from_hints") {
+      notify.info("Metadata @macro reconfigured from local projects", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro rebuilt a minimal metadata state from locally known projects.",
+      });
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    if (
+      metadataRecoveryReport.status === "blocked_dirty" ||
+      metadataRecoveryReport.status === "blocked_conflict"
+    ) {
+      notify.warning("Automatic @macro recovery skipped", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro detected local metadata blockers and did not apply recovery automatically.",
+      });
+    }
   }, [initStatus.critical, metadataRecoveryReport]);
 
   // ==========================================================================
@@ -488,7 +476,6 @@ const App: React.FC = () => {
       <Suspense fallback={null}>
         <DiffModal />
         <SettingsModal />
-        <AccountModal />
         <ProjectModal />
         <ProjectGitFlowModal />
         <CodeFileViewerModal />

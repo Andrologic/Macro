@@ -89,7 +89,7 @@ const startProviderSettingsRequest = (providerId: string): number => {
 
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
 const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
-  'Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.';
+  'Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.';
 
 const requireProviderConfigurationIpc = (): void => {
   if (!ipcIsTauriAvailable()) {

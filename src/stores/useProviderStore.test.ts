@@ -498,20 +498,20 @@ describe('useProviderStore secret resolution', () => {
         isEnabled: true,
         isLocal: false,
       })
-    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
     await expect(
       providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
         apiKey: 'test-api-key',
       })
-    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
     await expect(
       providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai')
-    ).rejects.toThrow('Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.');
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
 
     expect(createProviderConfigMock).not.toHaveBeenCalled();
     expect(updateProviderConfigMock).not.toHaveBeenCalled();
     expect(providerStore.useProviderStore.getState().lastError).toBe(
-      'Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.'
+      'Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.'
     );
   });
 

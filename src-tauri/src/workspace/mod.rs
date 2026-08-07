@@ -7282,12 +7282,16 @@ mod tests {
     }
 
     fn commit_all(repo_root: &Path, message: &str) -> Oid {
-        let add_status = background_command("git")
+        let add_output = background_command("git")
             .current_dir(repo_root)
-            .args(["add", "-A", "."])
-            .status()
+            .args(["-c", "core.autocrlf=false", "add", "-A", "."])
+            .output()
             .expect("git add");
-        assert!(add_status.success());
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
 
         let commit_output = background_command("git")
             .current_dir(repo_root)

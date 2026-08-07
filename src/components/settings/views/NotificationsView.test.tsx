@@ -27,7 +27,7 @@ const defaultNotificationChannelModes = {
   git_sync_attention_required: 'both',
 } as const;
 
-const updatePreferencesMock = mock(async (_preferences: unknown) => undefined);
+const setInAppNotificationsEnabledMock = mock((_enabled: boolean) => undefined);
 const setNotificationChannelModeMock = mock(
   (_category: unknown, _mode: unknown) => undefined
 );
@@ -42,24 +42,19 @@ const emitActionableNotificationBlueprintMock = mock(async (_draft: unknown, _ch
 const initializeDesktopNotificationsMock = mock(async () => undefined);
 
 let importCounter = 0;
-let authState = {
-  user: {
-    preferences: {
-      notifications: true,
-    },
-  },
-  updatePreferences: updatePreferencesMock,
-};
+let desktopRuntimeSupported = true;
 let appState = {
+  inAppNotificationsEnabled: true,
+  setInAppNotificationsEnabled: setInAppNotificationsEnabledMock,
   notificationChannelModes: {
     ...defaultNotificationChannelModes,
   },
   setNotificationChannelMode: setNotificationChannelModeMock,
 };
 
-const useAuthStore = createStoreHook(() => authState);
 const useAppStore = createStoreHook(() => appState);
 const desktopNotificationsMock = {
+  isDesktopNotificationRuntimeSupported: () => desktopRuntimeSupported,
   getDesktopNotificationStatus: () => 'granted' as const,
   initializeDesktopNotifications: () => initializeDesktopNotificationsMock(),
   subscribeDesktopNotificationStatus: () => () => undefined,
@@ -124,10 +119,6 @@ const loadNotificationsView = async (devMode: boolean) => {
         );
       },
     }),
-  }));
-
-  mock.module('../../../stores/useAuthStore', () => ({
-    useAuthStore,
   }));
 
   mock.module('../../../stores/useAppStore', () => ({
@@ -256,7 +247,7 @@ const loadNotificationsView = async (devMode: boolean) => {
   mock.module('./notificationDebugCatalog', () => ({
     DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT: {
       tone: 'info',
-      title: 'Background indexing finished',
+      title: 'Background work finished',
       description: 'Everything is up to date.',
     },
     DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT: {
@@ -302,22 +293,17 @@ describe('NotificationsView', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
-    authState = {
-      user: {
-        preferences: {
-          notifications: true,
-        },
-      },
-      updatePreferences: updatePreferencesMock,
-    };
+    desktopRuntimeSupported = true;
     appState = {
+      inAppNotificationsEnabled: true,
+      setInAppNotificationsEnabled: setInAppNotificationsEnabledMock,
       notificationChannelModes: {
         ...defaultNotificationChannelModes,
       },
       setNotificationChannelMode: setNotificationChannelModeMock,
     };
 
-    updatePreferencesMock.mockClear();
+    setInAppNotificationsEnabledMock.mockClear();
     setNotificationChannelModeMock.mockClear();
     emitInformationalNotificationBlueprintMock.mockClear();
     emitActionableNotificationBlueprintMock.mockClear();
@@ -372,6 +358,45 @@ describe('NotificationsView', () => {
     expect(
       container?.querySelector('[data-testid="notifications-debug-section"]')
     ).not.toBeNull();
+  });
+
+  it('updates the local in-app notification preference without an account', async () => {
+    const { NotificationsView } = await loadNotificationsView(false);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    const inAppSwitch = container?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    await act(async () => {
+      inAppSwitch.click();
+      await Promise.resolve();
+    });
+
+    expect(setInAppNotificationsEnabledMock).toHaveBeenCalledWith(false);
+  });
+
+  it('hides desktop delivery modes and displays persisted desktop modes as toast when unsupported', async () => {
+    desktopRuntimeSupported = false;
+    const { NotificationsView } = await loadNotificationsView(false);
+
+    await act(async () => {
+      root?.render(<NotificationsView />);
+      await Promise.resolve();
+    });
+
+    const selects = Array.from(container?.querySelectorAll('select') ?? []);
+    expect(selects.length).toBeGreaterThan(0);
+    expect(selects[0]?.value).toBe('toast');
+    expect(
+      selects.every((select) =>
+        Array.from(select.options).every(
+          (option) => option.value !== 'desktop' && option.value !== 'both'
+        )
+      )
+    ).toBe(true);
+    expect(container?.textContent).toContain('Desktop notifications are unavailable');
   });
 
   it('renders only the two blueprint panels with matching preview frame shells', async () => {
@@ -475,7 +500,7 @@ describe('NotificationsView', () => {
     expect(emitInformationalNotificationBlueprintMock).toHaveBeenCalledWith(
       {
         tone: 'info',
-        title: 'Background indexing finished',
+      title: 'Background work finished',
         description: 'Everything is up to date.',
       },
       'all'

@@ -47,7 +47,7 @@ L'application dispose deja d'une base solide :
 - sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
 - merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traites via un workflow assiste de resolution et reprise
 - couches de services, stores et IPC deja structurees
-- kernel headless deja present en premiere version
+- fondation headless experimentale presente dans le code, sans capacite produit exposee
 
 En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiques :
 
