@@ -22,6 +22,14 @@ import { presentMetadataSyncIssue } from '../../services/degradedErrorPresentati
 import { cn } from '../../utils/cn';
 
 type FooterSyncAction = 'fetch' | 'pull' | 'push';
+type CodeDivergenceStrategy = 'merge' | 'rebase';
+type CodeDivergenceAction = CodeDivergenceStrategy | 'abort';
+type CodeDivergencePreflightStatus =
+  | 'checking'
+  | 'available'
+  | 'conflicts'
+  | 'blocked'
+  | 'failed';
 type MacroConflictContext = FooterSyncAction | 'refresh';
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
 
@@ -41,6 +49,34 @@ interface RepositorySyncResult {
   projectName: string;
   success: boolean;
   message: string;
+}
+
+interface CodeDivergenceEntry {
+  project: ScopedProject;
+  branch: string;
+  upstreamBranch: string;
+  ahead: number;
+  behind: number;
+  isClean: boolean;
+  mergeInProgress: boolean;
+  conflictFiles: string[];
+  preflight: Record<CodeDivergenceStrategy, CodeDivergencePreflight>;
+}
+
+interface CodeDivergenceResolution {
+  entries: CodeDivergenceEntry[];
+  error: string | null;
+}
+
+interface CodeDivergencePreflight {
+  status: CodeDivergencePreflightStatus;
+  conflictFiles: string[];
+  error: string | null;
+}
+
+interface CodeDivergenceStrategySummary {
+  status: CodeDivergencePreflightStatus;
+  conflictFiles: string[];
 }
 
 interface FooterMetadataSyncState {
@@ -104,11 +140,165 @@ const DEFAULT_FOOTER_METADATA_SYNC: FooterMetadataSyncState = {
   conflictFiles: [],
   repositories: [],
 };
+const CODE_DIVERGENCE_STRATEGIES: CodeDivergenceStrategy[] = ['merge', 'rebase'];
+const CODE_DIVERGENCE_STATUS_PRIORITY: CodeDivergencePreflightStatus[] = [
+  'checking',
+  'conflicts',
+  'blocked',
+  'failed',
+  'available',
+];
+
+const uniqueStrings = (items: string[]): string[] =>
+  Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+
+const createCodeDivergencePreflight = (
+  status: CodeDivergencePreflightStatus,
+  options?: { conflictFiles?: string[]; error?: string | null }
+): CodeDivergencePreflight => ({
+  status,
+  conflictFiles: uniqueStrings(options?.conflictFiles ?? []),
+  error: options?.error ?? null,
+});
+
+const createCheckingCodeDivergencePreflights = (): Record<
+  CodeDivergenceStrategy,
+  CodeDivergencePreflight
+> => ({
+  merge: createCodeDivergencePreflight('checking'),
+  rebase: createCodeDivergencePreflight('checking'),
+});
 
 const formatGitOutput = (output: string | null | undefined, t: TranslateFn): string => {
   const normalized = (output || '').trim();
   if (!normalized) return t('footer.sync.done', 'Done.');
   return normalized.split('\n').map((line) => line.trim()).filter(Boolean).slice(-2).join(' | ');
+};
+
+const getDefaultUpstreamBranchName = (branch: string): string => `origin/${branch}`;
+
+const isDirtyWorktreeError = (message: string | null | undefined): boolean => {
+  const normalized = (message || '').toLowerCase();
+  return normalized.includes('commit or stash') || normalized.includes('not clean');
+};
+
+const isUnmergedIndexError = (message: string | null | undefined): boolean => {
+  const normalized = (message || '').toLowerCase();
+  return normalized.includes('not fully merged index') || normalized.includes('unmerged');
+};
+
+const getConflictMarkerIndex = (message: string): { index: number; marker: string } | null => {
+  const normalized = message.toLowerCase();
+  const markers = ['conflicts in:', 'conflicts:'];
+  for (const marker of markers) {
+    const index = normalized.indexOf(marker);
+    if (index >= 0) {
+      return { index, marker };
+    }
+  }
+  return null;
+};
+
+const extractConflictFilesFromError = (message: string | null | undefined): string[] => {
+  const raw = (message || '').trim();
+  if (!raw) return [];
+
+  const marker = getConflictMarkerIndex(raw);
+  if (!marker) {
+    const files: string[] = [];
+    const conflictPattern = /\bCONFLICT\s*\([^)]+\):[^\n]*?\bin\s+([^\s,;]+)/gi;
+    let match = conflictPattern.exec(raw);
+    while (match) {
+      files.push(match[1] ?? '');
+      match = conflictPattern.exec(raw);
+    }
+    return uniqueStrings(files);
+  }
+
+  return uniqueStrings(raw
+    .slice(marker.index + marker.marker.length)
+    .split(',')
+    .map((item) => item.trim().replace(/[.;]$/, ''))
+    .filter(Boolean));
+};
+
+const getConflictFilesFromDto = (dto: { conflictFiles?: string[]; conflict_files?: string[] }): string[] =>
+  uniqueStrings([...(dto.conflictFiles ?? []), ...(dto.conflict_files ?? [])]);
+
+const summarizeConflictError = (message: string | null | undefined): string | null => {
+  const raw = (message || '').trim();
+  if (!raw) return null;
+
+  const marker = getConflictMarkerIndex(raw);
+  if (!marker) return raw;
+
+  const prefix = raw.slice(0, marker.index).trim().replace(/\s*(because of)?\s*$/i, '').trim();
+  return prefix ? `${prefix} because of conflicts.` : 'Conflict files need manual resolution.';
+};
+
+const getStatusConflictFiles = (status: tauriIpc.GitStatusDto): string[] =>
+  Array.from(new Set([...(status.conflictedFiles || []), ...((status.conflicted_files as string[] | undefined) || [])]));
+
+const getStatusMergeInProgress = (status: tauriIpc.GitStatusDto): boolean =>
+  Boolean(status.mergeInProgress ?? status.merge_in_progress);
+
+const buildCodeDivergencePreflightFromError = (error: unknown): CodeDivergencePreflight => {
+  const message = toServiceError(error).message;
+  const conflictFiles = extractConflictFilesFromError(message);
+  const normalized = message.toLowerCase();
+  if (conflictFiles.length > 0 || normalized.includes('conflict')) {
+    return createCodeDivergencePreflight('conflicts', {
+      conflictFiles,
+      error: summarizeConflictError(message),
+    });
+  }
+  if (isDirtyWorktreeError(message) || isUnmergedIndexError(message)) {
+    return createCodeDivergencePreflight('blocked', { error: summarizeConflictError(message) });
+  }
+  return createCodeDivergencePreflight('failed', { error: summarizeConflictError(message) });
+};
+
+const buildMergeCodeDivergencePreflight = (
+  check: tauriIpc.GitMergeCheckDto
+): CodeDivergencePreflight => {
+  const conflictFiles = getConflictFilesFromDto(check);
+  if (check.mergeable) {
+    return createCodeDivergencePreflight('available');
+  }
+  return createCodeDivergencePreflight(conflictFiles.length > 0 ? 'conflicts' : 'failed', {
+    conflictFiles,
+  });
+};
+
+const buildRebaseCodeDivergencePreflight = (
+  check: tauriIpc.GitRebaseCheckDto
+): CodeDivergencePreflight => {
+  const conflictFiles = uniqueStrings([
+    ...getConflictFilesFromDto(check),
+    ...extractConflictFilesFromError(check.output),
+  ]);
+  if (check.rebaseable) {
+    return createCodeDivergencePreflight('available');
+  }
+  return createCodeDivergencePreflight(
+    conflictFiles.length > 0 || check.output.toLowerCase().includes('conflict')
+      ? 'conflicts'
+      : 'failed',
+    { conflictFiles }
+  );
+};
+
+const summarizeCodeDivergenceStrategy = (
+  entries: CodeDivergenceEntry[],
+  strategy: CodeDivergenceStrategy
+): CodeDivergenceStrategySummary => {
+  const statuses = entries.map((entry) => entry.preflight[strategy].status);
+  const status =
+    CODE_DIVERGENCE_STATUS_PRIORITY.find((candidate) => statuses.includes(candidate)) ?? 'failed';
+  return {
+    status,
+    conflictFiles: uniqueStrings(entries.flatMap((entry) => entry.preflight[strategy].conflictFiles)),
+  };
 };
 
 const unavailableGitStatus = (branch: string): tauriIpc.GitStatusDto => ({
@@ -127,6 +317,314 @@ const unavailableGitStatus = (branch: string): tauriIpc.GitStatusDto => ({
   ahead: 0,
   behind: 0,
 });
+
+interface CodeDivergenceResolutionModalProps {
+  resolution: CodeDivergenceResolution;
+  action: CodeDivergenceAction | null;
+  t: TranslateFn;
+  onClose: () => void;
+  onResolve: (strategy: CodeDivergenceStrategy, options?: { stashFirst?: boolean }) => void;
+  onAbortMerge: () => void;
+}
+
+const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps> = ({
+  resolution,
+  action,
+  t,
+  onClose,
+  onResolve,
+  onAbortMerge,
+}) => {
+  const hasMergeInProgress = resolution.entries.some((entry) => entry.mergeInProgress);
+  const hasLocalChanges = resolution.entries.some((entry) => !entry.isClean);
+  const strategySummaries = {
+    merge: summarizeCodeDivergenceStrategy(resolution.entries, 'merge'),
+    rebase: summarizeCodeDivergenceStrategy(resolution.entries, 'rebase'),
+  } satisfies Record<CodeDivergenceStrategy, CodeDivergenceStrategySummary>;
+  const conflictFiles = uniqueStrings([
+    ...resolution.entries.flatMap((entry) => entry.conflictFiles),
+    ...CODE_DIVERGENCE_STRATEGIES.flatMap((strategy) => strategySummaries[strategy].conflictFiles),
+    ...extractConflictFilesFromError(resolution.error),
+  ]);
+  const isChecking = CODE_DIVERGENCE_STRATEGIES.some(
+    (strategy) => strategySummaries[strategy].status === 'checking'
+  );
+  const hasConflicts = CODE_DIVERGENCE_STRATEGIES.some(
+    (strategy) => strategySummaries[strategy].status === 'conflicts'
+  );
+  const hasFailedPreflight = CODE_DIVERGENCE_STRATEGIES.some((strategy) =>
+    ['failed', 'blocked'].includes(strategySummaries[strategy].status)
+  );
+  const availableStrategies = CODE_DIVERGENCE_STRATEGIES.filter(
+    (strategy) => !hasMergeInProgress && strategySummaries[strategy].status === 'available'
+  );
+  const shouldCloseOnly = !hasMergeInProgress && !isChecking && availableStrategies.length === 0;
+
+  const getStatusLabel = (status: CodeDivergencePreflightStatus): string => {
+    switch (status) {
+      case 'available':
+        return t('footer.sync.preflightAvailable', 'Available');
+      case 'conflicts':
+        return t('footer.sync.preflightConflicts', 'Conflicts');
+      case 'blocked':
+        return t('footer.sync.preflightBlockedByLocalChanges', 'Blocked by local changes');
+      case 'checking':
+        return t('footer.sync.preflightChecking', 'Checking');
+      case 'failed':
+        return t('footer.sync.preflightFailed', 'Failed');
+      default:
+        return status;
+    }
+  };
+
+  const getActionLabel = (strategy: CodeDivergenceStrategy): string =>
+    strategy === 'merge'
+      ? hasLocalChanges
+        ? t('footer.sync.stashThenMerge', 'Stash, then merge')
+        : t('footer.sync.mergeRemoteBranch', 'Merge')
+      : hasLocalChanges
+        ? t('footer.sync.stashThenRebase', 'Stash, then rebase')
+        : t('footer.sync.rebaseOntoRemote', 'Rebase');
+
+  const getStrategyLabel = (strategy: CodeDivergenceStrategy): string =>
+    strategy === 'merge'
+      ? t('footer.sync.mergeRemoteBranch', 'Merge')
+      : t('footer.sync.rebaseOntoRemote', 'Rebase');
+
+  const statusTone = hasMergeInProgress || hasConflicts
+    ? 'border-red-500/30 bg-red-500/10 text-red-300'
+    : hasLocalChanges
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+      : 'border-border/80 bg-muted/20 text-muted-foreground';
+  const statusIcon = hasMergeInProgress || hasConflicts ? 'triangle-alert' : 'alert-circle';
+  const statusTitle = hasMergeInProgress
+    ? t('footer.sync.codeDivergenceMergeInProgressTitle', 'Merge in progress')
+    : isChecking
+      ? t('footer.sync.codeDivergenceCheckingTitle', 'Checking integration strategies')
+      : hasConflicts
+        ? t('footer.sync.codeDivergenceConflictTitle', 'Conflicts detected')
+        : hasFailedPreflight
+          ? t('footer.sync.codeDivergencePreflightFailedTitle', 'Preflight could not complete')
+          : hasLocalChanges
+            ? t('footer.sync.codeDivergenceDirtyTitle', 'Local changes detected')
+            : t('footer.sync.codeDivergenceReadyTitle', 'Ready to integrate remote commits');
+  const statusBody = hasMergeInProgress
+    ? t(
+        'footer.sync.codeDivergenceMergeInProgressBody',
+        'Abort the current merge before trying another sync action.'
+      )
+    : isChecking
+      ? t(
+          'footer.sync.codeDivergenceCheckingBody',
+          'Macro is checking merge and rebase before offering an action.'
+        )
+      : hasConflicts && availableStrategies.length === 0
+        ? t(
+            'footer.sync.codeDivergenceAllConflictBody',
+            'Merge and rebase would conflict. Resolve these files manually, then retry.'
+          )
+        : hasConflicts
+          ? t(
+              'footer.sync.codeDivergenceSomeConflictBody',
+              'One strategy would conflict. Use the available strategy or resolve the files manually.'
+            )
+          : hasFailedPreflight
+            ? t(
+                'footer.sync.codeDivergencePreflightFailedBody',
+                'Macro could not prove a safe integration strategy. Close and refresh before retrying.'
+              )
+            : hasLocalChanges
+              ? t(
+                  'footer.sync.codeDivergenceDirtyWorktree',
+                  'Macro will stash local changes before running the selected action.'
+                )
+              : t(
+                  'footer.sync.codeDivergenceReadyBody',
+                  'Rebase keeps history linear; merge preserves a merge commit.'
+                );
+
+  return (
+    <div className="fixed inset-0 z-[96] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div
+        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-card shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="code-divergence-title"
+      >
+        <div className="border-b border-border/80 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-500/10 text-amber-400">
+              <Icon name="git-merge" size={16} />
+            </div>
+            <div className="min-w-0">
+              <h3 id="code-divergence-title" className="text-sm font-semibold text-foreground">
+                {t('footer.sync.codeDivergencePromptTitle', 'Branch has diverged from remote')}
+              </h3>
+              <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">
+                {t(
+                  'footer.sync.codeDivergencePromptDescription',
+                  'This branch has local commits and remote commits. Choose how to integrate the remote commits.'
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 px-5 py-4">
+          <div className={cn('rounded-md border px-3 py-2.5 text-xs leading-5', statusTone)}>
+            <div className="flex items-start gap-2">
+              <Icon name={statusIcon} size={14} className="mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-foreground">{statusTitle}</div>
+                <div className="mt-0.5">{statusBody}</div>
+                {!hasMergeInProgress && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {CODE_DIVERGENCE_STRATEGIES.map((strategy) => {
+                      const summary = strategySummaries[strategy];
+                      const isAvailable = summary.status === 'available';
+                      return (
+                        <div
+                          key={strategy}
+                          className={cn(
+                            'flex items-center justify-between gap-3 rounded border px-2.5 py-2',
+                            isAvailable
+                              ? 'border-emerald-500/20 bg-emerald-500/10'
+                              : summary.status === 'checking'
+                                ? 'border-border/70 bg-background/40'
+                                : summary.status === 'conflicts'
+                                  ? 'border-red-500/20 bg-red-500/10'
+                                  : 'border-amber-500/20 bg-amber-500/10'
+                          )}
+                        >
+                          <span className="font-medium text-foreground">{getStrategyLabel(strategy)}</span>
+                          <span
+                            className={cn(
+                              'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                              isAvailable
+                                ? 'bg-emerald-500/15 text-emerald-300'
+                                : summary.status === 'checking'
+                                  ? 'bg-muted text-muted-foreground'
+                                  : summary.status === 'conflicts'
+                                    ? 'bg-red-500/15 text-red-200'
+                                    : 'bg-amber-500/15 text-amber-200'
+                            )}
+                          >
+                            {getStatusLabel(summary.status)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="max-h-44 space-y-2 overflow-y-auto">
+            {resolution.entries.map((entry) => (
+              <div
+                key={`${entry.project.id}:${entry.branch}`}
+                className="rounded-md border border-border/80 bg-background/40 px-3 py-2.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate font-medium text-foreground">
+                    {entry.project.name}
+                  </span>
+                  <span className="shrink-0 font-medium text-muted-foreground">
+                    ↓ {entry.behind} · ↑ {entry.ahead}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                  <Icon name="git-branch" size={12} className="shrink-0 text-blue-400" />
+                  <span className="truncate">{entry.branch}</span>
+                  <span className="shrink-0 text-muted-foreground/70">from</span>
+                  <span className="truncate">{entry.upstreamBranch}</span>
+                  {!entry.isClean && !entry.mergeInProgress && (
+                    <span className="ml-auto shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                      {t('footer.sync.localChangesBadge', 'local changes')}
+                    </span>
+                  )}
+                  {entry.mergeInProgress && (
+                    <span className="ml-auto shrink-0 rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+                      {t('footer.sync.mergeInProgressBadge', 'merge in progress')}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {(hasMergeInProgress || hasConflicts) && conflictFiles.length > 0 && (
+            <div className="rounded-md border border-red-500/25 bg-red-500/5 px-3 py-2.5 text-xs">
+              <div className="mb-2 font-medium text-red-200">
+                {t('footer.sync.conflictedFiles', 'Conflicted files')}
+              </div>
+              <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto pr-1">
+                {conflictFiles.map((file) => (
+                  <span
+                    key={file}
+                    className="max-w-full truncate rounded border border-red-500/20 bg-red-500/10 px-1.5 py-0.5 text-[11px] text-red-100"
+                    title={file}
+                  >
+                    {file}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div
+          className={cn(
+            'flex items-center border-t border-border/80 bg-muted/10 px-5 py-3',
+            shouldCloseOnly ? 'justify-end' : 'gap-2'
+          )}
+        >
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={Boolean(action)}
+            onClick={onClose}
+          >
+            {shouldCloseOnly ? t('common.close', 'Close') : t('common.cancel', 'Cancel')}
+          </Button>
+          {!shouldCloseOnly && (
+            <div className="ml-auto flex items-center gap-2">
+              {hasMergeInProgress ? (
+                <Button
+                  type="button"
+                  variant="error"
+                  size="sm"
+                  disabled={Boolean(action)}
+                  isLoading={action === 'abort'}
+                  onClick={onAbortMerge}
+                >
+                  {t('footer.sync.abortMerge', 'Abort merge')}
+                </Button>
+              ) : (
+                availableStrategies.map((strategy) => (
+                  <Button
+                    key={strategy}
+                    type="button"
+                    variant={availableStrategies.length === 1 || strategy === 'rebase' ? 'primary' : 'secondary'}
+                    size="sm"
+                    disabled={Boolean(action)}
+                    isLoading={action === strategy}
+                    onClick={() => onResolve(strategy, { stashFirst: hasLocalChanges })}
+                  >
+                    {getActionLabel(strategy)}
+                  </Button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const Footer: React.FC = () => {
   const { t } = useTranslation();
@@ -166,6 +664,10 @@ export const Footer: React.FC = () => {
   const [syncAction, setSyncAction] = useState<FooterSyncAction | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
+  const [codeDivergenceResolution, setCodeDivergenceResolution] =
+    useState<CodeDivergenceResolution | null>(null);
+  const [codeDivergenceAction, setCodeDivergenceAction] =
+    useState<CodeDivergenceAction | null>(null);
   const [pushResolution, setPushResolution] = useState<PushResolutionState | null>(null);
   const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
 
@@ -360,6 +862,36 @@ export const Footer: React.FC = () => {
     return entries;
   }, [scopeProjects]);
 
+  const findDivergentCodeEntries = useCallback(async (
+    projects: ScopedProject[]
+  ): Promise<CodeDivergenceEntry[]> => {
+    const statuses = await readScopedCodeStatuses(projects);
+    return statuses.flatMap((entry): CodeDivergenceEntry[] => {
+      const status = entry.status;
+      if (
+        !status ||
+        !status.has_upstream ||
+        !status.branch ||
+        status.ahead <= 0 ||
+        status.behind <= 0
+      ) {
+        return [];
+      }
+
+      return [{
+        project: entry.project,
+        branch: status.branch,
+        upstreamBranch: getDefaultUpstreamBranchName(status.branch),
+        ahead: status.ahead,
+        behind: status.behind,
+        isClean: status.is_clean,
+        mergeInProgress: getStatusMergeInProgress(status),
+        conflictFiles: getStatusConflictFiles(status),
+        preflight: createCheckingCodeDivergencePreflights(),
+      }];
+    });
+  }, [readScopedCodeStatuses]);
+
   const buildMissingOriginResolution = useCallback((
     codeEntries: PushPreflightCodeEntry[],
     macroResult: tauriIpc.MacroBranchSyncDto | null,
@@ -487,6 +1019,93 @@ export const Footer: React.FC = () => {
     return results;
   }, [scopeProjects, translate]);
 
+  const runCodeDivergencePreflight = useCallback(async (entries: CodeDivergenceEntry[]) => {
+    const checkedEntries = await Promise.all(entries.map(async (entry) => {
+      let nextEntry = entry;
+
+      try {
+        await tauriIpc.gitFetch({
+          repoPath: entry.project.path,
+          branch: entry.branch,
+        });
+      } catch (error) {
+        const failure = buildCodeDivergencePreflightFromError(error);
+        return {
+          ...entry,
+          preflight: {
+            merge: failure,
+            rebase: failure,
+          },
+        };
+      }
+
+      try {
+        const status = await tauriIpc.gitStatus(entry.project.path);
+        nextEntry = {
+          ...entry,
+          branch: status.branch || entry.branch,
+          upstreamBranch: getDefaultUpstreamBranchName(status.branch || entry.branch),
+          ahead: status.ahead,
+          behind: status.behind,
+          isClean: status.is_clean,
+          mergeInProgress: getStatusMergeInProgress(status),
+          conflictFiles: getStatusConflictFiles(status),
+        };
+      } catch {
+        nextEntry = entry;
+      }
+
+      if (nextEntry.mergeInProgress) {
+        const blocked = createCodeDivergencePreflight('blocked', {
+          conflictFiles: nextEntry.conflictFiles,
+        });
+        return {
+          ...nextEntry,
+          preflight: {
+            merge: blocked,
+            rebase: blocked,
+          },
+        };
+      }
+
+      const [mergePreflight, rebasePreflight] = await Promise.all([
+        tauriIpc.gitMergeCheck({
+          repoPath: nextEntry.project.path,
+          branchName: nextEntry.upstreamBranch,
+          intoBranch: nextEntry.branch,
+        })
+          .then(buildMergeCodeDivergencePreflight)
+          .catch(buildCodeDivergencePreflightFromError),
+        tauriIpc.gitRebaseCheck({
+          repoPath: nextEntry.project.path,
+          branchName: nextEntry.branch,
+          ontoBranch: nextEntry.upstreamBranch,
+        })
+          .then(buildRebaseCodeDivergencePreflight)
+          .catch(buildCodeDivergencePreflightFromError),
+      ]);
+
+      return {
+        ...nextEntry,
+        preflight: {
+          merge: mergePreflight,
+          rebase: rebasePreflight,
+        },
+      };
+    }));
+
+    const checkedByPath = new Map(checkedEntries.map((entry) => [entry.project.path, entry] as const));
+    setCodeDivergenceResolution((current) => {
+      if (!current) return null;
+      return {
+        ...current,
+        entries: current.entries.map((entry) =>
+          checkedByPath.get(entry.project.path) ?? entry
+        ),
+      };
+    });
+  }, []);
+
   const describeMacroResultForToast = useCallback((action: FooterSyncAction, result: tauriIpc.MacroBranchSyncDto | null) => {
     if (!result) {
       return '';
@@ -541,6 +1160,18 @@ export const Footer: React.FC = () => {
     setSyncAction(action);
     lastMacroConflictActionRef.current = action;
     try {
+      if (action !== 'fetch' && codeAhead > 0 && codeBehind > 0) {
+        const divergentEntries = await findDivergentCodeEntries(actionProjects);
+        if (divergentEntries.length > 0) {
+          setCodeDivergenceResolution({
+            entries: divergentEntries,
+            error: null,
+          });
+          await runCodeDivergencePreflight(divergentEntries);
+          return;
+        }
+      }
+
       if (action === 'push') {
         const { macroResult: preflight, missingOriginResolution } = await runPushPreflight(actionProjects);
 
@@ -620,7 +1251,7 @@ export const Footer: React.FC = () => {
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [createMacroSyncServiceForProjects, describeMacroResultForToast, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runPushPreflight, scopeProjects, scopedMacroSyncService, syncAction, t]);
+  }, [codeAhead, codeBehind, createMacroSyncServiceForProjects, describeMacroResultForToast, findDivergentCodeEntries, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runCodeDivergencePreflight, runPushPreflight, scopeProjects, scopedMacroSyncService, syncAction, t]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -787,6 +1418,171 @@ export const Footer: React.FC = () => {
   const ignoreMissingUpstreamFromResolve = () => {
     setMetadataMissingUpstreamPolicy('ignore');
     setShowConflictModal(false);
+  };
+
+  const resolveCodeDivergence = async (
+    strategy: CodeDivergenceStrategy,
+    options?: { stashFirst?: boolean }
+  ) => {
+    if (!codeDivergenceResolution || codeDivergenceAction) return;
+    if (codeDivergenceResolution.entries.some((entry) => entry.preflight[strategy].status !== 'available')) {
+      return;
+    }
+    setCodeDivergenceAction(strategy);
+
+    const failures: RepositorySyncResult[] = [];
+    const successes: RepositorySyncResult[] = [];
+    const nextEntries = [...codeDivergenceResolution.entries];
+
+    try {
+      for (const [entryIndex, entry] of codeDivergenceResolution.entries.entries()) {
+        try {
+          await tauriIpc.gitFetch({
+            repoPath: entry.project.path,
+            branch: entry.branch,
+          });
+
+          if (options?.stashFirst) {
+            const latestStatus = await tauriIpc.gitStatus(entry.project.path);
+            if (!latestStatus.is_clean) {
+              await tauriIpc.gitStash({
+                repoPath: entry.project.path,
+                message: `Macro: stash before ${strategy} ${entry.branch}`,
+              });
+            }
+          }
+
+          const output = strategy === 'rebase'
+            ? await tauriIpc.gitRebaseBranch({
+                repoPath: entry.project.path,
+                branchName: entry.branch,
+                ontoBranch: entry.upstreamBranch,
+                confirm: true,
+              })
+            : await tauriIpc.gitMerge({
+                repoPath: entry.project.path,
+                branchName: entry.upstreamBranch,
+                intoBranch: entry.branch,
+              });
+
+          successes.push({
+            projectName: entry.project.name,
+            success: true,
+            message: formatGitOutput(output, translate),
+          });
+        } catch (error) {
+          const failedPreflight = buildCodeDivergencePreflightFromError(error);
+          try {
+            const status = await tauriIpc.gitStatus(entry.project.path);
+            nextEntries[entryIndex] = {
+              ...entry,
+              isClean: status.is_clean,
+              mergeInProgress: getStatusMergeInProgress(status),
+              conflictFiles: uniqueStrings([
+                ...getStatusConflictFiles(status),
+                ...failedPreflight.conflictFiles,
+              ]),
+              preflight: {
+                ...entry.preflight,
+                [strategy]: failedPreflight,
+              },
+            };
+          } catch {
+            nextEntries[entryIndex] = {
+              ...entry,
+              conflictFiles: uniqueStrings([
+                ...entry.conflictFiles,
+                ...failedPreflight.conflictFiles,
+              ]),
+              preflight: {
+                ...entry.preflight,
+                [strategy]: failedPreflight,
+              },
+            };
+          }
+          failures.push({
+            projectName: entry.project.name,
+            success: false,
+            message: toServiceError(error).message,
+          });
+        }
+      }
+
+      if (failures.length > 0) {
+        const description = failures
+          .slice(0, 2)
+          .map((failure) => `${failure.projectName}: ${failure.message}`)
+          .join(' | ');
+        setCodeDivergenceResolution({
+          ...codeDivergenceResolution,
+          entries: nextEntries,
+          error: description,
+        });
+        notify.error(t('footer.sync.codeDivergenceFailed', 'Could not resolve branch divergence'), {
+          description,
+          category: 'git_sync_attention_required',
+        });
+        return;
+      }
+
+      setCodeDivergenceResolution(null);
+      notify.success(t('footer.sync.codeDivergenceResolved', 'Branch divergence resolved'), {
+        description: successes.map((success) => success.projectName).join(', '),
+        category: 'git_sync_completed',
+      });
+    } finally {
+      await refreshFooterStatus({ showBusy: true });
+      setCodeDivergenceAction(null);
+    }
+  };
+
+  const abortCodeDivergenceMerge = async () => {
+    if (!codeDivergenceResolution || codeDivergenceAction) return;
+    const entries = codeDivergenceResolution.entries.filter((entry) => entry.mergeInProgress);
+    if (entries.length === 0) return;
+
+    setCodeDivergenceAction('abort');
+    const failures: RepositorySyncResult[] = [];
+    try {
+      for (const entry of entries) {
+        try {
+          await tauriIpc.gitAbortMerge({
+            repoPath: entry.project.path,
+            confirm: true,
+          });
+        } catch (error) {
+          failures.push({
+            projectName: entry.project.name,
+            success: false,
+            message: toServiceError(error).message,
+          });
+        }
+      }
+
+      if (failures.length > 0) {
+        const description = failures
+          .slice(0, 2)
+          .map((failure) => `${failure.projectName}: ${failure.message}`)
+          .join(' | ');
+        setCodeDivergenceResolution({
+          ...codeDivergenceResolution,
+          error: description,
+        });
+        notify.error(t('footer.sync.abortMergeFailed', 'Could not abort merge'), {
+          description,
+          category: 'git_sync_attention_required',
+        });
+        return;
+      }
+
+      setCodeDivergenceResolution(null);
+      notify.success(t('footer.sync.mergeAborted', 'Merge aborted'), {
+        category: 'git_sync_completed',
+      });
+    } finally {
+      await refreshFooterStatus({ showBusy: true });
+      setCodeDivergenceAction(null);
+    }
   };
 
   const openPushResolution = () => {
@@ -1128,6 +1924,17 @@ export const Footer: React.FC = () => {
             )}
           </div>
         </div>
+      )}
+
+      {codeDivergenceResolution && (
+        <CodeDivergenceResolutionModal
+          resolution={codeDivergenceResolution}
+          action={codeDivergenceAction}
+          t={translate}
+          onClose={() => setCodeDivergenceResolution(null)}
+          onResolve={(strategy, options) => void resolveCodeDivergence(strategy, options)}
+          onAbortMerge={() => void abortCodeDivergenceMerge()}
+        />
       )}
 
       <NotificationCenterPopover

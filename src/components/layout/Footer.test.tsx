@@ -89,6 +89,20 @@ type MacroBranchSyncDto = {
   error: string | null;
 };
 
+type GitMergeCheckDto = {
+  mergeable: boolean;
+  conflictFiles: string[];
+  hasChanges: boolean;
+  ahead?: number;
+  behind?: number;
+};
+
+type GitRebaseCheckDto = {
+  rebaseable: boolean;
+  conflictFiles: string[];
+  output: string;
+};
+
 let appState: AppStoreState;
 let notificationState: NotificationStoreState;
 let gitStatusByPath: Record<string, GitStatusDto>;
@@ -97,6 +111,12 @@ let gitStatusMock: ReturnType<typeof mock>;
 let gitFetchMock: ReturnType<typeof mock>;
 let gitPullMock: ReturnType<typeof mock>;
 let gitPushMock: ReturnType<typeof mock>;
+let gitMergeCheckMock: ReturnType<typeof mock>;
+let gitRebaseCheckMock: ReturnType<typeof mock>;
+let gitMergeMock: ReturnType<typeof mock>;
+let gitRebaseBranchMock: ReturnType<typeof mock>;
+let gitStashMock: ReturnType<typeof mock>;
+let gitAbortMergeMock: ReturnType<typeof mock>;
 let gitRemoteAddOriginMock: ReturnType<typeof mock>;
 let macroBranchEnsureMock: ReturnType<typeof mock>;
 let macroBranchStatusMock: ReturnType<typeof mock>;
@@ -166,6 +186,19 @@ const buildGitStatusWithoutOrigin = (branch: string, ahead = 1): GitStatusDto =>
   ...buildGitStatus(branch, 0, ahead),
   has_origin: false,
   has_upstream: false,
+});
+
+const buildDirtyGitStatus = (branch: string, behind: number, ahead: number): GitStatusDto => ({
+  ...buildGitStatus(branch, behind, ahead),
+  is_clean: false,
+});
+
+const buildMergeInProgressGitStatus = (branch: string, behind: number, ahead: number): GitStatusDto => ({
+  ...buildDirtyGitStatus(branch, behind, ahead),
+  conflicted_files: ['README.md'],
+  merge_in_progress: true,
+  conflictedFiles: ['README.md'],
+  mergeInProgress: true,
 });
 
 const buildMacroStatus = (behind: number, ahead: number): MacroBranchSyncDto => ({
@@ -283,6 +316,21 @@ const loadFooter = async () => {
     gitFetch: (params: { repoPath: string }) => gitFetchMock(params),
     gitPull: (params: { repoPath: string }) => gitPullMock(params),
     gitPush: (params: { repoPath: string }) => gitPushMock(params),
+    gitMergeCheck: (params: { repoPath: string; branchName: string; intoBranch: string }) =>
+      gitMergeCheckMock(params),
+    gitRebaseCheck: (params: { repoPath: string; branchName: string; ontoBranch: string }) =>
+      gitRebaseCheckMock(params),
+    gitMerge: (params: { repoPath: string; branchName: string; intoBranch: string }) =>
+      gitMergeMock(params),
+    gitRebaseBranch: (params: {
+      repoPath: string;
+      branchName: string;
+      ontoBranch: string;
+      confirm: boolean;
+    }) => gitRebaseBranchMock(params),
+    gitStash: (params: { repoPath: string; message?: string }) => gitStashMock(params),
+    gitAbortMerge: (params: { repoPath: string; confirm: boolean }) =>
+      gitAbortMergeMock(params),
     gitRemoteAddOrigin: (params: { repoPath: string; url: string }) =>
       gitRemoteAddOriginMock(params),
     macroBranchEnsure: (params?: { workspacePath?: string | null }) =>
@@ -402,9 +450,9 @@ describe('Footer', () => {
       },
     };
     gitStatusByPath = {
-      '/repo/api': buildGitStatus('main-a', 2, 1),
-      '/repo/web': buildGitStatus('feature-b', 4, 3),
-      '/repo/docs': buildGitStatus('release-c', 1, 7),
+      '/repo/api': buildGitStatus('main-a', 2, 0),
+      '/repo/web': buildGitStatus('feature-b', 0, 3),
+      '/repo/docs': buildGitStatus('release-c', 1, 0),
     };
     macroStatusByPath = {
       '/repo/api': buildMacroStatus(5, 4),
@@ -428,6 +476,41 @@ describe('Footer', () => {
       remote: 'origin',
       output: `push ${repoPath}`,
     }));
+    gitMergeCheckMock = mock(async (): Promise<GitMergeCheckDto> => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 0,
+      behind: 0,
+    }));
+    gitRebaseCheckMock = mock(async (): Promise<GitRebaseCheckDto> => ({
+      rebaseable: true,
+      conflictFiles: [],
+      output: '',
+    }));
+    gitMergeMock = mock(async ({ branchName, intoBranch }: { branchName: string; intoBranch: string }) =>
+      `Merged ${branchName} into ${intoBranch}`
+    );
+    gitRebaseBranchMock = mock(async ({ branchName, ontoBranch }: { branchName: string; ontoBranch: string }) =>
+      `Rebased ${branchName} onto ${ontoBranch}`
+    );
+    gitStashMock = mock(async ({ repoPath }: { repoPath: string; message?: string }) => {
+      gitStatusByPath[repoPath] = {
+        ...gitStatusByPath[repoPath]!,
+        is_clean: true,
+      };
+      return 'stash123';
+    });
+    gitAbortMergeMock = mock(async ({ repoPath }: { repoPath: string; confirm: boolean }) => {
+      gitStatusByPath[repoPath] = {
+        ...gitStatusByPath[repoPath]!,
+        conflicted_files: [],
+        merge_in_progress: false,
+        conflictedFiles: [],
+        mergeInProgress: false,
+        is_clean: true,
+      };
+    });
     gitRemoteAddOriginMock = mock(async ({ url }: { repoPath: string; url: string }) => ({
       remote: 'origin',
       url,
@@ -470,15 +553,15 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('6@13');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('4@10');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@13');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@10');
 
     await selectGitScope(container!, 'project-b');
 
     expect(appState.switchProjectContext).not.toHaveBeenCalled();
     expect(appState.selectedProjectId).toBe('project-a');
     expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('project-b');
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('4@8');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('0@8');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@6');
   });
 
@@ -566,6 +649,304 @@ describe('Footer', () => {
     ]);
   });
 
+  it('opens a divergence modal and runs preflights before mutating a divergent branch', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Branch has diverged from remote');
+    expect(container?.textContent ?? '').toContain('origin/feature-b');
+    expect(container?.textContent ?? '').toContain('Available');
+    expect(gitFetchMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branch: 'feature-b',
+    });
+    expect(gitMergeCheckMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branchName: 'origin/feature-b',
+      intoBranch: 'feature-b',
+    });
+    expect(gitRebaseCheckMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branchName: 'feature-b',
+      ontoBranch: 'origin/feature-b',
+    });
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(gitRebaseBranchMock).not.toHaveBeenCalled();
+
+    act(() => {
+      findButtonByText(container!, 'Rebase')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitFetchMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branch: 'feature-b',
+    });
+    expect(gitRebaseBranchMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branchName: 'feature-b',
+      ontoBranch: 'origin/feature-b',
+      confirm: true,
+    });
+    expect(gitMergeMock).not.toHaveBeenCalled();
+  });
+
+  it('can stash local changes before resolving a divergent branch', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildDirtyGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    gitMergeCheckMock.mockImplementationOnce(async (): Promise<GitMergeCheckDto> => ({
+      mergeable: false,
+      conflictFiles: ['docs/cli.md'],
+      hasChanges: true,
+      ahead: 3,
+      behind: 4,
+    }));
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('local changes');
+    expect(findButtonByText(container!, 'Stash, then merge')).toBeNull();
+    expect(container?.textContent ?? '').toContain('Stash, then rebase');
+
+    act(() => {
+      findButtonByText(container!, 'Stash, then rebase')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitStashMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      message: 'Macro: stash before rebase feature-b',
+    });
+    expect(gitRebaseBranchMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      branchName: 'feature-b',
+      ontoBranch: 'origin/feature-b',
+      confirm: true,
+    });
+    expect(gitPullMock).not.toHaveBeenCalled();
+  });
+
+  it('hides merge when the merge preflight detects conflicts', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    gitMergeCheckMock.mockImplementationOnce(async (): Promise<GitMergeCheckDto> => ({
+      mergeable: false,
+      conflictFiles: ['docs/cli.md', 'src/project.ml', 'tests/test_cli.ml'],
+      hasChanges: true,
+      ahead: 3,
+      behind: 4,
+    }));
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    const text = container?.textContent ?? '';
+    expect(text).toContain('Conflicts detected');
+    expect(text).toContain('Conflicts');
+    expect(text).toContain('docs/cli.md');
+    expect(text).toContain('src/project.ml');
+    expect(text).not.toContain('Latest attempt failed');
+    expect(findButtonByText(container!, 'Merge')).toBeNull();
+    expect(findButtonByText(container!, 'Rebase')).not.toBeNull();
+    expect(gitMergeMock).not.toHaveBeenCalled();
+  });
+
+  it('hides rebase when the rebase preflight detects conflicts', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    gitRebaseCheckMock.mockImplementationOnce(async (): Promise<GitRebaseCheckDto> => ({
+      rebaseable: false,
+      conflictFiles: ['src/cascade.ml', 'tests/test_project_manifest.ml'],
+      output: 'conflict',
+    }));
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    const text = container?.textContent ?? '';
+    expect(text).toContain('Conflicts detected');
+    expect(text).toContain('src/cascade.ml');
+    expect(text).toContain('tests/test_project_manifest.ml');
+    expect(findButtonByText(container!, 'Merge')).not.toBeNull();
+    expect(findButtonByText(container!, 'Rebase')).toBeNull();
+    expect(gitRebaseBranchMock).not.toHaveBeenCalled();
+  });
+
+  it('offers only close when merge and rebase preflights both conflict', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    gitMergeCheckMock.mockImplementationOnce(async (): Promise<GitMergeCheckDto> => ({
+      mergeable: false,
+      conflictFiles: ['docs/maintenance-plan.md'],
+      hasChanges: true,
+      ahead: 3,
+      behind: 4,
+    }));
+    gitRebaseCheckMock.mockImplementationOnce(async (): Promise<GitRebaseCheckDto> => ({
+      rebaseable: false,
+      conflictFiles: ['src/project_interface.ml'],
+      output: 'conflict',
+    }));
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    const text = container?.textContent ?? '';
+    expect(text).toContain('docs/maintenance-plan.md');
+    expect(text).toContain('src/project_interface.ml');
+    expect(findButtonByText(container!, 'Merge')).toBeNull();
+    expect(findButtonByText(container!, 'Rebase')).toBeNull();
+    expect(findButtonByText(container!, 'Close')).not.toBeNull();
+    expect(findButtonByText(container!, 'Cancel')).toBeNull();
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(gitRebaseBranchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows only abort merge when divergence resolution finds an unmerged index', async () => {
+    gitStatusByPath = {
+      '/repo/api': buildGitStatus('main-a', 0, 0),
+      '/repo/web': buildMergeInProgressGitStatus('feature-b', 4, 3),
+      '/repo/docs': buildGitStatus('release-c', 0, 0),
+    };
+    macroStatusByPath = {
+      '/repo/api': buildMacroStatus(0, 0),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root?.render(<Footer />);
+    await flushAsyncWork();
+    await selectGitScope(container!, 'project-b');
+
+    act(() => {
+      findButtonByIcon(container!, 'arrow-down')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(container?.textContent ?? '').toContain('Merge in progress');
+    expect(container?.textContent ?? '').toContain('README.md');
+    expect(findButtonByText(container!, 'Stash, then rebase')).toBeNull();
+    expect(findButtonByText(container!, 'Merge')).toBeNull();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(gitRebaseCheckMock).not.toHaveBeenCalled();
+
+    act(() => {
+      findButtonByText(container!, 'Abort merge')?.click();
+    });
+    await flushAsyncWork();
+
+    expect(gitAbortMergeMock).toHaveBeenCalledWith({
+      repoPath: '/repo/web',
+      confirm: true,
+    });
+    expect(gitPullMock).not.toHaveBeenCalled();
+  });
+
   it('resets the local footer git scope when the selected group changes', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');
@@ -585,7 +966,7 @@ describe('Footer', () => {
 
     expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('__all__');
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('1@2');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('7@9');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@9');
     expect(container?.textContent ?? '').toContain('release-c');
   });
 
@@ -615,7 +996,7 @@ describe('Footer', () => {
       'project-a',
     ]);
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@5');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('1@4');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@4');
   });
 
   it('marks macro-only pull and push counts without adding them to code counts', async () => {

@@ -256,23 +256,6 @@ pub async fn workspace_reconcile_project_registry_from_hints(
 }
 
 #[tauri::command]
-pub async fn workspace_reconcile_project_registry_from_known_parent_dirs(
-    workspace_root: State<'_, WorkspaceMetadataRoot>,
-    git_state: State<'_, GitState>,
-    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
-) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
-    let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::reconcile_project_registry_from_known_parent_dirs(
-        &workspace_path,
-        &metadata_root,
-        request,
-    )
-    .await
-}
-
-#[tauri::command]
 pub async fn workspace_discover_recoverable_projects(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,

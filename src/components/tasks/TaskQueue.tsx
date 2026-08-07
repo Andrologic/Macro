@@ -387,7 +387,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
+      <div className="grid h-full grid-rows-[auto,1fr,auto] p-1.5">
         {actions.length > 0 && (
           <button
             ref={menuButtonRef}
@@ -403,7 +403,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               setShowMenu(nextValue);
             }}
             onMouseDown={(event) => event.stopPropagation()}
-            className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={t('implement.taskActions', 'Task actions')}
           >
             <Icon name="more-vertical" size={13} />
@@ -429,7 +429,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
 
           <div className="min-w-0 flex-1">
-            <h3 className="pr-7 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
+            <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
               {task.title}
             </h3>
           </div>
@@ -458,7 +458,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           ) : null}
         </div>
 
-        <div className="min-w-0 self-end pr-10">
+        <div className="min-w-0 self-end pr-3">
           {contextBadges.length > 0 && (
             <div
               data-task-card-footer="true"
@@ -491,7 +491,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             disabled={taskCommandRunStatus === 'cancelling'}
             className={cn(
-              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               taskCommandRunStatus === 'cancelling'
                 ? 'cursor-not-allowed text-muted-foreground'
                 : 'text-amber-500 hover:bg-accent/70'
@@ -518,7 +518,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             disabled={!canRunTaskCommands}
             className={cn(
-              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               canRunTaskCommands
                 ? 'text-emerald-500 hover:bg-accent/70'
                 : 'cursor-not-allowed text-muted-foreground/50'
