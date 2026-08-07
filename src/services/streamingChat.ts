@@ -1253,9 +1253,13 @@ const readStreamChunkWithIdleTimeout = async (
   }
 
   let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
     const idleTimeout = new Promise<never>((_, reject) => {
       timeoutId = globalThis.setTimeout(() => {
+        void reader.cancel().catch(() => {
+          // Ignore cancellation errors while closing an idle stream.
+        });
         reject(
           new ProviderRuntimeError('Provider stream stalled before sending more data', {
             kind: 'stream_idle_timeout',
@@ -1264,12 +1268,111 @@ const readStreamChunkWithIdleTimeout = async (
         );
       }, timeoutMs);
     });
-    return await Promise.race([reader.read(), idleTimeout]);
+    const abort = new Promise<never>((_, reject) => {
+      abortHandler = () => {
+        void reader.cancel().catch(() => {
+          // Ignore cancellation errors while aborting a stream.
+        });
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal?.addEventListener('abort', abortHandler, { once: true });
+    });
+    return await Promise.race([reader.read(), idleTimeout, abort]);
   } finally {
     if (timeoutId !== undefined) {
       globalThis.clearTimeout(timeoutId);
     }
+    if (abortHandler) {
+      signal?.removeEventListener('abort', abortHandler);
+    }
   }
+};
+
+export const extractSseData = (rawEvent: string): string | undefined => {
+  const dataLines = rawEvent.split('\n').flatMap((rawLine) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith('data:')) {
+      return [];
+    }
+    const data = line.slice('data:'.length);
+    return [data.startsWith(' ') ? data.slice(1) : data];
+  });
+
+  return dataLines.length > 0 ? dataLines.join('\n') : undefined;
+};
+
+export interface SseEventParser {
+  push(chunk: string): string[];
+  flush(): string[];
+}
+
+export const createSseEventParser = (): SseEventParser => {
+  let input = '';
+  let eventLines: string[] = [];
+
+  const dispatchEvent = (events: string[]) => {
+    if (eventLines.length > 0) {
+      events.push(eventLines.join('\n'));
+      eventLines = [];
+    }
+  };
+
+  const drain = (flush: boolean): string[] => {
+    const events: string[] = [];
+    while (true) {
+      const newlineIndex = input.indexOf('\n');
+      const carriageReturnIndex = input.indexOf('\r');
+      let lineEnd = -1;
+      let terminatorLength = 0;
+
+      if (newlineIndex >= 0 && carriageReturnIndex >= 0) {
+        lineEnd = Math.min(newlineIndex, carriageReturnIndex);
+      } else {
+        lineEnd = Math.max(newlineIndex, carriageReturnIndex);
+      }
+
+      if (lineEnd < 0) {
+        break;
+      }
+      if (input[lineEnd] === '\r' && lineEnd === input.length - 1 && !flush) {
+        break;
+      }
+
+      if (input[lineEnd] === '\r' && input[lineEnd + 1] === '\n') {
+        terminatorLength = 2;
+      } else {
+        terminatorLength = 1;
+      }
+
+      const line = input.slice(0, lineEnd);
+      input = input.slice(lineEnd + terminatorLength);
+      if (line.length === 0) {
+        dispatchEvent(events);
+      } else {
+        eventLines.push(line);
+      }
+    }
+
+    if (flush && input.length > 0) {
+      eventLines.push(input);
+      input = '';
+    }
+    if (flush) {
+      dispatchEvent(events);
+    }
+
+    return events;
+  };
+
+  return {
+    push(chunk: string) {
+      input += chunk;
+      return drain(false);
+    },
+    flush() {
+      return drain(true);
+    },
+  };
 };
 
 const escapeToolContextAttribute = (value: string): string =>
@@ -1747,6 +1850,7 @@ const emitStreamTimeline = (
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
+  completionReason?: StreamCompletionReason;
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   reasoningSummary?: string;
@@ -2301,8 +2405,10 @@ export const __testables = {
   collectAllowedTools,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
+  createSseEventParser,
   estimateCopilotSerializedPayloadTokens,
   extractVisibleTextFromProviderInputItems,
+  extractSseData,
   finalizeDanglingToolCallsForChatCompletions,
   formatToolTraceDetail,
   getActiveStreamingSessionIds,
@@ -2596,6 +2702,7 @@ const streamNativeTurnViaTauri = async (params: {
                 reasoningSummary: event.payload.reasoning_summary ?? undefined,
                 toolTraces: event.payload.tool_traces ?? undefined,
                 hiddenContext: event.payload.hidden_context ?? undefined,
+                completionReason: event.payload.completion_reason ?? undefined,
               })
             );
           }),
@@ -2609,6 +2716,20 @@ const streamNativeTurnViaTauri = async (params: {
         ]);
 
         resources.tauriUnlisteners = unlisteners;
+        if (settled || params.signal?.aborted) {
+          unlisteners.forEach((unlisten) => {
+            try {
+              unlisten();
+            } catch {
+              // Ignore listener cleanup errors during an abort race.
+            }
+          });
+          resources.tauriUnlisteners = [];
+          if (!settled) {
+            signalHandler();
+          }
+          return;
+        }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
         await tauriIpc.aiStreamChat({
@@ -2707,7 +2828,6 @@ const streamChatViaNativeToolCallingProvider = async (
   let currentMessages: StreamMessage[] = [...messages];
   const assistantTranscriptItems: unknown[] = [];
   let latestProviderTurnState: ProviderTurnState | undefined;
-  const readEvidenceBySource = new Map<string, string>();
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
   let guidedRetryCount = 0;
@@ -2722,29 +2842,6 @@ const streamChatViaNativeToolCallingProvider = async (
       providerTurnState: latestProviderTurnState,
       ...(completionReason ? { completionReason } : {}),
     });
-  };
-
-  const normalizeSourceKey = (value?: string): string =>
-    (value || '')
-      .trim()
-      .replace(/\\/g, '/')
-      .replace(/^\.\//, '')
-      .toLowerCase();
-
-  const rememberReadEvidence = (source: string, content: string) => {
-    const key = normalizeSourceKey(source);
-    if (!key || !content.trim()) return;
-    readEvidenceBySource.set(key, content);
-  };
-
-  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
-    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
-    if (!fileHeaderMatch) return;
-
-    const filePath = fileHeaderMatch[1].trim();
-    const separatorIndex = result.indexOf('\n\n');
-    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
-    rememberReadEvidence(filePath, content);
   };
 
   try {
@@ -2902,7 +2999,8 @@ const streamChatViaNativeToolCallingProvider = async (
         ) {
           throw new Error('Reponse ChatGPT vide apres execution des outils.');
         }
-        break;
+        completeNativeStream(turnResult.completionReason ?? 'completed');
+        return;
       }
 
       const toolResults: ToolResult[] = [];
@@ -2976,10 +3074,6 @@ const streamChatViaNativeToolCallingProvider = async (
           } else if (customResult?.kind === 'result') {
             customToolResult = customResult.result;
           }
-          if (customToolResult && toolName === 'read_file') {
-            rememberReadEvidenceFromWorkspaceResult(customToolResult);
-          }
-
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
           }
@@ -3053,7 +3147,6 @@ const streamChatViaNativeToolCallingProvider = async (
                   toolResult = `Error executing tool read_file: ${workspaceResult}`;
                 } else {
                   toolResult = workspaceResult;
-                  rememberReadEvidenceFromWorkspaceResult(workspaceResult);
                 }
               } else {
                 toolResult = 'Error executing tool read_file: workspace read returned no content.';
@@ -3100,9 +3193,6 @@ const streamChatViaNativeToolCallingProvider = async (
                       : '';
 
                   toolResult = `${base}${extractNotice}`;
-                  if (label) {
-                    rememberReadEvidence(label, content);
-                  }
                 }
               }
             }
@@ -3111,28 +3201,7 @@ const streamChatViaNativeToolCallingProvider = async (
           if (customToolResult && toolName === 'mark_source_passage') {
             toolResult = customToolResult;
           } else if (toolName === 'mark_source_passage') {
-            const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-            const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-            const source = typeof args.source === 'string' ? args.source : '';
-            const title = typeof args.title === 'string' ? args.title : '';
-            const passage = typeof args.passage === 'string' ? args.passage : '';
-            const normalizedPassage = passage.trim();
-
-            const sourceKey = normalizeSourceKey(source || title);
-            const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
-            const anyEvidence = Array.from(readEvidenceBySource.values());
-            const hasMatchingEvidence = normalizedPassage
-              ? (
-                (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
-                anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
-              )
-              : false;
-
-            if (!hasMatchingEvidence) {
-              toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
-            } else {
-              toolResult = `Source passage marked successfully (kind=${kind}).`;
-            }
+            toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
           } else if (toolName === 'read_sources') {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
@@ -3403,7 +3472,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
 
-  const readEvidenceBySource = new Map<string, string>();
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
   let guidedRetryCount = 0;
@@ -3420,29 +3488,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
       ...(completionReason ? { completionReason } : {}),
     });
-  };
-
-  const normalizeSourceKey = (value?: string): string =>
-    (value || '')
-      .trim()
-      .replace(/\\/g, '/')
-      .replace(/^\.\//, '')
-      .toLowerCase();
-
-  const rememberReadEvidence = (source: string, content: string) => {
-    const key = normalizeSourceKey(source);
-    if (!key || !content.trim()) return;
-    readEvidenceBySource.set(key, content);
-  };
-
-  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
-    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
-    if (!fileHeaderMatch) return;
-
-    const filePath = fileHeaderMatch[1].trim();
-    const separatorIndex = result.indexOf('\n\n');
-    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
-    rememberReadEvidence(filePath, content);
   };
 
   try {
@@ -3560,7 +3605,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const reader = activeResources.stream.getReader();
       activeResources.reader = reader;
       const decoder = new TextDecoder();
-      let buffer = '';
+      const sseParser = createSseEventParser();
       let isThinking = false;
       let toolCalls: ToolCall[] = [];
       let turnContent = ''; // The text generated *in this specific turn*
@@ -3594,6 +3639,61 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         }
       };
 
+      const processSseEvent = (rawEvent: string) => {
+        const data = extractSseData(rawEvent);
+        if (!data || data === '[DONE]') {
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(data);
+          const choice = parsed.choices?.[0] ?? {};
+          const delta = choice.delta ?? {};
+          const message = choice.message ?? {};
+          const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+          appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
+          appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
+
+          if (typeof reasoning === 'string' && reasoning.length > 0) {
+            turnReasoningContent += reasoning;
+            startThinking();
+            appendTurnChunk(reasoning);
+          }
+
+          // Handle tool calls
+          if (delta?.tool_calls) {
+            for (const toolCallDelta of delta.tool_calls) {
+              const index = toolCallDelta.index ?? 0;
+              if (!toolCalls[index]) {
+                toolCalls[index] = {
+                  id: toolCallDelta.id || '',
+                  type: 'function',
+                  function: { name: '', arguments: '' },
+                };
+              }
+              if (toolCallDelta.id) {
+                toolCalls[index].id = toolCallDelta.id;
+              }
+              if (toolCallDelta.function?.name) {
+                toolCalls[index].function.name = toolCallDelta.function.name;
+              }
+              if (toolCallDelta.function?.arguments) {
+                toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+              }
+            }
+          }
+
+          if (delta?.content) {
+            endThinking();
+            turnApiContent += delta.content;
+            appendTurnChunk(delta.content);
+          }
+        } catch {
+          // Skip malformed JSON - some providers send non-JSON lines.
+          devLogger.debug('Failed to parse SSE data:', data);
+        }
+      };
+
       try {
         while (true) {
           // Check if the stream was cancelled
@@ -3617,77 +3717,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           );
 
           if (done) {
+            for (const event of sseParser.push(decoder.decode())) {
+              processSseEvent(event);
+            }
+            for (const event of sseParser.flush()) {
+              processSseEvent(event);
+            }
             break;
           }
 
-          buffer += decoder.decode(value, { stream: true });
-
-          // Process complete SSE events
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            if (!trimmedLine || trimmedLine === '') {
-              continue;
-            }
-
-            if (trimmedLine.startsWith('data: ')) {
-              const data = trimmedLine.slice(6);
-
-              if (data === '[DONE]') {
-                continue;
-              }
-
-              try {
-                const parsed = JSON.parse(data);
-                const choice = parsed.choices?.[0] ?? {};
-                const delta = choice.delta ?? {};
-                const message = choice.message ?? {};
-                const reasoning = delta?.reasoning ?? delta?.reasoning_content;
-                appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
-                appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
-
-                if (typeof reasoning === 'string' && reasoning.length > 0) {
-                  turnReasoningContent += reasoning;
-                  startThinking();
-                  appendTurnChunk(reasoning);
-                }
-
-                // Handle tool calls
-                if (delta?.tool_calls) {
-                  for (const toolCallDelta of delta.tool_calls) {
-                    const index = toolCallDelta.index ?? 0;
-                    if (!toolCalls[index]) {
-                      toolCalls[index] = {
-                        id: toolCallDelta.id || '',
-                        type: 'function',
-                        function: { name: '', arguments: '' },
-                      };
-                    }
-                    if (toolCallDelta.id) {
-                      toolCalls[index].id = toolCallDelta.id;
-                    }
-                    if (toolCallDelta.function?.name) {
-                      toolCalls[index].function.name = toolCallDelta.function.name;
-                    }
-                    if (toolCallDelta.function?.arguments) {
-                      toolCalls[index].function.arguments += toolCallDelta.function.arguments;
-                    }
-                  }
-                }
-
-                if (delta?.content) {
-                  endThinking();
-                  turnApiContent += delta.content;
-                  appendTurnChunk(delta.content);
-                }
-              } catch (e) {
-                // Skip malformed JSON - some providers send non-JSON lines
-                devLogger.debug('Failed to parse SSE data:', data);
-              }
-            }
+          for (const event of sseParser.push(decoder.decode(value, { stream: true }))) {
+            processSseEvent(event);
           }
         }
         consecutiveStreamRetryCount = 0;
@@ -3897,10 +3937,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             } else if (customResult?.kind === 'result') {
               customToolResult = customResult.result;
             }
-            if (customToolResult && toolName === 'read_file') {
-              rememberReadEvidenceFromWorkspaceResult(customToolResult);
-            }
-
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
             }
@@ -3984,7 +4020,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                     toolResult = `Error executing tool read_file: ${workspaceResult}`;
                   } else {
                     toolResult = workspaceResult;
-                    rememberReadEvidenceFromWorkspaceResult(workspaceResult);
                   }
                 } else {
                   toolResult = 'Error executing tool read_file: workspace read returned no content.';
@@ -4032,9 +4067,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                       : '';
 
                   toolResult = `${base}${extractNotice}`;
-                  if (label) {
-                    rememberReadEvidence(label, content);
-                  }
                 }
               }
             }
@@ -4042,28 +4074,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             if (customToolResult && toolName === 'mark_source_passage') {
               toolResult = customToolResult;
             } else if (toolName === 'mark_source_passage') {
-              const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-              const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-              const source = typeof args.source === 'string' ? args.source : '';
-              const title = typeof args.title === 'string' ? args.title : '';
-              const passage = typeof args.passage === 'string' ? args.passage : '';
-              const normalizedPassage = passage.trim();
-
-              const sourceKey = normalizeSourceKey(source || title);
-              const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
-              const anyEvidence = Array.from(readEvidenceBySource.values());
-              const hasMatchingEvidence = normalizedPassage
-                ? (
-                  (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
-                  anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
-                )
-                : false;
-
-              if (!hasMatchingEvidence) {
-                toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
-              } else {
-                toolResult = `Source passage marked successfully (kind=${kind}).`;
-              }
+              toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
             } else if (toolName === 'read_sources') {
               toolResult = customToolResult || 'No source passages available.';
             } else if (toolName === 'edit_source_passage') {

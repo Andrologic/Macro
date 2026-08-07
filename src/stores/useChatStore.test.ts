@@ -10,6 +10,7 @@ import type {
   SkillManifest,
   WorkspaceFileReference,
 } from '../types';
+import type { Citation } from './useCitationsStore';
 import {
   ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
   type ArchitectPlanRecord,
@@ -375,6 +376,10 @@ let citationCounter = 0;
 let citationRecords: TestCitation[] = [];
 
 const createCitationId = () => `cite-test-${++citationCounter}`;
+
+const ensureCitationContentLoadedMock = mock(async (id: string) =>
+  citationRecords.find((citation) => citation.id === id) ?? null
+);
 
 const sortSourceCitations = (citations: TestCitation[]) =>
   [...citations].sort(
@@ -1065,6 +1070,37 @@ const gitBranchListMock = mock(async (repoPath: string) => (
 ));
 const dbGetConversationCompactionStateMock = mock(async () => null);
 const dbUpsertConversationCompactionStateMock = mock(async () => undefined);
+const toolboxStateByConversationId = new Map<
+  string,
+  {
+    conversation_id: string;
+    composer_context_refs_json: string;
+    created_at: string;
+    updated_at: string;
+  }
+>();
+const getConversationToolboxStateMock = mock(async (conversationId: string) =>
+  toolboxStateByConversationId.get(conversationId) ?? null
+);
+const upsertConversationToolboxStateMock = mock(async (input: {
+  conversation_id: string;
+  composer_context_refs_json: string;
+  timestamp?: string | null;
+}) => {
+  const previous = toolboxStateByConversationId.get(input.conversation_id);
+  const timestamp = input.timestamp ?? '2026-03-19T00:00:00.000Z';
+  const record = {
+    conversation_id: input.conversation_id,
+    composer_context_refs_json: input.composer_context_refs_json,
+    created_at: previous?.created_at ?? timestamp,
+    updated_at: timestamp,
+  };
+  toolboxStateByConversationId.set(input.conversation_id, record);
+  return record;
+});
+const deleteConversationToolboxStateMock = mock(async (conversationId: string) => {
+  toolboxStateByConversationId.delete(conversationId);
+});
 const createDbConversationCompactionState = (
   overrides: Record<string, unknown> = {},
 ) => ({
@@ -1358,6 +1394,17 @@ const registerUseChatStoreMocks = async () => {
           citationRecords = [];
         },
         citations: citationRecords,
+        hydrateConversationCitations: async () => undefined,
+        ensureCitationContentLoaded: ensureCitationContentLoadedMock,
+        ensureConversationCitationContentsLoaded: async (
+          conversationId: string,
+          filter?: (citation: TestCitation) => boolean,
+        ) =>
+          citationRecords.filter(
+            (citation) =>
+              citation.conversationId === conversationId &&
+              (!filter || filter(citation)),
+          ),
         addCitation: (citation: Omit<TestCitation, 'id' | 'timestamp'>) => {
           const id = createCitationId();
           citationRecords.push({
@@ -1449,6 +1496,21 @@ const registerUseChatStoreMocks = async () => {
         removeCitation: (id: string) => {
           citationRecords = citationRecords.filter((citation) => citation.id !== id);
         },
+        clearConversationCitations: (conversationId: string) => {
+          citationRecords = citationRecords.filter(
+            (citation) => citation.conversationId !== conversationId,
+          );
+        },
+        clearConversationCitationsBulk: (conversationIds: string[]) => {
+          const ids = new Set(conversationIds);
+          citationRecords = citationRecords.filter(
+            (citation) => !ids.has(citation.conversationId),
+          );
+        },
+        getConversationCitations: (conversationId: string) =>
+          citationRecords.filter(
+            (citation) => citation.conversationId === conversationId,
+          ),
         getConversationContextCitations: (conversationId: string) =>
           citationRecords.filter(
             (citation) =>
@@ -1637,6 +1699,9 @@ const registerUseChatStoreMocks = async () => {
     createMessage: createMessageMock,
     dbGetConversationCompactionState: dbGetConversationCompactionStateMock,
     dbUpsertConversationCompactionState: dbUpsertConversationCompactionStateMock,
+    getConversationToolboxState: getConversationToolboxStateMock,
+    upsertConversationToolboxState: upsertConversationToolboxStateMock,
+    deleteConversationToolboxState: deleteConversationToolboxStateMock,
     deleteConversation: deleteConversationMock,
     deleteConversations: deleteConversationsMock,
     gitBranchList: gitBranchListMock,
@@ -1768,6 +1833,11 @@ const registerUseChatStoreMocks = async () => {
 const loadChatStore = async () => {
   importCounter += 1;
   return import(`./useChatStore.ts?test=${importCounter}`);
+};
+
+const waitForToolboxPersistence = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
 };
 
 const loadAiSelectionsPreference = async () => {
@@ -2343,6 +2413,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.deleteManualFeatureDraft.mockClear();
     citationCounter = 0;
     citationRecords = [];
+    ensureCitationContentLoadedMock.mockClear();
+    ensureCitationContentLoadedMock.mockImplementation(async (id: string) =>
+      citationRecords.find((citation) => citation.id === id) ?? null
+    );
     tauriAvailable = false;
     dbConversationCounter = 0;
     dbMessageCounter = 0;
@@ -2383,6 +2457,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     createMessageMock.mockClear();
     dbGetConversationCompactionStateMock.mockClear();
     dbUpsertConversationCompactionStateMock.mockClear();
+    toolboxStateByConversationId.clear();
+    getConversationToolboxStateMock.mockClear();
+    getConversationToolboxStateMock.mockImplementation(async (conversationId: string) =>
+      toolboxStateByConversationId.get(conversationId) ?? null
+    );
+    upsertConversationToolboxStateMock.mockClear();
+    deleteConversationToolboxStateMock.mockClear();
     updateConversationAISelectionMock.mockClear();
     deleteConversationMock.mockClear();
     deleteConversationsMock.mockClear();
@@ -2442,6 +2523,39 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('keeps composer drafts isolated by context and migrates the temporary draft', async () => {
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({ composerDraftsByContextKey: {} }));
+
+    const state = useChatStore.getState();
+    state.saveComposerDraftForContext('context:temporary', {
+      text: 'Temporary draft',
+      images: [],
+      contextRefs: [],
+    });
+    state.saveComposerDraftForContext('conversation:existing', {
+      text: 'Existing draft',
+      images: [],
+      contextRefs: [],
+    });
+
+    expect(useChatStore.getState().getComposerDraftForContext('conversation:existing')?.text)
+      .toBe('Existing draft');
+    useChatStore.getState().migrateComposerDraftContext(
+      'context:temporary',
+      'conversation:created'
+    );
+
+    expect(useChatStore.getState().getComposerDraftForContext('context:temporary')).toBeNull();
+    expect(useChatStore.getState().getComposerDraftForContext('conversation:created')?.text)
+      .toBe('Temporary draft');
+    expect(useChatStore.getState().getComposerDraftForContext('conversation:existing')?.text)
+      .toBe('Existing draft');
+
+    useChatStore.getState().clearComposerDraftForContext('conversation:created');
+    expect(useChatStore.getState().getComposerDraftForContext('conversation:created')).toBeNull();
   });
 
   it('clears Architect conversation selection when no plan is selected', async () => {
@@ -2613,6 +2727,206 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(providerState.selectedProviderId).toBe('provider-2');
     expect(providerState.selectedModelId).toBe('model-2a');
     expect(providerState.selectedReasoningEffort).toBe('high');
+  });
+
+  it('restores persisted toolbox composer source refs after selecting a conversation', async () => {
+    tauriAvailable = true;
+    citationRecords = [
+      {
+        id: 'source-1',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'notes.md',
+        title: 'Persisted source',
+        snippet: 'Important passage',
+        messageId: 'assistant-1',
+        conversationId: 'conv-b',
+        timestamp: '2026-03-19T00:00:00.000Z',
+        kind: 'used',
+      },
+    ];
+    toolboxStateByConversationId.set('conv-b', {
+      conversation_id: 'conv-b',
+      composer_context_refs_json: JSON.stringify([
+        {
+          id: 'source-1',
+          kind: 'source',
+          title: 'Persisted source',
+          subtitle: 'notes.md',
+          sourceLabel: 'notes.md',
+          snippet: 'Important passage',
+        },
+      ]),
+      created_at: '2026-03-19T00:00:00.000Z',
+      updated_at: '2026-03-19T00:00:00.000Z',
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+    useChatStore.setState({ composerContextRefs: [] });
+
+    await useChatStore.getState().selectConversation('conv-b');
+
+    expect(getConversationToolboxStateMock).toHaveBeenCalledWith('conv-b');
+    expect(useChatStore.getState().composerContextRefs).toEqual([
+      expect.objectContaining({
+        id: 'source-1',
+        kind: 'source',
+        title: 'Persisted source',
+        subtitle: 'notes.md',
+        data: expect.objectContaining({
+          id: 'source-1',
+          conversationId: 'conv-b',
+        }),
+      }),
+    ]);
+  });
+
+  it('ignores stale toolbox hydration after a newer conversation switch wins', async () => {
+    tauriAvailable = true;
+    citationRecords = [
+      {
+        id: 'source-a',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'a.md',
+        title: 'Source A',
+        snippet: 'Passage A',
+        messageId: 'assistant-a',
+        conversationId: 'conv-a',
+        timestamp: '2026-03-19T00:00:00.000Z',
+        kind: 'used',
+      },
+      {
+        id: 'source-b',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'b.md',
+        title: 'Source B',
+        snippet: 'Passage B',
+        messageId: 'assistant-b',
+        conversationId: 'conv-b',
+        timestamp: '2026-03-19T00:01:00.000Z',
+        kind: 'used',
+      },
+    ];
+    const staleToolboxState = createDeferred<{
+      conversation_id: string;
+      composer_context_refs_json: string;
+      created_at: string;
+      updated_at: string;
+    } | null>();
+    getConversationToolboxStateMock.mockImplementation(async (conversationId: string) => {
+      if (conversationId === 'conv-a') {
+        return staleToolboxState.promise;
+      }
+      if (conversationId === 'conv-b') {
+        return {
+          conversation_id: 'conv-b',
+          composer_context_refs_json: JSON.stringify([
+            {
+              id: 'source-b',
+              kind: 'source',
+              title: 'Source B',
+              subtitle: 'b.md',
+              sourceLabel: 'b.md',
+              snippet: 'Passage B',
+            },
+          ]),
+          created_at: '2026-03-19T00:00:00.000Z',
+          updated_at: '2026-03-19T00:00:00.000Z',
+        };
+      }
+      return null;
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-b',
+        selectedConversationIdsByMode: { Architect: 'conv-b' },
+      }),
+    );
+    useChatStore.setState({ composerContextRefs: [] });
+
+    const staleSwitch = useChatStore.getState().selectConversation('conv-a');
+    await Promise.resolve();
+    await Promise.resolve();
+    const winningSwitch = useChatStore.getState().selectConversation('conv-b');
+
+    await winningSwitch;
+    staleToolboxState.resolve({
+      conversation_id: 'conv-a',
+      composer_context_refs_json: JSON.stringify([
+        {
+          id: 'source-a',
+          kind: 'source',
+          title: 'Source A',
+          subtitle: 'a.md',
+          sourceLabel: 'a.md',
+          snippet: 'Passage A',
+        },
+      ]),
+      created_at: '2026-03-19T00:00:00.000Z',
+      updated_at: '2026-03-19T00:00:00.000Z',
+    });
+    await staleSwitch;
+
+    expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+    expect(useChatStore.getState().composerContextRefs).toEqual([
+      expect.objectContaining({
+        id: 'source-b',
+        kind: 'source',
+        title: 'Source B',
+      }),
+    ]);
+  });
+
+  it('persists and deletes toolbox composer refs for the selected conversation', async () => {
+    tauriAvailable = true;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+    useChatStore.setState({ composerContextRefs: [] });
+
+    useChatStore.getState().addComposerContextRef({
+      id: 'file-1',
+      kind: 'file',
+      title: 'README.md',
+      subtitle: 'project-1',
+      data: {
+        id: 'file-1',
+        path: 'README.md',
+        relativePath: 'README.md',
+        projectId: 'project-1',
+        projectName: 'Project 1',
+      },
+    });
+    await waitForToolboxPersistence();
+
+    expect(upsertConversationToolboxStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation_id: 'conv-a',
+        composer_context_refs_json: expect.stringContaining('README.md'),
+      }),
+    );
+
+    useChatStore.getState().clearComposerContextRefs();
+    await waitForToolboxPersistence();
+
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('conv-a');
   });
 
   it('restores the conversation model from the database when preferences are empty', async () => {
@@ -5943,7 +6257,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
       content:
-        "Pose moi des questions pour choisir ma couleur preferee, utilise l'outil Question.",
+        "Pose-moi des questions pour choisir ma couleur préférée, utilise l'outil Question.",
     });
 
     const streamOptions = ((streamChatMock as unknown as {
@@ -5998,7 +6312,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
       content:
-        "Pose moi des questions pour choisir ma couleur preferee, utilise l'outil Question.",
+        "Pose-moi des questions pour choisir ma couleur préférée, utilise l'outil Question.",
     });
 
     const streamOptions = ((streamChatMock as unknown as {
@@ -6128,7 +6442,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     await useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
-      content: 'Regarde [file: src/App.tsx] avant de repondre.',
+      content: 'Regarde [file: src/App.tsx] avant de répondre.',
     });
 
     const userMessage = useChatStore
@@ -6188,7 +6502,75 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(String(result)).toContain('Workspace file body from disk.');
   });
 
+  it('persists source composer refs and injects the full passage', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    const sourceCitation: Citation = {
+      id: 'source-ref-1',
+      type: 'source_passage',
+      scope: 'source',
+      source: 'Research notes',
+      title: 'Retention insight',
+      snippet: 'Short retained excerpt.',
+      content: 'Full retained source passage with the detail the model needs.',
+      messageId: 'assistant-source',
+      conversationId: 'chat-conv',
+      timestamp: '2026-03-19T00:00:00.000Z',
+      url: 'https://example.com/source',
+      kind: 'interesting',
+      reason: 'Useful for the next answer',
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      composerContextRefs: [{
+        id: sourceCitation.id,
+        kind: 'source',
+        title: sourceCitation.title,
+        subtitle: sourceCitation.source,
+        data: sourceCitation,
+      } satisfies ContextReference],
+    }));
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Utilise cette source.',
+    });
+
+    const userMessage = useChatStore
+      .getState()
+      .messages.find((message: ChatMessage) => message.role === 'user');
+    expect(userMessage?.context_refs).toEqual([
+      expect.objectContaining({
+        id: 'source-ref-1',
+        kind: 'source',
+        title: 'Retention insight',
+        subtitle: 'Research notes',
+        snippet: 'Full retained source passage with the detail the model needs.',
+        sourceLabel: 'Research notes',
+        url: 'https://example.com/source',
+      }),
+    ]);
+
+    const streamOptions = getLatestStreamOptions<{
+      messages: Array<{ role: string; content: unknown }>;
+    }>();
+    const requestContent = String(streamOptions.messages.at(-1)?.content ?? '');
+    expect(requestContent).toContain('[source: Retention insight]');
+    expect(requestContent).toContain(
+      'Passage: Full retained source passage with the detail the model needs.',
+    );
+    expect(requestContent).toContain('Source: Research notes');
+    expect(requestContent).toContain('URL: https://example.com/source');
+  });
+
   it('preloads explicit skill mentions and keeps the compact enabled skill catalog', async () => {
+    tauriAvailable = true;
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -6251,7 +6633,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     await useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
-      content: 'Utilise $docs pour cette reponse. FULL BODY SHOULD NOT BE IN CATALOG',
+      content: 'Utilise $docs pour cette réponse. FULL BODY SHOULD NOT BE IN CATALOG',
     });
 
     const streamOptions = getLatestStreamOptions<{
@@ -6429,6 +6811,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('keeps skill read tools but blocks skill scripts in strict risk mode', async () => {
+    tauriAvailable = true;
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -6662,6 +7045,20 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
     };
 
+    citationRecords.push({
+      id: createCitationId(),
+      type: 'file',
+      scope: 'context',
+      source: 'notes.md',
+      title: 'notes.md',
+      snippet: 'Macro keeps source passages in the chat conversation.',
+      content: 'Macro keeps source passages in the chat conversation.',
+      messageId: 'context-message',
+      conversationId: 'chat-conv',
+      timestamp: new Date().toISOString(),
+      path: 'notes.md',
+    });
+
     const markResult = await streamOptions.onToolCall?.(
       'mark_source_passage',
       {
@@ -6712,6 +7109,349 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'call-delete-source',
     );
     expect(citationRecords.some((citation) => citation.id === citationId)).toBe(false);
+  });
+
+  it('rejects chat source passages that are absent from read source content', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Garde les sources importantes.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    const markResult = await streamOptions.onToolCall?.(
+      'mark_source_passage',
+      {
+        title: 'Unsupported fact',
+        passage: 'This passage was never present in a read source.',
+        kind: 'used',
+        source: 'missing.md',
+      },
+      'call-source',
+    );
+
+    expect(markResult).toBe(
+      'Error executing tool mark_source_passage: passage is not present in any read source content.',
+    );
+    expect(citationRecords.some((citation) => citation.scope === 'source')).toBe(false);
+  });
+
+  it('marks chat source passages from context snippets without loading full content', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Garde les sources importantes.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    citationRecords.push(
+      {
+        id: 'context-snippet',
+        type: 'file',
+        scope: 'context',
+        source: 'notes.md',
+        title: 'notes.md',
+        snippet: 'Snippet provenance is enough for this passage.',
+        messageId: 'context-message',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:00:00.000Z',
+        path: 'notes.md',
+      },
+      {
+        id: 'context-extra',
+        type: 'file',
+        scope: 'context',
+        source: 'other.md',
+        title: 'other.md',
+        snippet: 'Other snippet',
+        messageId: 'context-message',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:00:01.000Z',
+        path: 'other.md',
+      },
+    );
+    ensureCitationContentLoadedMock.mockClear();
+
+    const markResult = await streamOptions.onToolCall?.(
+      'mark_source_passage',
+      {
+        title: 'Snippet fact',
+        passage: 'provenance is enough',
+        kind: 'used',
+        source: 'notes.md',
+      },
+      'call-source-snippet',
+    );
+
+    expect(String(markResult)).toContain('Source passage marked successfully');
+    expect(ensureCitationContentLoadedMock).not.toHaveBeenCalled();
+  });
+
+  it('stops loading context citations after the first lazy source passage match', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Garde les sources importantes.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    citationRecords.push(
+      {
+        id: 'context-first',
+        type: 'file',
+        scope: 'context',
+        source: 'first.md',
+        title: 'first.md',
+        snippet: 'Light preview only',
+        messageId: 'context-message',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:00:00.000Z',
+        path: 'first.md',
+      },
+      {
+        id: 'context-second',
+        type: 'file',
+        scope: 'context',
+        source: 'second.md',
+        title: 'second.md',
+        snippet: 'Another preview only',
+        messageId: 'context-message',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:00:01.000Z',
+        path: 'second.md',
+      },
+    );
+    ensureCitationContentLoadedMock.mockClear();
+    ensureCitationContentLoadedMock.mockImplementation(async (id: string) => {
+      const citation = citationRecords.find((candidate) => candidate.id === id) ?? null;
+      if (!citation) return null;
+      if (id === 'context-first') {
+        citation.content = 'The full body contains the durable passage.';
+      }
+      return citation;
+    });
+
+    const markResult = await streamOptions.onToolCall?.(
+      'mark_source_passage',
+      {
+        title: 'Lazy fact',
+        passage: 'durable passage',
+        kind: 'used',
+        source: 'first.md',
+      },
+      'call-source-lazy',
+    );
+
+    expect(String(markResult)).toContain('Source passage marked successfully');
+    expect(ensureCitationContentLoadedMock).toHaveBeenCalledTimes(1);
+    expect(ensureCitationContentLoadedMock).toHaveBeenCalledWith('context-first');
+  });
+
+  it('limits chat source reads before loading source passage content', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'chat-conv',
+          title: 'Conversation chat-conv',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-19T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Relis les sources.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+    };
+
+    citationRecords.push(
+      {
+        id: 'source-new',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'new.md',
+        title: 'Newest source',
+        snippet: 'Newest preview',
+        messageId: 'assistant-new',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:02:00.000Z',
+        kind: 'used',
+      },
+      {
+        id: 'source-old',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'old.md',
+        title: 'Old source',
+        snippet: 'Old preview',
+        messageId: 'assistant-old',
+        conversationId: 'chat-conv',
+        timestamp: '2026-03-19T00:01:00.000Z',
+        kind: 'used',
+      },
+    );
+    ensureCitationContentLoadedMock.mockClear();
+    ensureCitationContentLoadedMock.mockImplementation(async (id: string) => {
+      const citation = citationRecords.find((candidate) => candidate.id === id) ?? null;
+      if (citation) {
+        citation.content = `Full content for ${citation.title}`;
+      }
+      return citation;
+    });
+
+    const readResult = await streamOptions.onToolCall?.(
+      'read_sources',
+      { limit: 1 },
+      'call-read-limited-sources',
+    );
+
+    expect(ensureCitationContentLoadedMock).toHaveBeenCalledTimes(1);
+    expect(ensureCitationContentLoadedMock).toHaveBeenCalledWith('source-new');
+    expect(String(readResult)).toContain('source-new');
+    expect(String(readResult)).not.toContain('source-old');
   });
 
   it('executes chat web search and fetch tools through the app handler', async () => {
@@ -6790,6 +7530,26 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page');
     expect(String(fetchResult)).toContain('Fetched full page content');
     expect(citationRecords.some((citation) => citation.content === 'Fetched full page content.')).toBe(true);
+
+    const markResult = await streamOptions.onToolCall?.(
+      'mark_source_passage',
+      {
+        title: 'Fetched page',
+        passage: 'Fetched full page content.',
+        kind: 'used',
+        url: 'https://example.com/page',
+      },
+      'call-mark-web-source',
+    );
+    expect(String(markResult)).toContain('Source passage marked successfully');
+    expect(
+      citationRecords.some(
+        (citation) =>
+          citation.scope === 'source' &&
+          citation.title === 'Fetched page' &&
+          citation.snippet === 'Fetched full page content.',
+      ),
+    ).toBe(true);
   });
 
   it('reuses the same implement conversation for the selected task', async () => {
@@ -13290,6 +14050,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await useChatStore.getState().deleteChatConversations(['chat-1', 'chat-2']);
 
     expect(deleteConversationsMock).toHaveBeenCalledWith(['chat-1', 'chat-2']);
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('chat-1');
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('chat-2');
     expect(useChatStore.getState().conversations.map((conversation: Conversation) => conversation.id)).toEqual([
       'chat-3',
     ]);
@@ -13448,7 +14210,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       task_id: '',
       conversation_id: 'conv-1',
       role: 'assistant',
-      content: 'rep',
+      content: 'rép',
       timestamp: '2026-03-19T00:02:00.000Z',
       tool_traces: [],
     });
@@ -13460,12 +14222,88 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const afterMessages = useChatStore.getState().messages;
     expect(afterMessages[0]).toBe(beforeMessages[0]);
     expect(afterMessages[1]).not.toBe(beforeMessages[1]);
-    expect(afterMessages[1]?.content).toBe('reponse');
+    expect(afterMessages[1]?.content).toBe('réponse');
     expect(
       useChatStore
         .getState()
         .getConversationMessages('conv-1')
         .map((message: { id: string }) => message.id)
     ).toEqual(['m-user', 'm-assistant']);
+  });
+});
+
+describe('useChatStore composer draft queue', () => {
+  let useChatStore: Awaited<ReturnType<typeof loadChatStore>>['useChatStore'];
+
+  beforeEach(async () => {
+    ({ useChatStore } = await loadChatStore());
+    useChatStore.setState((state: { pendingComposerDraftByConversationId?: Record<string, string> }) => ({
+      ...state,
+      pendingComposerDraftByConversationId: {},
+    }));
+  });
+
+  it('records a draft prompt keyed by conversation id', () => {
+    useChatStore.getState().setComposerDraft('conv-1', 'Resolve the merge blocker.');
+    expect(
+      useChatStore.getState().pendingComposerDraftByConversationId['conv-1']
+    ).toBe('Resolve the merge blocker.');
+  });
+
+  it('returns and removes the draft when consumed', () => {
+    useChatStore.getState().setComposerDraft('conv-1', 'Draft text');
+
+    const consumed = useChatStore.getState().consumeComposerDraft('conv-1');
+
+    expect(consumed).toBe('Draft text');
+    expect(
+      useChatStore.getState().pendingComposerDraftByConversationId['conv-1']
+    ).toBeUndefined();
+  });
+
+  it('returns null and does not mutate state when no draft exists', () => {
+    const before = useChatStore.getState().pendingComposerDraftByConversationId;
+    const consumed = useChatStore.getState().consumeComposerDraft('missing-conv');
+
+    expect(consumed).toBeNull();
+    expect(useChatStore.getState().pendingComposerDraftByConversationId).toBe(before);
+  });
+
+  it('keeps drafts for other conversations isolated', () => {
+    useChatStore.getState().setComposerDraft('conv-1', 'First draft');
+    useChatStore.getState().setComposerDraft('conv-2', 'Second draft');
+
+    useChatStore.getState().consumeComposerDraft('conv-1');
+
+    const state = useChatStore.getState().pendingComposerDraftByConversationId;
+    expect(state['conv-1']).toBeUndefined();
+    expect(state['conv-2']).toBe('Second draft');
+  });
+
+  it('peekComposerDraft reads without consuming the draft', () => {
+    useChatStore.getState().setComposerDraft('conv-1', 'Draft for review.');
+
+    const peeked = useChatStore.getState().peekComposerDraft('conv-1');
+    expect(peeked).toBe('Draft for review.');
+
+    // Peek is idempotent.
+    expect(useChatStore.getState().peekComposerDraft('conv-1')).toBe('Draft for review.');
+    expect(
+      useChatStore.getState().pendingComposerDraftByConversationId['conv-1']
+    ).toBe('Draft for review.');
+  });
+
+  it('peekComposerDraft returns null for an unknown conversation', () => {
+    expect(useChatStore.getState().peekComposerDraft('missing')).toBeNull();
+  });
+
+  it('acknowledgeComposerDraft drops the draft without returning it', () => {
+    useChatStore.getState().setComposerDraft('conv-1', 'Will be dropped.');
+
+    const returned = useChatStore.getState().acknowledgeComposerDraft('conv-1');
+    expect(returned).toBeUndefined();
+    expect(
+      useChatStore.getState().pendingComposerDraftByConversationId['conv-1']
+    ).toBeUndefined();
   });
 });

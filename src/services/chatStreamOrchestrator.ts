@@ -135,6 +135,7 @@ export const runAssistantStream = async ({
   let handledError = false;
   let handledComplete = false;
   let completionPromise: Promise<void> | null = null;
+  let errorPromise: Promise<void> | null = null;
   const handleErrorOnce = async (error: Error): Promise<void> => {
     if (handledError) {
       return;
@@ -168,11 +169,14 @@ export const runAssistantStream = async ({
         completionPromise = handleCompleteOnce(result);
       },
       onError: (error) => {
-        void handleErrorOnce(error);
+        errorPromise = handleErrorOnce(error);
       },
     });
     if (completionPromise) {
       await completionPromise;
+    }
+    if (errorPromise) {
+      await errorPromise;
     }
   } catch (error) {
     if (completionPromise) {

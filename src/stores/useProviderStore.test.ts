@@ -67,6 +67,7 @@ const createProviderConfigMock = mock(async () => ({
   created_at: '2026-04-04T00:00:00.000Z',
   updated_at: '2026-04-04T00:00:00.000Z',
 }));
+const deleteProviderConfigMock = mock(async (_providerId: string) => undefined);
 const getProviderSettingsMock = mock(async () => ({
   provider_id: 'provider-openai',
   filter_free_models: false,
@@ -223,6 +224,7 @@ const loadProviderStore = async () => {
     revealProviderApiKey: revealProviderApiKeyMock,
     updateProviderConfig: updateProviderConfigMock,
     createProviderConfig: createProviderConfigMock,
+    deleteProviderConfig: deleteProviderConfigMock,
     updateConversationDetails: mock(async () => undefined),
     createMessage: mock(async (conversationId: string, role: string, content: string) => ({
       id: `message-${conversationId}-${role}`,
@@ -281,6 +283,7 @@ describe('useProviderStore secret resolution', () => {
     revealProviderApiKeyMock.mockClear();
     updateProviderConfigMock.mockClear();
     createProviderConfigMock.mockClear();
+    deleteProviderConfigMock.mockClear();
     getProviderSettingsMock.mockClear();
     updateProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
@@ -510,6 +513,85 @@ describe('useProviderStore secret resolution', () => {
     expect(providerStore.useProviderStore.getState().lastError).toBe(
       'Provider configuration requires Tauri IPC; use remote transport for web/mobile runtimes.'
     );
+  });
+
+  it('reassigns the selected provider and model when the selected provider is deleted', async () => {
+    const providerStore = await loadProviderStore();
+    const fallbackProvider = {
+      id: 'provider-fallback',
+      name: 'Fallback',
+      providerType: 'openai',
+      baseUrl: 'https://fallback.example.test/v1',
+      apiKey: 'fallback-key',
+      hasStoredApiKey: true,
+      apiKeyLoaded: true,
+      isEnabled: true,
+      isLocal: false,
+      nativeToolCalling: true,
+    };
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: 'openai-key',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          isEnabled: true,
+          isLocal: false,
+          nativeToolCalling: true,
+        },
+        fallbackProvider,
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isEnabled: true,
+          nativeToolCalling: true,
+        },
+        {
+          id: 'provider-fallback',
+          name: 'Fallback',
+          status: 'online',
+          baseUrl: fallbackProvider.baseUrl,
+          isEnabled: true,
+          nativeToolCalling: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [dbModel('provider-openai', 'old-model')],
+        'provider-fallback': [dbModel('provider-fallback', 'fallback-model')],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'old-model',
+      selectedReasoningEffort: 'medium',
+      providerSettingsById: {
+        'provider-openai': {
+          providerId: 'provider-openai',
+          filterFreeModels: false,
+          copilotSendTimeoutMs: null,
+        },
+      },
+    });
+
+    await providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(deleteProviderConfigMock).toHaveBeenCalledWith('provider-openai');
+    expect(state.selectedProviderId).toBe('provider-fallback');
+    expect(state.selectedModelId).toBe('db-provider-fallback-fallback-model');
+    expect(state.selectedReasoningEffort).toBeNull();
+    expect(state.providerConfigs.map((provider: { id: string }) => provider.id)).toEqual([
+      'provider-fallback',
+    ]);
+    expect(state.modelsByProvider['provider-openai']).toBeUndefined();
+    expect(state.providerSettingsById['provider-openai']).toBeUndefined();
   });
 
   it('invalidates previous reachability when the base URL changes', async () => {
@@ -1266,7 +1348,7 @@ describe('useProviderStore secret resolution', () => {
     ).toEqual(['low', 'medium', 'high']);
   });
 
-  it('refreshes only the active provider models on boot after loading persisted models', async () => {
+  it('waits for the active provider connectivity check before completing restoration', async () => {
     listProviderConfigsMock.mockImplementationOnce(async () => [
       {
         id: 'provider-openai',
@@ -1310,15 +1392,20 @@ describe('useProviderStore secret resolution', () => {
     }).mockImplementation(async (providerId: string) => [
       dbModel(providerId, `${providerId}-persisted`),
     ]);
+    let resolveConnectivityCheck!: (result: unknown) => void;
+    const connectivityCheck = new Promise<unknown>((resolve) => {
+      resolveConnectivityCheck = resolve;
+    });
     (probeModelsEndpointMock as unknown as {
       mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
-    }).mockImplementationOnce(async () => ({
+    }).mockImplementationOnce(async () => connectivityCheck);
+    const successfulConnectivityResult = {
       success: true,
       status: 'reachable',
       source: 'models_endpoint',
       message: 'Connected! Found 1 model.',
       models: [{ id: 'gpt-fresh', name: 'GPT Fresh' }],
-    }));
+    };
     upsertProviderModelsMock.mockImplementationOnce(async () => [
       dbModel('provider-openai', 'gpt-fresh'),
     ] as never[]);
@@ -1329,9 +1416,20 @@ describe('useProviderStore secret resolution', () => {
       selectedModelId: 'provider-openai-persisted',
     });
 
-    await providerStore.useProviderStore.getState().initialize();
+    let initializationSettled = false;
+    const initialization = providerStore.useProviderStore.getState().initialize().finally(() => {
+      initializationSettled = true;
+    });
     await flushAsyncWork();
 
+    expect(initializationSettled).toBe(false);
+    expect(
+      providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']?.status
+    ).toBe('checking');
+    resolveConnectivityCheck(successfulConnectivityResult);
+    await initialization;
+
+    expect(initializationSettled).toBe(true);
     expect(listProviderModelsMock).toHaveBeenCalledWith('provider-openai');
     expect(listProviderModelsMock).toHaveBeenCalledWith('provider-anthropic');
     expect(revealProviderApiKeyMock).toHaveBeenCalledTimes(1);

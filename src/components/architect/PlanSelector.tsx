@@ -17,7 +17,10 @@ import {
   type ArchitectPlanRecord,
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
-import { deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
+import {
+  cleanupPlanBranches,
+  deletePlanAndCleanupBranches,
+} from '../../services/architectGitFlowService';
 import {
   getArchitectPlanKind,
   getPlanKindBackmergeBranch,
@@ -797,6 +800,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     }
   };
 
+  const handleCreatePlanRef = useRef(handleCreatePlan);
+  useLayoutEffect(() => {
+    handleCreatePlanRef.current = handleCreatePlan;
+  });
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
@@ -836,7 +844,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
       if (plans.length === 0 && canCreatePlanForScope && !creatingPlanKind) {
-        void handleCreatePlan('feature');
+        void handleCreatePlanRef.current('feature');
         return;
       }
       setIsOpen(true);
@@ -849,7 +857,6 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [
     canCreatePlanForScope,
     creatingPlanKind,
-    handleCreatePlan,
     hasLoadedPlans,
     isLoading,
     plans.length,
@@ -873,9 +880,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setFormError(null);
     try {
       const latestPlan = await getArchitectPlan(targetBranch, planFormModal.id);
-      if (!latestPlan || latestPlan.status === 'deleted') {
+      if (!latestPlan || !getArchitectPlanCrudCapabilities(latestPlan).canEditDetails) {
         throw new Error(
-          t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
+          t(
+            'architect.planSelector.errorSelectedPlanUnavailable',
+            'The selected plan is unavailable or immutable.'
+          )
         );
       }
       const existingValue = getArchitectPlanEditableName(latestPlan);
@@ -917,7 +927,32 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const handleArchivePlan = async (plan: ArchitectPlanSummary) => {
     setError(null);
     setIsLoading(true);
+    let releasePlanMutation: (() => void) | null = null;
     try {
+      const taskStore = useTaskStore.getState();
+      if (!taskStore.reservePlanWorktreeMutation(plan.id)) {
+        throw new Error(
+          t(
+            'implement.taskCommandsPlanMutationActive',
+            'Stop active task commands before archiving or deleting this plan.'
+          )
+        );
+      }
+      releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(plan.id);
+
+      const latestPlan = await getArchitectPlan(targetBranch, plan.id);
+      if (!latestPlan || !getArchitectPlanCrudCapabilities(latestPlan).canArchive) {
+        throw new Error(
+          t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
+        );
+      }
+      const cleanup = await cleanupPlanBranches(latestPlan);
+      taskStore.clearPlanRuntimeState({
+        planId: plan.id,
+        deletedWorktreeKeys: cleanup.flatMap((repository) =>
+          repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+        ),
+      });
       await archiveArchitectPlan(targetBranch, plan.id);
       const planDisplayName = getArchitectPlanDisplayName(plan);
       notify.success(
@@ -956,6 +991,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setError(message);
       notify.error(message);
     } finally {
+      releasePlanMutation?.();
       setIsLoading(false);
     }
   };
@@ -966,8 +1002,19 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsDeleting(true);
     let keepDeleteDialogOpen = false;
+    let releasePlanMutation: (() => void) | null = null;
     try {
       const deletedPlanId = planToDelete.id;
+      const taskStore = useTaskStore.getState();
+      if (!taskStore.reservePlanWorktreeMutation(deletedPlanId)) {
+        throw new Error(
+          t(
+            'implement.taskCommandsPlanMutationActive',
+            'Stop active task commands before archiving or deleting this plan.'
+          )
+        );
+      }
+      releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(deletedPlanId);
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: deletedPlanId,
@@ -1014,6 +1061,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       setError(message);
       notify.error(message);
     } finally {
+      releasePlanMutation?.();
       setIsDeleting(false);
       if (!keepDeleteDialogOpen) {
         setPlanToDelete(null);

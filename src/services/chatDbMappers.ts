@@ -181,6 +181,7 @@ export const mapDbMessageToChatMessage = (
         message.provider_turn_state_json,
       ),
       context_refs: parseDbContextRefs(message.context_refs_json),
+      completion_reason: message.completion_reason ?? undefined,
     };
   }
 
@@ -207,5 +208,6 @@ export const mapDbMessageToChatMessage = (
       message.provider_turn_state_json,
     ),
     context_refs: parseDbContextRefs(message.context_refs_json),
+    completion_reason: message.completion_reason ?? undefined,
   };
 };

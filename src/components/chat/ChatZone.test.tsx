@@ -149,6 +149,11 @@ type MockChatState = {
   setMessageImages: ReturnType<typeof mock>;
   compactConversationNow: ReturnType<typeof mock>;
   refreshConversationContextDiagnostics: ReturnType<typeof mock>;
+  pendingComposerDraftByConversationId: Record<string, string>;
+  setComposerDraft: ReturnType<typeof mock>;
+  peekComposerDraft: ReturnType<typeof mock>;
+  consumeComposerDraft: ReturnType<typeof mock>;
+  acknowledgeComposerDraft: ReturnType<typeof mock>;
   architectPlanNamingRecovery: {
     conversationId: string;
     planId: string;
@@ -329,7 +334,6 @@ const useShortcutsStore = createStoreHook(() => shortcutsState, (nextState) => {
 const useTaskStore = createStoreHook(() => taskState, (nextState) => {
   taskState = nextState;
 });
-
 const translationMock = createTranslationMock({
   'chat.typeMessage': 'Type your message',
   'chat.stop': 'Stop',
@@ -794,6 +798,11 @@ const resetState = () => {
     setMessageImages: mock(() => undefined),
     compactConversationNow: mock(async () => buildManualCompactionSkippedResult()),
     refreshConversationContextDiagnostics: mock(async () => undefined),
+    pendingComposerDraftByConversationId: {},
+    setComposerDraft: mock(() => undefined),
+    peekComposerDraft: mock(() => null),
+    consumeComposerDraft: mock(() => null),
+    acknowledgeComposerDraft: mock(() => undefined),
     architectPlanNamingRecovery: null,
     setArchitectPlanNamingRecoveryStage: mock(() => undefined),
     retryArchitectPlanNamingRecovery: mock(async () => false),
@@ -5097,6 +5106,48 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
     expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
     expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
+  });
+
+  it('consults peekComposerDraft when the selected conversation changes', async () => {
+    const peekMock = mock((conversationId: string) => {
+      return chatState.pendingComposerDraftByConversationId[conversationId] ?? null;
+    });
+    chatState = {
+      ...chatState,
+      conversations: [buildConversation()],
+      selectedConversationId: 'conv-1',
+      pendingComposerDraftByConversationId: {
+        'conv-1': 'Pre-filled conflict resolution draft.',
+      },
+      peekComposerDraft: peekMock as unknown as typeof chatState.peekComposerDraft,
+    };
+
+    requireRoot().render(<ChatZone />);
+    await act(async () => {
+      useChatStore.emit();
+    });
+
+    expect(peekMock).toHaveBeenCalledWith('conv-1');
+  });
+
+  it('does not call setText on the composer when no draft is pending', async () => {
+    chatState = {
+      ...chatState,
+      conversations: [buildConversation()],
+      selectedConversationId: 'conv-1',
+      pendingComposerDraftByConversationId: {},
+    };
+
+    requireRoot().render(<ChatZone />);
+    await act(async () => {
+      useChatStore.emit();
+    });
+
+    // The effect ran and the mock returned null. No text was set, the
+    // composer remains in its initial empty state.
+    expect(
+      requireContainer().querySelector('[data-testid="composer-editor"]')
+    ).not.toBeNull();
   });
 
   it('cancels questionnaire response editing without touching the message history', async () => {

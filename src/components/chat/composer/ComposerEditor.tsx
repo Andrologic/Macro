@@ -27,18 +27,22 @@ import {
   type NodeMutation,
 } from 'lexical';
 import { useChatStore } from '../../../stores/useChatStore';
-import type { ContextRefKind } from '../../../types';
+import type { ContextRefKind, ContextReference } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
 import { LexicalComposer } from './SafeLexicalComposer';
 import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
+import {
+  clearWindowSelection,
+  domSelectionBelongsToElement,
+} from './composerDomSelection';
 
 // ------ Types ------
 
 export interface ComposerEditorHandle {
   clear: () => void;
-  setText: (text: string) => void;
+  setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -78,13 +82,14 @@ const initializeComposerState = () => {
   root.append($createParagraphNode());
 };
 
-const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 const appendTextWithContextReferences = (
   parent: ElementNode,
   text: string,
   surface: MentionSurface,
-  syncContextRefs: boolean
+  syncContextRefs: boolean,
+  contextRefs: readonly ContextReference[] = [],
 ) => {
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -98,8 +103,12 @@ const appendTextWithContextReferences = (
     const kind = match[1]?.toLowerCase() as ContextRefKind | undefined;
     const title = match[2]?.trim() ?? '';
     if (kind && title) {
+      const matchingRef = contextRefs.find(
+        (ref) =>
+          ref.kind === kind && (ref.title === title || ref.id === title),
+      );
       parent.append(
-        $createMentionNode(kind, title, title, {
+        $createMentionNode(kind, matchingRef?.id ?? title, title, {
           surface,
           syncContextRefs,
         })
@@ -119,7 +128,10 @@ const setEditorPlainText = (
   text: string,
   surface: MentionSurface,
   syncContextRefs: boolean,
-  options: { selectEnd?: boolean } = {}
+  options: {
+    selectEnd?: boolean;
+    contextRefs?: readonly ContextReference[];
+  } = {},
 ) => {
   const root = $getRoot();
   root.clear();
@@ -130,7 +142,13 @@ const setEditorPlainText = (
     if (index > 0) {
       paragraph.append($createLineBreakNode());
     }
-    appendTextWithContextReferences(paragraph, line, surface, syncContextRefs);
+    appendTextWithContextReferences(
+      paragraph,
+      line,
+      surface,
+      syncContextRefs,
+      options.contextRefs,
+    );
   });
 
   root.append(paragraph);
@@ -214,6 +232,13 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   }, ref) => {
     const [editor] = useLexicalComposerContext();
     const textRef = useRef('');
+    const suppressMentionRefRemovalRef = useRef(false);
+
+    const deferMentionRefRemovalResume = () => {
+      void Promise.resolve().then(() => {
+        suppressMentionRefRemovalRef.current = false;
+      });
+    };
 
     // Editable state
     useEffect(() => {
@@ -223,6 +248,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     // Imperative handle for ChatZone
     useImperativeHandle(ref, () => ({
       clear: () => {
+        const shouldClearDomSelection = domSelectionBelongsToElement(editor.getRootElement());
         editor.update(
           () => {
             setEditorPlainText('', surface, syncContextRefs, { selectEnd: false });
@@ -230,15 +256,26 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           },
           { tag: [LEXICAL_UPDATE_TAGS.skipDomSelection, LEXICAL_UPDATE_TAGS.historyMerge] }
         );
+        if (shouldClearDomSelection) {
+          clearWindowSelection();
+        }
         textRef.current = '';
       },
-      setText: (text: string) => {
-        editor.update(
-          () => {
-            setEditorPlainText(text, surface, syncContextRefs);
-          },
-          { tag: [LEXICAL_UPDATE_TAGS.skipSelectionFocus, LEXICAL_UPDATE_TAGS.historyMerge] }
-        );
+      setText: (text: string, contextRefs?: readonly ContextReference[]) => {
+        suppressMentionRefRemovalRef.current = true;
+        try {
+          editor.update(
+            () => {
+              setEditorPlainText(text, surface, syncContextRefs, {
+                contextRefs:
+                  contextRefs ?? useChatStore.getState().composerContextRefs,
+              });
+            },
+            { tag: [LEXICAL_UPDATE_TAGS.skipSelectionFocus, LEXICAL_UPDATE_TAGS.historyMerge] }
+          );
+        } finally {
+          deferMentionRefRemovalResume();
+        }
         textRef.current = text;
       },
       getTextContent: () => textRef.current,
@@ -320,12 +357,14 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
               });
             } else if (mutation === 'destroyed') {
               const data = mentionMapRef.current.get(nodeKey);
+              mentionMapRef.current.delete(nodeKey);
               if (data) {
-                useChatStore.getState().removeComposerContextRef(
-                  data.refId,
-                  data.kind as ContextRefKind
-                );
-                mentionMapRef.current.delete(nodeKey);
+                if (!suppressMentionRefRemovalRef.current) {
+                  useChatStore.getState().removeComposerContextRef(
+                    data.refId,
+                    data.kind as ContextRefKind
+                  );
+                }
               }
             }
           }

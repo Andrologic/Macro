@@ -319,6 +319,54 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("uses camelCase for top-level Tauri arguments and keeps DTO fields snake_case", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.dbSetAppSetting({ key: "panel", valueJson: '{"open":true}' });
+    await tauriIpc.dbGetProjectContextState("project-1");
+    await tauriIpc.dbDeleteProjectContextState("project-1");
+    await tauriIpc.dbUpsertProjectContextState({
+      projectId: "project-1",
+      groupId: "group-1",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_set_app_setting",
+        payload: {
+          key: "panel",
+          valueJson: '{"open":true}',
+        },
+      },
+      {
+        command: "db_get_project_context_state",
+        payload: {
+          projectId: "project-1",
+        },
+      },
+      {
+        command: "db_delete_project_context_state",
+        payload: {
+          projectId: "project-1",
+        },
+      },
+      {
+        command: "db_upsert_project_context_state",
+        payload: {
+          input: {
+            project_id: "project-1",
+            group_id: "group-1",
+            focus_project_id: null,
+            last_plan_id: null,
+            last_task_id: null,
+            architect_conversation_id: null,
+            implement_conversation_id: null,
+          },
+        },
+      },
+    ]);
+  });
+
   it("submits Copilot tool results through ai_submit_tool_result", async () => {
     const tauriIpc = await loadTauriIpc();
 

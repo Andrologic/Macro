@@ -12,16 +12,17 @@ The maintainers prioritize issues related to:
 - core Architect, Implement, and Chat workflows;
 - local Git, worktree, review, and commit flows;
 - local provider secret storage;
-- signed and notarized macOS Apple Silicon release artifacts.
+- signed and notarized universal macOS release artifacts;
+- signed Windows x64 NSIS installations;
+- Linux x64 AppImage, deb, and rpm installations.
 
 ## Best-Effort Areas
 
 The following areas are useful to report but may not receive immediate fixes during 0.1:
 
-- Linux and Windows desktop packaging;
 - weekly prerelease builds;
 - remote transport and browser-only operation;
-- headless kernel workflows;
+- explicit development-only headless kernel workflows;
 - custom provider edge cases;
 - uncommon Git branch conventions or repository layouts.
 

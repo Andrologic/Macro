@@ -126,6 +126,7 @@ const MCPServerForm: React.FC<{
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
           <Switch
             checked={draft.enabled}
+            aria-label={t('tools.mcp.enableServer', 'Enable server')}
             onCheckedChange={(enabled) => onChange({ ...draft, enabled })}
           />
           {t('tools.mcp.enableServer', 'Enable server')}
@@ -195,7 +196,11 @@ const MCPServerRow: React.FC<{
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <Switch checked={enabled} onCheckedChange={() => onToggle(server.id)} />
+          <Switch
+            checked={enabled}
+            aria-label={t('tools.mcp.enableServer', 'Enable server')}
+            onCheckedChange={() => onToggle(server.id)}
+          />
           <button
             type="button"
             onClick={() => onRefresh(server.id)}

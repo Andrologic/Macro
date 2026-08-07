@@ -32,9 +32,8 @@ const LEGACY_SESSION_CONTEXT_KEY = 'macro_session_context_state';
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-const normalizeProjectSwitchPolicy = (_value: unknown): ProjectSwitchPolicy => {
-  return DEFAULT_PROJECT_SWITCH_POLICY;
-};
+const normalizeProjectSwitchPolicy = (value: unknown): ProjectSwitchPolicy =>
+  value === 'reset_on_switch' ? value : DEFAULT_PROJECT_SWITCH_POLICY;
 
 const safeJsonParse = <T>(raw: string | null): T | null => {
   if (!raw) return null;

@@ -7,6 +7,10 @@ use crate::ai::{
 use crate::db::repository;
 use tauri::{AppHandle, State};
 
+fn validate_request_id(request_id: &str) -> Result<(), CommandError> {
+    copilot::validate_request_id(request_id).map_err(|message| CommandError { message })
+}
+
 async fn get_provider_type(
     pool: &sqlx::SqlitePool,
     provider_id: &str,
@@ -30,6 +34,7 @@ pub async fn ai_start_chatgpt_auth(
     request_id: String,
     provider_id: Option<String>,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     let pool = get_pool(&pool).await?;
     let provider_id = provider_id.unwrap_or_else(|| "chatgpt".to_string());
     chatgpt::start_browser_auth(
@@ -73,6 +78,7 @@ pub async fn ai_download_copilot_runtime(
     request_id: String,
     provider_id: Option<String>,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     let pool = get_pool(&pool).await?;
     let provider_id = provider_id.unwrap_or_else(|| "copilot".to_string());
     match get_provider_type(&pool, &provider_id).await?.as_str() {
@@ -103,6 +109,7 @@ pub async fn ai_cancel_copilot_runtime_download(
     ai_state: State<'_, AiState>,
     request_id: String,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     copilot::cancel_runtime_download(&app_handle, ai_state.inner(), &request_id)
         .await
         .map_err(|message| CommandError { message })
@@ -116,6 +123,7 @@ pub async fn ai_start_copilot_auth(
     request_id: String,
     provider_id: Option<String>,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     let pool = get_pool(&pool).await?;
     let provider_id = provider_id.unwrap_or_else(|| "copilot".to_string());
     match get_provider_type(&pool, &provider_id).await?.as_str() {
@@ -143,6 +151,7 @@ pub async fn ai_cancel_copilot_auth(
     ai_state: State<'_, AiState>,
     request_id: String,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     copilot::cancel_auth(&app_handle, ai_state.inner(), &request_id)
         .await
         .map_err(|message| CommandError { message })
@@ -154,6 +163,7 @@ pub async fn ai_cancel_chatgpt_auth(
     ai_state: State<'_, AiState>,
     request_id: String,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     chatgpt::cancel_auth(app_handle, ai_state.inner(), &request_id)
         .await
         .map_err(|message| CommandError { message })
@@ -210,6 +220,7 @@ pub async fn ai_stream_chat(
     ai_state: State<'_, AiState>,
     request: AiChatRequest,
 ) -> CommandResult<()> {
+    validate_request_id(&request.request_id)?;
     let pool = get_pool(&pool).await?;
     match get_provider_type(&pool, &request.provider_id)
         .await?
@@ -237,6 +248,7 @@ pub async fn ai_cancel_stream(
     ai_state: State<'_, AiState>,
     request_id: String,
 ) -> CommandResult<()> {
+    validate_request_id(&request_id)?;
     copilot::cancel_stream(ai_state.inner(), &request_id)
         .await
         .map_err(|message| CommandError { message })
@@ -247,7 +259,23 @@ pub async fn ai_submit_tool_result(
     ai_state: State<'_, AiState>,
     request: copilot::CopilotToolResultRequest,
 ) -> CommandResult<()> {
+    validate_request_id(&request.request_id)?;
     copilot::submit_tool_result(ai_state.inner(), request)
         .await
         .map_err(|message| CommandError { message })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_request_id;
+
+    #[test]
+    fn request_id_validation_allows_generated_ids_and_rejects_path_segments() {
+        assert!(validate_request_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(validate_request_id("req_123.v1").is_ok());
+        assert!(validate_request_id("../outside").is_err());
+        assert!(validate_request_id("nested/request").is_err());
+        assert!(validate_request_id("\\\\outside").is_err());
+        assert!(validate_request_id("").is_err());
+    }
 }

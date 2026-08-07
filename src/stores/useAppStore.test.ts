@@ -676,13 +676,13 @@ describe('useAppStore architect plan resolution', () => {
     mock.restore();
   });
 
-  it('normalizes project context storage policy to per-project resume', async () => {
+  it('persists the requested project context storage policy', async () => {
     const { useAppStore } = await loadIsolatedUseAppStore();
 
     await useAppStore.getState().setProjectSwitchPolicy('reset_on_switch');
 
-    expect(useAppStore.getState().projectSwitchPolicy).toBe('resume_per_project');
-    expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('resume_per_project');
+    expect(useAppStore.getState().projectSwitchPolicy).toBe('reset_on_switch');
+    expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('reset_on_switch');
   });
 
   it('selects a recovered standalone project on initialize when no remembered selection is valid', async () => {

@@ -50,6 +50,7 @@ export interface ChatPersistenceIpc {
       providerInputItems?: unknown[];
       providerTurnState?: ProviderTurnState;
       contextRefs?: ChatMessage["context_refs"];
+      completionReason?: ChatMessage["completion_reason"];
     },
   ) => Promise<void>;
   renameConversation: (id: string, title: string) => Promise<void>;
@@ -81,6 +82,7 @@ export interface AssistantCompletionPersistenceResult {
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   toolTraces?: ToolTrace[];
+  completionReason?: ChatMessage["completion_reason"];
 }
 
 const cloneProviderInputItems = (
@@ -315,6 +317,9 @@ export const updateProviderInputItemsForMessage = async (
       providerInputItems: params.providerInputItems,
       providerTurnState: params.message.provider_turn_state,
       contextRefs: params.message.context_refs,
+      ...(params.message.completion_reason
+        ? { completionReason: params.message.completion_reason }
+        : {}),
     });
   }
 
@@ -343,6 +348,9 @@ export const updateEditedUserMessage = async (
     providerInputItems: params.providerInputItems,
     providerTurnState: params.message.provider_turn_state,
     contextRefs: params.contextRefs ?? params.message.context_refs,
+    ...(params.message.completion_reason
+      ? { completionReason: params.message.completion_reason }
+      : {}),
   });
 };
 
@@ -364,6 +372,9 @@ export const persistAssistantPartialResult = async (
     hiddenContext: assistantMessage.hidden_context,
     providerInputItems: assistantMessage.provider_input_items,
     providerTurnState: assistantMessage.provider_turn_state,
+    ...(assistantMessage.completion_reason
+      ? { completionReason: assistantMessage.completion_reason }
+      : {}),
   });
 };
 
@@ -387,6 +398,9 @@ export const persistAssistantCompletionResult = async (
       hiddenContext: params.result.hiddenContext,
       providerInputItems: params.result.providerInputItems,
       providerTurnState: params.result.providerTurnState,
+      ...(params.result.completionReason
+        ? { completionReason: params.result.completionReason }
+        : {}),
     },
   );
 };

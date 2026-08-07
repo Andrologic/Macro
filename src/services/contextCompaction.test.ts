@@ -384,7 +384,7 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions: [],
       modelContextWindowTokens: 32_000,
-      mode: 'manual',
+      mode: 'blocking',
       forceCompaction: true,
       forcePrune: true,
       estimateSerializedPayloadTokens,
@@ -890,7 +890,7 @@ describe('buildCompactedMessagesForRequest', () => {
       modelContextWindowTokens: 1000,
       contextLimitSource: 'provider_metadata',
       isContextLimitAuthoritative: true,
-      mode: 'manual',
+      mode: 'blocking',
       forceCompaction: true,
       generateSummary: async () => 'Current objective: answer from parser context.',
     });

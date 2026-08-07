@@ -160,6 +160,7 @@ const loadTerminalPanel = async () => {
     isManualDraftPendingInitialization: () => false,
   }));
   mock.module('../../stores/useTerminalStore', () => ({
+    isVisibleTerminalTab: (tab: MockTerminalTab) => tab.status !== 'closed',
     useTerminalStore: <TSelected,>(selector: (state: typeof terminalState) => TSelected) =>
       selector(terminalState),
   }));

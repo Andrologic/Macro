@@ -83,6 +83,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
           <Switch
             checked={settings.enabled}
             disabled={!skill.isValid}
+                aria-label={t('common.enable', 'Enable')}
             onCheckedChange={onEnabledChange}
           />
           <button
@@ -241,6 +242,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               <Switch
                 checked={settings.scriptsEnabled}
                 disabled={!skill.isValid || skill.scripts.length === 0}
+                aria-label={t('skills.scripts', 'Scripts')}
                 onCheckedChange={onScriptsEnabledChange}
               />
               <span className="col-span-2 max-w-44 text-[11px] leading-snug text-muted-foreground/70">

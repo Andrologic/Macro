@@ -342,7 +342,7 @@
     "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead.",
     "revertChangesFailed": "Failed to revert changes."
   },
-  "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+  "taskCommandsManualDraftUnsupported": "Send a first message to prepare this feature's branch, worktree, and terminal.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
   "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
   "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
@@ -484,5 +484,8 @@
   "diffModalCrashedTitle": "Could not keep this diff open",
   "diffModalCrashedDescription": "The changes panel is still running. Retry the diff viewer or close this file.",
   "diffRenderFailedTitle": "Could not render this diff",
-  "diffRenderFailedDescription": "The changes panel stayed open. Close this file and retry, or inspect the file directly."
+  "diffRenderFailedDescription": "The changes panel stayed open. Close this file and retry, or inspect the file directly.",
+  "reviewBeforeValidation": "Open every pending diff before validating changes.",
+  "reviewArtifactBeforeValidation": "Open this artifact before validating it.",
+  "taskCommandsPlanMutationActive": "Stop active task commands before archiving or deleting this plan."
 }

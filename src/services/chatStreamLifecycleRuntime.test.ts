@@ -151,6 +151,7 @@ describe("applyAssistantStreamCompletion", () => {
         visibleContent: "Done",
         hiddenContext: "hidden",
         providerInputItems: [{ id: "input" }],
+        completionReason: "completed",
         toolTraces: [
           {
             tool_call_id: "call-1",
@@ -174,6 +175,7 @@ describe("applyAssistantStreamCompletion", () => {
     expect(content).toBe("Done");
     expect(fields[0]?.hidden_context).toBe("hidden");
     expect(fields[0]?.provider_input_items).toEqual([{ id: "input" }]);
+    expect(fields[0]?.completion_reason).toBe("completed");
     expect(fields[0]?.tool_traces?.[0]?.status).toBe("denied");
   });
 });

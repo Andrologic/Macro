@@ -296,6 +296,18 @@ const loadIsolatedTaskStore = async () => {
   return import(`./useTaskStore.ts?finish-task=${isolatedTaskStoreImportCounter}`);
 };
 
+const flushPromises = async () => {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+};
+
+const waitForMergeCall = async () => {
+  for (let index = 0; index < 20 && gitMergeMock.mock.calls.length === 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+};
+
 const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
   id: 'task-1',
   plan_id: 'plan-1',
@@ -528,6 +540,43 @@ describe('useTaskStore.finishTask', () => {
     expect(writeArchitectTaskExecutionMock).toHaveBeenCalledTimes(1);
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
+
+  it('coalesces concurrent finish requests into one merge workflow', async () => {
+    let resolveMerge: (output: string) => void = () => undefined;
+    gitMergeMock.mockImplementationOnce(
+      async () => await new Promise<string>((resolve) => {
+        resolveMerge = resolve;
+      })
+    );
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    const firstFinish = useTaskStore.getState().finishTask('task-1');
+    await waitForMergeCall();
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    const secondFinish = useTaskStore.getState().finishTask('task-1');
+    await flushPromises();
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    resolveMerge('Merged feature/task-1 into plan/checkout');
+    await Promise.all([firstFinish, secondFinish]);
+
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
   });
 
   it('blocks architect task completion while task todos remain open', async () => {

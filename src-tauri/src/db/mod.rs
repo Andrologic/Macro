@@ -1,7 +1,7 @@
 pub mod models;
 pub mod repository;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
 }
 
-/// Initialize the desktop database connection pool in the app data directory.
+/// Initialize the desktop database pool in the app data directory.
 pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     let app_dir = app_handle
         .path()
@@ -46,12 +46,13 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
     create_pool(&db_path).await
 }
 
-/// Create a connection pool for the given database path
+/// Create a pool for the given database path.
 async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
+        .foreign_keys(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         .busy_timeout(std::time::Duration::from_secs(30));
@@ -69,42 +70,78 @@ async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
 /// Run database migrations
 async fn run_migrations(pool: &SqlitePool) -> DbResult<()> {
-    sqlx::query("PRAGMA foreign_keys = ON;")
-        .execute(pool)
+    let migration_pool = pool.clone();
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| DbError::Migration(error.to_string()))?
+            .block_on(run_migrations_local(migration_pool))
+    })
+    .await
+    .map_err(|error| DbError::Migration(format!("Migration task failed: {error}")))?
+}
+
+async fn run_migrations_local(pool: SqlitePool) -> DbResult<()> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
         .await?;
 
-    ensure_schema_migrations_table(pool).await?;
+    let migration_result = run_migrations_on_connection(&mut connection).await;
+    match migration_result {
+        Ok(()) => {
+            sqlx::query("COMMIT").execute(&mut *connection).await?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
+        }
+    }
+}
 
-    let user_tables = list_user_tables(pool).await?;
-    let applied_migrations = list_applied_migrations(pool).await?;
+async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbResult<()> {
+    ensure_schema_migrations_table(connection).await?;
+
+    let user_tables = list_user_tables(connection).await?;
+    let applied_migrations = list_applied_migrations(connection).await?;
+    let is_legacy_database = !user_tables.is_empty() && applied_migrations.is_empty();
 
     if user_tables.is_empty() {
         if !applied_migrations.contains(&MIGRATION_001_VERSION) {
             apply_migration(
-                pool,
+                connection,
                 MIGRATION_001_VERSION,
-                MIGRATION_001_NAME,
-                MIGRATION_001_SQL,
+                MIGRATION_001_NAME.to_string(),
+                MIGRATION_001_SQL.to_string(),
             )
             .await?;
         }
-    } else if applied_migrations.is_empty() {
-        upgrade_legacy_schema_to_baseline(pool).await?;
-        stamp_migration(pool, MIGRATION_001_VERSION, MIGRATION_001_NAME).await?;
+    } else if is_legacy_database {
+        upgrade_legacy_schema_to_baseline(connection).await?;
+        stamp_migration(
+            connection,
+            MIGRATION_001_VERSION,
+            MIGRATION_001_NAME.to_string(),
+        )
+        .await?;
     }
 
     // Baseline migration stamping is not enough for additive, idempotent schema updates.
     // Re-run the legacy ensure helpers on every startup so older runtime databases pick up
     // newly added columns and indexes even when schema_migrations is already populated.
-    upgrade_legacy_schema_to_baseline(pool).await?;
+    if !is_legacy_database {
+        upgrade_legacy_schema_to_baseline(connection).await?;
+    }
 
     // Insert default providers if they don't exist
-    insert_default_providers(pool).await?;
+    insert_default_providers(connection).await?;
 
     Ok(())
 }
 
-async fn ensure_schema_migrations_table(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_schema_migrations_table(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -114,13 +151,13 @@ async fn ensure_schema_migrations_table(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn list_user_tables(pool: &SqlitePool) -> DbResult<Vec<String>> {
+async fn list_user_tables(connection: &mut SqliteConnection) -> DbResult<Vec<String>> {
     let rows = sqlx::query(
         r#"
         SELECT name
@@ -131,7 +168,7 @@ async fn list_user_tables(pool: &SqlitePool) -> DbResult<Vec<String>> {
         ORDER BY name ASC
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await?;
 
     Ok(rows
@@ -140,9 +177,9 @@ async fn list_user_tables(pool: &SqlitePool) -> DbResult<Vec<String>> {
         .collect())
 }
 
-async fn list_applied_migrations(pool: &SqlitePool) -> DbResult<HashSet<i64>> {
+async fn list_applied_migrations(connection: &mut SqliteConnection) -> DbResult<HashSet<i64>> {
     let rows = sqlx::query("SELECT version FROM schema_migrations")
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await?;
 
     Ok(rows
@@ -151,19 +188,21 @@ async fn list_applied_migrations(pool: &SqlitePool) -> DbResult<HashSet<i64>> {
         .collect())
 }
 
-async fn apply_migration(pool: &SqlitePool, version: i64, name: &str, sql: &str) -> DbResult<()> {
-    for statement in sql.split(';') {
-        let statement = statement.trim();
-        if statement.is_empty() {
-            continue;
-        }
-        sqlx::query(statement).execute(pool).await?;
-    }
-
-    stamp_migration(pool, version, name).await
+async fn apply_migration(
+    connection: &mut SqliteConnection,
+    version: i64,
+    name: String,
+    sql: String,
+) -> DbResult<()> {
+    sqlx::raw_sql(&sql).execute(&mut *connection).await?;
+    stamp_migration(&mut *connection, version, name).await
 }
 
-async fn stamp_migration(pool: &SqlitePool, version: i64, name: &str) -> DbResult<()> {
+async fn stamp_migration(
+    connection: &mut SqliteConnection,
+    version: i64,
+    name: String,
+) -> DbResult<()> {
     let applied_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         r#"
@@ -172,17 +211,20 @@ async fn stamp_migration(pool: &SqlitePool, version: i64, name: &str) -> DbResul
         "#,
     )
     .bind(version)
-    .bind(name)
+    .bind(&name)
     .bind(applied_at)
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn table_columns(pool: &SqlitePool, table: &str) -> DbResult<HashSet<String>> {
+async fn table_columns(
+    connection: &mut SqliteConnection,
+    table: String,
+) -> DbResult<HashSet<String>> {
     let pragma = format!("PRAGMA table_info({})", table);
-    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+    let rows = sqlx::query(&pragma).fetch_all(&mut *connection).await?;
 
     Ok(rows
         .into_iter()
@@ -190,7 +232,7 @@ async fn table_columns(pool: &SqlitePool, table: &str) -> DbResult<HashSet<Strin
         .collect())
 }
 
-async fn table_exists(pool: &SqlitePool, table: &str) -> DbResult<bool> {
+async fn table_exists(connection: &mut SqliteConnection, table: String) -> DbResult<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -199,31 +241,33 @@ async fn table_exists(pool: &SqlitePool, table: &str) -> DbResult<bool> {
         "#,
     )
     .bind(table)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
 
     Ok(count > 0)
 }
 
-async fn upgrade_legacy_schema_to_baseline(pool: &SqlitePool) -> DbResult<()> {
-    ensure_legacy_conversations(pool).await?;
-    ensure_legacy_messages(pool).await?;
-    ensure_conversation_compactions(pool).await?;
-    ensure_legacy_settings(pool).await?;
-    ensure_legacy_git_tables(pool).await?;
-    ensure_legacy_provider_configs(pool).await?;
-    ensure_legacy_ai_models(pool).await?;
-    ensure_legacy_provider_settings(pool).await?;
-    ensure_legacy_app_settings(pool).await?;
-    ensure_legacy_terminal_tabs(pool).await?;
-    ensure_legacy_project_context_states(pool).await?;
-    ensure_legacy_session_context_state(pool).await?;
-    ensure_architect_plan_conversation_sync(pool).await?;
+async fn upgrade_legacy_schema_to_baseline(connection: &mut SqliteConnection) -> DbResult<()> {
+    ensure_legacy_conversations(&mut *connection).await?;
+    ensure_legacy_messages(&mut *connection).await?;
+    ensure_conversation_compactions(&mut *connection).await?;
+    ensure_legacy_settings(&mut *connection).await?;
+    ensure_legacy_git_tables(&mut *connection).await?;
+    ensure_legacy_provider_configs(&mut *connection).await?;
+    ensure_legacy_ai_models(&mut *connection).await?;
+    ensure_legacy_provider_settings(&mut *connection).await?;
+    ensure_legacy_app_settings(&mut *connection).await?;
+    ensure_legacy_terminal_tabs(&mut *connection).await?;
+    ensure_legacy_project_context_states(&mut *connection).await?;
+    ensure_legacy_session_context_state(&mut *connection).await?;
+    ensure_architect_plan_conversation_sync(&mut *connection).await?;
+    ensure_conversation_citations(&mut *connection).await?;
+    ensure_conversation_toolbox_state(&mut *connection).await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_conversations(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS conversations (
@@ -245,59 +289,59 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "conversations").await?;
+    let columns = table_columns(&mut *connection, "conversations".to_string()).await?;
     if !columns.contains("description") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN description TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("task_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN task_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("group_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN group_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("project_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN project_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("provider_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN provider_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("model_id") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN model_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("reasoning_effort") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN reasoning_effort TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     let scope_mode_was_added = !columns.contains("scope_mode");
     if scope_mode_was_added {
         sqlx::query("ALTER TABLE conversations ADD COLUMN scope_mode TEXT NOT NULL DEFAULT 'Chat'")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("created_at") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN created_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("is_pinned") {
         sqlx::query("ALTER TABLE conversations ADD COLUMN is_pinned INTEGER DEFAULT 0")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -308,10 +352,10 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         WHERE created_at IS NULL OR TRIM(created_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    backfill_conversation_scope_mode(pool, scope_mode_was_added).await?;
+    backfill_conversation_scope_mode(&mut *connection, scope_mode_was_added).await?;
 
     sqlx::query(
         r#"
@@ -319,7 +363,7 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         ON conversations(scope_mode, updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -327,7 +371,7 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         ON conversations(project_id, updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -335,7 +379,7 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         ON conversations(group_id, updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -343,13 +387,13 @@ async fn ensure_legacy_conversations(pool: &SqlitePool) -> DbResult<()> {
         ON conversations(task_id, updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_messages(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS messages (
@@ -365,52 +409,58 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
             provider_input_items_json TEXT,
             provider_turn_state_json TEXT,
             context_refs_json TEXT,
+            completion_reason TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "messages").await?;
+    let columns = table_columns(&mut *connection, "messages".to_string()).await?;
     if !columns.contains("created_at") {
         sqlx::query("ALTER TABLE messages ADD COLUMN created_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("turn_id") {
         sqlx::query("ALTER TABLE messages ADD COLUMN turn_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("token_count") {
         sqlx::query("ALTER TABLE messages ADD COLUMN token_count INTEGER")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("tool_traces_json") {
         sqlx::query("ALTER TABLE messages ADD COLUMN tool_traces_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("hidden_context") {
         sqlx::query("ALTER TABLE messages ADD COLUMN hidden_context TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("provider_input_items_json") {
         sqlx::query("ALTER TABLE messages ADD COLUMN provider_input_items_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("provider_turn_state_json") {
         sqlx::query("ALTER TABLE messages ADD COLUMN provider_turn_state_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("context_refs_json") {
         sqlx::query("ALTER TABLE messages ADD COLUMN context_refs_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
+            .await?;
+    }
+    if !columns.contains("completion_reason") {
+        sqlx::query("ALTER TABLE messages ADD COLUMN completion_reason TEXT")
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -422,7 +472,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
             WHERE created_at IS NULL OR TRIM(created_at) = ''
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     } else {
         sqlx::query(
@@ -432,7 +482,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
             WHERE created_at IS NULL OR TRIM(created_at) = ''
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
 
@@ -442,7 +492,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         ON messages(conversation_id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -451,7 +501,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         ON messages(conversation_id, turn_id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -459,7 +509,7 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         ON messages(conversation_id, created_at, id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -467,13 +517,15 @@ async fn ensure_legacy_messages(pool: &SqlitePool) -> DbResult<()> {
         ON messages(created_at, id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_architect_plan_conversation_sync(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_architect_plan_conversation_sync(
+    connection: &mut SqliteConnection,
+) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS architect_plan_conversation_sync (
@@ -487,7 +539,7 @@ async fn ensure_architect_plan_conversation_sync(pool: &SqlitePool) -> DbResult<
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -496,13 +548,90 @@ async fn ensure_architect_plan_conversation_sync(pool: &SqlitePool) -> DbResult<
         ON architect_plan_conversation_sync(plan_id, target_branch, updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_conversation_citations(connection: &mut SqliteConnection) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_citations (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            snippet TEXT,
+            content TEXT,
+            url TEXT,
+            favicon TEXT,
+            path TEXT,
+            language TEXT,
+            size_bytes INTEGER,
+            kind TEXT,
+            reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversation_citations_conversation
+        ON conversation_citations(conversation_id, updated_at DESC, id ASC);
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversation_citations_message
+        ON conversation_citations(conversation_id, message_id);
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_conversation_toolbox_state(connection: &mut SqliteConnection) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversation_toolbox_state (
+            conversation_id TEXT PRIMARY KEY,
+            composer_context_refs_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_conversation_toolbox_state_updated_at
+        ON conversation_toolbox_state(updated_at DESC);
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_conversation_compactions(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS conversation_compactions (
@@ -539,13 +668,13 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "conversation_compactions").await?;
+    let columns = table_columns(&mut *connection, "conversation_compactions".to_string()).await?;
     if !columns.contains("version") {
         sqlx::query("ALTER TABLE conversation_compactions ADD COLUMN version INTEGER DEFAULT 1")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     let optional_columns = [
@@ -576,7 +705,7 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
                 "ALTER TABLE conversation_compactions ADD COLUMN {} {}",
                 column, definition
             );
-            sqlx::query(&statement).execute(pool).await?;
+            sqlx::query(&statement).execute(&mut *connection).await?;
         }
     }
 
@@ -586,7 +715,7 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         ON conversation_compactions(updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -609,7 +738,7 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -618,13 +747,13 @@ async fn ensure_conversation_compactions(pool: &SqlitePool) -> DbResult<()> {
         ON conversation_compaction_events(conversation_id, created_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_settings(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_settings(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS settings (
@@ -633,13 +762,13 @@ async fn ensure_legacy_settings(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_git_tables(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS git_repositories (
@@ -653,7 +782,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -665,7 +794,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
            OR updated_at IS NULL OR TRIM(updated_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -674,7 +803,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
         ON git_repositories(path);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -697,7 +826,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -709,7 +838,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
            OR updated_at IS NULL OR TRIM(updated_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -718,7 +847,7 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
         ON git_worktrees(path);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -726,13 +855,13 @@ async fn ensure_legacy_git_tables(pool: &SqlitePool) -> DbResult<()> {
         ON git_worktrees(repo_id, task_id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_provider_configs(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_provider_configs(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS provider_configs (
@@ -754,23 +883,23 @@ async fn ensure_legacy_provider_configs(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "provider_configs").await?;
+    let columns = table_columns(&mut *connection, "provider_configs".to_string()).await?;
     if !columns.contains("created_at") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN created_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("updated_at") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN updated_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("api_key") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN api_key TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     let has_stored_api_key = columns.contains("has_stored_api_key");
@@ -778,32 +907,32 @@ async fn ensure_legacy_provider_configs(pool: &SqlitePool) -> DbResult<()> {
         sqlx::query(
             "ALTER TABLE provider_configs ADD COLUMN has_stored_api_key INTEGER NOT NULL DEFAULT 0",
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
     if !columns.contains("auth_status") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_status TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("auth_source") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN auth_source TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("plan_type") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN plan_type TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("account_label") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN account_label TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("token_expires_at") {
         sqlx::query("ALTER TABLE provider_configs ADD COLUMN token_expires_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -817,7 +946,7 @@ async fn ensure_legacy_provider_configs(pool: &SqlitePool) -> DbResult<()> {
             END
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
 
@@ -830,13 +959,13 @@ async fn ensure_legacy_provider_configs(pool: &SqlitePool) -> DbResult<()> {
            OR updated_at IS NULL OR TRIM(updated_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_ai_models(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS ai_models (
@@ -864,58 +993,58 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "ai_models").await?;
+    let columns = table_columns(&mut *connection, "ai_models".to_string()).await?;
     if !columns.contains("first_seen_at") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN first_seen_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("last_seen_at") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN last_seen_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("is_manual") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN is_manual INTEGER DEFAULT 0")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("reasoning_efforts_json") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN reasoning_efforts_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("default_reasoning_effort") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN default_reasoning_effort TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("context_window_tokens") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN context_window_tokens INTEGER")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("input_limit_tokens") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN input_limit_tokens INTEGER")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("output_limit_tokens") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN output_limit_tokens INTEGER")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("context_window_source") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN context_window_source TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("context_limits_updated_at") {
         sqlx::query("ALTER TABLE ai_models ADD COLUMN context_limits_updated_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -928,7 +1057,7 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
            OR last_seen_at IS NULL OR TRIM(last_seen_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -937,13 +1066,13 @@ async fn ensure_legacy_ai_models(pool: &SqlitePool) -> DbResult<()> {
         ON ai_models(provider_id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_provider_settings(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_provider_settings(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS provider_settings (
@@ -954,10 +1083,10 @@ async fn ensure_legacy_provider_settings(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "provider_settings").await?;
+    let columns = table_columns(&mut *connection, "provider_settings".to_string()).await?;
     if !columns.contains("copilot_send_timeout_ms") {
         sqlx::query(
             r#"
@@ -965,14 +1094,14 @@ async fn ensure_legacy_provider_settings(pool: &SqlitePool) -> DbResult<()> {
             ADD COLUMN copilot_send_timeout_ms INTEGER
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
 
     Ok(())
 }
 
-async fn ensure_legacy_app_settings(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_app_settings(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -982,13 +1111,13 @@ async fn ensure_legacy_app_settings(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_terminal_tabs(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_terminal_tabs(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS terminal_tabs (
@@ -1011,23 +1140,23 @@ async fn ensure_legacy_terminal_tabs(pool: &SqlitePool) -> DbResult<()> {
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "terminal_tabs").await?;
+    let columns = table_columns(&mut *connection, "terminal_tabs".to_string()).await?;
     if !columns.contains("created_at") {
         sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN created_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("updated_at") {
         sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN updated_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("prompt_context_json") {
         sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN prompt_context_json TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -1040,7 +1169,7 @@ async fn ensure_legacy_terminal_tabs(pool: &SqlitePool) -> DbResult<()> {
            OR updated_at IS NULL OR TRIM(updated_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -1049,7 +1178,7 @@ async fn ensure_legacy_terminal_tabs(pool: &SqlitePool) -> DbResult<()> {
         ON terminal_tabs(updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     sqlx::query(
         r#"
@@ -1057,13 +1186,13 @@ async fn ensure_legacy_terminal_tabs(pool: &SqlitePool) -> DbResult<()> {
         ON terminal_tabs(task_id, project_id);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_project_context_states(pool: &SqlitePool) -> DbResult<()> {
+async fn ensure_legacy_project_context_states(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS project_context_states (
@@ -1078,23 +1207,23 @@ async fn ensure_legacy_project_context_states(pool: &SqlitePool) -> DbResult<()>
         );
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
-    let columns = table_columns(pool, "project_context_states").await?;
+    let columns = table_columns(&mut *connection, "project_context_states".to_string()).await?;
     if !columns.contains("updated_at") {
         sqlx::query("ALTER TABLE project_context_states ADD COLUMN updated_at TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("group_id") {
         sqlx::query("ALTER TABLE project_context_states ADD COLUMN group_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
     if !columns.contains("focus_project_id") {
         sqlx::query("ALTER TABLE project_context_states ADD COLUMN focus_project_id TEXT")
-            .execute(pool)
+            .execute(&mut *connection)
             .await?;
     }
 
@@ -1105,7 +1234,7 @@ async fn ensure_legacy_project_context_states(pool: &SqlitePool) -> DbResult<()>
         WHERE updated_at IS NULL OR TRIM(updated_at) = ''
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     sqlx::query(
@@ -1114,14 +1243,14 @@ async fn ensure_legacy_project_context_states(pool: &SqlitePool) -> DbResult<()>
         ON project_context_states(updated_at DESC);
         "#,
     )
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
 
     Ok(())
 }
 
-async fn ensure_legacy_session_context_state(pool: &SqlitePool) -> DbResult<()> {
-    if !table_exists(pool, "session_context_state").await? {
+async fn ensure_legacy_session_context_state(connection: &mut SqliteConnection) -> DbResult<()> {
+    if !table_exists(&mut *connection, "session_context_state".to_string()).await? {
         sqlx::query(
             r#"
             CREATE TABLE session_context_state (
@@ -1133,13 +1262,13 @@ async fn ensure_legacy_session_context_state(pool: &SqlitePool) -> DbResult<()> 
             );
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     } else {
-        let columns = table_columns(pool, "session_context_state").await?;
+        let columns = table_columns(&mut *connection, "session_context_state".to_string()).await?;
         if !columns.contains("updated_at") {
             sqlx::query("ALTER TABLE session_context_state ADD COLUMN updated_at TEXT")
-                .execute(pool)
+                .execute(&mut *connection)
                 .await?;
         }
 
@@ -1150,7 +1279,7 @@ async fn ensure_legacy_session_context_state(pool: &SqlitePool) -> DbResult<()> 
             WHERE updated_at IS NULL OR TRIM(updated_at) = ''
             "#,
         )
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
 
@@ -1158,7 +1287,7 @@ async fn ensure_legacy_session_context_state(pool: &SqlitePool) -> DbResult<()> 
 }
 
 async fn backfill_conversation_scope_mode(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     force_reclassify_all_rows: bool,
 ) -> DbResult<()> {
     let query = if force_reclassify_all_rows {
@@ -1184,12 +1313,12 @@ async fn backfill_conversation_scope_mode(
         "#
     };
 
-    sqlx::query(query).execute(pool).await?;
+    sqlx::query(query).execute(&mut *connection).await?;
 
     Ok(())
 }
 
-async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
+async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult<()> {
     let default_providers = vec![
         (
             "chatgpt",
@@ -1278,7 +1407,7 @@ async fn insert_default_providers(pool: &SqlitePool) -> DbResult<()> {
         .bind(is_local as i32)
         .bind(&now)
         .bind(&now)
-        .execute(pool)
+        .execute(&mut *connection)
         .await?;
     }
 
@@ -1434,6 +1563,43 @@ mod tests {
         assert_eq!(row.get::<String, _>("name"), "001_initial");
     }
 
+    async fn apply_baseline_in_transaction(pool: &sqlx::SqlitePool) {
+        let mut transaction = pool.begin().await.expect("begin baseline transaction");
+        ensure_schema_migrations_table(&mut *transaction)
+            .await
+            .expect("schema migrations table");
+        apply_migration(
+            &mut *transaction,
+            MIGRATION_001_VERSION,
+            MIGRATION_001_NAME.to_string(),
+            MIGRATION_001_SQL.to_string(),
+        )
+        .await
+        .expect("apply baseline");
+        transaction
+            .commit()
+            .await
+            .expect("commit baseline transaction");
+    }
+
+    async fn stamp_baseline_in_transaction(pool: &sqlx::SqlitePool) {
+        let mut transaction = pool.begin().await.expect("begin stamp transaction");
+        ensure_schema_migrations_table(&mut *transaction)
+            .await
+            .expect("schema migrations table");
+        stamp_migration(
+            &mut *transaction,
+            MIGRATION_001_VERSION,
+            MIGRATION_001_NAME.to_string(),
+        )
+        .await
+        .expect("stamp baseline");
+        transaction
+            .commit()
+            .await
+            .expect("commit stamp transaction");
+    }
+
     #[test]
     fn app_db_path_is_rooted_in_app_data_dir() {
         let app_dir = Path::new("/tmp/macro-app-data");
@@ -1453,6 +1619,8 @@ mod tests {
             WHERE type = 'table'
               AND name IN (
                 'architect_plan_conversation_sync',
+                'conversation_citations',
+                'conversation_toolbox_state',
                 'schema_migrations',
                 'conversations',
                 'messages',
@@ -1483,6 +1651,8 @@ mod tests {
                 "ai_models".to_string(),
                 "app_settings".to_string(),
                 "architect_plan_conversation_sync".to_string(),
+                "conversation_citations".to_string(),
+                "conversation_toolbox_state".to_string(),
                 "conversations".to_string(),
                 "git_repositories".to_string(),
                 "git_worktrees".to_string(),
@@ -1514,7 +1684,10 @@ mod tests {
               AND name IN (
                 'idx_messages_conversation_created_at_id',
                 'idx_messages_created_at_id',
-                'idx_architect_plan_conversation_sync_plan'
+                'idx_architect_plan_conversation_sync_plan',
+                'idx_conversation_citations_conversation',
+                'idx_conversation_citations_message',
+                'idx_conversation_toolbox_state_updated_at'
               )
             ORDER BY name ASC
             "#,
@@ -1530,6 +1703,9 @@ mod tests {
             index_names,
             vec![
                 "idx_architect_plan_conversation_sync_plan".to_string(),
+                "idx_conversation_citations_conversation".to_string(),
+                "idx_conversation_citations_message".to_string(),
+                "idx_conversation_toolbox_state_updated_at".to_string(),
                 "idx_messages_conversation_created_at_id".to_string(),
                 "idx_messages_created_at_id".to_string(),
             ]
@@ -1557,6 +1733,68 @@ mod tests {
                 "target_branch".to_string(),
                 "transcript_revision".to_string(),
                 "message_count".to_string(),
+                "updated_at".to_string(),
+            ]
+        );
+
+        let citation_columns = sqlx::query(
+            r#"
+            SELECT name
+            FROM pragma_table_info('conversation_citations')
+            ORDER BY cid ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("citation table columns")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            citation_columns,
+            vec![
+                "id".to_string(),
+                "conversation_id".to_string(),
+                "message_id".to_string(),
+                "type".to_string(),
+                "scope".to_string(),
+                "source".to_string(),
+                "title".to_string(),
+                "snippet".to_string(),
+                "content".to_string(),
+                "url".to_string(),
+                "favicon".to_string(),
+                "path".to_string(),
+                "language".to_string(),
+                "size_bytes".to_string(),
+                "kind".to_string(),
+                "reason".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+            ]
+        );
+
+        let toolbox_columns = sqlx::query(
+            r#"
+            SELECT name
+            FROM pragma_table_info('conversation_toolbox_state')
+            ORDER BY cid ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("toolbox table columns")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            toolbox_columns,
+            vec![
+                "conversation_id".to_string(),
+                "composer_context_refs_json".to_string(),
+                "created_at".to_string(),
                 "updated_at".to_string(),
             ]
         );
@@ -1670,17 +1908,7 @@ mod tests {
             .await
             .expect("baseline pool");
 
-        ensure_schema_migrations_table(&pool)
-            .await
-            .expect("schema migrations table");
-        apply_migration(
-            &pool,
-            MIGRATION_001_VERSION,
-            MIGRATION_001_NAME,
-            MIGRATION_001_SQL,
-        )
-        .await
-        .expect("apply baseline");
+        apply_baseline_in_transaction(&pool).await;
 
         sqlx::query("DROP TABLE schema_migrations")
             .execute(&pool)
@@ -1707,17 +1935,7 @@ mod tests {
             .await
             .expect("baseline pool");
 
-        ensure_schema_migrations_table(&pool)
-            .await
-            .expect("schema migrations table");
-        apply_migration(
-            &pool,
-            MIGRATION_001_VERSION,
-            MIGRATION_001_NAME,
-            MIGRATION_001_SQL,
-        )
-        .await
-        .expect("apply baseline");
+        apply_baseline_in_transaction(&pool).await;
 
         let columns_before = sqlx::query(
             r#"
@@ -1768,12 +1986,7 @@ mod tests {
             .await
             .expect("legacy pool");
 
-        ensure_schema_migrations_table(&pool)
-            .await
-            .expect("schema migrations table");
-        stamp_migration(&pool, MIGRATION_001_VERSION, MIGRATION_001_NAME)
-            .await
-            .expect("stamp baseline");
+        stamp_baseline_in_transaction(&pool).await;
         sqlx::query(
             r#"
             CREATE TABLE provider_settings (
@@ -1789,7 +2002,11 @@ mod tests {
         drop(pool);
 
         let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
-        let columns = table_columns(&migrated_pool, "provider_settings")
+        let mut connection = migrated_pool
+            .acquire()
+            .await
+            .expect("provider settings connection");
+        let columns = table_columns(&mut *connection, "provider_settings".to_string())
             .await
             .expect("provider_settings columns");
 

@@ -1,4 +1,5 @@
 import { createRemoteUnsupportedInRemoteModeError } from '../serviceRuntime';
+import { createCombinedAbortSignal } from '../../utils/abortSignals';
 import { resolveRemoteConfig, type RemoteConfig } from './remoteConfig';
 
 export { resolveRemoteConfig } from './remoteConfig';
@@ -82,13 +83,17 @@ export const remoteRequest = async <T>(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const combinedSignal = createCombinedAbortSignal([
+    requestOptions.signal ?? undefined,
+    controller.signal,
+  ]);
   const url = toAbsoluteApiUrl(config, path);
 
   try {
     const response = await fetch(url, {
       ...requestOptions,
       headers,
-      signal: controller.signal,
+      signal: combinedSignal.signal,
     });
 
     const contentType = response.headers.get('content-type') ?? '';
@@ -120,6 +125,9 @@ export const remoteRequest = async <T>(
     }
 
     if (error instanceof Error && error.name === 'AbortError') {
+      if (requestOptions.signal?.aborted) {
+        throw error;
+      }
       throw {
         code: 'REMOTE_TIMEOUT',
         message: `Remote request timed out after ${config.timeoutMs}ms`,
@@ -137,6 +145,7 @@ export const remoteRequest = async <T>(
     };
   } finally {
     clearTimeout(timeoutId);
+    combinedSignal.dispose();
   }
 };
 

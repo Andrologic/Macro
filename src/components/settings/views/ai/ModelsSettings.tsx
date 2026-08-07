@@ -139,6 +139,43 @@ export const ModelsSettings: React.FC = () => {
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
 
+  const handleProviderSettingsChange = async (
+    providerId: string,
+    updates: Parameters<typeof updateProviderSettings>[1]
+  ) => {
+    try {
+      await updateProviderSettings(providerId, updates);
+    } catch (error) {
+      notify.error(
+        getErrorMessage(error, t('models.updateFailed', 'Failed to save model settings'))
+      );
+    }
+  };
+
+  const handleProviderModelEnabledChange = async (
+    providerId: string,
+    modelId: string,
+    enabled: boolean
+  ) => {
+    try {
+      await setProviderModelEnabled(providerId, modelId, enabled);
+    } catch (error) {
+      notify.error(
+        getErrorMessage(error, t('models.updateFailed', 'Failed to update model'))
+      );
+    }
+  };
+
+  const handleAllProviderModelsEnabledChange = async (providerId: string, enabled: boolean) => {
+    try {
+      await setAllProviderModelsEnabled(providerId, enabled);
+    } catch (error) {
+      notify.error(
+        getErrorMessage(error, t('models.updateFailed', 'Failed to update models'))
+      );
+    }
+  };
+
   const providers = providerConfigs;
   const enabledCommitProviders = providers.filter((provider) => providerHasCredentials(provider));
   const normalizedMetadataModelConfig = normalizeMetadataModelConfig(metadataModelConfig, {
@@ -520,9 +557,12 @@ export const ModelsSettings: React.FC = () => {
                           <Switch
                             className="scale-90"
                             checked={!!settings?.filterFreeModels}
-                            onCheckedChange={(checked) =>
-                              updateProviderSettings(provider.id, { filterFreeModels: checked })
-                            }
+                            aria-label={t('models.freeOnly', 'Free only')}
+                            onCheckedChange={(checked) => {
+                              void handleProviderSettingsChange(provider.id, {
+                                filterFreeModels: checked,
+                              });
+                            }}
                           />
                         </div>
                       )}
@@ -535,14 +575,14 @@ export const ModelsSettings: React.FC = () => {
                         onClick={async (event) => {
                           event.preventDefault();
                           if (showFreeOnly) {
-                            await Promise.all(
+                              await Promise.all(
                               filteredModels.map((model) =>
-                                setProviderModelEnabled(provider.id, model.id, true)
+                                handleProviderModelEnabledChange(provider.id, model.id, true)
                               )
                             );
                             return;
                           }
-                          await setAllProviderModelsEnabled(provider.id, true);
+                          await handleAllProviderModelsEnabledChange(provider.id, true);
                         }}
                         disabled={filteredModels.length === 0}
                       >
@@ -554,14 +594,14 @@ export const ModelsSettings: React.FC = () => {
                         onClick={async (event) => {
                           event.preventDefault();
                           if (showFreeOnly) {
-                            await Promise.all(
+                              await Promise.all(
                               filteredModels.map((model) =>
-                                setProviderModelEnabled(provider.id, model.id, false)
+                                handleProviderModelEnabledChange(provider.id, model.id, false)
                               )
                             );
                             return;
                           }
-                          await setAllProviderModelsEnabled(provider.id, false);
+                          await handleAllProviderModelsEnabledChange(provider.id, false);
                         }}
                         disabled={filteredModels.length === 0}
                       >
@@ -646,9 +686,10 @@ export const ModelsSettings: React.FC = () => {
                         <div className="flex shrink-0 items-center gap-1.5">
                           <Switch
                             checked={model.isEnabled !== false}
-                            onCheckedChange={(checked) =>
-                              setProviderModelEnabled(provider.id, model.id, checked)
-                            }
+                            aria-label={t('common.enable', 'Enable')}
+                            onCheckedChange={(checked) => {
+                              void handleProviderModelEnabledChange(provider.id, model.id, checked);
+                            }}
                           />
 
                           {model.contextWindowSource === 'provider_overflow_error' && (

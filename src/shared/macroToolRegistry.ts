@@ -759,7 +759,8 @@ export const MACRO_TOOL_REGISTRY = [
         command: { type: "string", description: "Shell command to execute." },
         timeout_ms: {
           type: "number",
-          description: "Optional timeout in milliseconds.",
+          description:
+            "Optional timeout in milliseconds. Defaults to 300000 (5 minutes) and is capped at 1800000 (30 minutes).",
         },
       },
       required: ["session_id", "command"],

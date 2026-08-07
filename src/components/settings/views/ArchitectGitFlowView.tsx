@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
 import { loadPreference, PREF_KEYS, savePreference } from '../../../services/preferences';
@@ -26,6 +26,7 @@ const defaultSettings: ArchitectGitNamingSettings = {
 export const ArchitectGitFlowView: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ArchitectGitNamingSettings>(defaultSettings);
+  const settingsTouchedRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -55,6 +56,10 @@ export const ArchitectGitFlowView: React.FC = () => {
         loadPreference<boolean>(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH),
       ]);
 
+      if (cancelled || settingsTouchedRef.current) {
+        return;
+      }
+
       setSettings({
         mainBranch: mainBranch || defaultSettings.mainBranch,
         baseBranch: baseBranch || defaultSettings.baseBranch,
@@ -71,8 +76,18 @@ export const ArchitectGitFlowView: React.FC = () => {
       });
     };
 
+    let cancelled = false;
     void loadSettings();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const updateSettings = (updater: React.SetStateAction<ArchitectGitNamingSettings>) => {
+    settingsTouchedRef.current = true;
+    setSettings(updater);
+  };
 
   const validationErrors = useMemo(() => validateArchitectGitNamingSettings(settings), [settings]);
 
@@ -116,6 +131,7 @@ export const ArchitectGitFlowView: React.FC = () => {
 
   const handleSave = async () => {
     if (validationErrors.length > 0) return;
+    settingsTouchedRef.current = true;
     setIsSaving(true);
     setSaveSuccess(false);
     await Promise.all([
@@ -154,6 +170,7 @@ export const ArchitectGitFlowView: React.FC = () => {
   };
 
   const handleReset = () => {
+    settingsTouchedRef.current = true;
     setSettings(defaultSettings);
     setSaveSuccess(false);
   };
@@ -179,7 +196,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.mainBranch}
-            onChange={(event) => setSettings((prev) => ({ ...prev, mainBranch: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, mainBranch: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="main"
           />
@@ -191,7 +208,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.baseBranch}
-            onChange={(event) => setSettings((prev) => ({ ...prev, baseBranch: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, baseBranch: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="main"
           />
@@ -204,7 +221,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           <select
             value={settings.completionMergePolicy}
             onChange={(event) =>
-              setSettings((prev) => ({
+              updateSettings((prev) => ({
                 ...prev,
                 completionMergePolicy:
                   event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
@@ -233,7 +250,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.planBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, planBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, planBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="plan/{planSlug}"
           />
@@ -245,7 +262,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.featureBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, featureBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, featureBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="feature/{planSlug}/{featureSlug}"
           />
@@ -261,7 +278,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           <input
             value={settings.standaloneFeatureBranchTemplate}
             onChange={(event) =>
-              setSettings((prev) => ({ ...prev, standaloneFeatureBranchTemplate: event.target.value }))
+              updateSettings((prev) => ({ ...prev, standaloneFeatureBranchTemplate: event.target.value }))
             }
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="feature/{featureSlug}"
@@ -274,7 +291,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.releaseBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="release/v{releaseSlug}"
           />
@@ -286,7 +303,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.hotfixBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, hotfixBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, hotfixBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="hotfix/{hotfixSlug}"
           />
@@ -298,7 +315,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.bugfixBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, bugfixBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, bugfixBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="bugfix/{bugfixSlug}"
           />
@@ -309,7 +326,7 @@ export const ArchitectGitFlowView: React.FC = () => {
             type="checkbox"
             checked={settings.syncTargetBeforeFinish}
             onChange={(event) =>
-              setSettings((prev) => ({ ...prev, syncTargetBeforeFinish: event.target.checked }))
+              updateSettings((prev) => ({ ...prev, syncTargetBeforeFinish: event.target.checked }))
             }
             className="mt-0.5 h-4 w-4 rounded border-border bg-background"
           />

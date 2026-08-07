@@ -77,6 +77,30 @@ describe('projectRegistry', () => {
     expect(formatProjectRegistryRepairSummary(result.report)).toContain('Macro a réparé');
   });
 
+  it('preserves case-sensitive POSIX paths as distinct projects', () => {
+    const result = normalizeProjectRegistry({
+      projectGroups: [
+        {
+          id: 'group-main',
+          name: 'Main',
+          isOpen: true,
+          projects: [
+            makeProject('project-upper', '/workspace/Macro', 'Macro'),
+            makeProject('project-lower', '/workspace/macro', 'macro'),
+          ],
+        },
+      ],
+      selectedGroupId: 'group-main',
+      selectedProjectId: null,
+    });
+
+    expect(result.projectGroups[0]?.projects.map((project) => project.id)).toEqual([
+      'project-upper',
+      'project-lower',
+    ]);
+    expect(result.report.duplicatePathsRemoved).toBe(0);
+  });
+
   it('keeps all projects selected when only the group is restored', () => {
     const result = normalizeProjectRegistry({
       projectGroups: [

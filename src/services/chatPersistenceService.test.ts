@@ -296,6 +296,7 @@ describe("chatPersistenceService", () => {
         visibleContent: "Done",
         toolTraces: [],
         providerInputItems: [{ id: "result-input" }],
+        completionReason: "tool_turn_limit",
       },
     });
 
@@ -305,6 +306,7 @@ describe("chatPersistenceService", () => {
       hiddenContext: undefined,
       providerInputItems: [{ id: "result-input" }],
       providerTurnState: undefined,
+      completionReason: "tool_turn_limit",
     });
   });
 

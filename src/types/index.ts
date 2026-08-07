@@ -2,6 +2,7 @@
 
 import type { SupportedLanguage } from '../i18n/languages';
 import type { IconName } from '../components/ui/Icon';
+import type { Citation } from '../stores/useCitationsStore';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type ProjectPathKind = 'windows' | 'wsl';
@@ -259,15 +260,15 @@ export interface WorkspaceFileReference {
   isFocused?: boolean;
 }
 
-// Context references for chat composer (tag needs, nodes, branches, skills, files)
-export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill' | 'file';
+// Context references for chat composer (tag needs, nodes, branches, skills, files, sources)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: Need | PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference;
+  data: Need | PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
 }
 
 export interface PersistedContextReference {
@@ -283,6 +284,9 @@ export interface PersistedContextReference {
   relativePath?: string;
   projectId?: string | null;
   projectName?: string | null;
+  snippet?: string;
+  sourceLabel?: string;
+  url?: string;
 }
 
 // Activity indicator for projects

@@ -342,7 +342,7 @@
     "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her.",
     "revertChangesFailed": "Änderungen konnten nicht verworfen werden."
   },
-  "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+  "taskCommandsManualDraftUnsupported": "Senden Sie eine erste Nachricht, um Branch, Worktree und Terminal dieser Funktion vorzubereiten.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
   "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
   "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
@@ -484,5 +484,8 @@
   "diffModalCrashedTitle": "Dieser Diff konnte nicht offen gehalten werden",
   "diffModalCrashedDescription": "Das Änderungen-Panel läuft weiter. Versuche den Diff-Viewer erneut oder schließe diese Datei.",
   "diffRenderFailedTitle": "Diff konnte nicht gerendert werden",
-  "diffRenderFailedDescription": "Das Änderungen-Panel blieb geöffnet. Schließe diese Datei und versuche es erneut, oder prüfe die Datei direkt."
+  "diffRenderFailedDescription": "Das Änderungen-Panel blieb geöffnet. Schließe diese Datei und versuche es erneut, oder prüfe die Datei direkt.",
+  "reviewBeforeValidation": "Öffnen Sie jeden ausstehenden Diff, bevor Sie die Änderungen bestätigen.",
+  "reviewArtifactBeforeValidation": "Öffnen Sie dieses Artefakt, bevor Sie es bestätigen.",
+  "taskCommandsPlanMutationActive": "Beenden Sie aktive Aufgabenbefehle, bevor Sie diesen Plan archivieren oder löschen."
 }

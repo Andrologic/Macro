@@ -99,6 +99,17 @@ describe('MarkdownRichContent context references', () => {
     expect(markup).not.toContain('[skill: test-skill]');
   });
 
+  it('renders source references as chips inside normal markdown text', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Sources: [source: product brief]'} />
+    );
+
+    expect(markup).toContain('data-context-reference-kind="source"');
+    expect(markup).toContain('data-context-reference-surface="message"');
+    expect(markup).not.toContain('[source: product brief]');
+  });
+
   it('renders context reference chips in markdown table cells', () => {
     const { MarkdownRichContent } = markdownRichContentModule;
     const markup = renderToStaticMarkup(

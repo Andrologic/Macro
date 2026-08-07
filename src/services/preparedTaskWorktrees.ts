@@ -23,6 +23,7 @@ export const resolveCachedPreparedTaskWorktreePath = (
   branchWorktrees: Record<string, string>
 ): string | null =>
   branchWorktrees[target.worktreeKey] ||
+  branchWorktrees[`${target.projectId}::${target.branchName}`] ||
   branchWorktrees[target.branchName] ||
   null;
 

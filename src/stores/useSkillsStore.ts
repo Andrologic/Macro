@@ -105,6 +105,8 @@ const canRunSkillScriptFromSnapshot = (
     permission.hasScripts === true;
 };
 
+let settingsMutationVersion = 0;
+
 interface SkillsStore {
   skills: SkillManifest[];
   settingsBySkillId: Record<string, SkillSettings>;
@@ -166,11 +168,16 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   lastError: null,
 
   loadSettings: async () => {
+    const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
       const settingsBySkillId = readStoredSkillSettings();
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
-      const migratedSettings = migrateLegacySkillSettings(settingsBySkillId, response.skills);
+      const currentSettings =
+        hydrationVersion === settingsMutationVersion
+          ? settingsBySkillId
+          : get().settingsBySkillId;
+      const migratedSettings = migrateLegacySkillSettings(currentSettings, response.skills);
       set({
         skills: response.skills,
         settingsBySkillId: migratedSettings,
@@ -193,6 +200,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   },
 
   installSkillFromLocalPath: async (sourcePath) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const installed = await services.installSkillFromLocalPath({ sourcePath });
@@ -213,6 +221,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   },
 
   createSkillTemplate: async (data) => {
+    settingsMutationVersion += 1;
     set({ saving: true, lastError: null });
     try {
       const created = await services.createSkillTemplate({
@@ -264,6 +273,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   },
 
   setSkillEnabled: (skillId, enabled) => {
+    settingsMutationVersion += 1;
     set((state) => {
       const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
       const settingsBySkillId = {
@@ -279,6 +289,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   },
 
   setSkillScriptsEnabled: (skillId, scriptsEnabled) => {
+    settingsMutationVersion += 1;
     set((state) => {
       const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
       const settingsBySkillId = {

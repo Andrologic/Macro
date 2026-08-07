@@ -33,13 +33,16 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
+const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
 const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
 const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
@@ -69,6 +72,28 @@ const GIT_SETUP_ACTION_CREATE_DEVELOP: &str = "create_develop";
 const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
 const PROJECT_GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+
+static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+
+fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
+    std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
+}
+
+async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
+    let key = workspace_state_lock_key(metadata_root);
+    let lock = {
+        let locks = WORKSPACE_STATE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
 const ACCESS_BLOCK_LAST_ACTIONABLE_PLAN: &str = "last_actionable_plan";
@@ -572,9 +597,8 @@ async fn wait_for_wsl_command(
         timeout(timeout_duration, &mut wait_future)
             .await
             .map_err(|_| BackendError::Git {
-                message:
-                    "Git detection timed out. Check WSL or add the project as read-only."
-                        .to_string(),
+                message: "Git detection timed out. Check WSL or add the project as read-only."
+                    .to_string(),
             })?
             .map_err(|error| BackendError::Git {
                 message: format!("Failed to run WSL command: {}", error),
@@ -1546,6 +1570,7 @@ pub async fn refresh_project_registry_state(
     workspace_path: &Path,
     metadata_root: &Path,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let state = load_or_create_state(workspace_path, metadata_root).await?;
     let _ = persist_sanitized_state(
         workspace_path,
@@ -1838,6 +1863,7 @@ pub async fn create_manual_feature_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
     let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
@@ -1932,6 +1958,7 @@ pub async fn finalize_manual_feature(
     description: &str,
     feature_slug: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let standalone_projects = state.standalone_projects.clone();
     let project_groups = state.project_groups.clone();
@@ -2061,6 +2088,7 @@ pub async fn revert_manual_feature_to_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let feature_index = state
@@ -2137,6 +2165,7 @@ pub async fn delete_manual_feature_draft(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
     state
@@ -2165,6 +2194,7 @@ pub async fn rename_manual_feature(
     task_id: &str,
     title: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let normalized_title = title.trim();
@@ -2210,6 +2240,7 @@ pub async fn archive_manual_feature(
     reason: Option<&str>,
     merged_at: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
@@ -2260,6 +2291,7 @@ pub async fn restore_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
@@ -2306,6 +2338,7 @@ pub async fn delete_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
     let normalized_task_id = task_id.trim();
@@ -2335,6 +2368,7 @@ pub async fn update_standalone_task_status(
     task_id: &str,
     status: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let normalized_status = status.trim();
@@ -2412,6 +2446,7 @@ pub async fn update_manual_feature_merge_workflow(
     task_id: &str,
     merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let feature = state
@@ -2604,6 +2639,7 @@ pub async fn create_project_with_cancel(
     request: CreateProjectRequest,
     cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     ensure_not_cancelled(cancel_rx.as_ref())?;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
@@ -2927,6 +2963,7 @@ pub async fn import_git_repo(
     metadata_root: &Path,
     request: ImportGitRepoRequest,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -2993,6 +3030,7 @@ pub async fn rename_project_group(
     group_id: &str,
     name: &str,
 ) -> Result<ProjectGroupDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err(BackendError::Validation(
@@ -3044,6 +3082,7 @@ pub async fn create_project_group(
     name: &str,
     project_ids: &[String],
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err(BackendError::Validation(
@@ -3097,6 +3136,7 @@ pub async fn move_project_to_group(
     project_id: &str,
     group_id: Option<&str>,
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let current_group_id = find_group_id_for_project(&state, project_id);
     let target_group_id = group_id.map(str::trim).filter(|value| !value.is_empty());
@@ -3157,6 +3197,7 @@ pub async fn rename_project(
     project_id: &str,
     name: &str,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err(BackendError::Validation(
@@ -3212,6 +3253,7 @@ pub async fn update_project_git_flow(
     project_id: &str,
     git_flow_settings: &ProjectGitFlowSettingsDto,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_git_flow_settings = normalize_project_git_flow_settings(Some(git_flow_settings));
     validate_project_git_flow_settings_strict(&normalized_git_flow_settings)?;
@@ -3616,6 +3658,7 @@ pub async fn update_project_access(
     confirmed_migration: bool,
     access_preview: Option<&ProjectAccessChangePreviewDto>,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     tracing::info!(
         action = "project_access_update_requested",
         project_id = %project_id,
@@ -3724,6 +3767,7 @@ pub async fn archive_project_group(
     metadata_root: &Path,
     group_id: &str,
 ) -> Result<ProjectGroupDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let group = state
         .project_groups
@@ -3760,6 +3804,7 @@ pub async fn archive_project(
     metadata_root: &Path,
     project_id: &str,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
@@ -3793,6 +3838,7 @@ pub async fn remove_project_group(
     metadata_root: &Path,
     group_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -3830,6 +3876,7 @@ pub async fn close_project(
     metadata_root: &Path,
     project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -4254,6 +4301,10 @@ fn workspace_state_path(metadata_root: &Path) -> PathBuf {
     metadata_root.join(WORKSPACE_STATE_FILE)
 }
 
+fn workspace_state_backup_path(metadata_root: &Path) -> PathBuf {
+    metadata_root.join(WORKSPACE_STATE_BACKUP_FILE)
+}
+
 fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
     metadata_root
         .join(LEGACY_WORKSPACE_META_DIR)
@@ -4263,23 +4314,84 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
+    let backup_path = workspace_state_backup_path(metadata_root);
     let path = if primary_path.exists() {
-        primary_path
+        primary_path.clone()
     } else if legacy_path.exists() {
         legacy_path
+    } else if backup_path.exists() {
+        backup_path.clone()
     } else {
         return Ok(None);
     };
 
-    let content = std::fs::read_to_string(&path).map_err(|error| BackendError::Filesystem {
-        message: format!("Failed to read workspace state: {}", error),
-    })?;
+    let read_and_parse = |candidate: &Path| -> Result<WorkspaceState> {
+        let content =
+            std::fs::read_to_string(candidate).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to read workspace state {}: {}",
+                    candidate.display(),
+                    error
+                ),
+            })?;
+        serde_json::from_str(&content).map_err(|error| {
+            BackendError::Validation(format!(
+                "Invalid workspace state format in {}: {}",
+                candidate.display(),
+                error
+            ))
+        })
+    };
 
-    let state: WorkspaceState = serde_json::from_str(&content).map_err(|error| {
-        BackendError::Validation(format!("Invalid workspace state format: {}", error))
-    })?;
-
-    Ok(Some(state))
+    match read_and_parse(&path) {
+        Ok(state) => {
+            if path == backup_path && !primary_path.exists() {
+                persist_state_sync(metadata_root, &state)?;
+                tracing::warn!(
+                    action = "workspace_state_recovered_from_backup",
+                    backup_path = %backup_path.display(),
+                    primary_path = %primary_path.display(),
+                    reason = "primary_missing"
+                );
+            }
+            Ok(Some(state))
+        }
+        Err(primary_error) if path == primary_path && backup_path.exists() => {
+            match read_and_parse(&backup_path) {
+                Ok(state) => {
+                    let corrupt_path = metadata_root.join(format!(
+                        "{}.corrupt-{}",
+                        WORKSPACE_STATE_FILE,
+                        uuid::Uuid::new_v4().simple()
+                    ));
+                    std::fs::rename(&primary_path, &corrupt_path).map_err(|error| {
+                        BackendError::Filesystem {
+                            message: format!(
+                                "Failed to preserve invalid workspace state {} before recovery: {}",
+                                primary_path.display(),
+                                error
+                            ),
+                        }
+                    })?;
+                    persist_state_sync(metadata_root, &state)?;
+                    tracing::warn!(
+                        action = "workspace_state_recovered_from_backup",
+                        backup_path = %backup_path.display(),
+                        primary_path = %primary_path.display(),
+                        corrupt_path = %corrupt_path.display(),
+                        reason = "primary_invalid",
+                        primary_error = %primary_error
+                    );
+                    Ok(Some(state))
+                }
+                Err(backup_error) => Err(BackendError::Validation(format!(
+                    "Workspace state and backup are both invalid. Primary error: {}; backup error: {}",
+                    primary_error, backup_error
+                ))),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -4625,17 +4737,101 @@ fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
 
-    std::fs::write(workspace_state_path(metadata_root), serialized).map_err(|error| {
-        BackendError::Filesystem {
-            message: format!(
-                "Failed to write workspace state {}: {}",
-                workspace_state_path(metadata_root).display(),
-                error
-            ),
-        }
-    })?;
+    write_workspace_state_durably_sync(metadata_root, serialized.as_bytes())?;
 
     Ok(())
+}
+
+fn write_workspace_state_durably_sync(metadata_root: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!(
+            "Failed to create workspace metadata directory {}: {}",
+            metadata_root.display(),
+            error
+        ),
+    })?;
+
+    let primary_path = workspace_state_path(metadata_root);
+    let backup_path = workspace_state_backup_path(metadata_root);
+    let temp_path = metadata_root.join(format!(
+        ".{}.macro-tmp-{}",
+        WORKSPACE_STATE_FILE,
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    let write_result = (|| -> Result<()> {
+        let mut temp_file =
+            std::fs::File::create(&temp_path).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to create temporary workspace state {}: {}",
+                    temp_path.display(),
+                    error
+                ),
+            })?;
+        temp_file
+            .write_all(bytes)
+            .and_then(|_| temp_file.flush())
+            .and_then(|_| temp_file.sync_all())
+            .map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to write temporary workspace state {}: {}",
+                    temp_path.display(),
+                    error
+                ),
+            })?;
+
+        if primary_path.exists() {
+            std::fs::copy(&primary_path, &backup_path).map_err(|error| {
+                BackendError::Filesystem {
+                    message: format!(
+                        "Failed to back up workspace state {} to {}: {}",
+                        primary_path.display(),
+                        backup_path.display(),
+                        error
+                    ),
+                }
+            })?;
+            if let Ok(backup_file) = std::fs::File::open(&backup_path) {
+                let _ = backup_file.sync_all();
+            }
+        }
+
+        #[cfg(windows)]
+        if primary_path.exists() {
+            std::fs::remove_file(&primary_path).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to prepare workspace state replacement {}: {}",
+                    primary_path.display(),
+                    error
+                ),
+            })?;
+        }
+
+        if let Err(error) = std::fs::rename(&temp_path, &primary_path) {
+            if !primary_path.exists() && backup_path.exists() {
+                let _ = std::fs::copy(&backup_path, &primary_path);
+            }
+            return Err(BackendError::Filesystem {
+                message: format!(
+                    "Failed to replace workspace state {}: {}",
+                    primary_path.display(),
+                    error
+                ),
+            });
+        }
+
+        #[cfg(unix)]
+        if let Ok(directory) = std::fs::File::open(metadata_root) {
+            let _ = directory.sync_all();
+        }
+
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
@@ -5194,6 +5390,7 @@ pub async fn reconcile_project_registry_from_hints(
     metadata_root: &Path,
     request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut report = WorkspaceProjectRegistryReconcileReportDto {
         status: "unchanged".to_string(),
         ..WorkspaceProjectRegistryReconcileReportDto::default()
@@ -5299,11 +5496,7 @@ pub async fn discover_recoverable_projects(
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
     let state = load_raw_state(metadata_root).await?.unwrap_or_default();
     let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
-    let hints = discover_recoverable_project_hints(
-        workspace_path,
-        &state,
-        max_children_per_root,
-    );
+    let hints = discover_recoverable_project_hints(workspace_path, &state, max_children_per_root);
 
     let mut report = WorkspaceProjectRegistryReconcileReportDto {
         status: if hints.is_empty() {
@@ -5316,9 +5509,11 @@ pub async fn discover_recoverable_projects(
 
     for hint in hints {
         let resolved_path = resolve_project_path(workspace_path, &hint.path);
-        report
-            .discovered_projects
-            .push(project_from_recovery_hint(&hint, &resolved_path, workspace_path));
+        report.discovered_projects.push(project_from_recovery_hint(
+            &hint,
+            &resolved_path,
+            workspace_path,
+        ));
     }
 
     tracing::info!(
@@ -5503,6 +5698,7 @@ pub async fn recover_missing_metadata(
     metadata_root: &Path,
     request: WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
 
@@ -5586,27 +5782,12 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
 }
 
 async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
-    let primary_path = workspace_state_path(metadata_root);
-    let legacy_path = legacy_workspace_state_path(metadata_root);
-    let path = if primary_path.exists() {
-        primary_path
-    } else if legacy_path.exists() {
-        legacy_path
-    } else {
-        return Ok(None);
-    };
-
-    let content = fs::read_to_string(&path)
+    let metadata_root = metadata_root.to_path_buf();
+    tokio::task::spawn_blocking(move || load_raw_state_sync(&metadata_root))
         .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to read workspace state: {}", error),
-        })?;
-
-    let state: WorkspaceState = serde_json::from_str(&content).map_err(|error| {
-        BackendError::Validation(format!("Invalid workspace state format: {}", error))
-    })?;
-
-    Ok(Some(state))
+        .map_err(|error| BackendError::Internal {
+            message: format!("Workspace state load task failed: {error}"),
+        })?
 }
 
 fn sanitize_project_entry(
@@ -6070,33 +6251,19 @@ async fn persist_sanitized_state(
 }
 
 async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<()> {
-    fs::create_dir_all(workspace_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!(
-                "Failed to create workspace metadata directory {}: {}",
-                workspace_path.display(),
-                error
-            ),
-        })?;
-
     let durable_state = strip_workspace_project_locations(state.clone());
     let serialized =
         serde_json::to_string_pretty(&durable_state).map_err(|error| BackendError::Internal {
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
-
-    fs::write(workspace_state_path(workspace_path), serialized)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!(
-                "Failed to write workspace state {}: {}",
-                workspace_state_path(workspace_path).display(),
-                error
-            ),
-        })?;
-
-    Ok(())
+    let workspace_path = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        write_workspace_state_durably_sync(&workspace_path, serialized.as_bytes())
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Workspace state persistence task failed: {error}"),
+    })?
 }
 
 fn build_project(
@@ -6935,6 +7102,8 @@ mod tests {
     use git2::{Repository, RepositoryInitOptions};
     use serde_json::json;
     use std::fs as stdfs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
@@ -7946,6 +8115,10 @@ mod tests {
         let _empty_commit = commit_all(temp.path(), "empty metadata");
 
         stdfs::remove_file(workspace_state_path(temp.path())).expect("remove workspace state");
+        if workspace_state_backup_path(temp.path()).exists() {
+            stdfs::remove_file(workspace_state_backup_path(temp.path()))
+                .expect("remove workspace backup");
+        }
         let _missing_commit = commit_all(temp.path(), "remove metadata");
 
         let report = recover_missing_metadata_sync(
@@ -8221,10 +8394,7 @@ mod tests {
         assert_eq!(report.discovered_projects[0].name, "octan_sales");
         assert_eq!(before, after);
         assert!(persisted.standalone_projects.is_empty());
-        assert_eq!(
-            persisted.project_groups[0].projects[0].id,
-            "project-sysml"
-        );
+        assert_eq!(persisted.project_groups[0].projects[0].id, "project-sysml");
     }
 
     #[tokio::test]
@@ -8289,7 +8459,12 @@ mod tests {
         let all_project_ids = loaded
             .standalone_projects
             .iter()
-            .chain(loaded.project_groups.iter().flat_map(|group| group.projects.iter()))
+            .chain(
+                loaded
+                    .project_groups
+                    .iter()
+                    .flat_map(|group| group.projects.iter()),
+            )
             .map(|project| project.id.as_str())
             .collect::<Vec<_>>();
 
@@ -8858,5 +9033,136 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[test]
+    fn load_raw_state_restores_the_last_valid_backup() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let first = WorkspaceState {
+            standalone_projects: vec![make_project("project-first", "/tmp/first")],
+            ..WorkspaceState::default()
+        };
+        let second = WorkspaceState {
+            standalone_projects: vec![make_project("project-second", "/tmp/second")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &first).expect("persist first state");
+        persist_state_sync(&metadata_root, &second).expect("persist second state");
+        stdfs::write(workspace_state_path(&metadata_root), "{invalid")
+            .expect("corrupt primary state");
+
+        let recovered = load_raw_state_sync(&metadata_root)
+            .expect("recover state")
+            .expect("workspace state");
+        assert_eq!(recovered.standalone_projects[0].id, "project-first");
+
+        let restored_content =
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("restored primary");
+        let restored: WorkspaceState =
+            serde_json::from_str(&restored_content).expect("valid restored json");
+        assert_eq!(restored.standalone_projects[0].id, "project-first");
+    }
+
+    #[test]
+    fn load_raw_state_reports_primary_and_backup_corruption() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        stdfs::write(workspace_state_path(&metadata_root), "{primary").expect("corrupt primary");
+        stdfs::write(workspace_state_backup_path(&metadata_root), "{backup")
+            .expect("corrupt backup");
+
+        let error = load_raw_state_sync(&metadata_root).expect_err("both files must fail");
+        let message = error.to_string();
+        assert!(message.contains("Primary error"));
+        assert!(message.contains("backup error"));
+        assert_eq!(
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("primary kept"),
+            "{primary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_write_failure_preserves_the_last_valid_json() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let original = WorkspaceState {
+            standalone_projects: vec![make_project("project-original", "/tmp/original")],
+            ..WorkspaceState::default()
+        };
+        let replacement = WorkspaceState {
+            standalone_projects: vec![make_project("project-replacement", "/tmp/replacement")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &original).expect("persist original state");
+
+        let writable_permissions = stdfs::metadata(&metadata_root)
+            .expect("metadata root")
+            .permissions();
+        let mut read_only_permissions = writable_permissions.clone();
+        read_only_permissions.set_mode(0o555);
+        stdfs::set_permissions(&metadata_root, read_only_permissions)
+            .expect("make metadata root read-only");
+        let result = persist_state_sync(&metadata_root, &replacement);
+        stdfs::set_permissions(&metadata_root, writable_permissions)
+            .expect("restore metadata permissions");
+
+        assert!(
+            result.is_err(),
+            "write should fail in a read-only directory"
+        );
+        let content = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read preserved primary state");
+        let preserved: WorkspaceState =
+            serde_json::from_str(&content).expect("preserved primary must remain valid JSON");
+        assert_eq!(preserved.standalone_projects[0].id, "project-original");
+    }
+
+    #[tokio::test]
+    async fn concurrent_workspace_mutations_preserve_both_updates() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let first_path = temp.path().join("first");
+        let second_path = temp.path().join("second");
+        stdfs::create_dir_all(&first_path).expect("first path");
+        stdfs::create_dir_all(&second_path).expect("second path");
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                make_project("project-first", first_path.to_string_lossy().as_ref()),
+                make_project("project-second", second_path.to_string_lossy().as_ref()),
+            ],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("seed state");
+
+        let (first_result, second_result) = tokio::join!(
+            rename_project(
+                temp.path(),
+                &metadata_root,
+                "project-first",
+                "First renamed"
+            ),
+            rename_project(
+                temp.path(),
+                &metadata_root,
+                "project-second",
+                "Second renamed"
+            )
+        );
+        first_result.expect("rename first");
+        second_result.expect("rename second");
+
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("load state")
+            .expect("workspace state");
+        let names = persisted
+            .standalone_projects
+            .iter()
+            .map(|project| project.name.as_str())
+            .collect::<HashSet<_>>();
+        assert!(names.contains("First renamed"));
+        assert!(names.contains("Second renamed"));
     }
 }

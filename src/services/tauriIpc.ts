@@ -24,6 +24,7 @@ import type {
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
   AppMode,
+  ChatCompletionReason,
   Need,
   MCPServer,
   MCPTool,
@@ -59,6 +60,11 @@ export interface DbConversation {
   is_pinned: boolean;
 }
 
+export interface DbInitializationStatusDto {
+  status: "initializing" | "ready" | "failed";
+  message: string | null;
+}
+
 export interface DbMessage {
   id: string;
   conversation_id: string;
@@ -72,6 +78,61 @@ export interface DbMessage {
   provider_input_items_json: string | null;
   provider_turn_state_json: string | null;
   context_refs_json?: string | null;
+  completion_reason?: ChatCompletionReason | null;
+}
+
+export interface DbConversationCitation {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  type: string;
+  scope: string;
+  source: string;
+  title: string;
+  snippet: string | null;
+  content: string | null;
+  url: string | null;
+  favicon: string | null;
+  path: string | null;
+  language: string | null;
+  size_bytes: number | null;
+  kind: string | null;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbUpsertConversationCitationInput {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  type: string;
+  scope: string;
+  source: string;
+  title: string;
+  snippet?: string | null;
+  content?: string | null;
+  url?: string | null;
+  favicon?: string | null;
+  path?: string | null;
+  language?: string | null;
+  size_bytes?: number | null;
+  kind?: string | null;
+  reason?: string | null;
+  timestamp?: string | null;
+}
+
+export interface DbConversationToolboxState {
+  conversation_id: string;
+  composer_context_refs_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbUpsertConversationToolboxStateInput {
+  conversation_id: string;
+  composer_context_refs_json: string;
+  timestamp?: string | null;
 }
 
 export interface DbConversationCompactionState {
@@ -112,6 +173,7 @@ export interface DbImportMessageInput {
   role: string;
   content: string;
   created_at: string;
+  completion_reason?: ChatCompletionReason | null;
 }
 
 export interface DbChatSnapshot {
@@ -688,6 +750,7 @@ export interface AiStreamDoneEvent {
   reasoning_summary?: string | null;
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;
+  completion_reason?: ChatCompletionReason | null;
 }
 
 export const parseProviderInputItemsJson = (
@@ -1129,6 +1192,7 @@ export interface TerminalSessionDto {
   output: string;
   exit_code: number | null;
   timed_out: boolean;
+  output_truncated: boolean;
   updated_at: string;
 }
 
@@ -1199,6 +1263,14 @@ export async function frontendLog(params: FrontendLogParams): Promise<void> {
     scope: params.scope,
     message: params.message,
   });
+}
+
+export async function getDatabaseInitializationStatus(): Promise<DbInitializationStatusDto> {
+  return invoke<DbInitializationStatusDto>("db_get_initialization_status");
+}
+
+export async function retryDatabaseInitialization(): Promise<DbInitializationStatusDto> {
+  return invoke<DbInitializationStatusDto>("db_retry_initialize");
 }
 
 export async function listConversations(): Promise<DbConversation[]> {
@@ -1380,6 +1452,62 @@ export async function dbInsertConversationCompactionEvent(
   return invoke("db_insert_conversation_compaction_event", { input });
 }
 
+export async function listConversationCitations(
+  conversationId: string,
+): Promise<DbConversationCitation[]> {
+  return invoke<DbConversationCitation[]>("db_list_conversation_citations", {
+    conversationId,
+  });
+}
+
+export async function getConversationCitationContent(
+  id: string,
+): Promise<string | null> {
+  return invoke<string | null>("db_get_conversation_citation_content", { id });
+}
+
+export async function upsertConversationCitation(
+  input: DbUpsertConversationCitationInput,
+): Promise<DbConversationCitation> {
+  return invoke<DbConversationCitation>("db_upsert_conversation_citation", {
+    input,
+  });
+}
+
+export async function deleteConversationCitation(id: string): Promise<void> {
+  return invoke("db_delete_conversation_citation", { id });
+}
+
+export async function deleteConversationCitations(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_citations", { conversationId });
+}
+
+export async function getConversationToolboxState(
+  conversationId: string,
+): Promise<DbConversationToolboxState | null> {
+  return invoke<DbConversationToolboxState | null>(
+    "db_get_conversation_toolbox_state",
+    { conversationId },
+  );
+}
+
+export async function upsertConversationToolboxState(
+  input: DbUpsertConversationToolboxStateInput,
+): Promise<DbConversationToolboxState> {
+  return invoke<DbConversationToolboxState>(
+    "db_upsert_conversation_toolbox_state",
+    { input },
+  );
+}
+
+export async function deleteConversationToolboxState(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_toolbox_state", { conversationId });
+}
+
 export async function createMessage(
   conversationId: string,
   role: string,
@@ -1393,6 +1521,7 @@ export async function createMessage(
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
     contextRefs?: unknown[];
+    completionReason?: ChatCompletionReason;
   },
 ): Promise<DbMessage> {
   return invoke<DbMessage>("db_create_message", {
@@ -1416,6 +1545,9 @@ export async function createMessage(
       contextRefsJson: options?.contextRefs
         ? JSON.stringify(options.contextRefs)
         : null,
+      ...(options?.completionReason
+        ? { completionReason: options.completionReason }
+        : {}),
     },
   });
 }
@@ -1441,6 +1573,7 @@ export async function updateMessage(
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
     contextRefs?: unknown[];
+    completionReason?: ChatCompletionReason;
   },
 ): Promise<void> {
   return invoke("db_update_message", {
@@ -1462,6 +1595,9 @@ export async function updateMessage(
       contextRefsJson: options?.contextRefs
         ? JSON.stringify(options.contextRefs)
         : null,
+      ...(options?.completionReason
+        ? { completionReason: options.completionReason }
+        : {}),
     },
   });
 }
@@ -2995,7 +3131,7 @@ export async function dbSetAppSetting(params: {
 }): Promise<DbAppSetting> {
   return invoke<DbAppSetting>("db_set_app_setting", {
     key: params.key,
-    value_json: params.valueJson,
+    valueJson: params.valueJson,
   });
 }
 
@@ -3003,7 +3139,7 @@ export async function dbGetProjectContextState(
   projectId: string,
 ): Promise<DbProjectContextState | null> {
   return invoke<DbProjectContextState | null>("db_get_project_context_state", {
-    project_id: projectId,
+    projectId,
   });
 }
 
@@ -3033,7 +3169,7 @@ export async function dbDeleteProjectContextState(
   projectId: string,
 ): Promise<void> {
   return invoke("db_delete_project_context_state", {
-    project_id: projectId,
+    projectId,
   });
 }
 

@@ -31,70 +31,89 @@ const persistBindings = async (bindings: ShortcutBindings) => {
   await savePreference(PREF_KEYS.SHORTCUT_BINDINGS, bindings);
 };
 
-export const useShortcutsStore = create<ShortcutsStore>((set) => ({
-  bindings: buildNormalizedDefaults(),
-  promptHistoryNavigationMode: 'contextual_arrows',
-  isLoaded: false,
+export const useShortcutsStore = create<ShortcutsStore>((set) => {
+  let mutationVersion = 0;
 
-  initialize: async () => {
-    const defaults = buildNormalizedDefaults();
-    try {
-      const [rawStored, rawNavigationMode] = await Promise.all([
-        loadPreference<Record<string, unknown>>(PREF_KEYS.SHORTCUT_BINDINGS),
-        loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
-      ]);
-      const stored = rawStored && typeof rawStored === 'object' ? rawStored : {};
-      const promptHistoryNavigationMode: PromptHistoryNavigationMode =
-        rawNavigationMode === 'shortcut_only' ? 'shortcut_only' : 'contextual_arrows';
+  return {
+    bindings: buildNormalizedDefaults(),
+    promptHistoryNavigationMode: 'contextual_arrows',
+    isLoaded: false,
 
-      const merged: ShortcutBindings = { ...defaults };
-      Object.keys(defaults).forEach((id) => {
-        const value = stored[id];
-        if (value === null) {
-          merged[id as ShortcutId] = null;
-        } else if (typeof value === 'string') {
-          merged[id as ShortcutId] = normalizeBinding(value);
+    initialize: async () => {
+      const defaults = buildNormalizedDefaults();
+      const hydrationVersion = mutationVersion;
+      try {
+        const [rawStored, rawNavigationMode] = await Promise.all([
+          loadPreference<Record<string, unknown>>(PREF_KEYS.SHORTCUT_BINDINGS),
+          loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
+        ]);
+        if (hydrationVersion !== mutationVersion) {
+          set({ isLoaded: true });
+          return;
         }
+        const stored = rawStored && typeof rawStored === 'object' ? rawStored : {};
+        const promptHistoryNavigationMode: PromptHistoryNavigationMode =
+          rawNavigationMode === 'shortcut_only' ? 'shortcut_only' : 'contextual_arrows';
+
+        const merged: ShortcutBindings = { ...defaults };
+        Object.keys(defaults).forEach((id) => {
+          const value = stored[id];
+          if (value === null) {
+            merged[id as ShortcutId] = null;
+          } else if (typeof value === 'string') {
+            merged[id as ShortcutId] = normalizeBinding(value);
+          }
+        });
+
+        set({ bindings: merged, promptHistoryNavigationMode, isLoaded: true });
+      } catch {
+        if (hydrationVersion === mutationVersion) {
+          set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
+        } else {
+          set({ isLoaded: true });
+        }
+      }
+    },
+
+    setBinding: (id, binding) => {
+      mutationVersion += 1;
+      set((state) => {
+        const normalized = binding ? normalizeBinding(binding) : null;
+        const nextBindings = {
+          ...state.bindings,
+          [id]: normalized,
+        };
+        void persistBindings(nextBindings);
+        return { bindings: nextBindings };
       });
+    },
 
-      set({ bindings: merged, promptHistoryNavigationMode, isLoaded: true });
-    } catch {
-      set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
-    }
-  },
+    setPromptHistoryNavigationMode: (mode) => {
+      mutationVersion += 1;
+      void savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, mode);
+      set({ promptHistoryNavigationMode: mode });
+    },
 
-  setBinding: (id, binding) =>
-    set((state) => {
-      const normalized = binding ? normalizeBinding(binding) : null;
-      const nextBindings = {
-        ...state.bindings,
-        [id]: normalized,
-      };
-      void persistBindings(nextBindings);
-      return { bindings: nextBindings };
-    }),
+    resetBinding: (id) => {
+      mutationVersion += 1;
+      set((state) => {
+        const nextBindings = {
+          ...state.bindings,
+          [id]: shortcutDefaults[id] ? normalizeBinding(shortcutDefaults[id] as string) : null,
+        };
+        void persistBindings(nextBindings);
+        return { bindings: nextBindings };
+      });
+    },
 
-  setPromptHistoryNavigationMode: (mode) => {
-    void savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, mode);
-    set({ promptHistoryNavigationMode: mode });
-  },
-
-  resetBinding: (id) =>
-    set((state) => {
-      const nextBindings = {
-        ...state.bindings,
-        [id]: shortcutDefaults[id] ? normalizeBinding(shortcutDefaults[id] as string) : null,
-      };
-      void persistBindings(nextBindings);
-      return { bindings: nextBindings };
-    }),
-
-  resetAll: () => {
-    const nextBindings = buildNormalizedDefaults();
-    void Promise.all([
-      persistBindings(nextBindings),
-      savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, 'contextual_arrows'),
-    ]);
-    set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows' });
-  },
-}));
+    resetAll: () => {
+      mutationVersion += 1;
+      const nextBindings = buildNormalizedDefaults();
+      void Promise.all([
+        persistBindings(nextBindings),
+        savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, 'contextual_arrows'),
+      ]);
+      set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows' });
+    },
+  };
+});

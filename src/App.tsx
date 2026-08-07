@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Header } from "./components/layout/Header";
 import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
@@ -64,18 +65,29 @@ const StartupErrorScreen: React.FC<{
   failedSteps: string[];
   details?: string;
   onRetry: () => void;
-}> = ({ message, failedSteps, details, onRetry }) => (
+}> = ({ message, failedSteps, details, onRetry }) => {
+  const { t } = useTranslation();
+  return (
   <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background px-6 text-foreground">
     <div className="w-full max-w-lg rounded-2xl border border-border bg-card/80 p-6 shadow-2xl">
       <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-        Startup interrupted
+        {t("startup.interrupted", "Startup interrupted")}
       </p>
-      <h1 className="mt-3 text-2xl font-semibold">Macro could not finish booting.</h1>
-      <p className="mt-3 text-sm leading-6 text-muted-foreground">{message}</p>
-      {failedSteps.length > 0 && (
+      <h1 className="mt-3 text-2xl font-semibold">
+        {t("startup.failedTitle", "Macro could not finish booting.")}
+      </h1>
+      <p className="mt-3 text-sm leading-6 text-muted-foreground">
+        {import.meta.env.DEV
+          ? message
+          : t(
+              "startup.failedDescription",
+              "Macro could not initialize its local data. You can retry safely."
+            )}
+      </p>
+      {import.meta.env.DEV && failedSteps.length > 0 && (
         <div className="mt-4 rounded-xl border border-border bg-background/60 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Failed step{failedSteps.length > 1 ? "s" : ""}
+            {t("startup.failedSteps", "Failed steps")}
           </p>
           <p className="mt-1 text-sm">{failedSteps.join(", ")}</p>
         </div>
@@ -90,11 +102,12 @@ const StartupErrorScreen: React.FC<{
         onClick={onRetry}
         className="mt-5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
       >
-        Retry
+        {t("common.retry", "Retry")}
       </button>
     </div>
   </div>
-);
+  );
+};
 
 // =============================================================================
 // INITIALIZATION PRIORITY CONFIGURATION
@@ -299,7 +312,16 @@ const App: React.FC = () => {
       return;
     }
 
-    void controller.restart().catch((error) => {
+    void (async () => {
+      const tauriIpc = await import("./services/tauriIpc");
+      if (tauriIpc.isTauriAvailable()) {
+        const databaseStatus = await tauriIpc.getDatabaseInitializationStatus();
+        if (databaseStatus.status === "failed") {
+          await tauriIpc.retryDatabaseInitialization();
+        }
+      }
+      await controller.restart();
+    })().catch((error) => {
       console.error("Failed to restart app bootstrap:", error);
       setBootstrapImportError({
         message:

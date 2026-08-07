@@ -41,6 +41,7 @@ import {
   archiveArchitectPlan,
   commitArchitectPlanMetadata,
   getArchitectPlan,
+  getArchitectPlanCrudCapabilities,
   getArchitectPlanTargetBranchesByProjectId,
   getGitFlowBaseBranch,
   resolveTargetBranch,
@@ -1388,8 +1389,16 @@ interface TaskCommandRunState {
   status: 'running' | 'cancelling';
   currentProjectId: string | null;
   currentProjectName: string | null;
-  activeTabId: string | null;
+  activeTabIds: string[];
+  cancelFailed?: boolean;
   startedAt: string;
+}
+
+type TaskOperationKind = 'commands' | 'archive' | 'delete' | 'merge';
+
+interface TaskCommandRunCompletion {
+  promise: Promise<void>;
+  resolve: () => void;
 }
 
 interface TaskCommandRunResult {
@@ -1531,6 +1540,8 @@ interface TaskStore {
   activeRepositoryPath: string | null;
   activeWorkspacePathOverridesByProjectId: Record<string, string>;
   taskCommandRuns: Record<string, TaskCommandRunState>;
+  reservePlanWorktreeMutation: (planId: string) => boolean;
+  releasePlanWorktreeMutation: (planId: string) => void;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
   initialize: () => Promise<void>;
   initializeCritical: () => Promise<void>;
@@ -2123,6 +2134,67 @@ const cleanupTaskExecutionTargets = async (
 };
 
 export const useTaskStore = create<TaskStore>((set, get) => {
+  const activeMergeWorkflowRuns = new Map<string, Promise<void>>();
+  const activeTaskOperations = new Map<string, TaskOperationKind>();
+  const activePlanWorktreeMutations = new Set<string>();
+  const taskCommandRunCompletions = new Map<string, TaskCommandRunCompletion>();
+  const taskCommandCancellationPromises = new Map<string, Promise<void>>();
+
+  const getTaskCommandMutationBlockedMessage = (action: 'archive' | 'delete' | 'complete'): string =>
+    tTask(
+      'implement.taskCommandsActiveMutationBlocked',
+      'Stop the active command run before {{action}} this task.',
+      { action }
+    );
+
+  const isTaskCommandRunActive = (taskId: string): boolean =>
+    Boolean(get().taskCommandRuns[taskId]) || activeTaskOperations.get(taskId) === 'commands';
+
+  const acquireTaskOperation = (taskId: string, operation: TaskOperationKind): boolean => {
+    if (activeTaskOperations.has(taskId)) {
+      return false;
+    }
+
+    activeTaskOperations.set(taskId, operation);
+    return true;
+  };
+
+  const releaseTaskOperation = (taskId: string, operation: TaskOperationKind): void => {
+    if (activeTaskOperations.get(taskId) === operation) {
+      activeTaskOperations.delete(taskId);
+    }
+  };
+
+  const setTaskCommandCancellationFailure = (params: {
+    taskId: string;
+    tabId: string;
+    error: unknown;
+  }): void => {
+    const normalized = toServiceError(params.error);
+    set((state) => ({
+      lastError: normalized.message,
+      taskCommandRuns: {
+        ...state.taskCommandRuns,
+        [params.taskId]: {
+          ...(state.taskCommandRuns[params.taskId] || {
+            taskId: params.taskId,
+            status: 'running' as const,
+            currentProjectId: null,
+            currentProjectName: null,
+            activeTabIds: [],
+            startedAt: new Date().toISOString(),
+          }),
+          status: 'running',
+          activeTabIds: Array.from(new Set([
+            ...(state.taskCommandRuns[params.taskId]?.activeTabIds ?? []),
+            params.tabId,
+          ])),
+          cancelFailed: true,
+        },
+      },
+    }));
+  };
+
   const throwRemoteTaskActionUnavailable = (feature: string): never => {
     const serviceError = createRemoteUnsupportedInRemoteModeError(feature);
     const error = Object.assign(new Error(serviceError.message), serviceError);
@@ -2159,12 +2231,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               ([taskId]) => taskId !== task.id
             )
           );
+      const nextTaskStatus =
+        nextSession?.taskStatus ??
+        state.tasks.find((candidate) => candidate.id === task.id)?.status ??
+        task.status;
       const nextTasks = syncTaskMergeWorkflowSession(
-        applyTaskStatusLocallyById(
-          state.tasks,
-          task.id,
-          nextSession?.taskStatus ?? task.status
-        ),
+        applyTaskStatusLocallyById(state.tasks, task.id, nextTaskStatus),
         task.id,
         nextSession
       );
@@ -2195,6 +2267,27 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   activeRepositoryPath: null,
   activeWorkspacePathOverridesByProjectId: {},
   taskCommandRuns: {},
+
+  reservePlanWorktreeMutation: (planId) => {
+    const safePlanId = planId.trim();
+    if (!safePlanId || activePlanWorktreeMutations.has(safePlanId)) {
+      return false;
+    }
+
+    const hasActiveTaskCommand = get().tasks.some(
+      (task) => task.plan_id === safePlanId && isTaskCommandRunActive(task.id)
+    );
+    if (hasActiveTaskCommand) {
+      return false;
+    }
+
+    activePlanWorktreeMutations.add(safePlanId);
+    return true;
+  },
+
+  releasePlanWorktreeMutation: (planId) => {
+    activePlanWorktreeMutations.delete(planId.trim());
+  },
 
   setTasks: (tasks) => set({ tasks }),
 
@@ -2757,6 +2850,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (isTaskCommandRunActive(taskId)) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('archive') });
+      return;
+    }
+    if (!acquireTaskOperation(taskId, 'archive')) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('archive') });
+      return;
+    }
+
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
       for (const target of executionTargets) {
@@ -2827,6 +2929,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      releaseTaskOperation(taskId, 'archive');
     }
   },
 
@@ -2880,6 +2984,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           'Only standalone features can be deleted from Implement.'
         ),
       });
+      return;
+    }
+
+    if (isTaskCommandRunActive(taskId)) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('delete') });
+      return;
+    }
+    if (!acquireTaskOperation(taskId, 'delete')) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('delete') });
       return;
     }
 
@@ -2975,6 +3088,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      releaseTaskOperation(taskId, 'delete');
     }
   },
 
@@ -3001,6 +3116,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    set({ lastError: null });
     await get().setTaskStatus(taskId, 'Pending');
   },
 
@@ -3279,12 +3395,52 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    if (get().taskCommandRuns[taskId]) {
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      set({
+        lastError: tTask(
+          'implement.taskCommandsPlanMutationActive',
+          'This plan is being archived or deleted. Wait for that operation to finish.'
+        ),
+      });
+      return null;
+    }
+
+    if (get().taskCommandRuns[taskId] || activeTaskOperations.has(taskId)) {
+      return null;
+    }
+
+    if (!acquireTaskOperation(taskId, 'commands')) {
       return null;
     }
 
     set({ lastError: null });
     let keepCommandRunVisible = false;
+    let totalCount = 0;
+    let completedCount = 0;
+    let currentProjectName: string | null = null;
+    let resolveCompletion: (() => void) | null = null;
+    const completionPromise = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    taskCommandRunCompletions.set(taskId, {
+      promise: completionPromise,
+      resolve: () => resolveCompletion?.(),
+    });
+    const startedAt = new Date().toISOString();
+
+    set((state) => ({
+      taskCommandRuns: {
+        ...state.taskCommandRuns,
+        [taskId]: {
+          taskId,
+          status: 'running',
+          currentProjectId: null,
+          currentProjectName: null,
+          activeTabIds: [],
+          startedAt,
+        },
+      },
+    }));
 
     try {
       const registry = await loadTaskProjectCommandRegistry();
@@ -3301,6 +3457,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         missingBaseBranchIssue: null,
       }));
 
+      const runAfterPreparation = get().taskCommandRuns[taskId];
+      if (!runAfterPreparation || runAfterPreparation.status === 'cancelling') {
+        return {
+          status: 'cancelled',
+          completedCount,
+          totalCount: preparedTargets.length,
+          currentProjectName,
+        };
+      }
+
       const missingProject = preparedTargets.find(
         (target) => !getTaskProjectCommand(registry, target.repoPath)?.command
       );
@@ -3316,22 +3482,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const terminalStore = useTerminalStore.getState();
-      const totalCount = preparedTargets.length;
-      let completedCount = 0;
-
-      set((state) => ({
-        taskCommandRuns: {
-          ...state.taskCommandRuns,
-          [taskId]: {
-            taskId,
-            status: 'running',
-            currentProjectId: null,
-            currentProjectName: null,
-            activeTabId: null,
-            startedAt: new Date().toISOString(),
-          },
-        },
-      }));
+      totalCount = preparedTargets.length;
 
       for (const target of preparedTargets) {
         const currentRun = get().taskCommandRuns[taskId];
@@ -3343,6 +3494,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             currentProjectName: target.projectName,
           };
         }
+
+        currentProjectName = target.projectName;
 
         const commandEntry = getTaskProjectCommand(registry, target.repoPath);
         if (!commandEntry?.command) {
@@ -3372,6 +3525,26 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           promptContext: displayMetadata.promptContext,
         });
 
+        const runAfterTerminalCreation = get().taskCommandRuns[taskId];
+        if (!runAfterTerminalCreation || runAfterTerminalCreation.status === 'cancelling') {
+          try {
+            await terminalStore.closeTab(tab.id);
+            get().handleTaskCommandTerminalClosed(tab.id);
+          } catch (error) {
+            setTaskCommandCancellationFailure({
+              taskId,
+              tabId: tab.id,
+              error,
+            });
+          }
+          return {
+            status: 'cancelled',
+            completedCount,
+            totalCount,
+            currentProjectName,
+          };
+        }
+
         set((state) => ({
           taskCommandRuns: {
             ...state.taskCommandRuns,
@@ -3381,12 +3554,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                 status: 'running',
                 currentProjectId: null,
                 currentProjectName: null,
-                activeTabId: null,
+                activeTabIds: [],
                 startedAt: new Date().toISOString(),
               }),
               currentProjectId: target.projectId,
               currentProjectName: target.projectName,
-              activeTabId: tab.id,
+              activeTabIds: Array.from(new Set([
+                ...(state.taskCommandRuns[taskId]?.activeTabIds ?? []),
+                tab.id,
+              ])),
             },
           },
         }));
@@ -3395,6 +3571,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
         const nextRun = get().taskCommandRuns[taskId];
         if (nextRun?.status === 'cancelling') {
+          try {
+            await terminalStore.closeTab(tab.id);
+            get().handleTaskCommandTerminalClosed(tab.id);
+          } catch (error) {
+            setTaskCommandCancellationFailure({
+              taskId,
+              tabId: tab.id,
+              error,
+            });
+          }
           return {
             status: 'cancelled',
             completedCount,
@@ -3412,6 +3598,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         currentProjectName: null,
       };
     } catch (error) {
+      if (get().taskCommandRuns[taskId]?.status === 'cancelling') {
+        return {
+          status: 'cancelled',
+          completedCount,
+          totalCount,
+          currentProjectName,
+        };
+      }
       if (error instanceof MissingTaskBaseBranchError) {
         set({
           missingBaseBranchIssue: error.issue,
@@ -3428,7 +3622,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           return state;
         }
 
-        if (keepCommandRunVisible && state.taskCommandRuns[taskId].status === 'running') {
+        if (
+          (keepCommandRunVisible && state.taskCommandRuns[taskId].status === 'running') ||
+          state.taskCommandRuns[taskId].cancelFailed
+        ) {
           return state;
         }
 
@@ -3436,74 +3633,134 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         delete nextRuns[taskId];
         return { taskCommandRuns: nextRuns };
       });
+      releaseTaskOperation(taskId, 'commands');
+      const completion = taskCommandRunCompletions.get(taskId);
+      if (completion) {
+        taskCommandRunCompletions.delete(taskId);
+        completion.resolve();
+      }
     }
   },
 
   cancelTaskCommands: async (taskId) => {
-    const runState = get().taskCommandRuns[taskId];
-    if (!runState) {
+    const existingCancellation = taskCommandCancellationPromises.get(taskId);
+    if (existingCancellation) {
+      await existingCancellation;
       return;
     }
 
-    set((state) => ({
-      taskCommandRuns: {
-        ...state.taskCommandRuns,
-        [taskId]: {
-          ...state.taskCommandRuns[taskId],
-          status: 'cancelling',
-        },
-      },
-    }));
+    const runState = get().taskCommandRuns[taskId];
+    const completion = taskCommandRunCompletions.get(taskId);
+    if (!runState && !completion) {
+      return;
+    }
 
-    if (!runState.activeTabId) {
+    const cancellationPromise = (async () => {
+      if (runState && runState.status !== 'cancelling') {
+        set((state) => {
+          const currentRun = state.taskCommandRuns[taskId];
+          if (!currentRun) {
+            return state;
+          }
+          return {
+            taskCommandRuns: {
+              ...state.taskCommandRuns,
+              [taskId]: {
+                ...currentRun,
+                status: 'cancelling',
+              },
+            },
+          };
+        });
+      }
+
+      const activeTabIds = Array.from(new Set(get().taskCommandRuns[taskId]?.activeTabIds ?? []));
+      const failedTabIds: string[] = [];
+      let firstError: unknown = null;
+      for (const tabId of activeTabIds) {
+        try {
+          await useTerminalStore.getState().closeTab(tabId);
+          get().handleTaskCommandTerminalClosed(tabId);
+        } catch (error) {
+          failedTabIds.push(tabId);
+          firstError ??= error;
+        }
+      }
+
+      if (firstError) {
+        const normalized = toServiceError(firstError);
+        set((state) => {
+          if (!state.taskCommandRuns[taskId]) {
+            return { lastError: normalized.message };
+          }
+
+          return {
+            lastError: normalized.message,
+            taskCommandRuns: {
+              ...state.taskCommandRuns,
+              [taskId]: {
+                ...state.taskCommandRuns[taskId],
+                status: 'running',
+                activeTabIds: failedTabIds,
+                cancelFailed: true,
+              },
+            },
+          };
+        });
+        return;
+      }
+
+      if (completion) {
+        await completion.promise;
+      }
+
       set((state) => {
-        if (!state.taskCommandRuns[taskId]) {
+        if (!state.taskCommandRuns[taskId] || state.taskCommandRuns[taskId].cancelFailed) {
           return state;
         }
         const nextRuns = { ...state.taskCommandRuns };
         delete nextRuns[taskId];
         return { taskCommandRuns: nextRuns };
       });
-      return;
-    }
+    })();
 
+    taskCommandCancellationPromises.set(taskId, cancellationPromise);
     try {
-      await useTerminalStore.getState().closeTab(runState.activeTabId);
-      get().handleTaskCommandTerminalClosed(runState.activeTabId);
-    } catch (error) {
-      const normalized = toServiceError(error);
-      set((state) => {
-        if (!state.taskCommandRuns[taskId]) {
-          return { lastError: normalized.message };
-        }
-
-        return {
-          lastError: normalized.message,
-          taskCommandRuns: {
-            ...state.taskCommandRuns,
-            [taskId]: {
-              ...state.taskCommandRuns[taskId],
-              status: 'running',
-            },
-          },
-        };
-      });
+      await cancellationPromise;
+    } finally {
+      if (taskCommandCancellationPromises.get(taskId) === cancellationPromise) {
+        taskCommandCancellationPromises.delete(taskId);
+      }
     }
   },
 
   handleTaskCommandTerminalClosed: (tabId) => {
     set((state) => {
       const taskId = Object.entries(state.taskCommandRuns).find(
-        ([, runState]) => runState.activeTabId === tabId
+        ([, runState]) => runState.activeTabIds.includes(tabId)
       )?.[0];
 
       if (!taskId) {
         return state;
       }
 
-      const nextRuns = { ...state.taskCommandRuns };
-      delete nextRuns[taskId];
-      return { taskCommandRuns: nextRuns };
+      const runState = state.taskCommandRuns[taskId];
+      const activeTabIds = runState.activeTabIds.filter((candidate) => candidate !== tabId);
+      if (activeTabIds.length === 0) {
+        const nextRuns = { ...state.taskCommandRuns };
+        delete nextRuns[taskId];
+        return { taskCommandRuns: nextRuns };
+      }
+
+      return {
+        taskCommandRuns: {
+          ...state.taskCommandRuns,
+          [taskId]: {
+            ...runState,
+            activeTabIds,
+          },
+        },
+      };
     });
   },
 
@@ -3658,11 +3915,28 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   runMergeWorkflow: async (taskId, options) => {
+    const activeRun = activeMergeWorkflowRuns.get(taskId);
+    if (activeRun) {
+      await activeRun;
+      return;
+    }
+
+    const run = (async () => {
     const task = get().getTaskById(taskId);
     if (!task) {
       const error = toServiceError(
         tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId })
       );
+      set({ lastError: error.message });
+      throw error;
+    }
+    if (task.status === 'Completed') {
+      set({ lastError: null });
+      return;
+    }
+
+    if (isTaskCommandRunActive(taskId) || !acquireTaskOperation(taskId, 'merge')) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
       set({ lastError: error.message });
       throw error;
     }
@@ -3704,6 +3978,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     ): Promise<void> => {
       currentRuntime = runtime;
       await syncRuntimePersistence(task, runtime);
+    };
+
+    const clearRuntimeAndCompleteTask = async (): Promise<void> => {
+      await persistRuntime(null);
+      await get().setTaskStatus(taskId, 'Completed');
     };
 
     const reloadAfterMergeFailure = async (
@@ -3847,6 +4126,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await persistRuntime(currentRuntime);
         }
 
+        await persistRuntime({
+          ...(currentRuntime || reviewRuntime),
+          phase: 'archiving',
+          taskStatus: 'InProgress',
+          message: null,
+        });
+
         const plan = await getArchitectPlan(branchName, task.plan_id);
         if (!plan || plan.status === 'deleted') {
           throw new Error(
@@ -3868,14 +4154,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const cleanup = await cleanupPlanBranches(archivedPlan, undefined, {
           allowRetained: true,
         });
-        await persistRuntime(null);
-        get().clearPlanRuntimeState({
-          planId: archivedPlan.id,
-          deletedWorktreeKeys: cleanup.flatMap((repository) =>
-            repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
-          ),
-        });
         await get().refreshFromPlan();
+        let metadataCommitSucceeded = true;
         try {
           await commitArchitectPlanMetadata({
             branchName,
@@ -3883,7 +4163,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
           });
         } catch (error) {
+          metadataCommitSucceeded = false;
           set({ lastError: toServiceError(error).message });
+        }
+        if (metadataCommitSucceeded) {
+          await persistRuntime(null);
+          get().clearPlanRuntimeState({
+            planId: archivedPlan.id,
+            deletedWorktreeKeys: cleanup.flatMap((repository) =>
+              repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+            ),
+          });
         }
         return;
       }
@@ -4083,12 +4373,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         );
       }
 
+      await persistRuntime({
+        ...(currentRuntime || reviewRuntime),
+        phase: 'archiving',
+        taskStatus: 'InProgress',
+        message: null,
+      });
+
       const removedWorktreeKeys = tauriIpc.isTauriAvailable()
         ? await cleanupTaskExecutionTargets(executionTargetsWithRepoPaths)
         : [];
-
-      await persistRuntime(null);
-      await get().setTaskStatus(taskId, 'Completed');
 
       set((state) => ({
         ...updateTaskRuntimeAfterCleanup(state, task, removedWorktreeKeys),
@@ -4119,6 +4413,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (useAppStore.getState().selectedTaskId === taskId) {
           useAppStore.getState().setSelectedTask(null);
         }
+        await clearRuntimeAndCompleteTask();
         return;
       }
 
@@ -4193,6 +4488,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }
         );
       }
+
+      await clearRuntimeAndCompleteTask();
     } catch (error) {
       const normalized = toServiceError(error);
 
@@ -4232,6 +4529,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: normalized.message });
       throw normalized;
     }
+    })();
+
+    activeMergeWorkflowRuns.set(taskId, run);
+    try {
+      await run;
+    } finally {
+      releaseTaskOperation(taskId, 'merge');
+      if (activeMergeWorkflowRuns.get(taskId) === run) {
+        activeMergeWorkflowRuns.delete(taskId);
+      }
+    }
   },
 
   finishTask: async (taskId, options) => {
@@ -4264,6 +4572,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     const branchName = resolveTargetBranch(summary.storageBranch);
     const taskId = buildPlanFinalizationTaskId(planId);
+    if (!get().reservePlanWorktreeMutation(planId)) {
+      const error = new Error(
+        tTask(
+          'implement.taskCommandsPlanMutationActive',
+          'Stop active task commands before archiving or deleting this plan.'
+        )
+      );
+      set({ lastError: error.message });
+      throw error;
+    }
     set((state) => ({
       lastError: null,
       ...applyMergeWorkflowRuntimePatch(state, taskId, {
@@ -4282,6 +4600,21 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }));
 
     try {
+      const plan = await getArchitectPlan(branchName, planId);
+      if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
+        throw new Error(
+          tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
+            taskId: planId,
+          })
+        );
+      }
+      const cleanup = await cleanupPlanBranches(plan);
+      get().clearPlanRuntimeState({
+        planId,
+        deletedWorktreeKeys: cleanup.flatMap((repository) =>
+          repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+        ),
+      });
       await archiveArchitectPlan(branchName, planId);
       if (useAppStore.getState().selectedTaskId === buildPlanFinalizationTaskId(planId)) {
         useAppStore.getState().setSelectedTask(null);
@@ -4306,6 +4639,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }),
       }));
       throw normalized;
+    } finally {
+      get().releasePlanWorktreeMutation(planId);
     }
   },
 
@@ -4486,11 +4821,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     if (task.status === 'Failed') {
+      set({ lastError: null });
       await get().startTask(taskId);
       return;
     }
 
     if (task.status === 'AwaitingResponse') {
+      set({ lastError: null });
       await get().setTaskStatus(taskId, 'InProgress');
       return;
     }

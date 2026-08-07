@@ -378,12 +378,12 @@ describe('remote provider', () => {
     });
   });
 
-  it('maps unsupported remote skill endpoints to precise feature errors', async () => {
+  it('maps a missing headless skill endpoint to a precise feature error', async () => {
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
 
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
-      return jsonResponse({ error: 'unsupported' }, 501);
+      return jsonResponse({ error: 'not found' }, 404);
     }) as unknown as typeof fetch;
 
     await expect(listSkills()).rejects.toMatchObject({

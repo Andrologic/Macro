@@ -78,6 +78,14 @@ const MODEL_REFRESH_SELECTION_COOLDOWN_MS = 5 * 60 * 1000;
 const MODEL_CONTEXT_METADATA_STALE_MS = 5 * 60 * 1000;
 const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
 const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
+let providerConfigMutationVersion = 0;
+const providerSettingsRequestVersionById = new Map<string, number>();
+
+const startProviderSettingsRequest = (providerId: string): number => {
+  const nextVersion = (providerSettingsRequestVersionById.get(providerId) ?? 0) + 1;
+  providerSettingsRequestVersionById.set(providerId, nextVersion);
+  return nextVersion;
+};
 
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
 const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
@@ -979,7 +987,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       );
     }
 
-    void Promise.allSettled(connectivityChecks);
+    await Promise.allSettled(connectivityChecks);
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
@@ -1023,15 +1031,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderConfigs: async () => {
+    const hydrationVersion = providerConfigMutationVersion;
     set({ isLoading: true, lastError: null });
     
     try {
       if (ipcIsTauriAvailable()) {
         const currentProviderConfigs = get().providerConfigs;
         const configs = await ipcListProviderConfigs();
+        if (hydrationVersion !== providerConfigMutationVersion) {
+          set({ isLoading: false });
+          return;
+        }
         const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
+        const mergedProviderConfigs = await mergeLocalProviderConfig(normalizedConfigs);
+        if (hydrationVersion !== providerConfigMutationVersion) {
+          set({ isLoading: false });
+          return;
+        }
         const providerConfigs = mergeRuntimeProviderConfigState(
-          await mergeLocalProviderConfig(normalizedConfigs),
+          mergedProviderConfigs,
           currentProviderConfigs
         );
         const currentSelectedProviderId = get().selectedProviderId;
@@ -2050,6 +2068,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderSettings: async (providerId: string) => {
+    const requestVersion = startProviderSettingsRequest(providerId);
     if (ipcIsTauriAvailable()) {
       try {
         const settings = await ipcGetProviderSettings(providerId);
@@ -2058,6 +2077,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           filterFreeModels: settings.filter_free_models,
           copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
         };
+        if (
+          providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+          !get().providerConfigs.some((provider) => provider.id === providerId)
+        ) {
+          return get().providerSettingsById[providerId] ?? null;
+        }
         set((state) => ({
           providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
         }));
@@ -2074,6 +2099,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       filterFreeModels: false,
       copilotSendTimeoutMs: null,
     };
+    if (
+      providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+      !get().providerConfigs.some((provider) => provider.id === providerId)
+    ) {
+      return get().providerSettingsById[providerId] ?? null;
+    }
     set((state) => ({
       providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
     }));
@@ -2081,6 +2112,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   updateProviderSettings: async (providerId: string, updates: Partial<ProviderSettings>) => {
+    const requestVersion = startProviderSettingsRequest(providerId);
     const current = get().providerSettingsById[providerId] ?? {
       providerId,
       filterFreeModels: false,
@@ -2088,21 +2120,31 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     };
     const next: ProviderSettings = { ...current, ...updates, providerId };
 
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.updateProviderSettings({
-        providerId,
-        ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
-          ? { filterFreeModels: next.filterFreeModels }
-          : {}),
-        ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
-          ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
-          : {}),
-      });
-    }
+    try {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.updateProviderSettings({
+          providerId,
+          ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
+            ? { filterFreeModels: next.filterFreeModels }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
+            ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
+            : {}),
+        });
+      }
 
-    set((state) => ({
-      providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
-    }));
+      if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
+        return;
+      }
+
+      set((state) => ({
+        providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update provider settings';
+      set({ lastError: message });
+      throw error;
+    }
   },
 
   commitRestoredSelection: async (selection, options) => {
@@ -2285,6 +2327,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
     try {
       requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
 
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
       const providerType = updates.providerType ?? currentConfig?.providerType;
@@ -2362,6 +2405,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
     try {
       requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
 
       const created = await ipcCreateProviderConfig({
         name: config.name,
@@ -2391,21 +2435,65 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   deleteProviderConfig: async (id: string) => {
     try {
       requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
+      startProviderSettingsRequest(id);
 
       await tauriIpc.deleteProviderConfig(id);
 
-      set((state) => ({
-        providerConfigs: state.providerConfigs.filter((c) => c.id !== id),
-        providers: state.providers.filter((p) => p.id !== id),
-        modelsByProvider: Object.fromEntries(
-          Object.entries(state.modelsByProvider).filter(([key]) => key !== id)
-        ),
-        providerSettingsById: Object.fromEntries(
-          Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
-        ),
-        providerReachabilityById: omitRuntimeStateKey(state.providerReachabilityById, id),
-        connectionStatus: omitRuntimeStateKey(state.connectionStatus, id),
-      }));
+      set((state) => {
+        const providerConfigs = state.providerConfigs.filter((provider) => provider.id !== id);
+        const selectedProviderWasDeleted = state.selectedProviderId === id;
+        const fallbackProvider = selectedProviderWasDeleted
+          ? providerConfigs.find(
+              (provider) => provider.isEnabled && providerHasCredentials(provider)
+            ) ?? null
+          : null;
+        const nextSelectedProviderId = selectedProviderWasDeleted
+          ? fallbackProvider?.id ?? null
+          : state.selectedProviderId;
+        const nextModels = nextSelectedProviderId
+          ? state.modelsByProvider[nextSelectedProviderId] ?? []
+          : [];
+        const selectedModelStillAvailable =
+          nextSelectedProviderId === state.selectedProviderId &&
+          state.selectedModelId !== null &&
+          nextModels.some(
+            (model) => model.id === state.selectedModelId && model.isEnabled !== false
+          );
+        const nextSelectedModelId = selectedModelStillAvailable
+          ? state.selectedModelId
+          : getFirstEnabledModelId(nextModels);
+
+        return {
+          providerConfigs,
+          providers: state.providers.filter((provider) => provider.id !== id),
+          modelsByProvider: Object.fromEntries(
+            Object.entries(state.modelsByProvider).filter(([key]) => key !== id)
+          ),
+          providerSettingsById: Object.fromEntries(
+            Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
+          ),
+          providerReachabilityById: omitRuntimeStateKey(state.providerReachabilityById, id),
+          connectionStatus: omitRuntimeStateKey(state.connectionStatus, id),
+          authErrorsByProvider: omitRuntimeStateKey(state.authErrorsByProvider, id),
+          authRequestIdsByProvider: omitRuntimeStateKey(state.authRequestIdsByProvider, id),
+          copilotStatusByProvider: omitRuntimeStateKey(state.copilotStatusByProvider, id),
+          copilotDownloadStateByProvider: omitRuntimeStateKey(
+            state.copilotDownloadStateByProvider,
+            id
+          ),
+          copilotAuthStateByProvider: omitRuntimeStateKey(state.copilotAuthStateByProvider, id),
+          selectedProviderId: nextSelectedProviderId,
+          selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort: resolveSelectedReasoningEffort({
+            providerId: nextSelectedProviderId,
+            modelId: nextSelectedModelId,
+            modelsByProvider: state.modelsByProvider,
+            unsupported: state.reasoningUnsupportedModelKeys,
+            requested: selectedModelStillAvailable ? state.selectedReasoningEffort : null,
+          }),
+        };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete provider';
       set({ lastError: message });

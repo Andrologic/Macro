@@ -15,6 +15,7 @@ type MockCitation = {
   conversationId: string;
   timestamp: string;
   url?: string;
+  favicon?: string;
   path?: string;
   sizeBytes?: number;
   kind?: 'interesting' | 'used';
@@ -116,6 +117,13 @@ const enabledToolIds = new Set(chatTools.map((tool) => tool.id));
 let contextCitations: MockCitation[] = createInitialContextCitations();
 let sourceCitations: MockCitation[] = createInitialSourceCitations();
 let selectedConversationIdMock: string | null = 'chat-conv';
+let composerContextRefs: Array<{
+  id: string;
+  kind: string;
+  title: string;
+  subtitle?: string;
+  data: MockCitation;
+}> = [];
 let citationCounter = 0;
 let citationVersion = 0;
 const citationSubscribers = new Set<() => void>();
@@ -188,6 +196,22 @@ const getMockCitationState = () => ({
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
 const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
+const addComposerContextRefMock = mock((ref: {
+  id: string;
+  kind: string;
+  title: string;
+  subtitle?: string;
+  data: MockCitation;
+}) => {
+  if (!composerContextRefs.some((candidate) => candidate.id === ref.id && candidate.kind === ref.kind)) {
+    composerContextRefs = [...composerContextRefs, ref];
+  }
+});
+const removeComposerContextRefMock = mock((id: string, kind: string) => {
+  composerContextRefs = composerContextRefs.filter(
+    (ref) => ref.id !== id || ref.kind !== kind,
+  );
+});
 const clipboardWriteTextMock = mock(async (_text: string) => undefined);
 const notifyErrorMock = mock((_title: string, _options?: unknown) => undefined);
 let clipboardReadTextMock = mock(async () => 'clipboard text');
@@ -198,11 +222,15 @@ const fetchWebPageMock = mock(async (url: string) => {
     throw new Error('preview failed');
   }
   const isSecond = url.includes('second');
+  const favicon = isSecond
+    ? 'data:image/png;base64,c2Vjb25kLWljb24='
+    : 'data:image/png;base64,aWNvbg==';
   return {
     url,
     title: isSecond ? 'Second fetched page' : 'Fetched page',
     snippet: isSecond ? 'Second fetched snippet' : 'Fetched snippet',
     content: isSecond ? 'Second fetched full content' : 'Fetched full content',
+    favicon,
   };
 });
 const focusEvents: unknown[] = [];
@@ -312,6 +340,11 @@ const findCardForText = (container: HTMLElement, text: string): HTMLElement => {
   throw new Error(`Card not found for ${text}`);
 };
 
+const findImageBySrc = (container: HTMLElement, src: string): HTMLImageElement | null =>
+  Array.from(container.querySelectorAll('img')).find(
+    (image) => image.getAttribute('src') === src,
+  ) ?? null;
+
 const loadContextToolbox = async () => {
   mock.restore();
 
@@ -333,6 +366,9 @@ const loadContextToolbox = async () => {
     useChatStore: () => ({
       selectedConversationId: selectedConversationIdMock,
       createConversation: createConversationMock,
+      composerContextRefs,
+      addComposerContextRef: addComposerContextRefMock,
+      removeComposerContextRef: removeComposerContextRefMock,
     }),
   }));
 
@@ -459,6 +495,7 @@ describe('ContextToolbox', () => {
     contextCitations = createInitialContextCitations();
     sourceCitations = createInitialSourceCitations();
     selectedConversationIdMock = 'chat-conv';
+    composerContextRefs = [];
     citationCounter = 0;
     citationVersion = 0;
     citationSubscribers.clear();
@@ -515,6 +552,8 @@ describe('ContextToolbox', () => {
     notifyErrorMock.mockClear();
     addCitationMock.mockClear();
     removeCitationMock.mockClear();
+    addComposerContextRefMock.mockClear();
+    removeComposerContextRefMock.mockClear();
     toggleChatToolMock.mockClear();
     mock.restore();
   });
@@ -562,6 +601,36 @@ describe('ContextToolbox', () => {
     expect(container?.textContent).toContain('Used source');
     expect(container?.textContent).toContain('Found');
     expect(container?.textContent).toContain('Used');
+    expect(container?.innerHTML).toContain('text-primary');
+    expect(container?.innerHTML).not.toContain('amber-');
+
+    const interestingCard = findCardForText(container!, 'Interesting source');
+    const sourceToggle = interestingCard.querySelector('button[aria-expanded]') as HTMLButtonElement;
+    expect(sourceToggle).toBeTruthy();
+    expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+    const sourceSnippet = Array.from(interestingCard.querySelectorAll('p')).find(
+      (node) => node.textContent === 'Macro stores source passages.',
+    );
+    expect(sourceSnippet?.className).toContain('line-clamp-2');
+    await act(async () => {
+      sourceToggle.click();
+      await Promise.resolve();
+    });
+    expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(sourceSnippet?.className).toContain('whitespace-pre-wrap');
+
+    await clickActionForText(container!, 'Interesting source', 'plus');
+    expect(addComposerContextRefMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'source-interesting',
+        kind: 'source',
+        title: 'Interesting source',
+        subtitle: 'notes.md',
+        data: expect.objectContaining({
+          id: 'source-interesting',
+        }),
+      }),
+    );
 
     await clickIconButton(container!, 'message-square');
     expect(focusEvents).toContainEqual({ messageId: 'assistant-1' });
@@ -589,6 +658,36 @@ describe('ContextToolbox', () => {
     });
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
+    expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
+  });
+
+  it('shows source composer references as already added', async () => {
+    composerContextRefs = [
+      {
+        id: 'source-interesting',
+        kind: 'source',
+        title: 'Interesting source',
+        subtitle: 'notes.md',
+        data: sourceCitations[0],
+      },
+    ];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      findButtonByText(container!, 'Sources').click();
+      await Promise.resolve();
+    });
+
+    const interestingCard = findCardForText(container!, 'Interesting source');
+    const alreadyAddedButton = interestingCard.querySelector('button[title="Already in composer"]') as HTMLButtonElement;
+    expect(alreadyAddedButton).toBeTruthy();
+    expect(alreadyAddedButton.disabled).toBe(true);
+    expect(alreadyAddedButton.querySelector('[data-icon="check"]')).toBeTruthy();
   });
 
   it('disables Web Fetch in the Chat tools list when URL fetching is disabled globally', async () => {
@@ -721,10 +820,25 @@ describe('ContextToolbox', () => {
       await Promise.resolve();
     });
     expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/article');
+    expect(addCitationMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'web',
+        title: 'Fetched page',
+        favicon: 'data:image/png;base64,aWNvbg==',
+      }),
+    );
     expect(container?.textContent).not.toContain('URL added to context.');
     expect(container?.textContent).toContain('Fetched page');
     expect(container?.textContent).toContain('example.com');
     expect(container?.textContent).not.toContain('Fetched snippet');
+    expect(findImageBySrc(container!, 'data:image/png;base64,aWNvbg==')).toBeTruthy();
+
+    await act(async () => {
+      findImageBySrc(container!, 'data:image/png;base64,aWNvbg==')?.dispatchEvent(new Event('error'));
+      await Promise.resolve();
+    });
+    expect(findImageBySrc(container!, 'data:image/png;base64,aWNvbg==')).toBeNull();
+    expect(findCardForText(container!, 'Fetched page').querySelector('[data-icon="globe"]')).toBeTruthy();
 
     await changeInputByPlaceholder('https://example.com/article', 'example.com/second');
     await act(async () => {

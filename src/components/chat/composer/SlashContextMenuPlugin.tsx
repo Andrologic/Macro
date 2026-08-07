@@ -21,11 +21,13 @@ import {
 } from '../../architect/NeedReferenceChip';
 import { useAppStore } from '../../../stores/useAppStore';
 import { useChatStore } from '../../../stores/useChatStore';
+import { useCitationsStore } from '../../../stores/useCitationsStore';
 import { useNeedsStore } from '../../../stores/useNeedsStore';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useTaskStore } from '../../../stores/useTaskStore';
 import { resolveProjectExecutionContext } from '../../../services/projectExecutionContext';
 import { searchWorkspaceFiles } from '../../../services/workspaceFileSearch';
+import type { Citation } from '../../../stores/useCitationsStore';
 import type { ContextRefKind, Need, SkillManifest, WorkspaceFileReference } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
@@ -44,7 +46,7 @@ interface SlashTriggerState {
   rect: DOMRect;
 }
 
-type SlashContextKind = 'need' | 'skill' | 'file';
+type SlashContextKind = 'need' | 'skill' | 'file' | 'source';
 
 interface SlashContextMenuItem extends SlashContextRankCandidate {
   key: string;
@@ -60,7 +62,7 @@ interface SlashContextMenuItem extends SlashContextRankCandidate {
   label?: string;
   searchText: string;
   disabled?: boolean;
-  data: Need | SkillManifest | WorkspaceFileReference;
+  data: Need | SkillManifest | WorkspaceFileReference | Citation;
   score?: number;
 }
 
@@ -186,6 +188,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const conversations = useChatStore((state) => state.conversations);
   const allNeeds = useNeedsStore((state) => state.needs);
   const allSkills = useSkillsStore((state) => state.skills);
+  const citations = useCitationsStore((state) => state.citations);
   const settingsBySkillId = useSkillsStore((state) => state.settingsBySkillId);
   const isLoadingSkills = useSkillsStore((state) => state.isLoading);
   const loadSettings = useSkillsStore((state) => state.loadSettings);
@@ -308,7 +311,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
 
     if (!shouldSearchFiles) {
       fileSearchRequestRef.current += 1;
-      setFileResults([]);
+      setFileResults((previous) => (previous.length === 0 ? previous : []));
       setIsSearchingFiles(false);
       return undefined;
     }
@@ -443,8 +446,51 @@ export const SlashContextMenuPlugin: React.FC = () => {
       };
     });
 
+    const sourceCitations = selectedConversationId
+      ? Array.from(
+          new Map(
+            citations
+              .filter(
+                (citation) =>
+                  citation.conversationId === selectedConversationId &&
+                  citation.scope === 'source',
+              )
+              .map((citation) => [citation.id, citation]),
+          ).values(),
+        )
+          .sort(
+            (left, right) =>
+              new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+          )
+      : [];
+
+    const sourceItems: SlashContextMenuItem[] = sourceCitations.map((citation) => {
+      const key = `source:${citation.id}`;
+      return {
+        key,
+        kind: 'source',
+        refKind: 'source',
+        id: citation.id,
+        title: citation.title,
+        subtitle: citation.source || citation.url,
+        icon: 'book-open',
+        iconClassName: 'text-primary',
+        searchText: [
+          citation.title,
+          citation.snippet ?? '',
+          citation.content ?? '',
+          citation.source,
+          citation.url ?? '',
+          citation.reason ?? '',
+        ].join(' '),
+        useCount: slashUsage[key]?.useCount,
+        lastUsedAt: slashUsage[key]?.lastUsedAt,
+        data: citation,
+      };
+    });
+
     return rankSlashContextCandidates(
-      [...needItems, ...skillItems, ...fileItems],
+      [...needItems, ...sourceItems, ...skillItems, ...fileItems],
       {
         query,
         mode,
@@ -455,10 +501,12 @@ export const SlashContextMenuPlugin: React.FC = () => {
     activeArchitectPlanId,
     allNeeds,
     allSkills,
+    citations,
     fileResults,
     mode,
     settingsBySkillId,
     slashUsage,
+    selectedConversationId,
     t,
     trigger?.query,
   ]);

@@ -78,7 +78,30 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: false,
   implementExecution: false,
   taskProjectCommands: false,
-  skills: true,
+  skills: false,
+  skillScripts: false,
+  skillCreation: false,
+};
+
+const NO_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
+  bootstrap: false,
+  taskCatalog: false,
+  gitTree: false,
+  gitHistory: false,
+  toolPolicy: false,
+  toolValidation: false,
+  toolExecution: false,
+  toolSettings: false,
+  mcpServerSettings: false,
+  projectMutation: false,
+  projectGitSetupPreview: false,
+  projectAccessPreview: false,
+  gitWorktrees: false,
+  gitFilePreview: false,
+  taskMutation: false,
+  implementExecution: false,
+  taskProjectCommands: false,
+  skills: false,
   skillScripts: false,
   skillCreation: false,
 };
@@ -202,7 +225,7 @@ export const getServiceRuntimeCapabilities = (options?: {
     );
   } catch (error) {
     if (error instanceof Error && error.message === DESKTOP_IPC_UNAVAILABLE_MESSAGE) {
-      return REMOTE_MINIMAL_RUNTIME_CAPABILITIES;
+      return NO_RUNTIME_CAPABILITIES;
     }
     throw error;
   }

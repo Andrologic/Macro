@@ -8,7 +8,7 @@ use crate::WorkspaceMetadataRoot;
 use chrono::Utc;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,10 +20,25 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
 const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
 const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 1_000_000;
+const DEFAULT_LEGACY_COMMAND_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
+const MAX_LEGACY_COMMAND_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+const LEGACY_COMMAND_KILL_GRACE_MS: u64 = 2_000;
+const MAX_LEGACY_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const LEGACY_COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
+const TRUNCATED_OUTPUT_MARKER: &str =
+    "[terminal output truncated; beginning and latest output retained]\n";
 const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
@@ -93,6 +108,7 @@ pub struct TerminalSessionDto {
     pub output: String,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    pub output_truncated: bool,
     pub updated_at: String,
 }
 
@@ -171,8 +187,85 @@ struct LegacyTerminalSessionRecord {
     output: String,
     exit_code: Option<i32>,
     timed_out: bool,
+    output_truncated: bool,
     updated_at: String,
     pid: Option<u32>,
+    #[cfg(windows)]
+    windows_job: Option<Arc<WindowsJob>>,
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for WindowsJob {}
+#[cfg(windows)]
+unsafe impl Sync for WindowsJob {}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn assign(child: &tokio::process::Child) -> CommandResult<Arc<Self>> {
+        let process_handle = child
+            .raw_handle()
+            .ok_or_else(|| command_error("Windows child process handle is unavailable"))?
+            as HANDLE;
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(command_error(format!(
+                "Failed to create Windows Job Object: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(command_error(format!(
+                "Failed to configure Windows Job Object: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        if unsafe { AssignProcessToJobObject(handle, process_handle) } == 0 {
+            unsafe { CloseHandle(handle) };
+            return Err(command_error(format!(
+                "Failed to assign the command process to its Windows Job Object: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        Ok(Arc::new(Self { handle }))
+    }
+
+    fn terminate(&self) -> CommandResult<()> {
+        if unsafe { TerminateJobObject(self.handle, 1) } == 0 {
+            return Err(command_error(format!(
+                "Failed to terminate Windows Job Object: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
 }
 
 struct ProjectTerminalTarget {
@@ -202,6 +295,7 @@ impl LegacyTerminalSessionRecord {
             output: self.output.clone(),
             exit_code: self.exit_code,
             timed_out: self.timed_out,
+            output_truncated: self.output_truncated,
             updated_at: self.updated_at.clone(),
         }
     }
@@ -1133,12 +1227,7 @@ async fn apply_live_tab_metadata_update(
 }
 
 async fn persist_terminal_tab_record(db_pool: DbPool, record: TerminalTabRecord) {
-    let pool = {
-        let guard = db_pool.lock().await;
-        guard.as_ref().cloned()
-    };
-
-    if let Some(pool) = pool {
+    if let Some(pool) = db_pool.ready_pool() {
         let _ = repository::upsert_terminal_tab(&pool, &record).await;
     }
 }
@@ -1653,6 +1742,12 @@ fn build_shell_command_compat(command: &str, cwd: &Path) -> tokio::process::Comm
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.as_std_mut().process_group(0);
+    }
     process
 }
 
@@ -2239,10 +2334,12 @@ async fn kill_process(pid: u32) -> CommandResult<()> {
 
     #[cfg(not(windows))]
     let status = background_tokio_command("kill")
-        .args(["-TERM", &pid.to_string()])
+        .args(["-TERM", "--", &format!("-{pid}")])
         .status()
         .await
-        .map_err(|error| command_error(format!("Failed to kill process {}: {}", pid, error)))?;
+        .map_err(|error| {
+            command_error(format!("Failed to kill process group {}: {}", pid, error))
+        })?;
 
     if !status.success() {
         return Err(command_error(format!(
@@ -2251,24 +2348,151 @@ async fn kill_process(pid: u32) -> CommandResult<()> {
         )));
     }
 
+    #[cfg(not(windows))]
+    {
+        tokio::time::sleep(Duration::from_millis(LEGACY_COMMAND_KILL_GRACE_MS)).await;
+        let _ = background_tokio_command("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .status()
+            .await;
+    }
+
     Ok(())
 }
 
-async fn read_child_stream<T>(stream: Option<T>) -> CommandResult<String>
+struct BoundedChildOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn push_bounded_output(head: &mut Vec<u8>, tail: &mut VecDeque<u8>, chunk: &[u8]) -> bool {
+    let mut remainder = chunk;
+    if head.len() < LEGACY_COMMAND_OUTPUT_HEAD_BYTES {
+        let head_remaining = LEGACY_COMMAND_OUTPUT_HEAD_BYTES - head.len();
+        let take = head_remaining.min(remainder.len());
+        head.extend_from_slice(&remainder[..take]);
+        remainder = &remainder[take..];
+    }
+
+    let tail_capacity =
+        MAX_LEGACY_COMMAND_OUTPUT_BYTES.saturating_sub(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
+    for byte in remainder {
+        tail.push_back(*byte);
+        if tail.len() > tail_capacity {
+            tail.pop_front();
+        }
+    }
+
+    !remainder.is_empty() && remainder.len() > tail_capacity.saturating_sub(tail.len())
+}
+
+async fn read_child_stream<T>(stream: Option<T>) -> CommandResult<BoundedChildOutput>
 where
     T: tokio::io::AsyncRead + Unpin,
 {
     let Some(mut stream) = stream else {
-        return Ok(String::new());
+        return Ok(BoundedChildOutput {
+            bytes: Vec::new(),
+            truncated: false,
+        });
     };
 
-    let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| command_error(format!("Failed to read terminal output: {}", error)))?;
+    let mut head = Vec::with_capacity(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
+    let mut tail = VecDeque::new();
+    let mut truncated = false;
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let count = stream
+            .read(&mut buffer)
+            .await
+            .map_err(|error| command_error(format!("Failed to read terminal output: {}", error)))?;
+        if count == 0 {
+            break;
+        }
+        let before = head.len() + tail.len();
+        let _ = push_bounded_output(&mut head, &mut tail, &buffer[..count]);
+        truncated |= before + count > MAX_LEGACY_COMMAND_OUTPUT_BYTES;
+    }
 
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+    head.extend(tail);
+    Ok(BoundedChildOutput {
+        bytes: head,
+        truncated,
+    })
+}
+
+fn normalize_legacy_timeout_ms(timeout_ms: Option<u64>) -> u64 {
+    timeout_ms
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LEGACY_COMMAND_TIMEOUT_MS)
+        .min(MAX_LEGACY_COMMAND_TIMEOUT_MS)
+}
+
+fn combine_bounded_child_output(
+    stdout: BoundedChildOutput,
+    stderr: BoundedChildOutput,
+) -> (String, bool) {
+    let mut head = Vec::with_capacity(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
+    let mut tail = VecDeque::new();
+    let total_len = stdout.bytes.len() + stderr.bytes.len();
+    let _ = push_bounded_output(&mut head, &mut tail, &stdout.bytes);
+    let _ = push_bounded_output(&mut head, &mut tail, &stderr.bytes);
+    let truncated =
+        stdout.truncated || stderr.truncated || total_len > MAX_LEGACY_COMMAND_OUTPUT_BYTES;
+    head.extend(tail);
+    let output = String::from_utf8_lossy(&head).to_string();
+    if truncated {
+        (format!("{TRUNCATED_OUTPUT_MARKER}{output}"), true)
+    } else {
+        (output, false)
+    }
+}
+
+#[cfg(not(windows))]
+async fn stop_legacy_child_tree(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+) -> CommandResult<std::process::ExitStatus> {
+    if let Some(pid) = pid {
+        let _ = kill_process(pid).await;
+    } else {
+        let _ = child.kill().await;
+    }
+    match tokio::time::timeout(
+        Duration::from_millis(LEGACY_COMMAND_KILL_GRACE_MS),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(result) => result
+            .map_err(|error| command_error(format!("Failed to stop terminal command: {error}"))),
+        Err(_) => {
+            let _ = child.kill().await;
+            child.wait().await.map_err(|error| {
+                command_error(format!("Failed to force-stop terminal command: {error}"))
+            })
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn stop_legacy_child_tree(
+    child: &mut tokio::process::Child,
+    job: Option<Arc<WindowsJob>>,
+) -> CommandResult<std::process::ExitStatus> {
+    if let Some(job) = job {
+        job.terminate()?;
+    } else {
+        child
+            .kill()
+            .await
+            .map_err(|error| command_error(format!("Failed to stop terminal command: {error}")))?;
+    }
+    child.wait().await.map_err(|error| {
+        command_error(format!(
+            "Failed to wait for the stopped terminal command: {error}"
+        ))
+    })
 }
 
 pub async fn create_legacy_session_internal(
@@ -2294,8 +2518,11 @@ pub async fn create_legacy_session_internal(
         output: String::new(),
         exit_code: None,
         timed_out: false,
+        output_truncated: false,
         updated_at: current_timestamp(),
         pid: None,
+        #[cfg(windows)]
+        windows_job: None,
     };
 
     let dto = session.to_dto();
@@ -2335,6 +2562,7 @@ pub async fn run_legacy_session_internal(
         session.output.clear();
         session.exit_code = None;
         session.timed_out = false;
+        session.output_truncated = false;
         session.updated_at = current_timestamp();
         session.cwd.clone()
     };
@@ -2343,6 +2571,8 @@ pub async fn run_legacy_session_internal(
         .spawn()
         .map_err(|error| command_error(format!("Failed to start terminal command: {}", error)))?;
     let pid = child.id();
+    #[cfg(windows)]
+    let windows_job = Some(WindowsJob::assign(&child)?);
 
     {
         let mut sessions = terminal_store.legacy_sessions.lock().await;
@@ -2350,6 +2580,10 @@ pub async fn run_legacy_session_internal(
             .get_mut(&session_id)
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
         session.pid = pid;
+        #[cfg(windows)]
+        {
+            session.windows_job = windows_job.clone();
+        }
         session.updated_at = current_timestamp();
     }
 
@@ -2358,25 +2592,25 @@ pub async fn run_legacy_session_internal(
     let stdout_task = tokio::spawn(read_child_stream(stdout));
     let stderr_task = tokio::spawn(read_child_stream(stderr));
 
+    let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
     let mut timed_out = false;
-    let exit_status = if let Some(timeout_ms) = timeout_ms.filter(|value| *value > 0) {
-        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await
-        {
-            Ok(result) => result.map_err(|error| {
-                command_error(format!("Failed to wait for terminal command: {}", error))
-            })?,
-            Err(_) => {
-                timed_out = true;
-                let _ = child.kill().await;
-                child.wait().await.map_err(|error| {
-                    command_error(format!("Failed to stop terminal command: {}", error))
-                })?
-            }
-        }
-    } else {
-        child.wait().await.map_err(|error| {
+    let exit_status = match tokio::time::timeout(
+        Duration::from_millis(normalized_timeout_ms),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(|error| {
             command_error(format!("Failed to wait for terminal command: {}", error))
-        })?
+        })?,
+        Err(_) => {
+            timed_out = true;
+            #[cfg(not(windows))]
+            let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+            #[cfg(windows)]
+            let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+            stopped
+        }
     };
 
     let stdout_output = stdout_task
@@ -2385,7 +2619,8 @@ pub async fn run_legacy_session_internal(
     let stderr_output = stderr_task
         .await
         .map_err(|error| command_error(format!("Terminal stderr task failed: {}", error)))??;
-    let combined_output = format!("{}{}", stdout_output, stderr_output);
+    let (combined_output, output_truncated) =
+        combine_bounded_child_output(stdout_output, stderr_output);
 
     let mut sessions = terminal_store.legacy_sessions.lock().await;
     let session = sessions
@@ -2396,7 +2631,12 @@ pub async fn run_legacy_session_internal(
     session.output = combined_output;
     session.exit_code = exit_status.code();
     session.timed_out = timed_out;
+    session.output_truncated = output_truncated;
     session.pid = None;
+    #[cfg(windows)]
+    {
+        session.windows_job = None;
+    }
     session.updated_at = current_timestamp();
     session.status = if timed_out {
         "timed_out".to_string()
@@ -2434,7 +2674,22 @@ pub async fn kill_legacy_session_internal(
         session.pid
     };
 
+    #[cfg(windows)]
+    let windows_job = {
+        let sessions = terminal_store.legacy_sessions.lock().await;
+        sessions
+            .get(&session_id)
+            .and_then(|session| session.windows_job.clone())
+    };
+
+    #[cfg(not(windows))]
     if let Some(pid) = pid {
+        let _ = kill_process(pid).await;
+    }
+    #[cfg(windows)]
+    if let Some(job) = windows_job {
+        let _ = job.terminate();
+    } else if let Some(pid) = pid {
         let _ = kill_process(pid).await;
     }
 
@@ -2444,6 +2699,10 @@ pub async fn kill_legacy_session_internal(
         .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
     session.status = "killed".to_string();
     session.pid = None;
+    #[cfg(windows)]
+    {
+        session.windows_job = None;
+    }
     session.updated_at = current_timestamp();
 
     Ok(session.to_dto())
@@ -2516,6 +2775,118 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn legacy_timeout_uses_default_and_caps_explicit_values() {
+        assert_eq!(
+            normalize_legacy_timeout_ms(None),
+            DEFAULT_LEGACY_COMMAND_TIMEOUT_MS
+        );
+        assert_eq!(
+            normalize_legacy_timeout_ms(Some(0)),
+            DEFAULT_LEGACY_COMMAND_TIMEOUT_MS
+        );
+        assert_eq!(normalize_legacy_timeout_ms(Some(42)), 42);
+        assert_eq!(
+            normalize_legacy_timeout_ms(Some(MAX_LEGACY_COMMAND_TIMEOUT_MS + 1)),
+            MAX_LEGACY_COMMAND_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn combined_legacy_output_is_bounded_and_marked() {
+        let stdout = BoundedChildOutput {
+            bytes: vec![b'a'; MAX_LEGACY_COMMAND_OUTPUT_BYTES],
+            truncated: false,
+        };
+        let stderr = BoundedChildOutput {
+            bytes: vec![b'z'; 128],
+            truncated: false,
+        };
+
+        let (output, truncated) = combine_bounded_child_output(stdout, stderr);
+        assert!(truncated);
+        assert!(output.starts_with(TRUNCATED_OUTPUT_MARKER));
+        assert!(output.contains(&"a".repeat(LEGACY_COMMAND_OUTPUT_HEAD_BYTES)));
+        assert!(output.ends_with(&"z".repeat(128)));
+        assert!(output.len() <= MAX_LEGACY_COMMAND_OUTPUT_BYTES + TRUNCATED_OUTPUT_MARKER.len());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn killing_a_legacy_process_group_removes_its_child() {
+        let temp = TempDir::new().expect("temp dir");
+        let child_pid_path = temp.path().join("child.pid");
+        let command = format!(
+            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
+            child_pid_path.display()
+        );
+        let mut process = build_shell_command_compat(&command, temp.path());
+        let mut child = process.spawn().expect("spawn process group");
+        let parent_pid = child.id().expect("parent pid");
+
+        for _ in 0..100 {
+            if child_pid_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let child_pid = fs::read_to_string(&child_pid_path)
+            .expect("child pid file")
+            .parse::<u32>()
+            .expect("child pid");
+
+        kill_process(parent_pid).await.expect("kill process group");
+        let _ = child.wait().await;
+        let child_probe = background_tokio_command("kill")
+            .args(["-0", &child_pid.to_string()])
+            .status()
+            .await
+            .expect("probe child process");
+        assert!(!child_probe.success(), "child process {child_pid} survived");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn terminating_a_windows_job_removes_descendants() {
+        let temp = TempDir::new().expect("temp dir");
+        let child_pid_path = temp.path().join("child.pid");
+        let script = format!(
+            "$child = Start-Process powershell -PassThru -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30'; Set-Content -NoNewline -Path '{}' -Value $child.Id; Wait-Process -Id $child.Id",
+            child_pid_path.display()
+        );
+        let mut command = background_tokio_command("powershell");
+        command.args(["-NoProfile", "-Command", &script]);
+        let mut child = command.spawn().expect("spawn job root");
+        let job = WindowsJob::assign(&child).expect("assign Windows Job Object");
+
+        for _ in 0..100 {
+            if child_pid_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let descendant_pid = fs::read_to_string(&child_pid_path)
+            .expect("descendant pid file")
+            .parse::<u32>()
+            .expect("descendant pid");
+
+        job.terminate().expect("terminate Windows Job Object");
+        tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("job root should exit")
+            .expect("wait for job root");
+        let output = background_tokio_command("tasklist")
+            .args(["/FI", &format!("PID eq {descendant_pid}"), "/NH"])
+            .output()
+            .await
+            .expect("query descendant process");
+        let listing = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !listing.contains(&descendant_pid.to_string()),
+            "descendant process {descendant_pid} survived: {listing}"
+        );
     }
 
     fn terminal_test_project(id: &str, path: &str) -> ProjectDto {

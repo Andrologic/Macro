@@ -342,7 +342,7 @@
     "deletedChangeReadOnly": "삭제된 파일은 검토 중에 읽기 전용입니다. 대신 TaskFlow에서 복원하십시오.",
     "revertChangesFailed": "변경을 되돌리지 못했습니다."
   },
-  "taskCommandsManualDraftUnsupported": "Manual draft terminals require an active task project.",
+  "taskCommandsManualDraftUnsupported": "첫 메시지를 보내 이 기능의 브랜치, 워크트리, 터미널을 준비하세요.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",
   "remoteExecutionUnavailable": "Implementation actions are unavailable in remote mode.",
   "remoteTaskCommandsUnavailable": "Project commands are unavailable in remote mode.",
@@ -484,5 +484,8 @@
   "diffModalCrashedTitle": "이 diff를 계속 열어 둘 수 없습니다",
   "diffModalCrashedDescription": "변경 패널은 계속 실행 중입니다. diff 뷰어를 다시 시도하거나 이 파일을 닫으세요.",
   "diffRenderFailedTitle": "이 diff를 렌더링할 수 없습니다",
-  "diffRenderFailedDescription": "변경 패널은 열린 상태로 유지되었습니다. 이 파일을 닫고 다시 시도하거나 파일을 직접 확인하세요."
+  "diffRenderFailedDescription": "변경 패널은 열린 상태로 유지되었습니다. 이 파일을 닫고 다시 시도하거나 파일을 직접 확인하세요.",
+  "reviewBeforeValidation": "변경 사항을 검증하기 전에 보류 중인 모든 diff를 여세요.",
+  "reviewArtifactBeforeValidation": "검증하기 전에 이 산출물을 여세요.",
+  "taskCommandsPlanMutationActive": "이 계획을 보관하거나 삭제하기 전에 실행 중인 작업 명령을 중지하세요."
 }

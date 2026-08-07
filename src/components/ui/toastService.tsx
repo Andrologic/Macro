@@ -245,7 +245,7 @@ const toBatchManagedToastOptions = (
 
   return {
     ...baseOptions,
-    duration: Infinity,
+    duration: options?.duration ?? Infinity,
     onDismiss: chainToastHandler(baseOptions.onDismiss, () => {
       unregisterToastFromBatch(toastId);
     }),

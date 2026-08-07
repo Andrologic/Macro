@@ -48,6 +48,10 @@ import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services
 import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
+import {
+  clearConflictAssistantInternalAgentProfile,
+  getConflictAssistantInternalAgentProfile,
+} from '../../services/conflictAssistantService';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -402,7 +406,7 @@ interface ChatMessageRowProps {
   skillTurnFeedback?: SkillTurnFeedback | null;
 }
 
-const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file):\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source):\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
@@ -461,6 +465,22 @@ const buildSnapshotContextRefData = (
       projectId: ref.projectId ?? null,
       projectName: ref.projectName ?? null,
     } satisfies WorkspaceFileReference;
+  }
+
+  if (ref.kind === 'source') {
+    return {
+      id: ref.id,
+      type: 'source_passage',
+      scope: 'source',
+      source: ref.sourceLabel ?? ref.subtitle ?? ref.title,
+      title: ref.title,
+      snippet: ref.snippet,
+      content: ref.snippet,
+      messageId: '',
+      conversationId: '',
+      timestamp: '',
+      url: ref.url,
+    };
   }
 
   if (ref.kind === 'need') {
@@ -555,7 +575,13 @@ const UserMessageContent: React.FC<{
           }
 
           const rawKind = match[1]?.toLocaleLowerCase();
-          const kind = rawKind === 'need' ? 'need' : rawKind === 'file' ? 'file' : 'skill';
+          const kind = rawKind === 'need'
+            ? 'need'
+            : rawKind === 'file'
+            ? 'file'
+            : rawKind === 'source'
+            ? 'source'
+            : 'skill';
           const title = match[2]?.trim() ?? '';
           const need = kind === 'need'
             ? needsByTitle.get(normalizeNeedMentionTitle(title))
@@ -1008,6 +1034,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations,
     messages,
     selectedConversationId,
+    activeContextKey,
     selectedConversationRuntime,
     conversationCompactionStatusById,
     sessionCompactionEventsByConversationId,
@@ -1048,10 +1075,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitActiveQuestionnaire,
     compactConversationNow,
     refreshConversationContextDiagnostics,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
+    saveComposerDraftForContext = () => undefined,
+    getComposerDraftForContext = () => null,
+    clearComposerDraftForContext = () => undefined,
+    migrateComposerDraftContext = () => undefined,
+    replaceComposerContextRefs = () => undefined,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    activeContextKey: state.activeContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
@@ -1098,6 +1133,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     compactConversationNow: state.compactConversationNow,
     refreshConversationContextDiagnostics:
       state.refreshConversationContextDiagnostics,
+    peekComposerDraft: state.peekComposerDraft,
+    acknowledgeComposerDraft: state.acknowledgeComposerDraft,
+    saveComposerDraftForContext: state.saveComposerDraftForContext,
+    getComposerDraftForContext: state.getComposerDraftForContext,
+    clearComposerDraftForContext: state.clearComposerDraftForContext,
+    migrateComposerDraftContext: state.migrateComposerDraftContext,
+    replaceComposerContextRefs: state.replaceComposerContextRefs,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
@@ -1147,6 +1189,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     EMPTY_COMPOSER_DRAFT_SNAPSHOT
   );
   const pendingPromptHistoryTextRef = useRef<string | null>(null);
+  const composerDraftContextKey = selectedConversationId
+    ? `conversation:${selectedConversationId}`
+    : activeContextKey
+      ? `context:${activeContextKey}`
+      : `mode:${mode}`;
+  const activeComposerDraftContextKeyRef = useRef<string | null>(null);
+  const latestComposerDraftRef = useRef({
+    text: '',
+    images: [] as MessageImageAttachment[],
+    contextRefs: [] as ContextReference[],
+  });
   const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
   const [
     architectPlanSelectorState,
@@ -1338,6 +1391,42 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setManualCompactionPhase('idle');
   }, [selectedConversationId]);
 
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    let cancelled = false;
+
+    // The LazyComposerEditor loads its underlying editor module
+    // asynchronously. composerEditorRef.current may be null on the first
+    // render. We peek (read) the draft without consuming it, then retry
+    // until the editor is ready, and only then acknowledge (consume) it.
+    const tryApplyDraft = (attemptsLeft: number) => {
+      if (cancelled) return;
+      const handle = composerEditorRef.current;
+      const draft = peekComposerDraft(selectedConversationId);
+      if (draft === null) {
+        return;
+      }
+      if (handle) {
+        handle.setText(draft);
+        handle.focus();
+        acknowledgeComposerDraft(selectedConversationId);
+        return;
+      }
+      if (attemptsLeft <= 0) {
+        // Editor never came up. Drop the draft so we don't leak it.
+        acknowledgeComposerDraft(selectedConversationId);
+        return;
+      }
+      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
+    };
+
+    tryApplyDraft(10);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
+
   const isStreaming = isContextStreaming;
   const isTranscriptActivityActive =
     isContextStreaming ||
@@ -1489,11 +1578,83 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     pendingPromptHistoryTextRef.current = snapshot.text;
     setInputValue(snapshot.text);
-    composerEditorRef.current?.setText(snapshot.text);
+    composerEditorRef.current?.setText(snapshot.text, snapshot.contextRefs);
     snapshot.contextRefs.forEach((ref) => {
       addComposerContextRef(ref);
     });
   }, [addComposerContextRef, clearComposerContextRefs, inputValue]);
+
+  useEffect(() => {
+    const previousContextKey = activeComposerDraftContextKeyRef.current;
+    if (previousContextKey === composerDraftContextKey) return;
+
+    if (previousContextKey) {
+      const draftToSave = composerEditSession
+        ? {
+            text: composerEditSession.savedDraftText,
+            images: composerEditSession.savedDraftImages,
+            contextRefs: composerEditSession.savedDraftContextRefs,
+          }
+        : latestComposerDraftRef.current;
+      saveComposerDraftForContext(previousContextKey, draftToSave);
+    }
+
+    const savedNextDraft = getComposerDraftForContext(composerDraftContextKey);
+    activeComposerDraftContextKeyRef.current = composerDraftContextKey;
+    if (!previousContextKey && !savedNextDraft) {
+      return;
+    }
+    const nextDraft = savedNextDraft ?? {
+      text: '',
+      images: [],
+      contextRefs: [],
+    };
+    setComposerEditSession(null);
+    setInputValue(nextDraft.text);
+    setComposerImages([...nextDraft.images]);
+    // Conversation toolbox refs hydrate asynchronously after a selection.
+    // Avoid replacing them with an empty draft before that hydration finishes.
+    if (savedNextDraft) {
+      replaceComposerContextRefs(
+        nextDraft.contextRefs,
+        selectedConversationId,
+      );
+    }
+    resetPromptHistoryNavigation();
+
+    let cancelled = false;
+    const applyText = (attemptsLeft: number) => {
+      if (cancelled) return;
+      const editor = composerEditorRef.current;
+      if (editor) {
+        editor.setText(nextDraft.text, nextDraft.contextRefs);
+        return;
+      }
+      if (attemptsLeft > 0) {
+        window.setTimeout(() => applyText(attemptsLeft - 1), 50);
+      }
+    };
+    applyText(10);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    composerDraftContextKey,
+    composerEditSession,
+    getComposerDraftForContext,
+    replaceComposerContextRefs,
+    resetPromptHistoryNavigation,
+    saveComposerDraftForContext,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    latestComposerDraftRef.current = {
+      text: inputValue,
+      images: [...composerImages],
+      contextRefs: cloneContextRefs(composerContextRefs),
+    };
+  }, [composerContextRefs, composerImages, inputValue]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -2113,6 +2274,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: selectedTask.id,
       });
+      clearComposerDraftForContext(composerDraftContextKey);
+      clearComposerDraftForContext(`conversation:${conversationId}`);
       composerEditorRef.current?.clear();
       setInputValue('');
       resetPromptHistoryNavigation();
@@ -2127,6 +2290,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     ensureConversation,
+    clearComposerDraftForContext,
+    composerDraftContextKey,
     isConversationPending,
     isBusySending,
     mode,
@@ -2250,7 +2415,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setComposerImages(session.savedDraftImages);
     setInputValue(session.savedDraftText);
     clearComposerContextRefs();
-    composerEditorRef.current?.setText(session.savedDraftText);
+    composerEditorRef.current?.setText(
+      session.savedDraftText,
+      session.savedDraftContextRefs,
+    );
     session.savedDraftContextRefs.forEach((ref) => {
       addComposerContextRef(ref);
     });
@@ -2281,10 +2449,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    saveComposerDraftForContext(composerDraftContextKey, {
+      text,
+      images: [...composerImages],
+      contextRefs: cloneContextRefs(composerContextRefs),
+    });
     const conversationId = await ensureConversation();
     if (!conversationId) return;
+    const conversationDraftKey = `conversation:${conversationId}`;
+    migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = text;
     const imagesForMessage = [...composerImages];
+    const internalAgentProfile =
+      getConflictAssistantInternalAgentProfile(conversationId);
 
     try {
       const result = await sendMessage({
@@ -2292,9 +2469,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
+        ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
       if (result.status === 'sent') {
+        if (internalAgentProfile) {
+          clearConflictAssistantInternalAgentProfile(conversationId);
+        }
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
         composerEditorRef.current?.clear();
+        clearComposerContextRefs();
         setComposerImages([]);
         setInputValue('');
         resetPromptHistoryNavigation();
@@ -2381,6 +2565,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
 
     const content = message.content;
+    const messageContextRefs = cloneContextRefs(message.context_refs);
     const draftText = composerEditorRef.current?.getTextContent() ?? inputValue;
     const session: ComposerEditSession = {
       messageId: message.id,
@@ -2394,7 +2579,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setComposerImages(getMessageImages(message.id));
     setInputValue(content);
     setPromptHistoryIndex(null);
-    composerEditorRef.current?.setText(content);
+    composerEditorRef.current?.setText(content, messageContextRefs);
     requestAnimationFrame(() => {
       composerEditorRef.current?.focus();
     });
@@ -2593,8 +2778,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 rootRef={taskTodoDropdownRef}
               />
             ) : (
-              <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                <Icon name={modeHeader.icon} size={10} className="text-primary" />
+              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
               </div>
             )}
             <div className="min-w-0">

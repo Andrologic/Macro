@@ -222,6 +222,7 @@ interface FolderTreeItemProps {
   selectedChangeId: string | null;
   onFileClick: (changeId: string) => void;
   onStageChanges: (changeIds: string[]) => void;
+  canValidateChanges: (changeIds: string[]) => boolean;
   onUnstageChanges: (changeIds: string[]) => void;
   onRevert: (changeIds: string[], scopeLabel: string, requiresConfirm: boolean) => void;
   labels: {
@@ -234,6 +235,8 @@ interface FolderTreeItemProps {
 
 interface ScopeActionRailProps {
   onValidate?: () => void;
+  showValidate?: boolean;
+  validateDisabled?: boolean;
   onUnstage?: () => void;
   onRevert?: () => void;
   labels: {
@@ -247,6 +250,8 @@ interface ScopeActionRailProps {
 
 const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   onValidate,
+  showValidate = Boolean(onValidate),
+  validateDisabled = false,
   onUnstage,
   onRevert,
   labels,
@@ -260,7 +265,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
       className
     )}
   >
-    {onValidate && (
+    {showValidate && (
       <Button
         type="button"
         variant="ghost"
@@ -268,9 +273,10 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
         className="h-7 w-7 px-0"
         title={labels.validate}
         aria-label={labels.validate}
+        disabled={validateDisabled}
         onClick={(event) => {
           event.stopPropagation();
-          onValidate();
+          onValidate?.();
         }}
       >
         <Icon name="check" size={14} />
@@ -318,6 +324,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   selectedChangeId,
   onFileClick,
   onStageChanges,
+  canValidateChanges,
   onUnstageChanges,
   onRevert,
   labels,
@@ -361,7 +368,9 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
           </button>
           {(pendingChangeIds.length > 0 || stagedChangeIds.length > 0) && (
             <ScopeActionRail
-              onValidate={pendingChangeIds.length > 0 ? () => onStageChanges(pendingChangeIds) : undefined}
+              showValidate={pendingChangeIds.length > 0}
+              validateDisabled={!canValidateChanges(pendingChangeIds)}
+              onValidate={pendingChangeIds.length > 0 && canValidateChanges(pendingChangeIds) ? () => onStageChanges(pendingChangeIds) : undefined}
               onUnstage={stagedChangeIds.length > 0 ? () => onUnstageChanges(stagedChangeIds) : undefined}
               onRevert={pendingChangeIds.length > 0 ? () => onRevert(pendingChangeIds, node.path, true) : undefined}
               labels={labels}
@@ -380,6 +389,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 selectedChangeId={selectedChangeId}
                 onFileClick={onFileClick}
                 onStageChanges={onStageChanges}
+                canValidateChanges={canValidateChanges}
                 onUnstageChanges={onUnstageChanges}
                 onRevert={onRevert}
                 labels={labels}
@@ -455,7 +465,9 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
       </button>
       {(change.hasPendingVisibleChange || change.hasValidatedStage) && (
         <ScopeActionRail
-          onValidate={change.hasPendingVisibleChange ? () => onStageChanges([change.id]) : undefined}
+          showValidate={change.hasPendingVisibleChange}
+          validateDisabled={!canValidateChanges([change.id])}
+          onValidate={change.hasPendingVisibleChange && canValidateChanges([change.id]) ? () => onStageChanges([change.id]) : undefined}
           onUnstage={change.hasValidatedStage ? () => onUnstageChanges([change.id]) : undefined}
           onRevert={change.hasPendingVisibleChange ? () => onRevert([change.id], change.path, false) : undefined}
           labels={labels}
@@ -472,6 +484,7 @@ interface ArtifactReviewItemProps {
   isSelected: boolean;
   onOpen: () => void;
   onValidate: () => void;
+  canValidate: boolean;
   onUnvalidate: () => void;
   labels: {
     staged: string;
@@ -489,6 +502,7 @@ const ArtifactReviewItem: React.FC<ArtifactReviewItemProps> = ({
   isSelected,
   onOpen,
   onValidate,
+  canValidate,
   onUnvalidate,
   labels,
 }) => {
@@ -558,7 +572,9 @@ const ArtifactReviewItem: React.FC<ArtifactReviewItemProps> = ({
       </button>
       {(entry.hasPendingReview || entry.hasValidatedReview) && (
         <ScopeActionRail
-          onValidate={entry.hasPendingReview ? onValidate : undefined}
+          showValidate={entry.hasPendingReview}
+          validateDisabled={!canValidate}
+          onValidate={entry.hasPendingReview && canValidate ? onValidate : undefined}
           onUnstage={entry.hasValidatedReview ? onUnvalidate : undefined}
           labels={labels}
           className="rounded-r-lg"
@@ -699,6 +715,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const [artifactPanelState, setArtifactPanelState] = useState<ArtifactReviewPanelState | null>(null);
   const [isLoadingArtifacts, setIsLoadingArtifacts] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [isFinishingTask, setIsFinishingTask] = useState(false);
+  const finishingTaskIdRef = useRef<string | null>(null);
+  const [reviewedChangeSignatures, setReviewedChangeSignatures] = useState<Record<string, string>>({});
+  const [reviewedArtifactSignatures, setReviewedArtifactSignatures] = useState<Record<string, string>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
     repositoryId: string;
     changeIds: string[];
@@ -1197,7 +1217,82 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskHasPendingQuestionnaire,
   ]);
 
-  const artifactEntries = artifactPanelState?.entries ?? [];
+  const artifactEntries = useMemo(
+    () => artifactPanelState?.entries ?? [],
+    [artifactPanelState?.entries]
+  );
+  const currentChangeSignatures = useMemo(() => {
+    const signatures: Record<string, string> = {};
+    repositories.forEach((repository) => {
+      repository.changes.forEach((change) => {
+        signatures[`${repository.id}:${change.id}`] = [
+          change.status,
+          change.additions,
+          change.deletions,
+          change.modifiedContent.length,
+          change.indexContent.length,
+        ].join(':');
+      });
+    });
+    return signatures;
+  }, [repositories]);
+  const currentArtifactSignatures = useMemo(
+    () => Object.fromEntries(
+      artifactEntries.map((entry) => [
+        entry.artifact.id,
+        `${entry.artifact.contentHash}:${entry.artifact.updatedAt}`,
+      ])
+    ),
+    [artifactEntries]
+  );
+
+  useEffect(() => {
+    setReviewedChangeSignatures((current) => Object.fromEntries(
+      Object.entries(current).filter(
+        ([key, signature]) => currentChangeSignatures[key] === signature
+      )
+    ));
+  }, [currentChangeSignatures]);
+
+  useEffect(() => {
+    setReviewedArtifactSignatures((current) => Object.fromEntries(
+      Object.entries(current).filter(
+        ([key, signature]) => currentArtifactSignatures[key] === signature
+      )
+    ));
+  }, [currentArtifactSignatures]);
+
+  const markChangeReviewed = useCallback((repositoryId: string, changeId: string) => {
+    const key = `${repositoryId}:${changeId}`;
+    const signature = currentChangeSignatures[key];
+    if (!signature) return;
+    setReviewedChangeSignatures((current) => ({ ...current, [key]: signature }));
+  }, [currentChangeSignatures]);
+
+  const areChangesReviewed = useCallback(
+    (repositoryId: string, changeIds: string[]) => changeIds.every((changeId) => {
+      const key = `${repositoryId}:${changeId}`;
+      return Boolean(
+        currentChangeSignatures[key] &&
+        reviewedChangeSignatures[key] === currentChangeSignatures[key]
+      );
+    }),
+    [currentChangeSignatures, reviewedChangeSignatures]
+  );
+
+  const markArtifactReviewed = useCallback((artifactId: string) => {
+    const signature = currentArtifactSignatures[artifactId];
+    if (!signature) return;
+    setReviewedArtifactSignatures((current) => ({ ...current, [artifactId]: signature }));
+  }, [currentArtifactSignatures]);
+
+  const isArtifactReviewed = useCallback(
+    (artifactId: string) => Boolean(
+      currentArtifactSignatures[artifactId] &&
+      reviewedArtifactSignatures[artifactId] === currentArtifactSignatures[artifactId]
+    ),
+    [currentArtifactSignatures, reviewedArtifactSignatures]
+  );
   const artifactContracts = artifactPanelState?.contracts ?? [];
   const missingArtifactContracts = artifactContracts.filter(
     (contract) =>
@@ -1280,6 +1375,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     : 0;
   const hasPendingValidation =
     reviewSummary.actionCounts.pending_validation > 0 || artifactPendingReviewCount > 0;
+  const unreviewedPendingFileCount = repositories.reduce(
+    (count, repository) => count + repository.changes.filter(
+      (change) => change.hasPendingVisibleChange &&
+        !areChangesReviewed(repository.id, [change.id])
+    ).length,
+    0
+  );
+  const unreviewedPendingArtifactCount = artifactEntries.filter(
+    (entry) => entry.hasPendingReview && !isArtifactReviewed(entry.artifact.id)
+  ).length;
+  const unreviewedPendingCount =
+    unreviewedPendingFileCount + unreviewedPendingArtifactCount;
   const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
   const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
@@ -1304,9 +1411,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     reviewSummary.actionCounts.ready_to_commit === 0 &&
     ownArtifactPendingReviewCount === 0 &&
     hasTaskCommittedRepositories;
-  const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
+  const isValidateChangesDisabled =
+    isCommitting ||
+    isGeneratingCommitMessages ||
+    !hasPendingValidation ||
+    unreviewedPendingCount > 0;
   const validateChangesDisabledReason = isGeneratingCommitMessages
     ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+    : unreviewedPendingCount > 0
+      ? t(
+          'implement.reviewBeforeValidation',
+          'Open every pending diff before validating changes.'
+        )
     : t(
         'implement.noRemainingChangesToValidate',
         'No remaining unstaged changes to validate.'
@@ -1455,6 +1571,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!artifactPanelState || !currentTask || !canShowTaskArtifacts(currentTask)) {
       return;
     }
+    if (!isArtifactReviewed(artifactId)) {
+      notify.warning(
+        t('implement.reviewArtifactBeforeValidation', 'Open this artifact before validating it.')
+      );
+      return;
+    }
     try {
       await validateVisibleTaskArtifact({
         branchName: artifactPanelState.branchName,
@@ -1497,7 +1619,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleValidateChanges = async () => {
-    if (!hasPendingValidation) return;
+    if (isValidateChangesDisabled) return;
     try {
       if (reviewSummary.actionCounts.pending_validation > 0) {
         await stageAllTaskChanges();
@@ -1528,6 +1650,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleStageScope = async (repositoryId: string, changeIds: string[]) => {
     if (changeIds.length === 0) return;
+    if (!areChangesReviewed(repositoryId, changeIds)) {
+      notify.warning(
+        t('implement.reviewBeforeValidation', 'Open every pending diff before validating changes.')
+      );
+      return;
+    }
     try {
       await stageChanges(repositoryId, changeIds);
     } catch (error) {
@@ -1615,7 +1743,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleFinishTask = async () => {
-    if (!currentTask || isCommitting || isGeneratingCommitMessages) return;
+    if (
+      !currentTask ||
+      isCommitting ||
+      isGeneratingCommitMessages ||
+      isFinishingTask ||
+      finishingTaskIdRef.current === currentTask.id
+    ) return;
+    finishingTaskIdRef.current = currentTask.id;
+    setIsFinishingTask(true);
     try {
       const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
       if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
@@ -1636,25 +1772,25 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         const messageText = toServiceError(error).message;
         notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
       }
+    } finally {
+      if (finishingTaskIdRef.current === currentTask.id) {
+        finishingTaskIdRef.current = null;
+        setIsFinishingTask(false);
+      }
     }
   };
-  const primaryAction = canFinishTask
-    ? {
-        onClick: () => void handleFinishTask(),
-        disabled: isGeneratingCommitMessages,
-        title: undefined,
-        icon: 'git-merge' as const,
-        label: t('implement.finishTask', 'Finish task'),
-      }
-    : {
-        onClick: handleOpenCommit,
-        disabled: isCommitDisabled,
-        title: isCommitDisabled ? commitDisabledReason : undefined,
-        icon: 'git-commit' as const,
-        label: isGeneratingCommitMessages
-          ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
-          : t('implement.commitChangesGeneric', 'Commit'),
-      };
+  const isPrimaryActionDisabled = canFinishTask
+    ? isGeneratingCommitMessages || isFinishingTask
+    : isCommitDisabled;
+  const primaryActionTitle = !canFinishTask && isCommitDisabled
+    ? commitDisabledReason
+    : undefined;
+  const primaryActionIcon = canFinishTask ? 'git-merge' as const : 'git-commit' as const;
+  const primaryActionLabel = canFinishTask
+    ? t('implement.finishTask', 'Finish task')
+    : isGeneratingCommitMessages
+      ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+      : t('implement.commitChangesGeneric', 'Commit');
 
   const actionLabels = {
     staged: t('implement.stagedBadge', 'Staged'),
@@ -1953,8 +2089,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 </div>
                 {repository.commitState === 'idle' && repositoryActionCount > 0 && (
                   <ScopeActionRail
+                    showValidate={repositoryChangeIds.length > 0}
+                    validateDisabled={
+                      repositoryChangeIds.length > 0 &&
+                      !areChangesReviewed(repository.id, repositoryChangeIds)
+                    }
                     onValidate={
-                      repositoryChangeIds.length > 0
+                      repositoryChangeIds.length > 0 &&
+                      areChangesReviewed(repository.id, repositoryChangeIds)
                         ? () => void handleStageScope(repository.id, repositoryChangeIds)
                         : undefined
                     }
@@ -2024,11 +2166,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
                         onFileClick={(changeId) => {
+                          markChangeReviewed(repository.id, changeId);
                           openDiffModal(repository.id, changeId);
                         }}
                         onStageChanges={(changeIds) => {
                           void handleStageScope(repository.id, changeIds);
                         }}
+                        canValidateChanges={(changeIds) =>
+                          areChangesReviewed(repository.id, changeIds)
+                        }
                         onUnstageChanges={(changeIds) => {
                           void handleUnstageScope(repository.id, changeIds);
                         }}
@@ -2214,8 +2360,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                           entry={entry}
                           sourceTitle={sourceNode?.title || entry.artifact.taskId}
                           isSelected={selectedArtifactId === entry.artifact.id}
-                          onOpen={() => setSelectedArtifactId(entry.artifact.id)}
+                          onOpen={() => {
+                            markArtifactReviewed(entry.artifact.id);
+                            setSelectedArtifactId(entry.artifact.id);
+                          }}
                           onValidate={() => void handleValidateArtifact(entry.artifact.id)}
+                          canValidate={isArtifactReviewed(entry.artifact.id)}
                           onUnvalidate={() => void handleUnvalidateArtifact(entry.artifact.id)}
                           labels={artifactActionLabels}
                         />
@@ -2248,19 +2398,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </button>
         )}
         <button
-          onClick={primaryAction.onClick}
+          onClick={canFinishTask ? () => void handleFinishTask() : handleOpenCommit}
           data-tour-id="implement-commit-changes"
-          disabled={primaryAction.disabled}
-          title={primaryAction.title}
+          disabled={isPrimaryActionDisabled}
+          title={primaryActionTitle}
           className={cn(
             'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-            primaryAction.disabled
+            isPrimaryActionDisabled
               ? 'bg-muted text-muted-foreground cursor-not-allowed'
               : 'bg-primary text-primary-foreground hover:bg-primary/90'
           )}
         >
-          <Icon name={primaryAction.icon} size={14} />
-          {primaryAction.label}
+          <Icon name={primaryActionIcon} size={14} />
+          {primaryActionLabel}
         </button>
       </div>
 
@@ -2277,7 +2427,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           task={currentTask}
           entries={artifactEntries}
           artifactId={selectedArtifactId}
-          onSelectArtifact={setSelectedArtifactId}
+          onSelectArtifact={(artifactId) => {
+            if (!artifactId) {
+              setSelectedArtifactId(null);
+              return;
+            }
+            markArtifactReviewed(artifactId);
+            setSelectedArtifactId(artifactId);
+          }}
           onValidate={handleValidateArtifact}
           onUnvalidate={handleUnvalidateArtifact}
           onArtifactSaved={handleArtifactSaved}

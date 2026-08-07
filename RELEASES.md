@@ -35,9 +35,9 @@ bun run version:bump minor
 bun run version:bump major
 ```
 
-The release workflow rejects any version that is not strict `x.y.z`. Before the
-next official release, `0.1.0-rc.8` must become a stable version such as
-`0.1.0`.
+The release workflow rejects any version that is not strict `x.y.z`. The
+current `0.1.0` version is eligible for an official release once its matching
+`v0.1.0` tag is created.
 
 ## GitHub Release Workflow
 
@@ -47,9 +47,10 @@ Official releases are prepared by:
 .github/workflows/release.yml
 ```
 
-The workflow runs only from `main`, either on push or manual dispatch from
-`main`. It validates the repository, builds desktop packages for macOS,
-Windows, and Linux, then creates a GitHub Release draft named `v<version>`.
+The workflow runs for stable `vX.Y.Z` tags, or a manual dispatch from `main`.
+It rejects a tag that does not exactly match every version manifest, validates
+the repository, builds desktop packages for macOS, Windows, and Linux, then
+creates a GitHub Release draft named `v<version>`.
 
 The draft contains:
 
@@ -101,6 +102,17 @@ stapled. The GitHub release workflow requires these secrets:
 - `APPLE_API_ISSUER`
 - `APPLE_API_KEY_P8`
 
+Windows release builds are Authenticode-signed with SHA-256 and DigiCert
+timestamping. The workflow refuses to publish Windows without:
+
+- `WINDOWS_CERTIFICATE_PFX_BASE64`
+- `WINDOWS_CERTIFICATE_PASSWORD`
+
+The release matrix verifies the signed universal macOS bundle, validates the
+Windows NSIS Authenticode signature, and inspects AppImage/deb/rpm contents.
+The macOS verification checks the Copilot runtime, manifest, license, and the
+absence of `macro-headless`.
+
 Desktop builds compile the Macro AI runtime sidecar into `src-tauri/binaries/`
 before packaging. Universal macOS builds combine the Apple Silicon and Intel
 sidecars with `lipo`, then Tauri embeds the packaged sidecar as
@@ -110,7 +122,7 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-3. Merge to `main`.
+3. Merge to `main`, then create and push the matching `vX.Y.Z` tag.
 4. Wait for `.github/workflows/release.yml` to create the draft release.
 5. Check the draft assets, notes, and checksums in GitHub.
 6. Publish the draft manually when it is ready for users.

@@ -283,7 +283,10 @@ describe('App layout containment', () => {
     });
 
     expect(container.textContent).toContain('Macro could not finish booting.');
-    expect(container.textContent).toContain('Critical bootstrap failed.');
-    expect(container.textContent).toContain('App Critical');
+    expect(container.textContent).toContain(
+      'Macro could not initialize its local data. You can retry safely.'
+    );
+    expect(container.textContent).not.toContain('Critical bootstrap failed.');
+    expect(container.textContent).not.toContain('App Critical');
   });
 });

@@ -98,6 +98,44 @@ describe('LazyComposerEditor', () => {
     mock.restore();
   });
 
+  it('keeps the textarea fallback when the rich editor import fails', async () => {
+    const importError = new Error('composer chunk unavailable');
+    mock.module('./ComposerEditor', () => Promise.reject(importError));
+    const failedModule = await import(
+      `./LazyComposerEditor.tsx?lazy-composer-load-failure=${Date.now()}`
+    );
+    const onTextChange = mock((_text: string) => undefined);
+    const errorSpy = mock(() => undefined);
+    const originalError = console.error;
+    console.error = errorSpy as never;
+
+    try {
+      await act(async () => {
+        flushSync(() => {
+          root.render(
+            <failedModule.LazyComposerEditor
+              editable
+              placeholder="Message"
+              onTextChange={onTextChange}
+              onSend={() => undefined}
+            />
+          );
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(container.querySelector('textarea')).not.toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to load the rich composer'),
+        importError,
+      );
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   it('emits one text change for fallback setText and clear calls', async () => {
     const onTextChange = mock((_text: string) => undefined);
     const editorRef = React.createRef<TestComposerEditorHandle>();
@@ -198,4 +236,5 @@ describe('LazyComposerEditor', () => {
 
     expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['loaded initial']);
   });
+
 });
