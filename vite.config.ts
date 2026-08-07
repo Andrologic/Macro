@@ -355,7 +355,7 @@ const manualAppChunk = (id: string): string | undefined => {
 };
 
 const manualChunk = (id: string): string | undefined =>
-  manualVendorChunk(id);
+  manualVendorChunk(id) ?? manualAppChunk(id);
 
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {

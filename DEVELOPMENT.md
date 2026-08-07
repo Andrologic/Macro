@@ -112,15 +112,18 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 ## Release Workflow
 
-GitHub releases are created by `.github/workflows/release.yml`. The workflow
-runs only from `main`, validates that `package.json` contains a stable `x.y.z`
-version, builds macOS, Windows, and Linux packages, then creates a GitHub
-Release draft for manual review.
+GitHub Actions release automation is currently suspended; the repository does
+not contain an active release workflow. Prepare an official release manually:
+
+1. bump `package.json` to a stable `x.y.z` version;
+2. run the validation commands above, `bun run build`, and
+   `bun run bundle:check`;
+3. build desktop packages on each supported platform with the Tauri commands;
+4. create the matching `v<version>` tag and GitHub Release manually, then
+   review the artifacts before publishing.
 
 The current `0.1.0-rc.8` version must be bumped to a stable version such as
-`0.1.0` before the next official release. Windows and Linux release packages are
-built in GitHub Actions; local macOS universal builds remain available for
-smoke testing.
+`0.1.0` before the next official release.
 
 ## Validation
 

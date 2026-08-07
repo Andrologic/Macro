@@ -35,23 +35,17 @@ bun run version:bump minor
 bun run version:bump major
 ```
 
-The release workflow rejects any version that is not strict `x.y.z`. Before the
+The release checks reject any version that is not strict `x.y.z`. Before the
 next official release, `0.1.0-rc.8` must become a stable version such as
 `0.1.0`.
 
-## GitHub Release Workflow
+## GitHub Releases
 
-Official releases are prepared by:
+GitHub Actions release automation is currently suspended and
+`.github/workflows/release.yml` is intentionally absent. Prepare official
+releases manually from a clean, validated branch.
 
-```text
-.github/workflows/release.yml
-```
-
-The workflow runs only from `main`, either on push or manual dispatch from
-`main`. It validates the repository, builds desktop packages for macOS,
-Windows, and Linux, then creates a GitHub Release draft named `v<version>`.
-
-The draft contains:
+The release should contain:
 
 - `Macro_<version>_macOS_universal.dmg`
 - `Macro_<version>_Windows_x64_setup.exe`
@@ -61,7 +55,7 @@ The draft contains:
 - `SHA256SUMS.txt`
 - GitHub's automatic source archives.
 
-Review the draft release in GitHub before publishing it manually.
+Review every artifact and checksum in GitHub before publishing the release.
 
 ## Build Outputs
 
@@ -92,7 +86,7 @@ src-tauri/target/universal-apple-darwin/release/bundle/
 ## macOS Release Requirements
 
 macOS release builds are universal (`arm64 + x86_64`), signed, notarized, and
-stapled. The GitHub release workflow requires these secrets:
+stapled. A signed release build requires these secrets:
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -110,7 +104,7 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-3. Merge to `main`.
-4. Wait for `.github/workflows/release.yml` to create the draft release.
-5. Check the draft assets, notes, and checksums in GitHub.
-6. Publish the draft manually when it is ready for users.
+3. Merge to the release branch and build the desktop packages on each supported platform.
+4. Create the `v<version>` tag and GitHub Release manually.
+5. Check the release assets, notes, and checksums in GitHub.
+6. Publish the release manually when it is ready for users.
