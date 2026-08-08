@@ -4,6 +4,7 @@
 mod review;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -374,7 +375,13 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
+    let repo = Repository::discover(cwd)?;
+    ensure_safe_config(&repo)?;
+
     let mut command = background_command("git");
+    command
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
     command.current_dir(cwd).args(args);
     let output = command.output().map_err(|e| BackendError::Git {
         message: format!("Failed to run git command '{}': {}", args.join(" "), e),
@@ -386,6 +393,12 @@ fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn is_git_environment_variable(key: &OsStr) -> bool {
+    key.to_string_lossy()
+        .to_ascii_uppercase()
+        .starts_with("GIT_")
 }
 
 fn command_output_text(output: &GitCommandOutput) -> String {
@@ -5767,6 +5780,34 @@ mod tests {
         }
         repo.set_head(&branch_ref).expect("set HEAD to @macro");
         (temp, repo)
+    }
+
+    #[test]
+    fn git_environment_filter_is_case_insensitive() {
+        assert!(is_git_environment_variable(OsStr::new("GIT_DIR")));
+        assert!(is_git_environment_variable(OsStr::new("git_config_count")));
+        assert!(!is_git_environment_variable(OsStr::new("PATH")));
+    }
+
+    #[test]
+    fn run_git_command_rejects_unsafe_hooks_path() {
+        let (temp, repo) = init_repo();
+        let hooks_path = temp
+            .path()
+            .parent()
+            .expect("temp parent")
+            .join("outside-hooks");
+        repo.config()
+            .expect("repo config")
+            .set_str("core.hooksPath", hooks_path.to_string_lossy().as_ref())
+            .expect("set hooks path");
+
+        let error = match run_git_command(temp.path(), &["status".to_string()]) {
+            Ok(_) => panic!("unsafe hooks path must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("core.hooksPath"));
     }
 
     #[test]

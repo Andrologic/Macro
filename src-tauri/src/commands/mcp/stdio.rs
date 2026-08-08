@@ -53,10 +53,11 @@ pub(crate) fn resolve_stdio_transport(
 
 fn stderr_excerpt(stderr: &str) -> String {
     let trimmed = stderr.trim();
-    if trimmed.len() <= MAX_STDERR_CHARS {
-        return trimmed.to_string();
+    let mut excerpt = trimmed.chars().take(MAX_STDERR_CHARS).collect::<String>();
+    if trimmed.chars().count() > MAX_STDERR_CHARS {
+        excerpt.push_str("...");
     }
-    format!("{}...", &trimmed[..MAX_STDERR_CHARS])
+    excerpt
 }
 
 async fn with_stdio_client<T, F, Fut>(
@@ -229,6 +230,15 @@ mod tests {
             .ok()
             .filter(|output| output.status.success())
             .map(|_| "python3".to_string())
+    }
+
+    #[test]
+    fn stderr_excerpt_is_unicode_safe() {
+        let stderr = "é".repeat(MAX_STDERR_CHARS + 1);
+
+        let excerpt = stderr_excerpt(&stderr);
+
+        assert_eq!(excerpt, format!("{}...", "é".repeat(MAX_STDERR_CHARS)));
     }
 
     fn fake_server_script() -> String {
