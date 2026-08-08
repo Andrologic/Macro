@@ -1332,47 +1332,61 @@ fn apply_git_setup_action(
     Ok(())
 }
 
+fn wsl_git_setup_action_command(
+    action: &str,
+    source_branch: Option<&str>,
+) -> Result<(&'static str, Vec<String>)> {
+    match action {
+        GIT_SETUP_ACTION_INITIALIZE_REPO => Ok((
+            r#"if [ ! -d "$1/.git" ]; then git -C "$1" init -b main; fi"#,
+            Vec::new(),
+        )),
+        GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT => Ok((
+            r#"git -C "$1" config user.name >/dev/null 2>&1 || git -C "$1" config user.name Macro
+git -C "$1" config user.email >/dev/null 2>&1 || git -C "$1" config user.email macro@local
+git -C "$1" add -A
+git -C "$1" diff --cached --quiet && git -C "$1" commit --allow-empty -m "chore(git): initialize repository" || git -C "$1" commit -m "chore(git): initialize repository""#,
+            Vec::new(),
+        )),
+        GIT_SETUP_ACTION_CREATE_DEVELOP => Ok((
+            r#"git -C "$1" show-ref --verify --quiet refs/heads/develop || git -C "$1" branch develop "$2""#,
+            vec![source_branch.unwrap_or("main").to_string()],
+        )),
+        _ => Err(BackendError::Validation(format!(
+            "Unsupported project Git setup action: {}",
+            action
+        ))),
+    }
+}
+
 async fn apply_wsl_git_setup_action(
     wsl_path: &WslProjectPath,
     detection: &ProjectGitFlowDetectionDto,
     action: &str,
     cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<()> {
-    let script = match action {
-        GIT_SETUP_ACTION_INITIALIZE_REPO => {
-            r#"if [ ! -d "$1/.git" ]; then git -C "$1" init -b main; fi"#
-        }
-        GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT => {
-            r#"git -C "$1" config user.name >/dev/null 2>&1 || git -C "$1" config user.name Macro
-git -C "$1" config user.email >/dev/null 2>&1 || git -C "$1" config user.email macro@local
-git -C "$1" add -A
-git -C "$1" diff --cached --quiet && git -C "$1" commit --allow-empty -m "chore(git): initialize repository" || git -C "$1" commit -m "chore(git): initialize repository""#
-        }
-        GIT_SETUP_ACTION_CREATE_DEVELOP => "",
-        _ => {
-            return Err(BackendError::Validation(format!(
-                "Unsupported project Git setup action: {}",
-                action
-            )));
-        }
-    };
-
-    let script = if action == GIT_SETUP_ACTION_CREATE_DEVELOP {
-        let source_branch = detection
-            .suggested_main_branch
-            .clone()
-            .or_else(|| detection.suggested_commit_branch.clone())
-            .or_else(|| detection.current_branch.clone())
-            .unwrap_or_else(|| "main".to_string());
-        format!(
-            r#"git -C "$1" show-ref --verify --quiet refs/heads/develop || git -C "$1" branch develop "{}""#,
-            source_branch.replace('"', "\\\"")
+    let source_branch = if action == GIT_SETUP_ACTION_CREATE_DEVELOP {
+        Some(
+            detection
+                .suggested_main_branch
+                .clone()
+                .or_else(|| detection.suggested_commit_branch.clone())
+                .or_else(|| detection.current_branch.clone())
+                .unwrap_or_else(|| "main".to_string()),
         )
     } else {
-        script.to_string()
+        None
     };
+    let (script, additional_args) = wsl_git_setup_action_command(action, source_branch.as_deref())?;
 
-    let output = run_wsl_shell(wsl_path, &script, Duration::from_secs(12), cancel_rx).await?;
+    let output = run_wsl_shell_with_args(
+        wsl_path,
+        script,
+        &additional_args,
+        Duration::from_secs(12),
+        cancel_rx,
+    )
+    .await?;
     if output.status.success() {
         Ok(())
     } else {
@@ -2816,6 +2830,16 @@ async fn run_wsl_shell(
     timeout_duration: Duration,
     cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<std::process::Output> {
+    run_wsl_shell_with_args(wsl_path, script, &[], timeout_duration, cancel_rx).await
+}
+
+async fn run_wsl_shell_with_args(
+    wsl_path: &WslProjectPath,
+    script: &str,
+    additional_args: &[String],
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
     let mut command = background_tokio_command("wsl.exe");
     command
         .arg("-d")
@@ -2825,7 +2849,8 @@ async fn run_wsl_shell(
         .arg("-lc")
         .arg(script)
         .arg("macro-wsl-command")
-        .arg(&wsl_path.linux_path);
+        .arg(&wsl_path.linux_path)
+        .args(additional_args);
     wait_for_wsl_command(command, timeout_duration, cancel_rx).await
 }
 
@@ -7121,6 +7146,19 @@ mod tests {
 
         assert_eq!(parsed.distro, "Debian");
         assert_eq!(parsed.linux_path, "/var/www/app");
+    }
+
+    #[test]
+    fn wsl_develop_branch_source_is_passed_as_positional_argument() {
+        let source_branch = r#"main$(touch /tmp/macro-pwned);`id`"#;
+
+        let (script, args) =
+            wsl_git_setup_action_command(GIT_SETUP_ACTION_CREATE_DEVELOP, Some(source_branch))
+                .expect("build WSL git setup command");
+
+        assert!(script.contains("\"$2\""));
+        assert!(!script.contains(source_branch));
+        assert_eq!(args, vec![source_branch.to_string()]);
     }
 
     fn make_project(id: &str, path: &str) -> ProjectDto {

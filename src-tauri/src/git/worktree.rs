@@ -117,7 +117,7 @@ fn branch_inspection_from_task(value: TaskWorktreeInspection) -> BranchWorktreeI
 }
 
 fn task_worktree_name(task_id: &str) -> String {
-    format!("task{}", task_id)
+    format!("task{}", sanitize_worktree_key(task_id))
 }
 
 fn stable_hash(value: &str) -> String {
@@ -1290,5 +1290,38 @@ impl GitState {
             pruned_registration,
             already_absent: !removed_path && !pruned_registration,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn task_worktree_name_sanitizes_path_components() {
+        let name = task_worktree_name("../../..");
+
+        assert!(name.starts_with("task"));
+        assert!(!name.contains(".."));
+        assert!(!name.contains('/'));
+        assert!(!name.contains('\\'));
+    }
+
+    #[test]
+    fn task_worktree_name_preserves_supported_identifiers() {
+        assert_eq!(task_worktree_name("task-123_alpha"), "tasktask-123_alpha");
+    }
+
+    #[test]
+    fn task_worktree_path_stays_under_worktree_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        let root = task_worktree_root(&repo).expect("worktree root");
+
+        let path = task_worktree_path(&repo, "../../..").expect("task worktree path");
+
+        assert!(path.starts_with(&root));
+        assert_eq!(path.parent(), Some(root.as_path()));
     }
 }

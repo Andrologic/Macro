@@ -157,11 +157,11 @@ pub async fn create_conversation(
 }
 
 fn truncate_last_message(content: &str) -> String {
-    if content.len() > 100 {
-        format!("{}...", &content[..100])
-    } else {
-        content.to_string()
+    let mut truncated = content.chars().take(100).collect::<String>();
+    if content.chars().count() > 100 {
+        truncated.push_str("...");
     }
+    truncated
 }
 
 async fn refresh_conversation_metadata_with_connection(
@@ -2863,6 +2863,15 @@ mod tests {
         )
         .await
         .expect("create conversation")
+    }
+
+    #[test]
+    fn truncate_last_message_is_unicode_safe() {
+        let content = "é".repeat(101);
+
+        let truncated = truncate_last_message(&content);
+
+        assert_eq!(truncated, format!("{}...", "é".repeat(100)));
     }
 
     #[tokio::test]
