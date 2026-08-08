@@ -1,6 +1,15 @@
 import type { Project, ProjectGroup, Task, TaskExecutionTarget } from '../types';
-import { getProjectGroupByProjectId, getSubProjectsForGroup } from './globalProjects';
+import {
+  getAllProjects,
+  getProjectGroupByProjectId,
+  getScopedProjectIds,
+  getSubProjectsForGroup,
+} from './globalProjects';
 import { isManualDraftPendingInitialization } from './manualDraftInitialization';
+import {
+  collectKnownProjectIds,
+  retargetTaskForExecution,
+} from './projectIdentityReconciliation';
 
 export type LastManualProjectIdByTaskId = Record<string, string>;
 
@@ -23,6 +32,7 @@ interface ResolvePreferredManualProjectIdParams {
 }
 
 interface ResolveTerminalGroupIdParams {
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null | undefined;
   selectedProjectId: string | null | undefined;
@@ -31,6 +41,16 @@ interface ResolveTerminalGroupIdParams {
 
 interface ResolveSelectedTaskTerminalScopeParams extends ResolveTerminalGroupIdParams {
   lastManualProjectIdByTaskId: LastManualProjectIdByTaskId | null | undefined;
+}
+
+export interface ResolvedTerminalProject {
+  projectId: string;
+  project: Project;
+}
+
+export interface ResolveTerminalProjectForRequestedIdParams extends ResolveTerminalGroupIdParams {
+  requestedProjectId: string;
+  lastManualProjectIdByTaskId?: LastManualProjectIdByTaskId | null;
 }
 
 const uniqueProjectIds = (values: Array<string | null | undefined>): string[] => {
@@ -52,6 +72,32 @@ const uniqueProjectIds = (values: Array<string | null | undefined>): string[] =>
   });
 
   return result;
+};
+
+const resolveSelectedScopeProjectIds = (params: ResolveTerminalGroupIdParams): string[] => {
+  return getScopedProjectIds(
+    {
+      standaloneProjects: params.standaloneProjects ?? [],
+      projectGroups: params.projectGroups,
+    },
+    params.selectedGroupId,
+    params.selectedProjectId
+  );
+};
+
+const retargetTerminalTask = (
+  params: ResolveTerminalGroupIdParams
+): TaskWithTargets | null | undefined => {
+  if (!params.selectedTask) {
+    return params.selectedTask;
+  }
+  return retargetTaskForExecution(params.selectedTask, {
+    scopedProjectIds: resolveSelectedScopeProjectIds(params),
+    knownProjectIds: collectKnownProjectIds({
+      standaloneProjects: params.standaloneProjects,
+      projectGroups: params.projectGroups,
+    }),
+  });
 };
 
 export const getTaskProjectIds = (task: TaskWithTargets | null | undefined): string[] =>
@@ -91,7 +137,8 @@ export const resolvePreferredManualProjectId = (
 export const resolveTerminalGroupId = (
   params: ResolveTerminalGroupIdParams
 ): string | null => {
-  const taskProjectIds = getTaskProjectIds(params.selectedTask);
+  const selectedTask = retargetTerminalTask(params);
+  const taskProjectIds = getTaskProjectIds(selectedTask);
 
   if (params.selectedGroupId) {
     const selectedGroupProjectIds = new Set(
@@ -121,12 +168,13 @@ export const resolveSelectedTaskTerminalScope = (
     return null;
   }
 
-  const taskId = params.selectedTask?.id?.trim();
+  const selectedTask = retargetTerminalTask(params);
+  const taskId = selectedTask?.id?.trim();
   if (!taskId) {
     return null;
   }
 
-  const taskProjectIds = getTaskProjectIds(params.selectedTask);
+  const taskProjectIds = getTaskProjectIds(selectedTask);
   if (taskProjectIds.length === 0) {
     return null;
   }
@@ -137,8 +185,10 @@ export const resolveSelectedTaskTerminalScope = (
   const scopedProjects =
     groupProjects.length > 0
       ? groupProjects.filter((project) => allowedProjectIds.has(project.id))
-      : params.projectGroups
-          .flatMap((group) => group.projects)
+      : [
+          ...(params.standaloneProjects ?? []),
+          ...params.projectGroups.flatMap((group) => group.projects),
+        ]
           .filter((project) => allowedProjectIds.has(project.id));
   const actionableScopedProjects = scopedProjects.filter((project) => !project.isReadOnly);
   const terminalProjects =
@@ -175,6 +225,50 @@ export const resolveSelectedTaskTerminalScope = (
     scopedProjectIds,
     projects: terminalProjects,
   };
+};
+
+export const resolveTerminalProjectForRequestedId = (
+  params: ResolveTerminalProjectForRequestedIdParams
+): ResolvedTerminalProject | null => {
+  const requestedProjectId = params.requestedProjectId.trim();
+  if (!requestedProjectId) {
+    return null;
+  }
+
+  const allProjects = getAllProjects({
+    standaloneProjects: params.standaloneProjects ?? [],
+    projectGroups: params.projectGroups,
+  });
+  const directProject = allProjects.find((project) => project.id === requestedProjectId) ?? null;
+  if (directProject) {
+    return { projectId: directProject.id, project: directProject };
+  }
+
+  const rawTaskProjectIds = getTaskProjectIds(params.selectedTask);
+  if (!rawTaskProjectIds.includes(requestedProjectId)) {
+    return null;
+  }
+
+  const fallbackScope = resolveSelectedTaskTerminalScope({
+    standaloneProjects: params.standaloneProjects,
+    projectGroups: params.projectGroups,
+    selectedGroupId: params.selectedGroupId,
+    selectedProjectId: params.selectedProjectId,
+    selectedTask: params.selectedTask,
+    lastManualProjectIdByTaskId: params.lastManualProjectIdByTaskId ?? null,
+  });
+  const fallbackProjectId =
+    fallbackScope && fallbackScope.scopedProjectIds.length === 1
+      ? fallbackScope.preferredProjectId
+      : null;
+  if (!fallbackProjectId) {
+    return null;
+  }
+
+  const fallbackProject = allProjects.find((project) => project.id === fallbackProjectId) ?? null;
+  return fallbackProject
+    ? { projectId: fallbackProject.id, project: fallbackProject }
+    : null;
 };
 
 export const getTerminalScopeKey = (taskId: string, projectId: string): string =>

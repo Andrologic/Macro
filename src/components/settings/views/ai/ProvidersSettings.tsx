@@ -113,6 +113,7 @@ export const ProvidersSettings: React.FC = () => {
     null
   );
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [refreshingCopilotProviderIds, setRefreshingCopilotProviderIds] = useState<string[]>([]);
   const [revealingProviderId, setRevealingProviderId] = useState<string | null>(null);
@@ -499,7 +500,9 @@ export const ProvidersSettings: React.FC = () => {
       setIsCreating(false);
     } catch (error) {
       console.error('Failed to save provider:', error);
-      notify.error(t('errors.saveFailed', 'Failed to save provider'));
+      notify.error(
+        getErrorMessage(error, t('errors.saveFailed', 'Failed to save provider'))
+      );
     } finally {
       setSaving(false);
     }
@@ -537,11 +540,20 @@ export const ProvidersSettings: React.FC = () => {
   };
 
   const handleDelete = async () => {
-    if (!editingProvider || isCreating) return;
-    await deleteProviderConfig(editingProvider.id);
-    setEditingProvider(null);
-    setIsDeleteConfirmOpen(false);
-    notify.success(t('providers.deleted', 'Provider deleted'));
+    if (!editingProvider || isCreating || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteProviderConfig(editingProvider.id);
+      setEditingProvider(null);
+      setIsDeleteConfirmOpen(false);
+      notify.success(t('providers.deleted', 'Provider deleted'));
+    } catch (error) {
+      notify.error(
+        getErrorMessage(error, t('errors.generic', 'Failed to delete provider'))
+      );
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleRevealApiKey = async () => {
@@ -686,6 +698,7 @@ export const ProvidersSettings: React.FC = () => {
                 </span>
                 <Switch
                   checked={editingProvider.isEnabled}
+                  aria-label={t('common.enabled', 'Enabled')}
                   onCheckedChange={(checked) =>
                     setEditingProvider({ ...editingProvider, isEnabled: checked })
                   }
@@ -732,7 +745,7 @@ export const ProvidersSettings: React.FC = () => {
                         editingProvider.hasStoredApiKey &&
                         !editingProvider.apiKeyLoaded &&
                         !editingProvider.apiKeyTouched
-                          ? t('providers.form.apiKeyStoredPlaceholder', 'Stored in Keychain')
+                          ? t('providers.form.apiKeyStoredPlaceholder', 'Stored locally by Macro')
                           : t('providers.form.apiKeyPlaceholder', 'sk-...')
                       }
                       className="pr-10 font-mono"
@@ -766,7 +779,7 @@ export const ProvidersSettings: React.FC = () => {
                     editingProvider.hasStoredApiKey &&
                     !editingProvider.apiKeyTouched && (
                       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span>{t('providers.form.apiKeyStoredHint', 'This key is stored in the system keychain.')}</span>
+                        <span>{t('providers.form.apiKeyStoredHint', 'This key is stored locally by Macro.')}</span>
                         <Button variant="ghost" size="sm" onClick={handleReplaceApiKey}>
                           {t('providers.form.replaceApiKey', 'Replace')}
                         </Button>
@@ -860,7 +873,12 @@ export const ProvidersSettings: React.FC = () => {
           confirmLabel={t('common.delete', 'Delete')}
           cancelLabel={t('common.cancel', 'Cancel')}
           confirmVariant="error"
-          onCancel={() => setIsDeleteConfirmOpen(false)}
+          isSubmitting={deleting}
+          onCancel={() => {
+            if (!deleting) {
+              setIsDeleteConfirmOpen(false);
+            }
+          }}
           onConfirm={() => {
             void handleDelete();
           }}
@@ -1056,7 +1074,21 @@ export const ProvidersSettings: React.FC = () => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => void cancelCopilotRuntimeDownload(provider.id)}
+                        onClick={async () => {
+                          try {
+                            await cancelCopilotRuntimeDownload(provider.id);
+                          } catch (error) {
+                            notify.error(
+                              getErrorMessage(
+                                error,
+                                t(
+                                  'providers.failedConnectCopilot',
+                                  'Failed to cancel the Copilot runtime download'
+                                )
+                              )
+                            );
+                          }
+                        }}
                       >
                         {t('common.cancel', 'Cancel')}
                       </Button>
@@ -1266,7 +1298,21 @@ export const ProvidersSettings: React.FC = () => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => void cancelCopilotAuth(provider.id)}
+                        onClick={async () => {
+                          try {
+                            await cancelCopilotAuth(provider.id);
+                          } catch (error) {
+                            notify.error(
+                              getErrorMessage(
+                                error,
+                                t(
+                                  'providers.failedConnectCopilot',
+                                  'Failed to cancel Copilot login'
+                                )
+                              )
+                            );
+                          }
+                        }}
                       >
                         {t('common.cancel', 'Cancel')}
                       </Button>

@@ -1,18 +1,11 @@
-export type DataProvider = 'mock' | 'ipc';
+export type DataProvider = 'ipc';
 export type ServiceTransport = 'desktop' | 'remote';
 export type ServiceProviderName = DataProvider | 'remote';
 
-export interface ServiceRuntimeWarning {
-  code: 'REMOTE_PROVIDER_IGNORED' | 'IPC_FALLBACK_TO_MOCK';
-  message: string;
-}
-
 export interface ResolvedServiceRuntime {
   requestedTransport: ServiceTransport;
-  requestedProvider: DataProvider | null;
   effectiveTransport: ServiceTransport;
   effectiveProvider: ServiceProviderName;
-  warnings: ServiceRuntimeWarning[];
 }
 
 export interface ServiceRuntimeCapabilities {
@@ -33,11 +26,16 @@ export interface ServiceRuntimeCapabilities {
   taskMutation: boolean;
   implementExecution: boolean;
   taskProjectCommands: boolean;
+  skills: boolean;
+  skillScripts: boolean;
+  skillCreation: boolean;
 }
 
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE = 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE';
 export const REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE =
   'This action is not available in remote mode yet.';
+export const DESKTOP_IPC_UNAVAILABLE_MESSAGE =
+  'Macro desktop features require Tauri IPC. Run the Tauri desktop app; remote mode is not available in Macro 0.1.';
 
 const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   bootstrap: true,
@@ -57,6 +55,9 @@ const DESKTOP_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: true,
   implementExecution: true,
   taskProjectCommands: true,
+  skills: true,
+  skillScripts: true,
+  skillCreation: true,
 };
 
 const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
@@ -77,11 +78,74 @@ const REMOTE_MINIMAL_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
   taskMutation: false,
   implementExecution: false,
   taskProjectCommands: false,
+  skills: false,
+  skillScripts: false,
+  skillCreation: false,
 };
 
-const detectTauriRuntime = (): boolean =>
-  typeof window !== 'undefined' &&
-  ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
+const NO_RUNTIME_CAPABILITIES: ServiceRuntimeCapabilities = {
+  bootstrap: false,
+  taskCatalog: false,
+  gitTree: false,
+  gitHistory: false,
+  toolPolicy: false,
+  toolValidation: false,
+  toolExecution: false,
+  toolSettings: false,
+  mcpServerSettings: false,
+  projectMutation: false,
+  projectGitSetupPreview: false,
+  projectAccessPreview: false,
+  gitWorktrees: false,
+  gitFilePreview: false,
+  taskMutation: false,
+  implementExecution: false,
+  taskProjectCommands: false,
+  skills: false,
+  skillScripts: false,
+  skillCreation: false,
+};
+
+let remoteRuntimeCapabilityOverrides: Partial<ServiceRuntimeCapabilities> = {};
+
+const normalizeCapabilityOverrides = (
+  capabilities?: Record<string, unknown> | null
+): Partial<ServiceRuntimeCapabilities> => {
+  if (!capabilities) {
+    return {};
+  }
+  return (Object.keys(REMOTE_MINIMAL_RUNTIME_CAPABILITIES) as Array<keyof ServiceRuntimeCapabilities>)
+    .reduce<Partial<ServiceRuntimeCapabilities>>((acc, key) => {
+      if (typeof capabilities[key] === 'boolean') {
+        acc[key] = capabilities[key];
+      }
+      return acc;
+    }, {});
+};
+
+export const setRemoteRuntimeCapabilityOverrides = (
+  capabilities?: Record<string, unknown> | null
+): void => {
+  remoteRuntimeCapabilityOverrides = normalizeCapabilityOverrides(capabilities);
+};
+
+export const clearRemoteRuntimeCapabilityOverrides = (): void => {
+  remoteRuntimeCapabilityOverrides = {};
+};
+
+const hasTauriIpcInvoke = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const tauriWindow = window as Window & {
+    __TAURI_INTERNALS__?: {
+      invoke?: unknown;
+    } | null;
+  };
+
+  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+};
 
 const readEnv = (
   key: string,
@@ -111,75 +175,61 @@ const readEnv = (
 const toTransport = (value?: string): ServiceTransport =>
   value === 'remote' ? 'remote' : 'desktop';
 
-const toProvider = (value?: string): DataProvider | null => {
-  if (value === 'mock' || value === 'ipc') {
-    return value;
-  }
-
-  return null;
-};
-
 export const resolveServiceRuntime = (options?: {
   env?: Record<string, string | undefined>;
   tauriAvailable?: boolean;
 }): ResolvedServiceRuntime => {
   const requestedTransport = toTransport(readEnv('VITE_BACKEND_TRANSPORT', options?.env));
-  const requestedProvider = toProvider(readEnv('VITE_DATA_PROVIDER', options?.env));
-  const tauriAvailable = options?.tauriAvailable ?? detectTauriRuntime();
-  const warnings: ServiceRuntimeWarning[] = [];
+  const tauriAvailable = options?.tauriAvailable ?? hasTauriIpcInvoke();
 
   if (requestedTransport === 'remote') {
-    if (requestedProvider) {
-      warnings.push({
-        code: 'REMOTE_PROVIDER_IGNORED',
-        message:
-          requestedProvider === 'mock'
-            ? 'VITE_DATA_PROVIDER=mock is ignored when VITE_BACKEND_TRANSPORT=remote; using the remote provider instead.'
-            : 'VITE_DATA_PROVIDER is ignored when VITE_BACKEND_TRANSPORT=remote; using the remote provider instead.',
-      });
-    }
-
     return {
       requestedTransport,
-      requestedProvider,
       effectiveTransport: 'remote',
       effectiveProvider: 'remote',
-      warnings,
     };
   }
 
-  const defaultProvider: DataProvider = tauriAvailable ? 'ipc' : 'mock';
-  const requestedOrDefaultProvider = requestedProvider ?? defaultProvider;
-  const effectiveProvider =
-    requestedOrDefaultProvider === 'ipc' && !tauriAvailable ? 'mock' : requestedOrDefaultProvider;
-
-  if (requestedOrDefaultProvider === 'ipc' && !tauriAvailable) {
-    warnings.push({
-      code: 'IPC_FALLBACK_TO_MOCK',
-      message: 'Tauri IPC is unavailable in this runtime; falling back to the mock provider.',
-    });
+  if (!tauriAvailable) {
+    throw new Error(DESKTOP_IPC_UNAVAILABLE_MESSAGE);
   }
 
   return {
     requestedTransport,
-    requestedProvider,
     effectiveTransport: 'desktop',
-    effectiveProvider,
-    warnings,
+    effectiveProvider: 'ipc',
   };
 };
 
 export const getServiceRuntime = (): ResolvedServiceRuntime => resolveServiceRuntime();
 
 export const resolveServiceRuntimeCapabilities = (
-  runtime: ResolvedServiceRuntime = resolveServiceRuntime()
-): ServiceRuntimeCapabilities =>
-  runtime.effectiveTransport === 'remote'
-    ? REMOTE_MINIMAL_RUNTIME_CAPABILITIES
+  runtime?: ResolvedServiceRuntime
+): ServiceRuntimeCapabilities => {
+  const resolvedRuntime = runtime ?? resolveServiceRuntime();
+  return resolvedRuntime.effectiveTransport === 'remote'
+    ? {
+        ...REMOTE_MINIMAL_RUNTIME_CAPABILITIES,
+        ...remoteRuntimeCapabilityOverrides,
+      }
     : DESKTOP_RUNTIME_CAPABILITIES;
+};
 
-export const getServiceRuntimeCapabilities = (): ServiceRuntimeCapabilities =>
-  resolveServiceRuntimeCapabilities();
+export const getServiceRuntimeCapabilities = (options?: {
+  env?: Record<string, string | undefined>;
+  tauriAvailable?: boolean;
+}): ServiceRuntimeCapabilities => {
+  try {
+    return resolveServiceRuntimeCapabilities(
+      options ? resolveServiceRuntime(options) : undefined
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === DESKTOP_IPC_UNAVAILABLE_MESSAGE) {
+      return NO_RUNTIME_CAPABILITIES;
+    }
+    throw error;
+  }
+};
 
 export const isRemoteServiceRuntime = (
   runtime: ResolvedServiceRuntime = resolveServiceRuntime()

@@ -1,4 +1,4 @@
-import type { Project, ProjectGroup } from '../types';
+import type { Project, ProjectGroup, ProjectRegistry } from '../types';
 import i18n from '../i18n';
 import { DEFAULT_LANGUAGE, resolveSupportedLanguage } from '../i18n/languages';
 import { getProjectGroupByProjectId, resolveExplicitProjectIdForGroup } from './globalProjects';
@@ -6,7 +6,7 @@ import { assignMountNamesToProjectGroups } from './projectMounts';
 
 export interface RememberedProjectRecord {
   projectId: string;
-  groupId: string;
+  groupId: string | null;
   name: string;
   path: string;
   lastOpenedAt: string;
@@ -25,14 +25,18 @@ export interface ProjectRegistryRepairReport {
 }
 
 export interface NormalizeProjectRegistryResult {
+  standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   report: ProjectRegistryRepairReport;
 }
 
-const normalizePath = (value: string): string =>
-  value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const normalizePath = (value: string): string => {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  const isWindowsPath = /^(?:[a-z]:\/|\/\/)/i.test(normalized);
+  return isWindowsPath ? normalized.toLowerCase() : normalized;
+};
 
 const isSyntheticGroupId = (value: string | null | undefined): boolean =>
   Boolean(value && value.startsWith('session-group-'));
@@ -42,6 +46,22 @@ const isSyntheticProjectId = (value: string | null | undefined): boolean =>
 
 export const countProjectsInRegistry = (groups: ProjectGroup[]): number =>
   groups.reduce((total, group) => total + group.projects.length, 0);
+
+export const countProjectsInProjectRegistry = (registry: ProjectRegistry): number =>
+  registry.standaloneProjects.length + countProjectsInRegistry(registry.projectGroups);
+
+export const getAllProjectsInRegistry = (registry: ProjectRegistry): Project[] => [
+  ...registry.standaloneProjects,
+  ...registry.projectGroups.flatMap((group) => group.projects),
+];
+
+const toRegistry = (input: ProjectRegistry | ProjectGroup[]): ProjectRegistry =>
+  Array.isArray(input)
+    ? { standaloneProjects: [], projectGroups: input }
+    : {
+        standaloneProjects: input.standaloneProjects ?? [],
+        projectGroups: input.projectGroups ?? [],
+      };
 
 const resolveRegistrySummaryLanguage = () => {
   if (typeof document !== 'undefined') {
@@ -98,6 +118,7 @@ const interpolate = (template: string, values: Record<string, string | number>):
   template.replace(/\{\{(\w+)\}\}/g, (_match, key) => String(values[key] ?? ''));
 
 export const normalizeProjectRegistry = (params: {
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -109,6 +130,30 @@ export const normalizeProjectRegistry = (params: {
   let emptyGroupsRemoved = 0;
   let removedSyntheticGroups = 0;
   let removedSyntheticProjects = 0;
+
+  const nextStandaloneProjects: Project[] = [];
+  for (const project of params.standaloneProjects ?? []) {
+    if (isSyntheticProjectId(project.id)) {
+      removedSyntheticProjects += 1;
+      removedProjectIds.push(project.id);
+      continue;
+    }
+
+    const normalizedPath = normalizePath(project.path);
+    if (!normalizedPath) {
+      removedProjectIds.push(project.id);
+      continue;
+    }
+
+    if (seenPaths.has(normalizedPath)) {
+      duplicatePathsRemoved += 1;
+      removedProjectIds.push(project.id);
+      continue;
+    }
+
+    seenPaths.add(normalizedPath);
+    nextStandaloneProjects.push(project);
+  }
 
   const nextProjectGroups = params.projectGroups
     .map((group) => {
@@ -147,6 +192,11 @@ export const normalizeProjectRegistry = (params: {
         return null;
       }
 
+      if (nextProjects.length === 1) {
+        nextStandaloneProjects.push(nextProjects[0]);
+        return null;
+      }
+
       return {
         ...group,
         projects: nextProjects,
@@ -154,6 +204,14 @@ export const normalizeProjectRegistry = (params: {
     })
     .filter((group): group is ProjectGroup => Boolean(group));
 
+  const normalizedStandaloneProjects = assignMountNamesToProjectGroups([
+    {
+      id: '__standalone__',
+      name: '__standalone__',
+      isOpen: true,
+      projects: nextStandaloneProjects,
+    },
+  ])[0]?.projects ?? [];
   const normalizedProjectGroups = assignMountNamesToProjectGroups(nextProjectGroups);
 
   const requestedSelectedProjectId =
@@ -169,10 +227,18 @@ export const normalizeProjectRegistry = (params: {
   let selectedProjectId: string | null = null;
 
   if (requestedSelectedProjectId) {
-    const groupForProject = getProjectGroupByProjectId(
+    const standaloneProject = normalizedStandaloneProjects.find(
+      (project) => project.id === requestedSelectedProjectId
+    );
+    if (standaloneProject) {
+      selectedGroupId = null;
+      selectedProjectId = standaloneProject.id;
+    }
+
+    const groupForProject = !standaloneProject ? getProjectGroupByProjectId(
       normalizedProjectGroups,
       requestedSelectedProjectId
-    );
+    ) : null;
     if (groupForProject) {
       selectedGroupId = groupForProject.id;
       selectedProjectId = requestedSelectedProjectId;
@@ -187,7 +253,14 @@ export const normalizeProjectRegistry = (params: {
   }
 
   if (!selectedGroupId) {
-    selectedGroupId = normalizedProjectGroups[0]?.id ?? null;
+    if (!selectedProjectId) {
+      const firstStandaloneProject = normalizedStandaloneProjects[0] ?? null;
+      if (firstStandaloneProject) {
+        selectedProjectId = firstStandaloneProject.id;
+      } else if (normalizedProjectGroups[0]) {
+        selectedGroupId = normalizedProjectGroups[0].id;
+      }
+    }
   }
 
   if (selectedGroupId) {
@@ -223,6 +296,7 @@ export const normalizeProjectRegistry = (params: {
   };
 
   return {
+    standaloneProjects: normalizedStandaloneProjects,
     projectGroups: normalizedProjectGroups,
     selectedGroupId,
     selectedProjectId,
@@ -231,34 +305,71 @@ export const normalizeProjectRegistry = (params: {
 };
 
 export const reconcileRememberedProjects = (
-  projectGroups: ProjectGroup[],
-  rememberedProjects: RememberedProjectRecord[]
+  projectRegistry: ProjectRegistry | ProjectGroup[],
+  rememberedProjects: RememberedProjectRecord[],
+  options: { preserveUnmatched?: boolean } = {}
 ): RememberedProjectRecord[] => {
-  const projectById = new Map(
-    projectGroups.flatMap((group) =>
-      group.projects.map((project) => [
-        project.id,
-        {
-          groupId: group.id,
-          name: project.name,
-          path: project.path,
-        },
-      ] as const)
-    )
-  );
-  const groupByPath = new Map(
-    projectGroups.flatMap((group) =>
-      group.projects.map((project) => [
-        normalizePath(project.path),
-        {
-          projectId: project.id,
-          groupId: group.id,
-          name: project.name,
-          path: project.path,
-        },
-      ] as const)
-    )
-  );
+  const registry = toRegistry(projectRegistry);
+  const projectById = new Map<
+    string,
+    { groupId: string | null; name: string; path: string }
+  >([
+    ...registry.standaloneProjects.map(
+      (project) =>
+        [
+          project.id,
+          {
+            groupId: null,
+            name: project.name,
+            path: project.path,
+          },
+        ] as const
+    ),
+    ...registry.projectGroups.flatMap((group) =>
+      group.projects.map(
+        (project) =>
+          [
+            project.id,
+            {
+              groupId: group.id,
+              name: project.name,
+              path: project.path,
+            },
+          ] as const
+      )
+    ),
+  ]);
+  const groupByPath = new Map<
+    string,
+    { projectId: string; groupId: string | null; name: string; path: string }
+  >([
+    ...registry.standaloneProjects.map(
+      (project) =>
+        [
+          normalizePath(project.path),
+          {
+            projectId: project.id,
+            groupId: null,
+            name: project.name,
+            path: project.path,
+          },
+        ] as const
+    ),
+    ...registry.projectGroups.flatMap((group) =>
+      group.projects.map(
+        (project) =>
+          [
+            normalizePath(project.path),
+            {
+              projectId: project.id,
+              groupId: group.id,
+              name: project.name,
+              path: project.path,
+            },
+          ] as const
+      )
+    ),
+  ]);
   const seenKeys = new Set<string>();
 
   return rememberedProjects.flatMap((remembered) => {
@@ -278,7 +389,22 @@ export const reconcileRememberedProjects = (
       : byPath;
 
     if (!resolved) {
-      return [];
+      if (!options.preserveUnmatched) {
+        return [];
+      }
+
+      const normalizedRememberedPath = normalizePath(remembered.path);
+      if (!remembered.projectId.trim() || !normalizedRememberedPath) {
+        return [];
+      }
+
+      const key = `${remembered.projectId}:${normalizedRememberedPath}`;
+      if (seenKeys.has(key)) {
+        return [];
+      }
+      seenKeys.add(key);
+
+      return [remembered];
     }
 
     const key = `${resolved.projectId}:${normalizePath(resolved.path)}`;
@@ -338,14 +464,14 @@ export const resolveCanonicalProjectGroup = (
 };
 
 export const resolveCanonicalProject = (
-  projectGroups: ProjectGroup[],
+  projectRegistry: ProjectRegistry | ProjectGroup[],
   targetProject: Pick<Project, 'id' | 'name' | 'path'> | null | undefined
 ): Project | null => {
   if (!targetProject) {
     return null;
   }
 
-  const allProjects = projectGroups.flatMap((group) => group.projects);
+  const allProjects = getAllProjectsInRegistry(toRegistry(projectRegistry));
   const directMatch = allProjects.find((project) => project.id === targetProject.id) ?? null;
   if (directMatch) {
     return directMatch;

@@ -1,6 +1,7 @@
 import type {
   Plan,
   ProjectGroup,
+  ProjectRegistry,
   PlanNode,
   PredictedBranch,
   Conversation,
@@ -11,6 +12,7 @@ import type {
   AIModel,
   Project,
   MCPServer,
+  SkillManifest,
 } from '../../types';
 import type {
   CatalogedImplementTask,
@@ -20,9 +22,12 @@ import type {
 
 export interface AppBootstrapDto {
   plan: Plan | null;
+  standaloneProjects?: ProjectRegistry['standaloneProjects'];
   projectGroups: ProjectGroup[];
   planNodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
+  runtimeCapabilities?: Record<string, boolean>;
+  capabilities?: Record<string, boolean>;
 }
 
 export interface ConversationsDto {
@@ -82,7 +87,22 @@ export interface ToolSettingsDto {
 }
 
 export interface MCPServerSettingsDto {
-  servers: Record<string, MCPServer>;
+  servers: Record<string, MCPServer | boolean | Record<string, unknown>>;
+}
+
+export interface SkillListDto {
+  skills: SkillManifest[];
+}
+
+export interface SkillDetailDto {
+  skill: SkillManifest;
+  body: string;
+}
+
+export interface SkillResourceReadDto {
+  skillId: string;
+  path: string;
+  content: string;
 }
 
 export interface ChatCompletionRequestDto {

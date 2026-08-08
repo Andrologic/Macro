@@ -73,7 +73,30 @@ describe('macroMetadataCoordinator', () => {
     });
   });
 
-  it('debounces structural mutations into one local checkpoint', async () => {
+  it('skips WSL workspace metadata flushes', async () => {
+    recordMacroMetadataMutation({
+      workspacePath: '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo',
+      kind: 'plan_updated',
+      label: 'wsl-plan',
+      importance: 'structural',
+    }, deps);
+
+    await flushMacroMetadata({
+      trigger: 'code_push',
+      workspacePaths: [
+        '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo',
+        '/repos/web',
+      ],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
+
+  it('commits structural mutations immediately', async () => {
     recordMacroMetadataMutation({
       workspacePath: '/repos/web',
       kind: 'plan_updated',
@@ -89,8 +112,12 @@ describe('macroMetadataCoordinator', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
     expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toEqual({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): update plan first-plan',
+    });
+    expect(macroBranchCommitIfDirtyMock.mock.calls[1]?.[0]).toEqual({
       workspacePath: '/repos/web',
       message: 'chore(@macro): update plan final-plan',
     });

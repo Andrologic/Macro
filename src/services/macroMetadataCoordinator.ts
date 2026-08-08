@@ -1,4 +1,5 @@
 import * as tauriIpc from './tauriIpc';
+import { isWslProjectPath } from './wslPaths';
 
 type MacroMetadataTauri = Pick<
   typeof tauriIpc,
@@ -56,7 +57,7 @@ interface MacroMetadataCoordinatorDeps {
   debounceMs?: number;
 }
 
-export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 15000;
+export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 0;
 
 const pendingMutations = new Map<string, PendingMacroMetadataMutation>();
 
@@ -134,6 +135,7 @@ export const recordMacroMetadataMutation = (
 ): void => {
   const workspacePath = normalizeWorkspacePath(mutation.workspacePath);
   if (!workspacePath) return;
+  if (isWslProjectPath(workspacePath)) return;
 
   const { tauri, debounceMs } = getDeps(deps);
   if (!tauri.isTauriAvailable()) return;
@@ -172,6 +174,14 @@ export const recordMacroMetadataMutation = (
 
   pendingMutations.set(workspacePath, next);
 
+  if (debounceMs <= 0) {
+    void flushMacroMetadata({
+      trigger: 'debounced_structural',
+      workspacePaths: [workspacePath],
+    }, deps);
+    return;
+  }
+
   next.timer = setTimeout(() => {
     void flushMacroMetadata({
       trigger: 'debounced_structural',
@@ -187,12 +197,21 @@ export const flushMacroMetadata = async (
   const { tauri } = getDeps(deps);
   if (!tauri.isTauriAvailable()) return [];
 
-  const workspacePaths = Array.from(
+  const normalizedWorkspacePaths = Array.from(
     new Set(
       request.workspacePaths
         .map((workspacePath) => normalizeWorkspacePath(workspacePath))
         .filter((workspacePath): workspacePath is string => Boolean(workspacePath))
     )
+  );
+  for (const workspacePath of normalizedWorkspacePaths) {
+    if (!isWslProjectPath(workspacePath)) continue;
+    const pending = pendingMutations.get(workspacePath);
+    clearPendingTimer(pending);
+    pendingMutations.delete(workspacePath);
+  }
+  const workspacePaths = normalizedWorkspacePaths.filter(
+    (workspacePath) => !isWslProjectPath(workspacePath)
   );
 
   const results: tauriIpc.MacroBranchSyncDto[] = [];

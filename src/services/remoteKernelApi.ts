@@ -16,8 +16,13 @@ interface RemoteToolValidation {
 const remoteKernelRequest = async <T>(path: string, options: RequestInit = {}): Promise<T> =>
   remoteRequest<T>(path, options);
 
-export const canUseRemoteKernel = (): boolean =>
-  isRemoteServiceRuntime() && resolveRemoteConfig() !== null;
+export const canUseRemoteKernel = (): boolean => {
+  try {
+    return isRemoteServiceRuntime() && resolveRemoteConfig() !== null;
+  } catch {
+    return false;
+  }
+};
 
 export const getRemoteToolModePolicy = async (mode: AppMode): Promise<RemoteToolModePolicy> => {
   return remoteKernelRequest<RemoteToolModePolicy>(

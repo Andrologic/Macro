@@ -10,7 +10,17 @@ import {
   $nodesOfType,
 } from 'lexical';
 import { useChatStore } from '../../../stores/useChatStore';
+import type { ContextRefKind } from '../../../types';
 import { MentionNode, $createMentionNode, $isMentionNode } from './MentionNode';
+
+interface InsertedComposerRef {
+  id: string;
+  kind: ContextRefKind;
+  title: string;
+}
+
+const getComposerRefKey = (kind: ContextRefKind, id: string): string =>
+  JSON.stringify([kind, id]);
 
 /**
  * MentionPlugin — watches composerContextRefs in the store
@@ -18,21 +28,35 @@ import { MentionNode, $createMentionNode, $isMentionNode } from './MentionNode';
  */
 export const MentionPlugin: React.FC = () => {
   const [editor] = useLexicalComposerContext();
-  const insertedKeysRef = useRef<Set<string>>(new Set());
+  const insertedRefsRef = useRef<Map<string, InsertedComposerRef>>(new Map());
 
   const composerContextRefs = useChatStore((s) => s.composerContextRefs);
 
   // Insert new chips at the cursor position
   useEffect(() => {
-    const currentKeys = new Set(composerContextRefs.map((r) => `${r.kind}-${r.id}`));
+    const currentKeys = new Set(composerContextRefs.map((r) => getComposerRefKey(r.kind, r.id)));
 
     // Insert any new refs
     for (const ref of composerContextRefs) {
-      const key = `${ref.kind}-${ref.id}`;
-      if (insertedKeysRef.current.has(key)) continue;
-      insertedKeysRef.current.add(key);
+      const key = getComposerRefKey(ref.kind, ref.id);
+      if (insertedRefsRef.current.has(key)) continue;
+      insertedRefsRef.current.set(key, {
+        id: ref.id,
+        kind: ref.kind,
+        title: ref.title,
+      });
 
       editor.update(() => {
+        const existingMention = $nodesOfType(MentionNode).some(
+          (node) =>
+            $isMentionNode(node) &&
+            node.getKind() === ref.kind &&
+            node.getRefId() === ref.id
+        );
+        if (existingMention) {
+          return;
+        }
+
         const mentionNode = $createMentionNode(ref.kind, ref.id, ref.title);
         const spaceAfter = $createTextNode(' ');
 
@@ -55,17 +79,18 @@ export const MentionPlugin: React.FC = () => {
     }
 
     // Remove chips that were removed from the store
-    for (const key of insertedKeysRef.current) {
+    for (const [key, insertedRef] of insertedRefsRef.current) {
       if (!currentKeys.has(key)) {
-        insertedKeysRef.current.delete(key);
+        insertedRefsRef.current.delete(key);
         // Remove from editor
-        const [kind] = key.split('-');
-        // Reconstruct id (it may contain dashes)
-        const refId = key.substring(kind.length + 1);
         editor.update(() => {
           const mentions = $nodesOfType(MentionNode);
           for (const node of mentions) {
-            if ($isMentionNode(node) && node.__refId === refId && node.__kind === kind) {
+            if (
+              $isMentionNode(node) &&
+              node.getKind() === insertedRef.kind &&
+              node.getRefId() === insertedRef.id
+            ) {
               node.remove();
               break;
             }

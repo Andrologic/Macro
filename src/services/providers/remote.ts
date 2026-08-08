@@ -12,6 +12,9 @@ import type {
   ProjectDto,
   DebugResetProjectReportDto,
   ProvidersDto,
+  SkillDetailDto,
+  SkillListDto,
+  SkillResourceReadDto,
   TaskCatalogDto,
   ToolSettingsDto,
 } from '../contracts/dtos';
@@ -20,13 +23,14 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  SkillScriptRunResult,
 } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import {
   buildMCPServerSettingsPayload,
   buildToolSettingsPayload,
-  normalizeMCPServerEnablementInput,
-  writeStoredMCPServerEnablement,
+  normalizeMCPServerSettingsInput,
+  writeStoredMCPServers,
   writeStoredToolEnablement,
 } from './clientSettingsStorage';
 import {
@@ -35,6 +39,7 @@ import {
   remoteRequest,
   remoteUnsupported,
 } from './remoteHttp';
+import { REMOTE_UNSUPPORTED_IN_REMOTE_MODE } from '../serviceRuntime';
 
 export { resolveRemoteConfig } from './remoteHttp';
 
@@ -63,7 +68,8 @@ export const gitWorktreeCreate = async (
   _taskId: string,
   _branchName: string,
   _fromRef?: string | null,
-  _preferredCommitBranch?: string | null
+  _preferredCommitBranch?: string | null,
+  _fallbackBranches?: string[] | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -111,6 +117,7 @@ export const detectProjectGitFlow = async (_data: {
 
 export const previewProjectGitSetup = async (_data: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> => remoteUnsupported('previewProjectGitSetup');
 
 export const createProject = async (_data: {
@@ -120,6 +127,7 @@ export const createProject = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectDto> => remoteUnsupported('createProject');
 
 export const createProjectWithGitSetup = async (_data: {
@@ -133,7 +141,21 @@ export const createProjectWithGitSetup = async (_data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createProjectWithGitSetup');
+
+export const createNewProjectRepo = async (_data: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
+}): Promise<ProjectGitSetupCommitResult> => remoteUnsupported('createNewProjectRepo');
+
+export const cancelProjectOperation = async (_requestId: string): Promise<boolean> =>
+  remoteUnsupported('cancelProjectOperation');
 
 export const importGitRepo = async (_data: {
   gitUrl: string;
@@ -149,6 +171,12 @@ export const renameProjectGroup = async (_data: {
   groupId: string;
   name: string;
 }): Promise<{ projectGroup: ProjectGroup }> => remoteUnsupported('renameProjectGroup');
+
+export const createProjectGroup: ServiceProvider['createProjectGroup'] = async (_data) =>
+  remoteUnsupported('createProjectGroup');
+
+export const moveProjectToGroup: ServiceProvider['moveProjectToGroup'] = async (_data) =>
+  remoteUnsupported('moveProjectToGroup');
 
 export const renameProject = async (_data: {
   projectId: string;
@@ -216,7 +244,107 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> =>
   buildMCPServerSettingsPayload();
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  writeStoredMCPServerEnablement(normalizeMCPServerEnablementInput(settings));
+  writeStoredMCPServers(normalizeMCPServerSettingsInput(settings));
+};
+
+export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
+  remoteUnsupported('mcpDiscoverTools');
+
+export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
+  remoteUnsupported('mcpCallTool');
+
+const isRemoteUnsupportedStatus = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const details = (error as { details?: unknown }).details;
+  if (!details || typeof details !== 'object') return false;
+  const status = (details as { status?: unknown }).status;
+  return status === 404 || status === 405 || status === 501;
+};
+
+const remoteSkillsUnsupported = (feature: string): never => {
+  throw {
+    code: REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
+    message: `The current remote runtime does not support Macro skills (${feature}).`,
+    details: { feature },
+  };
+};
+
+const remoteSkillRequest = async <T>(
+  feature: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> => {
+  try {
+    return await remoteRequest<T>(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (isRemoteUnsupportedStatus(error)) {
+      return remoteSkillsUnsupported(feature);
+    }
+    throw error;
+  }
+};
+
+export const listSkills: ServiceProvider['listSkills'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillListDto>(
+    'listSkills',
+    `${getWorkspaceBasePath(config)}/skills/list`,
+    { projectRoots: data?.projectRoots ?? [] },
+  );
+};
+
+export const getSkill: ServiceProvider['getSkill'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillDetailDto>(
+    'getSkill',
+    `${getWorkspaceBasePath(config)}/skills/get`,
+    {
+      skillId: data.skillId,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
+};
+
+export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async () =>
+  remoteUnsupported('installSkillFromLocalPath');
+
+export const createSkillTemplate: ServiceProvider['createSkillTemplate'] = async () =>
+  remoteUnsupported('createSkillTemplate');
+
+export const openSkillLocation: ServiceProvider['openSkillLocation'] = async () =>
+  remoteUnsupported('openSkillLocation');
+
+export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillResourceReadDto>(
+    'readSkillResource',
+    `${getWorkspaceBasePath(config)}/skills/read-resource`,
+    {
+      skillId: data.skillId,
+      resourcePath: data.resourcePath,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
+};
+
+export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) => {
+  const config = ensureRemoteConfig();
+  return remoteSkillRequest<SkillScriptRunResult>(
+    'runSkillScript',
+    `${getWorkspaceBasePath(config)}/skills/run-script`,
+    {
+      skillId: data.skillId,
+      scriptPath: data.scriptPath,
+      args: data.args ?? [],
+      timeoutMs: data.timeoutMs ?? null,
+      allowWorkspace: data.allowWorkspace === true,
+      workspacePath: data.workspacePath ?? null,
+      projectRoots: data.projectRoots ?? [],
+    },
+  );
 };
 
 export const provider: ServiceProvider = {
@@ -235,8 +363,12 @@ export const provider: ServiceProvider = {
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
+  createNewProjectRepo,
+  cancelProjectOperation,
   importGitRepo,
   renameProjectGroup,
+  createProjectGroup,
+  moveProjectToGroup,
   renameProject,
   updateProjectGitFlow,
   updateProjectGitFlowWithSetup,
@@ -252,4 +384,13 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
+  mcpDiscoverTools,
+  mcpCallTool,
+  listSkills,
+  getSkill,
+  installSkillFromLocalPath,
+  createSkillTemplate,
+  openSkillLocation,
+  readSkillResource,
+  runSkillScript,
 };

@@ -15,7 +15,6 @@ let windowOuterSizeMock: ReturnType<typeof mock>;
 let windowPrimaryMonitorWorkAreaMock: ReturnType<typeof mock>;
 let windowScaleFactorMock: ReturnType<typeof mock>;
 let windowSetBackgroundColorMock: ReturnType<typeof mock>;
-let windowSetMacosAppIconThemeMock: ReturnType<typeof mock>;
 let windowSetPositionMock: ReturnType<typeof mock>;
 let windowSetSizeMock: ReturnType<typeof mock>;
 let windowSetThemeMock: ReturnType<typeof mock>;
@@ -62,7 +61,6 @@ const registerWindowRestorationMocks = async () => {
     windowPrimaryMonitorWorkArea: (...args: unknown[]) => windowPrimaryMonitorWorkAreaMock(...args),
     windowScaleFactor: (...args: unknown[]) => windowScaleFactorMock(...args),
     windowSetBackgroundColor: (...args: unknown[]) => windowSetBackgroundColorMock(...args),
-    windowSetMacosAppIconTheme: (...args: unknown[]) => windowSetMacosAppIconThemeMock(...args),
     windowSetPosition: (...args: unknown[]) => windowSetPositionMock(...args),
     windowSetSize: (...args: unknown[]) => windowSetSizeMock(...args),
     windowSetTheme: (...args: unknown[]) => windowSetThemeMock(...args),
@@ -92,6 +90,7 @@ const registerWindowRestorationMocks = async () => {
   }));
 
   mock.module('../utils/pageLifecycle', () => ({
+    getPageLifecycleSignal: () => new AbortController().signal,
     isPageShuttingDown: () => pageShuttingDown,
     markPageShuttingDown: (reason?: unknown) => {
       pageShuttingDown = true;
@@ -202,7 +201,6 @@ describe('ensureWindowRestoredOnce', () => {
     windowSetBackgroundColorMock = mock(async () => {
       invocationOrder.push('background');
     });
-    windowSetMacosAppIconThemeMock = mock(async () => undefined);
     windowSetPositionMock = mock(async () => {
       invocationOrder.push('position');
     });

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { ArchitectPlanSummary } from '../../services/architectPlanService';
-import { computePlanSelectorRefreshState } from './planSelectorState';
+import {
+  computePlanSelectorEmptyState,
+  computePlanSelectorRefreshState,
+} from './planSelectorState';
 
 const buildPlanSummary = (
   overrides: Partial<ArchitectPlanSummary> & Pick<ArchitectPlanSummary, 'id'>
@@ -149,5 +152,73 @@ describe('planSelectorState', () => {
 
     expect(refreshState.visiblePlans.map((plan) => plan.id)).toEqual(['legacy-unscoped']);
     expect(refreshState.nextActivePlanId).toBe('legacy-unscoped');
+  });
+
+  it('does not show the outside-scope empty state for a stale catalog scope', () => {
+    expect(
+      computePlanSelectorEmptyState({
+        hasError: false,
+        isLoading: false,
+        hasLoadedPlans: true,
+        isWorkspaceMissing: false,
+        isReadOnlyOnlyScope: false,
+        displayedPlanCount: 0,
+        catalogStatus: 'ready',
+        isCatalogForCurrentScope: false,
+        catalogModernPlanCount: 2,
+        catalogVisiblePlanCount: 0,
+      })
+    ).toBe('hidden');
+  });
+
+  it('does not show an empty state when the current catalog has visible plans', () => {
+    expect(
+      computePlanSelectorEmptyState({
+        hasError: false,
+        isLoading: false,
+        hasLoadedPlans: true,
+        isWorkspaceMissing: false,
+        isReadOnlyOnlyScope: false,
+        displayedPlanCount: 0,
+        catalogStatus: 'ready',
+        isCatalogForCurrentScope: true,
+        catalogModernPlanCount: 2,
+        catalogVisiblePlanCount: 1,
+      })
+    ).toBe('hidden');
+  });
+
+  it('shows the outside-scope empty state only for the current loaded catalog', () => {
+    expect(
+      computePlanSelectorEmptyState({
+        hasError: false,
+        isLoading: false,
+        hasLoadedPlans: true,
+        isWorkspaceMissing: false,
+        isReadOnlyOnlyScope: false,
+        displayedPlanCount: 0,
+        catalogStatus: 'ready',
+        isCatalogForCurrentScope: true,
+        catalogModernPlanCount: 2,
+        catalogVisiblePlanCount: 0,
+      })
+    ).toBe('outside-scope');
+  });
+
+  it('shows the regular empty state when the current loaded catalog has no plans', () => {
+    expect(
+      computePlanSelectorEmptyState({
+        hasError: false,
+        isLoading: false,
+        hasLoadedPlans: true,
+        isWorkspaceMissing: false,
+        isReadOnlyOnlyScope: false,
+        displayedPlanCount: 0,
+        catalogStatus: 'ready',
+        isCatalogForCurrentScope: true,
+        catalogModernPlanCount: 0,
+        catalogVisiblePlanCount: 0,
+      })
+    ).toBe('empty');
   });
 });

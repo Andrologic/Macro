@@ -10,6 +10,9 @@ pub struct Conversation {
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_message: Option<String>,
@@ -21,6 +24,7 @@ pub struct Conversation {
 pub struct Message {
     pub id: String,
     pub conversation_id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub created_at: String,
@@ -29,6 +33,8 @@ pub struct Message {
     pub hidden_context: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
+    pub context_refs_json: Option<String>,
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +49,23 @@ pub struct ConversationCompactionStateRecord {
     pub estimated_tokens_after: i32,
     pub fingerprint: String,
     pub version: i32,
+    pub pruned_tool_context_message_ids_json: Option<String>,
+    pub reserved_tokens: Option<i32>,
+    pub footprint_before_json: Option<String>,
+    pub footprint_after_json: Option<String>,
+    pub degraded_reason: Option<String>,
+    pub compaction_kind: Option<String>,
+    pub compaction_pass: Option<String>,
+    pub summary_format_version: Option<i32>,
+    pub summary_source: Option<String>,
+    pub policy_version: Option<i32>,
+    pub fingerprint_inputs_json: Option<String>,
+    pub source_hashes_json: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub checkpoint_health: Option<String>,
+    pub last_trigger: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -57,6 +80,36 @@ pub struct ChatSnapshot {
 pub struct ChatBootstrapSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages_by_conversation_id: HashMap<String, Vec<Message>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationCitation {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub r#type: String,
+    pub scope: String,
+    pub source: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub content: Option<String>,
+    pub url: Option<String>,
+    pub favicon: Option<String>,
+    pub path: Option<String>,
+    pub language: Option<String>,
+    pub size_bytes: Option<i32>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationToolboxStateRecord {
+    pub conversation_id: String,
+    pub composer_context_refs_json: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +164,10 @@ pub struct AiModel {
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
     pub context_window_tokens: Option<i32>,
+    pub input_limit_tokens: Option<i32>,
+    pub output_limit_tokens: Option<i32>,
+    pub context_window_source: Option<String>,
+    pub context_limits_updated_at: Option<String>,
     pub is_enabled: bool,
     pub is_manual: bool,
     pub first_seen_at: String,
@@ -178,11 +235,16 @@ pub struct CreateConversationInput {
     pub task_id: Option<String>,
     pub group_id: Option<String>,
     pub project_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageInput {
+    pub id: Option<String>,
     pub conversation_id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub token_count: Option<i32>,
@@ -190,14 +252,46 @@ pub struct CreateMessageInput {
     pub hidden_context: Option<String>,
     pub provider_input_items_json: Option<String>,
     pub provider_turn_state_json: Option<String>,
+    pub context_refs_json: Option<String>,
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportMessageInput {
     pub id: String,
+    pub turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub created_at: String,
+    pub completion_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertConversationCitationInput {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: String,
+    pub r#type: String,
+    pub scope: String,
+    pub source: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub content: Option<String>,
+    pub url: Option<String>,
+    pub favicon: Option<String>,
+    pub path: Option<String>,
+    pub language: Option<String>,
+    pub size_bytes: Option<i32>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertConversationToolboxStateInput {
+    pub conversation_id: String,
+    pub composer_context_refs_json: String,
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +375,10 @@ pub struct ProviderModelInput {
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
     pub context_window_tokens: Option<i32>,
+    pub input_limit_tokens: Option<i32>,
+    pub output_limit_tokens: Option<i32>,
+    pub context_window_source: Option<String>,
+    pub context_limits_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +393,38 @@ pub struct UpsertConversationCompactionStateInput {
     pub estimated_tokens_after: i32,
     pub fingerprint: String,
     pub version: i32,
+    pub pruned_tool_context_message_ids_json: Option<String>,
+    pub reserved_tokens: Option<i32>,
+    pub footprint_before_json: Option<String>,
+    pub footprint_after_json: Option<String>,
+    pub degraded_reason: Option<String>,
+    pub compaction_kind: Option<String>,
+    pub compaction_pass: Option<String>,
+    pub summary_format_version: Option<i32>,
+    pub summary_source: Option<String>,
+    pub policy_version: Option<i32>,
+    pub fingerprint_inputs_json: Option<String>,
+    pub source_hashes_json: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub checkpoint_health: Option<String>,
+    pub last_trigger: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertConversationCompactionEventInput {
+    pub conversation_id: String,
+    pub trigger: String,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub model_context_window_tokens: Option<i32>,
+    pub tokens_before: Option<i32>,
+    pub tokens_after: Option<i32>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub reason: Option<String>,
+    pub metadata_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

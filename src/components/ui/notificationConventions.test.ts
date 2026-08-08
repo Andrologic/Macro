@@ -16,8 +16,8 @@ const walk = (directory: string): string[] =>
   });
 
 describe('notification conventions', () => {
-  it('keeps the root AGENT.md instruction file present', () => {
-    expect(existsSync(join(ROOT_DIR, 'AGENT.md'))).toBe(true);
+  it('keeps the root AGENTS.md instruction file present', () => {
+    expect(existsSync(join(ROOT_DIR, 'AGENTS.md'))).toBe(true);
   });
 
   it('keeps notification template consumers on direct imports to avoid chunk barrel warnings', () => {

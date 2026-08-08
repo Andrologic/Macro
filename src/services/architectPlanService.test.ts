@@ -96,6 +96,21 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
+    macroBranchCommitIfDirty: async () => ({
+      branch: '@macro',
+      state: 'clean',
+      worktree_path: `${options.workspaceRoot ?? '/repos/web'}/.git/macro-metadata-worktree`,
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+    }),
     fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
@@ -255,7 +270,7 @@ describe('architectPlanService', () => {
     );
   });
 
-  it('keeps typed Git Flow target branches available for develop-based projects', () => {
+  it('keeps typed Git workflow target branches available for develop-based projects', () => {
     storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
     storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
 
@@ -408,7 +423,7 @@ describe('architectPlanService', () => {
         planId: created.id,
         projectIds: ['web', 'api'],
       })
-    ).rejects.toThrow('Plan scope and GitFlow metadata are immutable after draft status.');
+    ).rejects.toThrow('Plan scope and Git workflow metadata are immutable after draft status.');
   });
 
   it('exposes delete only after a plan has been archived', () => {
@@ -575,7 +590,7 @@ describe('architectPlanService', () => {
     ]);
   });
 
-  it('normalizes typed GitFlow metadata with project-specific branch settings', async () => {
+  it('normalizes typed Git workflow metadata with project-specific branch settings', async () => {
     const deps = {
       tauri: {
         ...actualTauriIpc,
@@ -983,6 +998,37 @@ describe('architectPlanService', () => {
     expect(service.isArchitectPlanVisibleForScope(legacyUnscopedPlan, ['web'])).toBe(false);
     expect(service.isArchitectPlanVisibleForScope(legacyUnscopedPlan, [])).toBe(true);
     expect(service.planMatchesProjectId(legacyUnscopedPlan, 'web')).toBe(false);
+  });
+
+  it('treats physically available plan replicas as visible in the selected project scope', () => {
+    const stalePlanFromSelectedRepo: ArchitectPlanSummary = {
+      id: 'renamed-project-plan',
+      slug: 'renamed-project-plan',
+      title: 'Renamed project plan',
+      label: 'Renamed project plan',
+      description: '',
+      status: 'draft',
+      targetBranch: branchName,
+      projectId: 'project-lplr-app-1780329499166',
+      projectIds: ['project-lplr-app-1780329499166'],
+      expectedProjectIds: ['project-lplr-app-1780329499166'],
+      availableProjectIds: ['project-octan-sales-1780653766405'],
+      createdAt: '2026-03-19T00:00:00.000Z',
+      updatedAt: '2026-03-19T00:00:00.000Z',
+      nodeCount: 11,
+    };
+
+    expect(
+      service.isArchitectPlanVisibleForScope(stalePlanFromSelectedRepo, [
+        'project-octan-sales-1780653766405',
+      ])
+    ).toBe(true);
+    expect(
+      service.resolvePlanProjectContextId(
+        stalePlanFromSelectedRepo,
+        'project-octan-sales-1780653766405'
+      )
+    ).toBe('project-octan-sales-1780653766405');
   });
 
   it('does not bump revision when updating a plan with identical semantic content', async () => {

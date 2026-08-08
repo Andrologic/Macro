@@ -66,6 +66,18 @@ const readSupportedLanguages = () => {
 
 const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, "utf8"));
 
+const readLocale = (language) => {
+  const basePath = path.join(localeDir, `${language}.json`);
+  const locale = readJson(basePath);
+  const implementSegmentPath = path.join(localeDir, "segments", `implement-${language}.json`);
+
+  if (fs.existsSync(implementSegmentPath)) {
+    locale.implement = readJson(implementSegmentPath);
+  }
+
+  return locale;
+};
+
 const extractPlaceholders = (value) =>
   [...value.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)].map((match) => match[1].trim()).sort();
 
@@ -81,7 +93,7 @@ const walkFiles = (dir) => {
 };
 
 const supportedLanguages = readSupportedLanguages();
-const englishLocale = readJson(path.join(localeDir, "en.json"));
+const englishLocale = readLocale("en");
 const englishEntries = flattenObject(englishLocale);
 const englishKeys = new Map(englishEntries);
 
@@ -95,7 +107,7 @@ for (const language of supportedLanguages) {
     continue;
   }
 
-  const localeEntries = new Map(flattenObject(readJson(filePath)));
+  const localeEntries = new Map(flattenObject(readLocale(language)));
   const missingKeys = [...englishKeys.keys()].filter((key) => !localeEntries.has(key));
   const extraKeys = [...localeEntries.keys()].filter((key) => !englishKeys.has(key));
 

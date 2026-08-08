@@ -1,5 +1,6 @@
 import type {
   PlanNode,
+  PlanNodeTodo,
   PlanNodeStatus,
   PredictedBranch,
   Task,
@@ -18,6 +19,7 @@ import {
   getPredictedBranchIntent,
   getPredictedBranchIntentKey,
 } from './gitFlowBranchIntents';
+import { normalizePlanNodeTodos } from './planNodeTodos';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -82,6 +84,8 @@ export const toBranchWorktreeKey = (projectId: string, branchName: string): stri
   return `branch-${normalizedProjectId(projectId)}-${normalized || 'work'}-${stableHash(`${projectId}:${branchName}`)}`;
 };
 
+export { toPlanIntegrationWorktreeKey } from './planIntegrationWorktreeService';
+
 export const mapNodeStatusToTaskStatus = (status: PlanNodeStatus): TaskStatus => {
   if (status === 'completed') return 'Completed';
   if (status === 'in-progress') return 'InProgress';
@@ -108,6 +112,7 @@ export interface DerivedImplementTask extends Task {
   needs_revalidation: boolean;
   sequence_index: number;
   execution_targets: TaskExecutionTarget[];
+  todos?: PlanNodeTodo[];
 }
 
 export interface NormalizedStrategyResult {
@@ -592,6 +597,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       needs_revalidation: false,
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
       execution_targets: executionTargets,
+      todos: normalizePlanNodeTodos(node.todos),
     };
   });
 

@@ -100,6 +100,46 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("adds origin remotes with camelCase payload keys", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.gitRemoteAddOrigin({
+      repoPath: "C:/dev/web",
+      url: "https://github.com/example/web.git",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "git_remote_add_origin",
+        payload: {
+          repoPath: "C:/dev/web",
+          url: "https://github.com/example/web.git",
+        },
+      },
+    ]);
+  });
+
+  it("forwards frontend diagnostics to the native logger", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.frontendLog({
+      level: "error",
+      scope: "frontend",
+      message: "[Frontend:error] Importing a module script failed",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "frontend_log",
+        payload: {
+          level: "error",
+          scope: "frontend",
+          message: "[Frontend:error] Importing a module script failed",
+        },
+      },
+    ]);
+  });
+
   it("wraps message creation in params for db_create_message", async () => {
     const tauriIpc = await loadTauriIpc();
 
@@ -114,6 +154,8 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           params: {
             conversationId: "conv-1",
+            id: null,
+            turnId: null,
             role: "user",
             content: "hello",
             tokenCount: 3,
@@ -121,6 +163,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
             hiddenContext: "hidden",
             providerInputItemsJson: null,
             providerTurnStateJson: null,
+            contextRefsJson: null,
           },
         },
       },
@@ -140,12 +183,49 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           params: {
             id: "msg-1",
+            turnId: null,
             content: "updated",
             tokenCount: null,
             toolTracesJson: null,
             hiddenContext: null,
             providerInputItemsJson: JSON.stringify([{ type: "message" }]),
             providerTurnStateJson: null,
+            contextRefsJson: null,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("records conversation compaction events through db_insert_conversation_compaction_event", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.dbInsertConversationCompactionEvent({
+      conversation_id: "conv-1",
+      trigger: "safety_prestream",
+      provider_id: "provider-1",
+      model_id: "model-small",
+      model_context_window_tokens: 8000,
+      tokens_before: 9000,
+      tokens_after: 1200,
+      status: "success",
+      reason: "model_window_shrank",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_insert_conversation_compaction_event",
+        payload: {
+          input: {
+            conversation_id: "conv-1",
+            trigger: "safety_prestream",
+            provider_id: "provider-1",
+            model_id: "model-small",
+            model_context_window_tokens: 8000,
+            tokens_before: 9000,
+            tokens_after: 1200,
+            status: "success",
+            reason: "model_window_shrank",
           },
         },
       },
@@ -234,6 +314,54 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           providerId: "copilot",
           copilotSendTimeoutMs: 2_400_000,
+        },
+      },
+    ]);
+  });
+
+  it("uses camelCase for top-level Tauri arguments and keeps DTO fields snake_case", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.dbSetAppSetting({ key: "panel", valueJson: '{"open":true}' });
+    await tauriIpc.dbGetProjectContextState("project-1");
+    await tauriIpc.dbDeleteProjectContextState("project-1");
+    await tauriIpc.dbUpsertProjectContextState({
+      projectId: "project-1",
+      groupId: "group-1",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_set_app_setting",
+        payload: {
+          key: "panel",
+          valueJson: '{"open":true}',
+        },
+      },
+      {
+        command: "db_get_project_context_state",
+        payload: {
+          projectId: "project-1",
+        },
+      },
+      {
+        command: "db_delete_project_context_state",
+        payload: {
+          projectId: "project-1",
+        },
+      },
+      {
+        command: "db_upsert_project_context_state",
+        payload: {
+          input: {
+            project_id: "project-1",
+            group_id: "group-1",
+            focus_project_id: null,
+            last_plan_id: null,
+            last_task_id: null,
+            architect_conversation_id: null,
+            implement_conversation_id: null,
+          },
         },
       },
     ]);
@@ -336,6 +464,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           groupId: "group-1",
           groupName: "Suite",
           path: "C:/dev/web",
+          requestId: null,
         },
       },
       {
@@ -424,6 +553,13 @@ describe("tauriIpc executeWorkspaceTool", () => {
         "create_initial_commit",
       ],
     });
+    await tauriIpc.workspaceCreateNewProjectRepo({
+      repoName: "API",
+      parentPath: "C:/dev",
+      folderName: "api",
+      groupId: "group-1",
+      groupName: "Suite",
+    });
     await tauriIpc.workspaceUpdateProjectGitFlowWithSetup({
       projectId: "project-1",
       gitFlowSettings: {
@@ -456,6 +592,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
         command: "workspace_preview_project_git_setup",
         payload: {
           path: "C:/dev/web",
+          requestId: null,
         },
       },
       {
@@ -474,6 +611,19 @@ describe("tauriIpc executeWorkspaceTool", () => {
             "initialize_repo",
             "create_initial_commit",
           ],
+          requestId: null,
+        },
+      },
+      {
+        command: "workspace_create_new_project_repo",
+        payload: {
+          repoName: "API",
+          parentPath: "C:/dev",
+          folderName: "api",
+          groupId: "group-1",
+          groupName: "Suite",
+          gitFlowSettings: null,
+          requestId: null,
         },
       },
       {
@@ -551,6 +701,25 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("uses camelCase payload keys for recoverable project discovery", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceDiscoverRecoverableProjects({
+      maxChildrenPerRoot: 25,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "workspace_discover_recoverable_projects",
+        payload: {
+          request: {
+            maxChildrenPerRoot: 25,
+          },
+        },
+      },
+    ]);
+  });
+
   it("uses camelCase payload keys for terminal commands", async () => {
     const tauriIpc = await loadTauriIpc();
 
@@ -606,6 +775,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       branchName: "feature/checkout",
       fromRef: "integration-ready",
       preferredCommitBranch: "integration-ready",
+      fallbackBranches: ["develop", "main"],
     });
 
     expect(invokeCalls).toEqual([
@@ -617,6 +787,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           branchName: "feature/checkout",
           fromRef: "integration-ready",
           preferredCommitBranch: "integration-ready",
+          fallbackBranches: ["develop", "main"],
         },
       },
     ]);
@@ -631,6 +802,19 @@ describe("tauriIpc executeWorkspaceTool", () => {
       cwd: "C:/dev/worktree",
       title: "Build · API",
       taskId: "task-1",
+    });
+    await tauriIpc.terminalStartCommandTab({
+      kind: "task",
+      projectId: "project-1",
+      cwd: "C:/dev/worktree",
+      title: "Build · API",
+      taskId: "task-1",
+      command: "bun test",
+      promptContext: {
+        projectLabel: "api",
+        taskLabel: "Refactor parser",
+        branchLabel: null,
+      },
     });
     await tauriIpc.terminalReconnectTab("tab-1");
     await tauriIpc.terminalReadTab("tab-1");
@@ -663,6 +847,22 @@ describe("tauriIpc executeWorkspaceTool", () => {
           title: "Build · API",
           taskId: "task-1",
           promptContext: null,
+        },
+      },
+      {
+        command: "terminal_start_command_tab",
+        payload: {
+          kind: "task",
+          projectId: "project-1",
+          cwd: "C:/dev/worktree",
+          title: "Build · API",
+          taskId: "task-1",
+          promptContext: {
+            projectLabel: "api",
+            taskLabel: "Refactor parser",
+            branchLabel: null,
+          },
+          command: "bun test",
         },
       },
       {

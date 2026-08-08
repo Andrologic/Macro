@@ -14,6 +14,7 @@ Ce document n'est pas un plan d'implementation.
 Les ecarts entre la cible et l'etat courant, les phases de livraison et les priorites relevent de `docs/roadmap.md`.
 
 Sauf mention explicite contraire, les exigences de ce document decrivent le comportement produit attendu, y compris quand certaines capacites ne sont pas encore entierement stabilisees dans l'application.
+Pour la ligne 0.1, le contrat public est le workflow desktop local-first. Le remote et le mobile sont des pistes futures, non disponibles et non supportees dans le produit actuel. Macro 0.1 n'expose ni compte applicatif ni abonnement.
 
 ---
 
@@ -55,7 +56,7 @@ Macro doit couvrir :
 - la review des changements avant validation finale
 - la coordination de plusieurs projets relies dans un meme espace de travail
 - la conservation d'une trace d'audit des plans et de l'execution
-- la poursuite de l'execution depuis une autre machine ou depuis un flux de supervision mobile ou distant
+- a terme, la poursuite de l'execution depuis une autre machine ou depuis un flux de supervision mobile ou distant
 
 ### 3.2 Hors perimetre
 
@@ -155,6 +156,7 @@ Un plan contient :
 - les besoins extraits pendant la phase de planification
 - la strategie generee
 - la structure predictive de branches associee a cette strategie
+- les artefacts de relais produits par les taches planifiees pour transmettre de l'information aux taches dependantes
 
 Un plan sert a definir une vague de travail coherente.
 
@@ -191,6 +193,8 @@ Un noeud peut representer :
 
 Les noeuds de strategie definissent l'ordre, les dependances et la structure d'execution.
 
+Un noeud peut aussi declarer des contrats d'artefacts attendus. Ces contrats decrivent les informations critiques qu'une tache devra produire pour ses descendantes, par exemple des resultats d'audit, une carte de migration, un contrat d'API ou un registre de risques.
+
 ### 6.7 Branche predictive
 
 Une branche predictive est un artefact de planification qui represente la facon dont le travail doit etre decoupe dans Git pendant l'execution.
@@ -210,6 +214,22 @@ La tache est l'unite suivie dans le mode Implement.
 Une tache terminee avec succes se conclut toujours par un commit.
 
 La plupart des taches sont creees a partir d'un plan valide, mais Macro doit aussi supporter des taches autonomes pour les quick fixes ou les petites features ne justifiant pas un plan complet.
+
+### 6.9 Artefact de relais
+
+Un artefact de relais est une information durable produite par une tache issue d'un plan Architect.
+
+Il sert a transmettre du contexte exploitable aux taches qui dependent directement ou indirectement de la tache productrice.
+
+Les artefacts de relais :
+- sont rattaches a un plan et a une tache productrice
+- sont stockes dans les metadonnees `@macro`, pas dans le code source applicatif
+- peuvent etre declares a l'avance par la strategie ou produits librement par l'agent Implement
+- ne sont visibles que par la tache productrice, ses descendantes et la tache synthetique de finalisation du plan
+- ne sont pas partages entre taches paralleles sans dependance
+- sont affiches dans le panneau des changements comme un sous-projet `Artifacts`, avec revue et validation metadata separees du staging Git
+- peuvent superseder un artefact herite en creant une nouvelle version rattachee a la tache courante, sans ecraser la version parente
+- restent limites en v1 a du contenu texte, Markdown ou JSON
 
 ---
 
@@ -242,6 +262,7 @@ Le mode Architect doit supporter :
 - une conversation par plan
 - des besoins generes par l'IA
 - une strategie generee par l'IA
+- la declaration d'artefacts critiques attendus par tache
 - une visualisation des dependances et de la structure predictive
 - la validation d'un plan
 - la preparation automatique de la structure d'execution apres validation
@@ -264,6 +285,7 @@ Le mode Implement doit supporter :
 - une file de taches issue de plusieurs plans
 - le filtrage des taches par plan et par autres criteres pertinents
 - la prise en compte explicite des dependances et de l'etat de disponibilite d'une tache
+- la consultation des artefacts herites depuis les taches parentes et la production d'artefacts pour les taches dependantes
 - une review en fin de tache
 - une validation globale du plan avant merge du plan vers la branche de base
 
@@ -365,13 +387,12 @@ Exemples :
 - navigation projet
 - visualisation de diff
 - reglage de l'application
-- consultation de compte
 
 ---
 
 ## 9. Structure projet et multi-projet
 
-### 8.1 Le multi-projet comme capacite centrale
+### 9.1 Le multi-projet comme capacite centrale
 
 Le multi-projet est une capacite centrale du produit.
 
@@ -382,7 +403,7 @@ L'utilisateur doit pouvoir :
 - rattacher plusieurs sous-projets a ce groupe
 - laisser l'IA travailler avec conscience des relations entre ces projets
 
-### 8.2 Cas d'usage attendus
+### 9.2 Cas d'usage attendus
 
 Exemples de cas multi-projets natifs :
 
@@ -392,7 +413,7 @@ Exemples de cas multi-projets natifs :
 
 Le produit doit permettre de coordonner l'implementation sur ces projets dans un seul workflow structure.
 
-### 8.3 Comportement des plans dans un contexte multi-projet
+### 9.3 Comportement des plans dans un contexte multi-projet
 
 Lorsqu'un plan concerne plusieurs projets, le plan doit exister dans l'historique metadata de chaque projet implique.
 
@@ -403,7 +424,7 @@ Elle sert a :
 - maintenir la trace historique meme si un sous-projet est ensuite detache
 - eviter la perte de contexte au niveau d'un depot individuel
 
-### 8.4 Visibilite des taches
+### 9.4 Visibilite des taches
 
 Le mode Implement doit supporter des taches issues :
 - de plusieurs plans
@@ -466,7 +487,7 @@ Le changement de contexte doit restaurer l'etat local utile autant que possible,
 
 ## 11. Cycle de vie d'un plan
 
-### 9.1 Creation du plan
+### 11.1 Creation du plan
 
 L'utilisateur cree un plan depuis le mode Architect.
 
@@ -475,7 +496,7 @@ Creer un plan cree un nouveau contexte de planification comprenant :
 - ses besoins propres
 - sa strategie propre
 
-### 9.2 Generation du plan
+### 11.2 Generation du plan
 
 L'utilisateur exprime ses objectifs de facon conversationnelle.
 
@@ -485,25 +506,25 @@ L'IA doit :
 - organiser cette strategie pour maximiser le parallelisme lorsque cela reste sans risque
 - maintenir chaque unite d'execution a une taille limitee pour reduire la confusion de l'IA et les changements trop larges
 
-### 9.3 Validation du plan
+### 11.3 Validation du plan
 
 Lorsqu'un plan est valide :
 - la preparation des branches et des worktrees doit se faire automatiquement
 - cette preparation est obligatoire
 - la structure d'execution doit etre prete pour le mode Implement
 
-### 9.4 Execution du plan
+### 11.4 Execution du plan
 
 Un plan valide peut entrer en execution pendant que d'autres plans restent actifs en parallele.
 
-### 9.5 Completion du plan
+### 11.5 Completion du plan
 
 Un plan est considere comme termine lorsque :
 - toutes les taches requises sont completees
 - la validation globale du plan est realisee
 - la branche du plan est acceptee pour integration dans la branche de base configuree
 
-### 9.6 Archivage du plan
+### 11.6 Archivage du plan
 
 Les plans termines doivent etre archives.
 
@@ -518,13 +539,13 @@ Ils ne sont plus destines a etre modifies.
 
 ## 12. Regles de generation de strategie
 
-### 10.1 L'IA est responsable de la formalisation
+### 12.1 L'IA est responsable de la formalisation
 
 Les besoins et la strategie sont generes par l'IA et non saisis manuellement dans un formalisme rigide.
 
 L'utilisateur peut influencer le resultat par la conversation et les prompts, mais l'IA reste responsable de la structuration.
 
-### 10.2 Objectifs de la strategie
+### 12.2 Objectifs de la strategie
 
 La strategie doit :
 - refleter l'intention utilisateur
@@ -533,7 +554,7 @@ La strategie doit :
 - exprimer le sequentiel par des dependances explicites entre taches
 - minimiser les commits trop volumineux et les frontieres de taches floues
 
-### 10.3 Structuration par branches
+### 12.3 Structuration par branches
 
 La strategie doit organiser le travail de sorte que :
 - plusieurs branches puissent progresser en parallele
@@ -547,7 +568,7 @@ Cette structuration existe pour reduire le risque et ameliorer la qualite des re
 
 ## 13. Modele de tache
 
-### 11.1 Taches planifiees
+### 13.1 Taches planifiees
 
 La plupart des taches sont derivees automatiquement d'un plan valide.
 
@@ -557,7 +578,7 @@ Ces taches heritent :
 - de la structure de branche
 - des associations projet
 
-### 11.2 Taches autonomes
+### 13.2 Taches autonomes
 
 Macro doit aussi supporter des taches autonomes en dehors de tout plan.
 
@@ -573,7 +594,7 @@ Les taches autonomes doivent tout de meme supporter :
 
 Les taches autonomes sont mergees directement vers la branche de base configuree plutot que via une branche de plan.
 
-### 11.3 Regle de completion
+### 13.3 Regle de completion
 
 Une tache ne peut pas etre consideree comme complete sans commit.
 
@@ -581,14 +602,14 @@ Une tache ne peut pas etre consideree comme complete sans commit.
 
 ## 14. Comportement du mode Implement
 
-### 12.1 Conditions de demarrage
+### 14.1 Conditions de demarrage
 
 Dans le mode Implement :
 - les taches ne se lancent pas toutes seules
 - l'utilisateur declenche explicitement le debut de la tache
 - l'utilisateur peut fournir un prompt initial ou un cadrage complementaire avant l'execution
 
-### 12.2 Gestion des questions
+### 14.2 Gestion des questions
 
 Au debut d'une tache, l'IA peut :
 - poser des questions de clarification si necessaire
@@ -602,7 +623,7 @@ Le modele privilegie est :
 
 Ce modele existe pour reduire le frottement utilisateur et faciliter la supervision depuis mobile.
 
-### 12.5 Travail d'execution
+### 14.3 Travail d'execution
 
 Pendant l'execution d'une tache, l'IA peut :
 - inspecter le contexte necessaire
@@ -611,7 +632,7 @@ Pendant l'execution d'une tache, l'IA peut :
 - lancer un build
 - preparer des changements pour review
 
-### 12.6 Review humaine
+### 14.4 Review humaine
 
 Une review humaine est obligatoire a la fin de chaque tache.
 
@@ -626,7 +647,7 @@ L'utilisateur doit pouvoir :
 - demander des ameliorations
 - apporter de petits ajustements manuels
 
-### 12.7 Edition manuelle autorisee pendant la review
+### 14.5 Edition manuelle autorisee pendant la review
 
 Macro doit rester majoritairement en lecture seule.
 
@@ -642,7 +663,7 @@ Elle doit aussi permettre :
 
 L'edition manuelle est secondaire, mais elle doit exister.
 
-### 12.8 Perimetre de validation
+### 14.6 Perimetre de validation
 
 La validation humaine porte principalement sur la qualite et la justesse du code genere.
 
@@ -654,26 +675,26 @@ Les messages de commit doivent etre generes automatiquement par l'IA apres valid
 
 ## 15. Modele de review et d'integration
 
-### 13.1 Validation a l'echelle de la tache
+### 15.1 Validation a l'echelle de la tache
 
 Chaque tache completee doit se conclure par :
 - une review du code
 - une validation utilisateur
 - la generation d'un commit
 
-### 13.2 Validation a l'echelle du plan
+### 15.2 Validation a l'echelle du plan
 
 Lorsque toutes les taches d'un plan sont terminees, Macro doit imposer une validation globale du plan avant merge du plan vers la branche de base configuree.
 
 Cette validation est distincte de la review tache par tache.
 
-### 13.3 Generation des commits
+### 15.3 Generation des commits
 
 Apres acceptation de la review :
 - l'IA doit generer le message de commit
 - le commit doit etre cree sur la branche appropriee
 
-### 13.4 Structure des merges
+### 15.4 Structure des merges
 
 Pour le travail derive d'un plan, le flux par defaut est :
 
@@ -685,7 +706,7 @@ Pour les taches autonomes :
 
 - le travail valide est merge directement vers la branche de base configuree
 
-### 13.5 Merge conflicts
+### 15.5 Merge conflicts
 
 Macro doit supporter une resolution automatique assistee par IA des merge conflicts produits par ses propres operations de merge automatisees.
 
@@ -695,7 +716,7 @@ Cette resolution automatique ne concerne que les conflits issus des merges pilot
 
 ## 16. Regles Git et execution
 
-### 14.1 Le lien entre planification et Git
+### 16.1 Le lien entre planification et Git
 
 Dans Macro, la planification n'est pas separee de la structure d'execution Git.
 
@@ -704,11 +725,11 @@ La validation d'un plan doit preparer :
 - les worktrees
 - la trace metadata correspondante
 
-### 14.2 Exigence de proprete
+### 16.2 Exigence de proprete
 
 Lorsqu'un plan ou une structure d'execution de plan est supprime avant reel demarrage, Macro doit nettoyer les branches associees et les structures temporaires afin d'eviter les artefacts parasites.
 
-### 14.3 Commits multi-projets
+### 16.3 Commits multi-projets
 
 Quand une meme tache affecte plusieurs projets :
 - la validation reste une seule action coherente du point de vue du produit
@@ -719,11 +740,11 @@ Quand une meme tache affecte plusieurs projets :
 
 ## 17. Regles du mode Chat
 
-### 15.1 Objectif
+### 17.1 Objectif
 
 Le mode Chat existe pour des interactions legeres et independantes des projets.
 
-### 15.2 Modele de contexte
+### 17.2 Modele de contexte
 
 Le mode Chat ne doit pas supposer un contexte agent autonome a l'echelle d'un workspace.
 
@@ -732,31 +753,115 @@ Il doit fonctionner sur :
 - les fichiers explicitement attaches
 - les outils externes explicitement autorises
 
-### 15.3 Pieces jointes
+### 17.3 Pieces jointes
 
 Les fichiers attaches en mode Chat sont scopes a la conversation.
 
 Il n'y a pas d'exigence de bibliotheque de contexte reutilisable entre plusieurs conversations.
 
-### 15.4 Historique
+### 17.4 Historique
 
 Le mode Chat doit conserver un historique local des conversations.
 
 Une future synchronisation de cet historique peut exister plus tard, mais ne fait pas partie du comportement local minimal.
 
-### 15.5 Acces outils
+### 17.5 Acces outils
 
 Le mode Chat peut acceder :
 - au web
 - a certains outils MCP
+- aux skills activees par l'utilisateur
 
 La disponibilite de ces outils doit etre configurable.
 
 ---
 
-## 18. Modele d'automatisation et de notification
+## 18. Skills
 
-### 16.1 Appels d'attention
+### 18.1 Objectif fonctionnel
+
+Les skills permettent a l'utilisateur d'ajouter des instructions agent reutilisables sans modifier le code de Macro.
+
+Elles servent a orienter le comportement de l'IA dans Architect, Implement et Chat. Elles ne remplacent pas MCP et ne doivent pas creer de nouveaux outils externes arbitraires.
+
+### 18.2 Format et sources
+
+Une skill locale est un dossier contenant :
+
+- `SKILL.md` prioritaire (`skill.md` est accepte en compatibilite avec diagnostic)
+- frontmatter YAML AgentSkills avec `name` et `description`
+- champs optionnels `license`, `compatibility`, `allowed-tools` et `metadata`
+- dossiers optionnels `references/`, `assets/` et `scripts/`
+
+Macro decouvre les sources projet et utilisateur suivantes :
+
+- les skills projet dans `.agents/skills`
+- les skills globales utilisateur dans `~/.agents/skills`
+- les variantes compatibles Codex dans `.codex/skills` et `~/.codex/skills`
+- les variantes compatibles OpenCode dans `.opencode/skills`, `.opencode/skill`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills` et `~/.opencode/skill`
+- les variantes compatibles Claude dans `.claude/skills` et `~/.claude/skills`
+- l'import local par copie vers `~/.agents/skills/<skill-name>`
+
+Elle ne supporte pas encore :
+
+- l'installation directe depuis GitHub
+- une marketplace
+
+La validation est lenient pour l'usage mais explicite dans l'UI :
+
+- `isValid` signifie que Macro peut charger la skill
+- `specCompliant` signifie que la skill respecte strictement les contraintes AgentSkills
+- les diagnostics distinguent erreurs bloquantes et warnings de compatibilite
+- les noms de skills sont compares apres normalisation Unicode NFKC
+- les lettres et chiffres Unicode minuscules sont acceptes; uppercase, underscores, tirets en debut/fin, doubles tirets et mismatch avec le dossier restent des warnings lenient
+- tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` produit un warning `unexpected_frontmatter_field`
+
+### 18.3 Activation et contexte
+
+Les skills decouvertes sont desactivees par defaut.
+
+L'utilisateur peut les activer dans les reglages Skills. Il peut aussi referencer une skill dans le composeur via selection explicite ou mention `$skill-name`.
+
+Macro doit charger les skills progressivement :
+
+- catalogue compact au tour agent
+- contenu complet de `SKILL.md` seulement sur activation
+- ressources et scripts seulement via les outils dedies
+
+En cas de collision de nom, Macro choisit une skill effective de facon deterministe : projet avant global, puis `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. Le catalogue agent et `$skill-name` ne voient que cette skill effective. Les skills shadowed restent visibles dans les reglages et selectionnables explicitement par id/source.
+
+Les manifests sont transport-neutres. Les chemins locaux (`rootPath`, `skillFilePath`) restent presents pour les skills locales mais sont optionnels; `location.kind`, `location.uri` et `contentHash` sont les identifiants preferes pour les skills remote ou bundled.
+
+### 18.4 Securite
+
+Une skill peut etre activee sans etre trusted.
+
+Les scripts restent indisponibles tant que la skill n'est pas trusted et que l'option scripts n'est pas activee pour cette skill.
+
+`allowed-tools` est une information declarative de la skill. Elle ne contourne jamais les modes Macro, la politique d'approbation, le niveau de risque ou les reglages utilisateur.
+
+Toute execution de script doit passer par la politique d'approbation Macro des outils a risque, capturer la sortie, appliquer un timeout et eviter l'injection de secrets par defaut.
+
+Les chemins hors dossier skill, traversals, fichiers caches non autorises et symlinks sortants doivent etre refuses.
+
+### 18.5 Cible future : remote et cloud
+
+Cette section decrit un contrat technique potentiel pour une future ligne remote. Elle ne correspond a aucune capacite produit disponible en 0.1. Un runtime remote pourrait exposer les skills sans filesystem local lisible par le frontend avec les operations :
+
+- `POST /skills/list`
+- `POST /skills/get`
+- `POST /skills/read-resource`
+- `POST /skills/run-script`
+
+Les payloads publics cote frontend utilisent le camelCase. Les kernels distants doivent pouvoir repondre `unsupported`; 404, 405 et 501 sont presentes a l'utilisateur comme une capacite indisponible precise.
+
+La capacite `skills` controle `skill_activate` et `skill_read_resource`. La capacite separee `skillScripts` controle `skill_run_script`; elle est false par defaut en remote et doit etre declaree explicitement avant qu'un script cloud soit propose au modele.
+
+---
+
+## 19. Modele d'automatisation et de notification
+
+### 19.1 Appels d'attention
 
 Lorsque l'IA a besoin de l'utilisateur, Macro doit rendre cette demande d'attention explicite.
 
@@ -766,7 +871,7 @@ Exemples :
 - blocage d'execution
 - probleme d'integration
 
-### 16.2 Continuite desktop et mobile
+### 19.2 Continuite desktop et mobile
 
 La cible produit inclut une supervision distante depuis une application mobile compagnon.
 
@@ -778,10 +883,11 @@ L'utilisateur doit pouvoir :
 
 La creation complete de plans depuis mobile n'est pas un besoin central initial.
 La supervision distante du mode Implement est la priorite.
+Dans la ligne 0.1, cette continuite reste une cible produit : le support stable concerne d'abord l'experience desktop local-first.
 
-### 16.3 Perimetre des notifications
+### 19.3 Perimetre des notifications
 
-Le systeme de notification fait partie de la cible produit meme s'il n'est pas encore entierement implemente.
+Le systeme de notification desktop fait partie du produit actuel. L'activation globale des notifications in-app est une preference locale, sans compte applicatif. Chaque categorie importante peut aussi etre configuree par canal.
 
 Les notifications doivent au minimum couvrir :
 - besoin d'attention sur une tache
@@ -789,62 +895,80 @@ Les notifications doivent au minimum couvrir :
 - execution bloquee
 - execution terminee
 
+Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doivent pas etre proposes et une configuration bureau deja persistee doit retomber sur une notification in-app plutot que perdre l'evenement.
+
 ---
 
-## 19. Kernel distant et continuite d'execution
+## 20. Cible future : kernel distant et continuite d'execution
 
-### 17.1 Le kernel distant est une capacite produit
+### 20.1 Perimetre
 
-Le kernel distant fait partie de la specification produit, et pas seulement de l'architecture technique.
+Le kernel distant n'est pas une capacite du produit 0.1. Aucun mode remote ne doit etre presente comme disponible ou supporte dans l'application actuelle.
 
-Son role est de permettre a l'execution Macro de continuer independamment d'une seule session GUI locale.
+Une future ligne produit pourra permettre a l'execution Macro de continuer independamment d'une seule session GUI locale. La fondation presente dans le depot reste experimentale et interne jusque-la.
 
-### 17.2 Resultats fonctionnels attendus
+### 20.2 Resultats fonctionnels attendus
 
-Le kernel doit rendre possibles :
+Un futur kernel produit devra rendre possibles :
 - l'execution distante des IA
 - la continuite entre plusieurs machines desktop
 - l'execution continue sur une machine dediee ou un serveur heberge
 - la supervision distante depuis un client Macro ou mobile
 
-### 17.3 Scenarios utilisateurs cibles
+### 20.3 Scenarios utilisateurs cibles
 
-Le produit doit supporter au minimum les scenarios suivants :
+Une future ligne remote pourra viser les scenarios suivants :
 
 - l'utilisateur demarre sur un desktop puis reprend la supervision sur un laptop
 - l'utilisateur quitte son poste et poursuit la supervision depuis mobile
 - l'utilisateur execute Macro sur un serveur dedie au lieu d'un poste local unique
 
-### 17.4 Extensions liees au compte utilisateur
-
-Les comptes et les abonnements font partie du modele produit futur pour :
-- la supervision mobile distante
-- une synchronisation optionnelle des reglages
-- des offres d'execution hebergee
-
-Cela ne remet pas en cause la nature local-first de l'experience desktop principale.
-
 ---
 
-## 20. Reglages et controle utilisateur
+## 21. Reglages et controle utilisateur
 
 Macro doit exposer un controle utilisateur sur au moins les dimensions suivantes :
 
 - fournisseurs et modeles IA
 - disponibilite des outils par mode
+- activation, confiance et scripts des skills
 - niveau d'automatisation de l'implementation
-- configuration du git flow
+- configuration du workflow Git
 - preferences d'apparence et d'interaction
 - raccourcis
 - prompts et cadrage du comportement systeme
 
 Le produit doit permettre a l'utilisateur de modeler le comportement de l'IA sans necessiter de modification de code.
 
+Tout raccourci clavier configurable dans les reglages doit correspondre a une
+action runtime cablee et a une regle de disponibilite explicite. Si un raccourci
+est visible dans les reglages, son effet attendu doit etre verifie par un test
+automatise couvrant le contexte nominal et les contextes ou il doit rester inactif.
+
+Matrice fonctionnelle des raccourcis configurables :
+
+| Raccourci | Effet attendu | Contexte |
+| --- | --- | --- |
+| Ouvrir les reglages | Ouvre les reglages generaux | Global |
+| Fermer les reglages | Ferme la modale de reglages | Reglages ouverts |
+| Nouvelle conversation | Cree une conversation Chat | Mode Chat |
+| Passer en Architect | Active le mode Architect | Hors reglages |
+| Passer en Implement | Active le mode Implement | Hors reglages |
+| Passer en Chat | Active le mode Chat | Hors reglages |
+| Basculer panneau gauche | Ouvre ou ferme le panneau gauche | Global |
+| Basculer panneau droit | Ouvre ou ferme le panneau droit | Global |
+| Fournisseur suivant | Selectionne le fournisseur IA suivant disponible | Global |
+| Modele suivant | Selectionne le modele IA suivant disponible | Global |
+| Stopper le streaming | Arrete la reponse assistant en cours | Reponse en cours |
+| Focus input Chat | Place le focus dans le compositeur Chat | Global |
+| Prompt precedent | Navigue dans l'historique de prompts vers le precedent | Compositeur focus et mode historique par raccourci |
+| Prompt suivant | Navigue dans l'historique de prompts vers le suivant | Compositeur focus et mode historique par raccourci |
+
 ---
 
-## 21. Donnees, audit et trace historique
+## 22. Donnees, audit et trace historique
 
-### 19.1 Auditabilite
+### 22.1 Auditabilite
 
 Macro doit conserver suffisamment de metadonnees pour auditer :
 - ce qui a ete planifie
@@ -852,7 +976,7 @@ Macro doit conserver suffisamment de metadonnees pour auditer :
 - ce qui a ete execute
 - ou un eventuel probleme a pu apparaitre
 
-### 19.2 Nature historique des artefacts de planification
+### 22.2 Nature historique des artefacts de planification
 
 Les besoins, noeuds de strategie et branches predictives sont durables comme historique, mais pas comme objets pilotes du futur une fois le plan clos.
 
@@ -861,13 +985,13 @@ Leur utilite principale apres execution est :
 - la retrospective
 - la tracabilite
 
-### 19.3 Persistance des metadonnees
+### 22.3 Persistance des metadonnees
 
 Les metadonnees liees aux plans doivent etre stockees dans la structure metadata de Macro afin que l'historique ne soit pas perdu.
 
 ---
 
-## 22. Exclusions publiques
+## 23. Exclusions publiques
 
 Les elements suivants sont exclus de la surface fonctionnelle publique tant qu'ils ne sont pas promus explicitement :
 
@@ -879,7 +1003,7 @@ Ces elements peuvent exister dans l'application, mais ils ne font pas partie du 
 
 ---
 
-## 23. Regles produit non negociables
+## 24. Regles produit non negociables
 
 Les regles suivantes sont fondatrices :
 
@@ -897,11 +1021,12 @@ Les regles suivantes sont fondatrices :
 - Une review humaine est obligatoire a la fin de chaque tache.
 - Une tache de finalisation synthetique converge depuis les feuilles de la strategie et pilote l'integration finale.
 - L'edition manuelle du code existe, mais comme mecanisme secondaire d'ajustement en review.
+- Les skills guident l'agent sans contourner la politique d'outils.
 - Le support du kernel distant fait partie de la cible produit.
 
 ---
 
-## 24. Regles de maintenance du document
+## 25. Regles de maintenance du document
 
 Ce document doit etre mis a jour lorsque :
 - un workflow utilisateur change

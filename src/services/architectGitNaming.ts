@@ -1,9 +1,14 @@
-import type { GitFlowBranchType, ProjectGitFlowSettings } from '../types';
+import type { CompletionMergePolicy, GitFlowBranchType, ProjectGitFlowSettings } from '../types';
 import { PREF_DEFAULTS, PREF_KEYS } from './preferences';
 
 export interface ArchitectGitNamingSettings extends ProjectGitFlowSettings {
+  completionMergePolicy: CompletionMergePolicy;
   syncTargetBeforeFinish: boolean;
 }
+
+type NormalizedProjectGitFlowSettings = ProjectGitFlowSettings & {
+  completionMergePolicy: CompletionMergePolicy;
+};
 
 type NonPlanGitFlowBranchType = Exclude<GitFlowBranchType, 'plan'>;
 const FEATURE_SLUG_PATTERN = '[a-z0-9._-]+';
@@ -33,9 +38,10 @@ const TEMPLATE_LABEL_BY_BRANCH_TYPE: Record<GitFlowBranchType, string> = {
   bugfix: 'Bugfix branch template',
 };
 
-const DEFAULT_PROJECT_SETTINGS: ProjectGitFlowSettings = {
+const DEFAULT_PROJECT_SETTINGS: NormalizedProjectGitFlowSettings = {
   baseBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH] || 'main'),
   mainBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH] || 'main'),
+  completionMergePolicy: 'merge_commit',
   planBranchTemplate: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE] || 'plan/{planSlug}'),
   featureBranchTemplate: String(
     PREF_DEFAULTS[PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE] || 'feature/{planSlug}/{featureSlug}'
@@ -134,12 +140,14 @@ const readStoredBoolean = (key: string): boolean | null => {
 
 const normalizeProjectGitFlowSettings = (
   settings?: Partial<ProjectGitFlowSettings> | null
-): ProjectGitFlowSettings => ({
+): NormalizedProjectGitFlowSettings => ({
   baseBranch: normalizeGitBranchName(settings?.baseBranch || DEFAULT_PROJECT_SETTINGS.baseBranch, DEFAULT_PROJECT_SETTINGS.baseBranch),
   mainBranch: normalizeGitBranchName(
     settings?.mainBranch || DEFAULT_PROJECT_SETTINGS.mainBranch,
     DEFAULT_PROJECT_SETTINGS.mainBranch
   ),
+  completionMergePolicy:
+    settings?.completionMergePolicy === 'fast_forward' ? 'fast_forward' : 'merge_commit',
   planBranchTemplate: normalizeTemplate(
     settings?.planBranchTemplate || DEFAULT_PROJECT_SETTINGS.planBranchTemplate,
     DEFAULT_PROJECT_SETTINGS.planBranchTemplate
@@ -168,7 +176,7 @@ const normalizeProjectGitFlowSettings = (
 
 const getTemplateForBranchType = (
   branchType: GitFlowBranchType,
-  settings: ProjectGitFlowSettings
+  settings: NormalizedProjectGitFlowSettings
 ): string => settings[TEMPLATE_KEY_BY_BRANCH_TYPE[branchType]];
 
 const validateTemplateForBranchType = (
@@ -332,10 +340,16 @@ const validateTemplateDefinition = (params: {
   return errors;
 };
 
-export const getDefaultProjectGitFlowSettings = (): ProjectGitFlowSettings =>
+export const resolveCompletionMergePolicy = (
+  value?: string | null
+): CompletionMergePolicy => (value === 'fast_forward' ? 'fast_forward' : 'merge_commit');
+
+export const getDefaultProjectGitFlowSettings = (): NormalizedProjectGitFlowSettings =>
   normalizeProjectGitFlowSettings({
     baseBranch: readStoredValue(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH) || DEFAULT_PROJECT_SETTINGS.baseBranch,
     mainBranch: readStoredValue(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH) || DEFAULT_PROJECT_SETTINGS.mainBranch,
+    completionMergePolicy:
+      resolveCompletionMergePolicy(readStoredValue(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY)),
     planBranchTemplate:
       readStoredValue(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE) || DEFAULT_PROJECT_SETTINGS.planBranchTemplate,
     featureBranchTemplate:
@@ -353,7 +367,7 @@ export const getDefaultProjectGitFlowSettings = (): ProjectGitFlowSettings =>
 
 export const resolveProjectGitFlowSettings = (
   settings?: Partial<ProjectGitFlowSettings> | null
-): ProjectGitFlowSettings => normalizeProjectGitFlowSettings(settings ?? getDefaultProjectGitFlowSettings());
+): NormalizedProjectGitFlowSettings => normalizeProjectGitFlowSettings(settings ?? getDefaultProjectGitFlowSettings());
 
 export const getArchitectGitNamingSettings = (): ArchitectGitNamingSettings => ({
   ...getDefaultProjectGitFlowSettings(),

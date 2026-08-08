@@ -14,7 +14,7 @@ export const TourSpotlightOverlay: React.FC<TourSpotlightOverlayProps> = ({
 }) => {
   if (!rect) {
     return (
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto" />
+      <div className="absolute inset-0 bg-black/40 pointer-events-auto" />
     );
   }
 
@@ -36,7 +36,7 @@ export const TourSpotlightOverlay: React.FC<TourSpotlightOverlayProps> = ({
         d={maskPath}
         fill="rgba(0,0,0,0.40)"
         fillRule="evenodd"
-        className="backdrop-blur-sm pointer-events-auto"
+        className=" pointer-events-auto"
       />
       <rect
         data-onboarding-highlight="true"

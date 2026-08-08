@@ -32,8 +32,8 @@ L'architecture repose sur quatre principes :
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
 - desktop local avec backend Tauri embarque
-- desktop local avec simulation ou provider mock pour certaines phases de developpement
 - client desktop connecte a un kernel distant
+- client web/mobile connecte a un kernel distant
 
 ---
 
@@ -68,8 +68,8 @@ Les stores centralisent les decisions d'orchestration cote interface.
 La couche services frontend encapsule les acces aux sources de donnees et aux outils.
 
 Elle fournit :
-- une abstraction de provider (`mock`, `ipc`, `remote`)
-- des services specialises pour les plans, le git flow architecte, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
+- une abstraction de provider (`ipc`, `remote`)
+- des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
 
 Elle a pour role d'isoler le reste de l'interface des details du transport.
 
@@ -135,13 +135,12 @@ Le backend desktop utilise principalement :
 
 ### 4.3 Transports
 
-Macro supporte deux transports logiques cote application :
+Le produit 0.1 supporte un transport cote application :
 
 - `desktop`
-- `remote`
 
 Le transport `desktop` passe par Tauri IPC.
-Le transport `remote` passe par HTTP vers un kernel distant.
+Une fondation HTTP distante existe dans le code a titre experimental, mais elle n'est ni exposee ni supportee comme capacite produit en 0.1. Elle pourra servir a une future ligne remote sans modifier le contrat desktop actuel.
 
 ---
 
@@ -247,7 +246,7 @@ D'autres stores portent des responsabilites ciblees :
 - `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modeles IA
 - `useToolsStore` pour les outils internes et MCP
-- `useAuthStore` pour les futurs usages lies au compte
+- `useSkillsStore` pour la decouverte, les preferences et les activations de skills
 
 ### 6.5 Principe d'orchestration
 
@@ -269,13 +268,11 @@ Les composants doivent surtout afficher, recueillir des intentions utilisateur e
 
 La couche `services/index.ts` selectionne dynamiquement le provider de donnees selon :
 
-- le provider cible (`mock` ou `ipc`)
 - le transport cible (`desktop` ou `remote`)
 - la disponibilite effective du runtime Tauri
 
 Cette abstraction permet :
 
-- de travailler sur un frontend simule
 - d'utiliser Tauri en mode desktop
 - de parler a un backend distant sans reecrire le reste de l'application
 
@@ -293,6 +290,7 @@ Exemples principaux :
 - `remoteKernelApi`
 - `toolModePolicy`
 - `projectExecutionContext`
+- `skills` via le contrat provider et les commandes IPC dediees
 
 ### 7.3 Contrats et DTO
 
@@ -326,6 +324,7 @@ Le backend expose de nombreuses commandes Tauri, regroupees par domaine :
 - base de donnees
 - workspace
 - outils
+- skills
 - systeme de fichiers
 - Git
 
@@ -357,7 +356,6 @@ Les blocs principaux sont :
 - `workspace/`
 - `commands/`
 - `ai/`
-- `index/`
 
 ### 9.2 `core`
 
@@ -413,12 +411,6 @@ Le module `ai` porte :
 
 Cette couche est encore partiellement utilisee selon les flux, mais fait partie de l'architecture cible.
 
-### 9.8 `index`
-
-Le module `index` prepare la couche d'indexation et de recherche.
-
-Il existe dans l'architecture, meme si son usage produit n'est pas encore completement active.
-
 ---
 
 ## 10. Persistance
@@ -433,7 +425,6 @@ Elle stocke notamment :
 - messages
 - settings
 - cache local de workspace
-- jobs d'index
 - references de depots Git et worktrees
 
 ### 10.2 Persistance locale frontend
@@ -453,11 +444,14 @@ L'historique structure de Macro est conserve dans une branche metadata dediee.
 Cette branche contient notamment :
 
 - `workspace.json`
-- les index de plans
-- les plans serialises
-- les rendus Markdown de plans
-- les fichiers `planned.md`
-- les fichiers `executed.md`
+- `branches/<target-branch>/plans/index.json`
+- `branches/<target-branch>/plans/<plan-id>/plan.json`
+- `branches/<target-branch>/plans/<plan-id>/needs.json`
+- `branches/<target-branch>/plans/<plan-id>/runtime.json`
+- `branches/<target-branch>/plans/<plan-id>/manifest.json`
+- `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
 
 Le stockage metadata dans Git permet l'audit, la redondance et la conservation de l'historique de travail.
 
@@ -471,9 +465,16 @@ Les plans sont stockes dans une structure de type :
 
 - `branches/<target-branch>/plans/index.json`
 - `branches/<target-branch>/plans/<plan-id>/plan.json`
-- `branches/<target-branch>/plans/<plan-id>/plan.md`
-- `branches/<target-branch>/plans/<plan-id>/tasks/<task-id>/planned.md`
-- `branches/<target-branch>/plans/<plan-id>/tasks/<task-id>/executed.md`
+- `branches/<target-branch>/plans/<plan-id>/needs.json`
+- `branches/<target-branch>/plans/<plan-id>/runtime.json`
+- `branches/<target-branch>/plans/<plan-id>/manifest.json`
+- `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
+- `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
+
+Les artefacts de relais de taches sont separes du dossier `tasks/<task-id>/`, qui reste reserve aux rendus generes comme `planned.md` et `executed.md`.
+
+`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement a marquer la revue de l'artefact pour la tache consommatrice courante.
 
 ### 11.2 Raison de cette structure
 
@@ -489,6 +490,7 @@ Cette structure sert a :
 Le frontend lit, ecrit et synchronise cette structure via :
 
 - les services de planification
+- le service d'artefacts de plan, qui calcule la fermeture transitive des dependances et applique les droits de lecture/ecriture par tache
 - les commandes FS avec scope metadata
 - les commandes Git de sync `@macro`
 
@@ -595,9 +597,79 @@ Cette couche unifie l'execution des outils cote produit.
 
 ---
 
-## 14. Streaming IA et orchestration conversationnelle
+## 14. Skills
 
-### 14.1 Chat streaming
+### 14.1 Role
+
+Les skills sont une couche de contexte agent distincte de MCP.
+
+Une skill fournit des instructions reutilisables a l'agent. Elle ne cree pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
+
+### 14.2 Format local
+
+La version locale supporte des dossiers contenant :
+
+- `SKILL.md` prioritaire, avec `skill.md` accepte en mode compatibilite
+- frontmatter YAML AgentSkills avec `name`, `description`, `license`, `compatibility`, `allowed-tools` et `metadata`
+- dossiers optionnels `references/`, `assets/` et `scripts/`
+
+Les sources supportees en 0.1 sont :
+
+- `.agents/skills`, `.codex/skills`, `.opencode/skills`, `.opencode/skill` et `.claude/skills` dans les projets visibles par Macro
+- `~/.agents/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills`, `~/.opencode/skill` et `~/.claude/skills` pour les skills utilisateur globales
+
+La decouverte ignore les dossiers caches internes, `.git`, `node_modules`, les racines symlinkees et applique des limites de profondeur et de volume. La validation separe `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
+
+Le validateur suit la logique `skills-ref` pour les noms : comparaison apres normalisation Unicode NFKC, lettres/chiffres Unicode acceptes avec tirets, et lowercase Unicode. Les ecarts d'usage courants (uppercase, underscores, tirets en debut/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` genere le diagnostic `unexpected_frontmatter_field`.
+
+Les collisions sont resolues de facon deterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposee au catalogue agent et a la resolution `$skill-name`. Les skills shadowed restent listees dans Settings et peuvent etre chargees par selection explicite/id exact.
+
+### 14.3 Chargement progressif
+
+Le chargement doit rester progressif :
+
+- au bootstrap, Macro ne charge que le manifeste compact
+- dans le prompt, Macro injecte seulement le catalogue des skills activees, chargeables et non-shadowed
+- le corps body-only de `SKILL.md` est charge via `skill_activate` dans un bloc `<skill_content ...>` structure
+- les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
+- les scripts de `scripts/` sont executes via `skill_run_script`
+
+`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dedupliquees par conversation et rechargees seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistres aupres du modele que lorsqu'une skill activee et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts actives et un niveau de risque compatible.
+
+Les preferences d'activation sont persistees comme preferences Macro cote client, pas dans les dossiers de skills.
+
+### 14.4 Securite
+
+Les skills decouvertes sont desactivees par defaut.
+
+L'execution de scripts exige :
+
+- skill activee
+- skill marquee comme trusted
+- scripts actives pour cette skill
+- passage par la politique d'approbation d'outils a risque
+
+Le backend bloque les chemins hors skill, les traversals, les fichiers caches non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectes par defaut, avec timeout, sortie tronquee et repertoire temporaire par defaut.
+
+`allowed-tools` est expose comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
+
+### 14.5 Fondation de transport remote (experimentale)
+
+Cette couche reste interne et hors du contrat produit 0.1. Les details ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
+
+Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local. La deduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
+
+Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le prefixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolerant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime courant ne supporte pas la capacite precise.
+
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des reglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par defaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+
+La surface complete reste supportee par le desktop local via Tauri IPC.
+
+---
+
+## 15. Streaming IA et orchestration conversationnelle
+
+### 15.1 Chat streaming
 
 Le streaming des reponses IA est gere cote frontend par un service dedie.
 
@@ -608,13 +680,13 @@ Cette couche s'occupe de :
 - mettre a jour la conversation en cours
 - annuler un stream si necessaire
 
-### 14.2 Couplage avec les plans
+### 15.2 Couplage avec les plans
 
 En mode Architect, certaines actions conversationnelles declenchent une sync metadata a la fin du stream.
 
 L'objectif est d'ancrer les changements de plan dans la branche metadata de facon reguliere.
 
-### 14.3 Couplage avec le mode Implement
+### 15.3 Couplage avec le mode Implement
 
 En mode Implement, le chat sert aussi de couche d'interaction pour :
 
@@ -626,13 +698,15 @@ Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestrati
 
 ---
 
-## 15. Backend distant et kernel headless
+## 16. Fondation experimentale : backend distant et kernel headless
 
-### 15.1 Role du kernel headless
+Cette section documente du code exploratoire interne. Ce code n'est pas expose comme mode produit, n'est pas supporte en 0.1 et ne constitue pas un engagement de compatibilite.
 
-Le kernel headless est la version sans GUI du backend Macro.
+### 16.1 Role du kernel headless
 
-Il doit permettre a un client Macro distant de :
+Le prototype de kernel headless est une version sans GUI du backend Macro.
+
+Il explore la possibilite pour un futur client Macro distant de :
 
 - recuperer l'etat du workspace
 - recuperer les taches
@@ -640,32 +714,43 @@ Il doit permettre a un client Macro distant de :
 - executer certains outils
 - consulter l'etat Git
 
-### 15.2 Exposition HTTP
+### 16.2 Exposition HTTP
 
 Le kernel headless expose une API HTTP basee sur axum.
 
 Cette API couvre au minimum :
 
-- healthcheck
-- tool mode policy
-- validation d'outil
-- execution d'outil
-- bootstrap workspace
-- liste des taches
-- arbre Git par projet
-- historique Git par projet
+- `GET /health`
+- `GET /v1/tools/mode-policy`
+- `POST /v1/tools/validate`
+- `POST /v1/tools/execute`
+- `GET /api/v1/tools/mode-policy`
+- `POST /api/v1/tools/validate`
+- `POST /api/v1/tools/execute`
+- `GET /api/v1/workspace/bootstrap`
+- `GET /api/v1/workspaces/{workspace_id}/bootstrap`
+- `GET /api/v1/workspace/tasks`
+- `GET /api/v1/workspaces/{workspace_id}/tasks`
+- `GET /api/v1/projects/{project_id}/git/tree`
+- `GET /api/v1/projects/{project_id}/git/commits`
+- `POST /api/v1/workspaces/{workspace_id}/skills/list`
+- `POST /api/v1/workspaces/{workspace_id}/skills/get`
+- `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
+- `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
-### 15.3 Authentification
+Cette surface HTTP est une fondation experimentale incomplete. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
+
+Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
+
+### 16.3 Protection experimentale
 
 Le kernel headless peut etre protege par un bearer token.
 
-Cette securisation est la base du modele de connexion distante, meme si le modele complet de compte et d'abonnement depasse l'etat courant du code.
+Ce token protege uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
-### 15.4 Position architecturale
+### 16.4 Position architecturale
 
-Le kernel headless n'est pas un service annexe.
-
-Il constitue la base de :
+Si cette exploration devient un jour une capacite produit, elle pourrait servir de base a :
 
 - l'execution distante
 - la continuite entre plusieurs clients
@@ -674,9 +759,9 @@ Il constitue la base de :
 
 ---
 
-## 16. Configuration
+## 17. Configuration
 
-### 16.1 Configuration frontend
+### 17.1 Configuration frontend
 
 Le frontend depend notamment de variables d'environnement pour :
 
@@ -684,7 +769,7 @@ Le frontend depend notamment de variables d'environnement pour :
 - choisir le transport backend
 - configurer l'acces au backend distant
 
-### 16.2 Configuration backend
+### 17.2 Configuration backend
 
 Le backend Rust charge une configuration runtime pour :
 
@@ -692,18 +777,19 @@ Le backend Rust charge une configuration runtime pour :
 - le chemin de la base SQLite
 - les options de runtime
 
-### 16.3 Configuration utilisateur
+### 17.3 Configuration utilisateur
 
 Les preferences utilisateur sont reparties entre :
 
 - persistence locale frontend
 - settings backend
 - configurations providers et modeles
-- regles de git flow et d'automatisation
+- regles de workflow Git et d'automatisation
+- preferences de skills activees, trusted et scripts
 
 ---
 
-## 17. Principes de separation entre documents
+## 18. Principes de separation entre documents
 
 Le present document doit decrire :
 
@@ -725,7 +811,7 @@ Ces sujets appartiennent respectivement a :
 
 ---
 
-## 18. Regles de maintenance du document
+## 19. Regles de maintenance du document
 
 Ce document doit etre mis a jour lorsque :
 

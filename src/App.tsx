@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Header } from "./components/layout/Header";
 import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
 import { ModeRouter } from "./components/layout/ModeRouter";
+import { Footer } from "./components/layout/Footer";
+import { Toaster } from "./components/ui/Toaster";
+import { notify } from "./components/ui/toastService";
 import { useAppStore } from "./stores/useAppStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -22,23 +26,12 @@ import type {
 
 const DiffModal = lazy(() => import("./components/modals/DiffModal"));
 const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
-const AccountModal = lazy(() => import("./components/modals/AccountModal"));
 const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
 const ProjectGitFlowModal = lazy(
   () => import("./components/modals/ProjectGitFlowModal"),
 );
 const CodeFileViewerModal = lazy(
   () => import("./components/modals/CodeFileViewerModal"),
-);
-const Footer = lazy(() =>
-  import("./components/layout/Footer").then((module) => ({
-    default: module.Footer,
-  })),
-);
-const Toaster = lazy(() =>
-  import("./components/ui/Toaster").then((module) => ({
-    default: module.Toaster,
-  })),
 );
 const OnboardingGuide = lazy(() =>
   import("./components/onboarding/OnboardingGuide").then((module) => ({
@@ -58,13 +51,6 @@ const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
   startupError: null,
 };
 
-const FooterSkeleton: React.FC = () => (
-  <div
-    className="h-8 shrink-0 border-t border-border bg-background/70"
-    aria-hidden="true"
-  />
-);
-
 const StartupScreen: React.FC = () => (
   <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background">
     <div className="flex flex-col items-center gap-4">
@@ -79,18 +65,29 @@ const StartupErrorScreen: React.FC<{
   failedSteps: string[];
   details?: string;
   onRetry: () => void;
-}> = ({ message, failedSteps, details, onRetry }) => (
+}> = ({ message, failedSteps, details, onRetry }) => {
+  const { t } = useTranslation();
+  return (
   <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center bg-background px-6 text-foreground">
     <div className="w-full max-w-lg rounded-2xl border border-border bg-card/80 p-6 shadow-2xl">
       <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-        Startup interrupted
+        {t("startup.interrupted", "Startup interrupted")}
       </p>
-      <h1 className="mt-3 text-2xl font-semibold">Macro could not finish booting.</h1>
-      <p className="mt-3 text-sm leading-6 text-muted-foreground">{message}</p>
-      {failedSteps.length > 0 && (
+      <h1 className="mt-3 text-2xl font-semibold">
+        {t("startup.failedTitle", "Macro could not finish booting.")}
+      </h1>
+      <p className="mt-3 text-sm leading-6 text-muted-foreground">
+        {import.meta.env.DEV
+          ? message
+          : t(
+              "startup.failedDescription",
+              "Macro could not initialize its local data. You can retry safely."
+            )}
+      </p>
+      {import.meta.env.DEV && failedSteps.length > 0 && (
         <div className="mt-4 rounded-xl border border-border bg-background/60 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Failed step{failedSteps.length > 1 ? "s" : ""}
+            {t("startup.failedSteps", "Failed steps")}
           </p>
           <p className="mt-1 text-sm">{failedSteps.join(", ")}</p>
         </div>
@@ -105,11 +102,12 @@ const StartupErrorScreen: React.FC<{
         onClick={onRetry}
         className="mt-5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
       >
-        Retry
+        {t("common.retry", "Retry")}
       </button>
     </div>
   </div>
-);
+  );
+};
 
 // =============================================================================
 // INITIALIZATION PRIORITY CONFIGURATION
@@ -314,7 +312,16 @@ const App: React.FC = () => {
       return;
     }
 
-    void controller.restart().catch((error) => {
+    void (async () => {
+      const tauriIpc = await import("./services/tauriIpc");
+      if (tauriIpc.isTauriAvailable()) {
+        const databaseStatus = await tauriIpc.getDatabaseInitializationStatus();
+        if (databaseStatus.status === "failed") {
+          await tauriIpc.retryDatabaseInitialization();
+        }
+      }
+      await controller.restart();
+    })().catch((error) => {
       console.error("Failed to restart app bootstrap:", error);
       setBootstrapImportError({
         message:
@@ -347,51 +354,39 @@ const App: React.FC = () => {
     }
     lastRecoveryToastKeyRef.current = toastKey;
 
-    let cancelled = false;
-
-    void import("./components/ui/toastService").then(({ notify }) => {
-      if (cancelled) {
-        return;
-      }
-
-      if (metadataRecoveryReport.status === "restored_from_history") {
-        notify.success(
-          metadataRecoveryReport.restoredCommit
-            ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
-            : "Metadata @macro restored from history",
-          {
-            description:
-              metadataRecoveryReport.message ||
-              "Macro restored the latest valid metadata snapshot before loading the workspace.",
-          },
-        );
-        return;
-      }
-
-      if (metadataRecoveryReport.status === "reconstructed_from_hints") {
-        notify.info("Metadata @macro reconfigured from local projects", {
+    if (metadataRecoveryReport.status === "restored_from_history") {
+      notify.success(
+        metadataRecoveryReport.restoredCommit
+          ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
+          : "Metadata @macro restored from history",
+        {
           description:
             metadataRecoveryReport.message ||
-            "Macro rebuilt a minimal metadata state from locally known projects.",
-        });
-        return;
-      }
+            "Macro restored the latest valid metadata snapshot before loading the workspace.",
+        },
+      );
+      return;
+    }
 
-      if (
-        metadataRecoveryReport.status === "blocked_dirty" ||
-        metadataRecoveryReport.status === "blocked_conflict"
-      ) {
-        notify.warning("Automatic @macro recovery skipped", {
-          description:
-            metadataRecoveryReport.message ||
-            "Macro detected local metadata blockers and did not apply recovery automatically.",
-        });
-      }
-    });
+    if (metadataRecoveryReport.status === "reconstructed_from_hints") {
+      notify.info("Metadata @macro reconfigured from local projects", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro rebuilt a minimal metadata state from locally known projects.",
+      });
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    if (
+      metadataRecoveryReport.status === "blocked_dirty" ||
+      metadataRecoveryReport.status === "blocked_conflict"
+    ) {
+      notify.warning("Automatic @macro recovery skipped", {
+        description:
+          metadataRecoveryReport.message ||
+          "Macro detected local metadata blockers and did not apply recovery automatically.",
+      });
+    }
   }, [initStatus.critical, metadataRecoveryReport]);
 
   // ==========================================================================
@@ -475,23 +470,18 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <Suspense fallback={<FooterSkeleton />}>
-        <Footer />
-      </Suspense>
+      <Footer />
 
       {/* Modals - Lazy Loaded with Suspense */}
       <Suspense fallback={null}>
         <DiffModal />
         <SettingsModal />
-        <AccountModal />
         <ProjectModal />
         <ProjectGitFlowModal />
         <CodeFileViewerModal />
       </Suspense>
 
-      <Suspense fallback={null}>
-        <Toaster />
-      </Suspense>
+      <Toaster />
 
       <Suspense fallback={null}>
         <OnboardingGuide />

@@ -3,24 +3,30 @@ use crate::commands::{CommandError, DbPool};
 use crate::core::error::{BackendError, Result};
 use crate::db::repository;
 use crate::git::GitState;
+use crate::project_path::parse_wsl_unc_path;
 use crate::workspace;
 use crate::workspace::metadata::{
-    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
-    ManualFeatureMergeWorkflowDto, ProjectAccessChangePreviewDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto,
-    ProjectGroupDto, ProjectRegistryDiagnosticsDto, WorkspaceArchitectActivatePlanChatRequestDto,
+    CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
+    ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto,
+    ProjectAccessChangePreviewDto, ProjectDto, ProjectGitFlowDetectionDto,
+    ProjectGitFlowSettingsDto, ProjectGitSetupCommitResultDto, ProjectGroupDto,
+    ProjectRegistryDiagnosticsDto, WorkspaceArchitectActivatePlanChatRequestDto,
     WorkspaceArchitectActivatePlanHeadRequestDto, WorkspaceArchitectListPlansRequestDto,
     WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
     WorkspaceArchitectPlanTranscriptDto, WorkspaceBootstrapDto, WorkspaceMetadataDto,
-    WorkspaceMetadataRecoveryReportDto, WorkspaceRecoverMissingMetadataRequestDto,
-    WorkspaceTaskCatalogDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceProjectRegistryReconcileReportDto,
+    WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+    WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+    WorkspaceRecoverMissingMetadataRequestDto, WorkspaceTaskCatalogDto,
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::State;
+use tokio::sync::{watch, Mutex};
 
 fn to_join_error(err: tokio::task::JoinError) -> BackendError {
     BackendError::Internal {
@@ -29,6 +35,12 @@ fn to_join_error(err: tokio::task::JoinError) -> BackendError {
 }
 
 async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> Result<PathBuf> {
+    if parse_wsl_unc_path(&workspace_path.to_string_lossy()).is_some() {
+        return Err(BackendError::Git {
+            message: "Macro metadata is not yet available for WSL projects.".to_string(),
+        });
+    }
+
     let workspace_path_for_fallback = workspace_path.clone();
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
@@ -36,7 +48,22 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             .map_err(to_join_error);
     match resolved {
         Ok(Ok(metadata_root)) => Ok(metadata_root),
-        Ok(Err(BackendError::GitRepositoryNotFound { message })) => {
+        Ok(Err(error)) => {
+            let error_message = error.to_string();
+            if let Some(metadata_worktree) =
+                crate::git::find_existing_macro_metadata_worktree_root(&workspace_path_for_fallback)
+            {
+                tracing::warn!(
+                    action = "workspace_metadata_root_existing_worktree_fallback",
+                    workspace_path = %workspace_path_for_fallback.display(),
+                    fallback_path = %metadata_worktree.display(),
+                    reason = %error_message
+                );
+                return Ok(metadata_worktree);
+            }
+            let BackendError::GitRepositoryNotFound { message } = error else {
+                return Err(error);
+            };
             let fallback = workspace_path_for_fallback.join(".macro");
             tracing::warn!(
                 action = "workspace_metadata_root_fallback",
@@ -46,7 +73,6 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             );
             Ok(fallback)
         }
-        Ok(Err(error)) => Err(error),
         Err(error) => Err(error),
     }
 }
@@ -54,6 +80,67 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
 fn to_backend_error(error: CommandError) -> BackendError {
     BackendError::Internal {
         message: error.message,
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ProjectOperationStore {
+    operations: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+}
+
+impl ProjectOperationStore {
+    async fn register(&self, request_id: Option<&str>) -> Option<ProjectOperationGuard> {
+        let request_id = request_id?.trim();
+        if request_id.is_empty() {
+            return None;
+        }
+
+        let (sender, receiver) = watch::channel(false);
+        self.operations
+            .lock()
+            .await
+            .insert(request_id.to_string(), sender);
+        Some(ProjectOperationGuard {
+            request_id: request_id.to_string(),
+            store: self.clone(),
+            receiver,
+        })
+    }
+
+    async fn cancel(&self, request_id: &str) -> bool {
+        let sender = self.operations.lock().await.get(request_id).cloned();
+        if let Some(sender) = sender {
+            let _ = sender.send(true);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn remove(&self, request_id: &str) {
+        self.operations.lock().await.remove(request_id);
+    }
+}
+
+pub struct ProjectOperationGuard {
+    request_id: String,
+    store: ProjectOperationStore,
+    receiver: watch::Receiver<bool>,
+}
+
+impl ProjectOperationGuard {
+    fn receiver(&self) -> watch::Receiver<bool> {
+        self.receiver.clone()
+    }
+}
+
+impl Drop for ProjectOperationGuard {
+    fn drop(&mut self) {
+        let request_id = self.request_id.clone();
+        let store = self.store.clone();
+        tauri::async_runtime::spawn(async move {
+            store.remove(&request_id).await;
+        });
     }
 }
 
@@ -157,6 +244,30 @@ pub async fn workspace_recover_missing_metadata(
 }
 
 #[tauri::command]
+pub async fn workspace_reconcile_project_registry_from_hints(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::reconcile_project_registry_from_hints(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
+pub async fn workspace_discover_recoverable_projects(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::discover_recoverable_projects(&workspace_path, &metadata_root, request).await
+}
+
+#[tauri::command]
 pub async fn workspace_get_active_root(workspace_root: State<'_, WorkspaceRoot>) -> Result<String> {
     let workspace_path = workspace_root.inner().read().await.clone();
     Ok(workspace_path.to_string_lossy().to_string())
@@ -207,13 +318,26 @@ pub async fn workspace_architect_invalidate(branch_name: Option<String>) -> Resu
 #[tauri::command]
 pub async fn workspace_preview_project_git_setup(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
+    project_operations: State<'_, ProjectOperationStore>,
     path: Option<String>,
+    request_id: Option<String>,
 ) -> Result<ProjectGitFlowDetectionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    Ok(workspace::preview_project_git_setup(
+    let operation = project_operations.register(request_id.as_deref()).await;
+    workspace::preview_project_git_setup_async(
         &workspace_path,
         path.as_deref(),
-    ))
+        operation.as_ref().map(ProjectOperationGuard::receiver),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_cancel_project_operation(
+    project_operations: State<'_, ProjectOperationStore>,
+    request_id: String,
+) -> Result<bool> {
+    Ok(project_operations.cancel(&request_id).await)
 }
 
 #[tauri::command]
@@ -251,7 +375,14 @@ pub async fn workspace_set_active_root(
     workspace_root: State<'_, WorkspaceRoot>,
     path: String,
 ) -> Result<String> {
-    let candidate = PathBuf::from(path);
+    let trimmed_path = path.trim();
+    if parse_wsl_unc_path(trimmed_path).is_some() {
+        let mut guard = workspace_root.inner().write().await;
+        *guard = PathBuf::from(trimmed_path);
+        return Ok(trimmed_path.to_string());
+    }
+
+    let candidate = PathBuf::from(trimmed_path);
     let base = workspace_root.inner().read().await.clone();
     let candidate = if candidate.is_absolute() {
         candidate
@@ -280,16 +411,19 @@ pub async fn workspace_set_active_root(
 pub async fn workspace_create_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    project_operations: State<'_, ProjectOperationStore>,
     name: String,
     description: String,
     group_id: Option<String>,
     group_name: Option<String>,
     path: Option<String>,
     git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    request_id: Option<String>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let operation = project_operations.register(request_id.as_deref()).await;
     let request = CreateProjectRequest {
         name,
         description,
@@ -299,7 +433,13 @@ pub async fn workspace_create_project(
         git_flow_settings,
     };
 
-    workspace::create_project(&workspace_path, &metadata_root, request).await
+    workspace::create_project_with_cancel(
+        &workspace_path,
+        &metadata_root,
+        request,
+        operation.as_ref().map(ProjectOperationGuard::receiver),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -307,6 +447,7 @@ pub async fn workspace_create_project(
 pub async fn workspace_create_project_with_git_setup(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    project_operations: State<'_, ProjectOperationStore>,
     name: String,
     description: String,
     group_id: Option<String>,
@@ -317,10 +458,12 @@ pub async fn workspace_create_project_with_git_setup(
     expected_repo_root_path: Option<String>,
     expected_setup_state: String,
     expected_recommended_action_sequence: Vec<String>,
+    request_id: Option<String>,
 ) -> Result<ProjectGitSetupCommitResultDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let operation = project_operations.register(request_id.as_deref()).await;
     let request = CreateProjectRequest {
         name,
         description,
@@ -338,6 +481,43 @@ pub async fn workspace_create_project_with_git_setup(
         expected_repo_root_path.as_deref(),
         &expected_setup_state,
         &expected_recommended_action_sequence,
+        operation.as_ref().map(ProjectOperationGuard::receiver),
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn workspace_create_new_project_repo(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_operations: State<'_, ProjectOperationStore>,
+    repo_name: String,
+    parent_path: String,
+    folder_name: String,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    request_id: Option<String>,
+) -> Result<ProjectGitSetupCommitResultDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let operation = project_operations.register(request_id.as_deref()).await;
+    let request = CreateNewProjectRepoRequest {
+        repo_name,
+        parent_path,
+        folder_name,
+        group_id,
+        group_name,
+        git_flow_settings,
+    };
+
+    workspace::create_new_project_repo_with_cancel(
+        &workspace_path,
+        &metadata_root,
+        request,
+        operation.as_ref().map(ProjectOperationGuard::receiver),
     )
     .await
 }
@@ -382,6 +562,38 @@ pub async fn workspace_rename_project_group(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     workspace::rename_project_group(&workspace_path, &metadata_root, &group_id, &name).await
+}
+
+#[tauri::command]
+pub async fn workspace_create_project_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    name: String,
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::create_project_group(&workspace_path, &metadata_root, &name, &project_ids).await
+}
+
+#[tauri::command]
+pub async fn workspace_move_project_to_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+    group_id: Option<String>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::move_project_to_group(
+        &workspace_path,
+        &metadata_root,
+        &project_id,
+        group_id.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

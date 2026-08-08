@@ -20,7 +20,11 @@ fn macos_log_dir() -> Option<PathBuf> {
 pub fn init_logging() {
     // Default log level can be controlled via RUST_LOG environment variable
     // e.g., RUST_LOG=debug,sqlx=warn
-    let env_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into());
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Tao can emit noisy event-loop ordering warnings during heavy webview redraws
+        // such as opening/closing CodeMirror diff modals. Keep real app warnings visible.
+        EnvFilter::new("info,tao::platform_impl::platform::event_loop::runner=error")
+    });
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
     #[cfg(target_os = "macos")]

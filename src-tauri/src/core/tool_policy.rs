@@ -16,6 +16,9 @@ pub struct ToolModePolicyResult {
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "read_file",
         "web_search",
         "web_fetch",
@@ -73,6 +76,9 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "mark_source_passage",
         "read_sources",
         "edit_source_passage",
@@ -85,6 +91,9 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "skill_activate",
+        "skill_read_resource",
+        "skill_run_script",
         "read_file",
         "web_search",
         "web_fetch",
@@ -96,6 +105,11 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "edit",
         "delete",
         "apply_patch",
+        "task_todo_get",
+        "task_todo_update",
+        "task_artifact_list",
+        "task_artifact_get",
+        "task_artifact_put",
         "git_status",
         "git_log",
         "git_branch_list",
@@ -116,6 +130,11 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
 
 fn is_write_tool(tool_id: &str) -> bool {
     matches!(tool_id, "write" | "edit" | "delete" | "apply_patch")
+}
+
+fn is_mcp_tool_id(tool_id: &str) -> bool {
+    let parts: Vec<&str> = tool_id.split("__").collect();
+    parts.len() >= 3 && parts.first() == Some(&"mcp") && parts[1].len() > 0 && parts[2].len() > 0
 }
 
 fn normalize_relative_path_parts(raw_path: &str) -> Option<Vec<String>> {
@@ -215,7 +234,7 @@ pub fn validate_tool_execution(
         };
     };
 
-    if !allowed_tool_ids.contains(&tool_id) {
+    if !allowed_tool_ids.contains(&tool_id) && !is_mcp_tool_id(tool_id) {
         return ToolValidationResult {
             allowed: false,
             reason: Some(format!(
@@ -277,6 +296,9 @@ mod tests {
             policy.allowed_tool_ids,
             vec![
                 "question".to_string(),
+                "skill_activate".to_string(),
+                "skill_read_resource".to_string(),
+                "skill_run_script".to_string(),
                 "mark_source_passage".to_string(),
                 "read_sources".to_string(),
                 "edit_source_passage".to_string(),
@@ -286,6 +308,15 @@ mod tests {
             ]
         );
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_activate".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_read_resource".to_string()));
+        assert!(policy
+            .allowed_tool_ids
+            .contains(&"skill_run_script".to_string()));
         assert!(policy
             .allowed_tool_ids
             .contains(&"mark_source_passage".to_string()));

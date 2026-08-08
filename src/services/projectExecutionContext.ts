@@ -7,6 +7,8 @@ import {
   isProjectActionable,
   isProjectReadOnly,
 } from './globalProjects';
+import { resolveCachedPreparedTaskWorktreePath } from './preparedTaskWorktrees';
+import { retargetTaskForExecution } from './projectIdentityReconciliation';
 
 export interface ExecutionTaskLike {
   id: string;
@@ -73,6 +75,26 @@ const getExecutionTargets = (task: ExecutionTaskLike | null): TaskExecutionTarge
   return task.execution_targets;
 };
 
+const resolveSelectedScopeProjectIds = (params: {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  projectGroups: ProjectGroup[];
+  projectById: Map<string, Project>;
+}): string[] => {
+  if (params.selectedGroupId) {
+    const groupProjectIds =
+      params.projectGroups
+        .find((group) => group.id === params.selectedGroupId)
+        ?.projects.map((project) => project.id) ?? [];
+    if (groupProjectIds.length > 0) {
+      return groupProjectIds;
+    }
+  }
+  return params.selectedProjectId && params.projectById.has(params.selectedProjectId)
+    ? [params.selectedProjectId]
+    : [];
+};
+
 export const resolveProjectExecutionContext = (
   input: ResolveProjectExecutionContextInput
 ): ProjectExecutionContext => {
@@ -108,11 +130,24 @@ export const resolveProjectExecutionContext = (
   const selectedTaskId = cleanString(input.selectedTaskId);
   const conversationTaskId = cleanString(conversation?.task_id);
   const taskId = conversationTaskId || (input.mode === 'Implement' ? selectedTaskId : null);
-  const task = taskId ? taskById.get(taskId) || null : null;
-
   const selectedProjectId = cleanString(input.selectedProjectId);
   const selectedGroupId = cleanString(input.selectedGroupId);
-  const executionTargets = getExecutionTargets(task);
+  const selectedKnownProjectId =
+    selectedProjectId && projectById.has(selectedProjectId) ? selectedProjectId : null;
+  const selectedScopeProjectIds = resolveSelectedScopeProjectIds({
+    selectedGroupId,
+    selectedProjectId: selectedKnownProjectId,
+    projectGroups,
+    projectById,
+  });
+  const rawTask = taskId ? taskById.get(taskId) || null : null;
+  const task = rawTask
+    ? retargetTaskForExecution(rawTask, {
+        scopedProjectIds: selectedScopeProjectIds,
+        knownProjectIds: Array.from(projectById.keys()),
+      })
+    : null;
+  const executionTargets = getExecutionTargets(task).filter((target) => projectById.has(target.projectId));
   const selectedExecutionTarget = executionTargets.find((target) => target.projectId === selectedProjectId) || null;
   const executionTarget = selectedExecutionTarget || executionTargets[0] || null;
 
@@ -120,31 +155,36 @@ export const resolveProjectExecutionContext = (
     ...executionTargets.map((target) => target.projectId),
     ...(task?.project_ids || []),
     task?.project_id,
-  ]);
-  const taskContextProjectIds = uniqueStrings(task?.context_project_ids || []);
+  ]).filter((projectId) => projectById.has(projectId));
+  const taskContextProjectIds = uniqueStrings(task?.context_project_ids || [])
+    .filter((projectId) => projectById.has(projectId));
   const conversationProjectId = cleanString(conversation?.project_id);
+  const knownConversationProjectId =
+    conversationProjectId && projectById.has(conversationProjectId)
+      ? conversationProjectId
+      : null;
   const conversationGroupId = cleanString(conversation?.group_id);
 
   const inferredGroupId =
     conversationGroupId ||
     getProjectGroupByProjectId(projectGroups, executionTarget?.projectId)?.id ||
-    getProjectGroupByProjectId(projectGroups, task?.project_id)?.id ||
+    getProjectGroupByProjectId(projectGroups, taskProjectIds[0])?.id ||
     selectedGroupId ||
-    getProjectGroupByProjectId(projectGroups, conversationProjectId)?.id ||
-    getProjectGroupByProjectId(projectGroups, selectedProjectId)?.id ||
+    getProjectGroupByProjectId(projectGroups, knownConversationProjectId)?.id ||
+    getProjectGroupByProjectId(projectGroups, selectedKnownProjectId)?.id ||
     null;
 
   const globalProject = getGlobalProjectById(projectGroups, inferredGroupId);
   const candidateFocusedProjectId =
-    selectedProjectId ||
+    selectedKnownProjectId ||
     cleanString(executionTarget?.projectId) ||
-    conversationProjectId ||
-    cleanString(task?.project_id) ||
+    knownConversationProjectId ||
+    taskProjectIds[0] ||
     (inferredGroupId
       ? getFocusedProjectForGroup(
           projectGroups,
           inferredGroupId,
-          selectedProjectId || conversationProjectId || cleanString(executionTarget?.projectId)
+          selectedKnownProjectId || knownConversationProjectId || cleanString(executionTarget?.projectId)
         )?.id
       : null) ||
     null;
@@ -154,14 +194,14 @@ export const resolveProjectExecutionContext = (
       ? [...taskProjectIds, ...taskContextProjectIds]
       : [
           ...(globalProject?.subProjectIds || []),
-          conversationProjectId,
+          knownConversationProjectId,
           candidateFocusedProjectId,
         ]),
   ]);
   const focusedProjectId = candidateFocusedProjectId && scopedProjectIds.includes(candidateFocusedProjectId)
     ? candidateFocusedProjectId
     : cleanString(executionTarget?.projectId) ||
-      cleanString(task?.project_id) ||
+      taskProjectIds[0] ||
       scopedProjectIds[0] ||
       null;
   const actionableProjectIds = hasTaskScope
@@ -180,8 +220,8 @@ export const resolveProjectExecutionContext = (
 
   const projectId =
     cleanString(executionTarget?.projectId) ||
-    cleanString(task?.project_id) ||
-    conversationProjectId ||
+    taskProjectIds[0] ||
+    knownConversationProjectId ||
     focusedProjectId ||
     scopedProjectIds[0] ||
     null;
@@ -206,15 +246,16 @@ export const resolveProjectExecutionContext = (
       : null;
     const branchWorktree = input.branchWorktrees
       ? cleanString(
-          (matchingTarget?.worktreeKey ? input.branchWorktrees[matchingTarget.worktreeKey] : null) ||
-            (matchingTarget?.branchName ? input.branchWorktrees[matchingTarget.branchName] : null)
+          matchingTarget
+            ? resolveCachedPreparedTaskWorktreePath(matchingTarget, input.branchWorktrees)
+            : null
         )
       : null;
     const resolvedPath =
       workspacePathOverride ||
       branchWorktree ||
-      cleanString(matchingTarget?.repoPath) ||
       cleanString(projectById.get(scopedProjectId)?.path) ||
+      cleanString(matchingTarget?.repoPath) ||
       null;
 
     if (resolvedPath) {

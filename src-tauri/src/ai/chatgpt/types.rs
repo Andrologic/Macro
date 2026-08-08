@@ -125,12 +125,23 @@ pub struct AiStreamDoneEvent {
     pub tool_traces: Option<Vec<AiToolTrace>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiStreamErrorEvent {
     pub request_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiStreamTimelineEvent {
+    pub request_id: String,
+    pub provider_id: String,
+    pub provider_type: String,
+    pub phase: String,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -173,6 +184,16 @@ pub struct AiToolTrace {
     pub tool_name: String,
     pub detail: Option<String>,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,8 +207,17 @@ pub(super) struct ModelsCacheEntry {
     pub(super) slug: String,
     pub(super) display_name: Option<String>,
     pub(super) description: Option<String>,
+    pub(super) default_reasoning_level: Option<String>,
+    pub(super) supported_reasoning_levels: Option<Vec<ModelsCacheReasoningLevel>>,
     pub(super) visibility: Option<String>,
     pub(super) available_in_plans: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ModelsCacheReasoningLevel {
+    pub(super) effort: String,
+    #[allow(dead_code)]
+    pub(super) description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

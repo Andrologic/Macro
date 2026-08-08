@@ -84,3 +84,56 @@ describe('MarkdownRichContent math rendering', () => {
     expect(markup).not.toContain('<p>[');
   });
 });
+
+describe('MarkdownRichContent context references', () => {
+  it('renders inline skill references as chips inside normal markdown text', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'XXXXX[skill: test-skill]XXXX\n\nNickel'} />
+    );
+
+    expect(markup).toContain('data-context-reference-kind="skill"');
+    expect(markup).toContain('data-context-reference-surface="message"');
+    expect(markup).toContain('XXXXX');
+    expect(markup).toContain('XXXX');
+    expect(markup).not.toContain('[skill: test-skill]');
+  });
+
+  it('renders source references as chips inside normal markdown text', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Sources: [source: product brief]'} />
+    );
+
+    expect(markup).toContain('data-context-reference-kind="source"');
+    expect(markup).toContain('data-context-reference-surface="message"');
+    expect(markup).not.toContain('[source: product brief]');
+  });
+
+  it('renders context reference chips in markdown table cells', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent
+        content={[
+          '| Action | Detail |',
+          '| --- | --- |',
+          '| Activer | [skill: test-skill] - déjà fait |',
+        ].join('\n')}
+      />
+    );
+
+    expect(markup).toContain('<td');
+    expect(markup).toContain('data-context-reference-kind="skill"');
+    expect(markup).not.toContain('[skill: test-skill]');
+  });
+
+  it('does not render context reference chips inside inline code', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Keep `[skill: test-skill]` literal'} />
+    );
+
+    expect(markup).toContain('[skill: test-skill]');
+    expect(markup).not.toContain('data-context-reference-kind="skill"');
+  });
+});

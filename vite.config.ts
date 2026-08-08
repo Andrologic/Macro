@@ -1,13 +1,130 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
+const MERMAID_PARSER_VIRTUAL_PREFIX = "\0macro-mermaid-parser-source:";
+
+const createMermaidParserSourcePlugin = () => {
+  const parserPackageRoot = resolve(projectRoot, "node_modules/@mermaid-js/parser");
+  const parserDistRoot = resolve(parserPackageRoot, "dist");
+  const parserSourceRoot = resolve(parserPackageRoot, "src");
+  const sourceByAbsolutePath = new Map<string, string>();
+
+  const visitSourceMaps = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        visitSourceMaps(entryPath);
+        continue;
+      }
+      if (!entry.name.endsWith(".mjs.map")) continue;
+
+      const sourceMap = JSON.parse(readFileSync(entryPath, "utf8")) as {
+        sources?: string[];
+        sourcesContent?: Array<string | null>;
+      };
+      sourceMap.sources?.forEach((sourcePath, index) => {
+        const absoluteSourcePath = resolve(dirname(entryPath), sourcePath);
+        const source = sourceMap.sourcesContent?.[index];
+        if (
+          absoluteSourcePath.startsWith(`${parserSourceRoot}/`) &&
+          typeof source === "string"
+        ) {
+          sourceByAbsolutePath.set(absoluteSourcePath, source);
+        }
+      });
+    }
+  };
+
+  visitSourceMaps(parserDistRoot);
+
+  const parserLanguageEntrypoints: Record<string, string[]> = {
+    info: ["InfoModule", "createInfoServices"],
+    packet: ["PacketModule", "createPacketServices"],
+    pie: ["PieModule", "createPieServices"],
+    architecture: ["ArchitectureModule", "createArchitectureServices"],
+    gitGraph: ["GitGraphModule", "createGitGraphServices"],
+    eventmodeling: ["EventModelingModule", "createEventModelingServices"],
+    radar: ["RadarModule", "createRadarServices"],
+    railroad: ["RailroadModule", "createRailroadServices"],
+    "railroad-abnf": ["RailroadAbnfModule", "createRailroadAbnfServices"],
+    "railroad-ebnf": ["RailroadEbnfModule", "createRailroadEbnfServices"],
+    "railroad-peg": ["RailroadPegModule", "createRailroadPegServices"],
+    treemap: ["TreemapModule", "createTreemapServices"],
+    treeView: ["TreeViewModule", "createTreeViewServices"],
+    wardley: ["WardleyModule", "createWardleyServices"],
+    cynefin: ["CynefinModule", "createCynefinServices"],
+  };
+  Object.entries(parserLanguageEntrypoints).forEach(([directory, exports]) => {
+    sourceByAbsolutePath.set(
+      resolve(parserSourceRoot, "language", directory, "index.ts"),
+      `export { ${exports.join(", ")} } from "./module.js";`
+    );
+  });
+  sourceByAbsolutePath.set(
+    resolve(parserSourceRoot, "language/common/index.ts"),
+    [
+      'export * from "./matcher.js";',
+      'export * from "./tokenBuilder.js";',
+      'export * from "./valueConverter.js";',
+    ].join("\n")
+  );
+  sourceByAbsolutePath.set(
+    resolve(parserSourceRoot, "index.ts"),
+    [
+      'export { parse } from "./parse.js";',
+      'export { isEmResetFrame } from "./language/generated/ast.js";',
+    ].join("\n")
+  );
+
+  const resolveVirtualSource = (absolutePath: string): string | null => {
+    const candidates = [
+      absolutePath,
+      absolutePath.replace(/\.js$/, ".ts"),
+      resolve(absolutePath, "index.ts"),
+    ];
+    const match = candidates.find((candidate) => sourceByAbsolutePath.has(candidate));
+    return match ? `${MERMAID_PARSER_VIRTUAL_PREFIX}${match}` : null;
+  };
+
+  const parserEntry = resolveVirtualSource(resolve(parserSourceRoot, "index.ts"));
+  if (!parserEntry) {
+    throw new Error(
+      "Unable to recover @mermaid-js/parser sources for bundle-safe code splitting."
+    );
+  }
+
+  return {
+    name: "macro-mermaid-parser-source-split",
+    enforce: "pre" as const,
+    resolveId(source: string, importer?: string) {
+      if (source === "@mermaid-js/parser") return parserEntry;
+      if (!importer?.startsWith(MERMAID_PARSER_VIRTUAL_PREFIX) || !source.startsWith(".")) {
+        return null;
+      }
+      const importerPath = importer.slice(MERMAID_PARSER_VIRTUAL_PREFIX.length);
+      return resolveVirtualSource(resolve(dirname(importerPath), source));
+    },
+    load(id: string) {
+      if (!id.startsWith(MERMAID_PARSER_VIRTUAL_PREFIX)) return null;
+      return sourceByAbsolutePath.get(id.slice(MERMAID_PARSER_VIRTUAL_PREFIX.length)) ?? null;
+    },
+    async transform(code: string, id: string) {
+      if (!id.startsWith(MERMAID_PARSER_VIRTUAL_PREFIX)) return null;
+      return transformWithEsbuild(
+        code,
+        id.slice(MERMAID_PARSER_VIRTUAL_PREFIX.length),
+        { loader: "ts", target: "esnext", sourcemap: false }
+      );
+    },
+  };
+};
 
 const readPackageVersion = (rootDir: string = projectRoot): string => {
   const packageJsonPath = resolve(rootDir, "package.json");
@@ -170,10 +287,6 @@ const manualVendorChunk = (id: string): string | undefined => {
     return "diagram-render-vendor";
   }
 
-  if (hasNodePackage(moduleId, "@mermaid-js/parser")) {
-    return "diagram-parser-vendor";
-  }
-
   if (hasNodePackage(moduleId, "lodash-es")) {
     return "diagram-utility-vendor";
   }
@@ -244,6 +357,69 @@ const manualVendorChunk = (id: string): string | undefined => {
   return undefined;
 };
 
+const manualAppChunk = (id: string): string | undefined => {
+  const moduleId = id.replace(/\\/g, "/");
+  if (moduleId.includes("/node_modules/") || !moduleId.includes("/src/")) return undefined;
+  if (moduleId.includes("/src/i18n/locales/")) return undefined;
+  if (moduleId.includes("/src/components/chat/ContextWindowIndicator.")) return "chat-context-window";
+  if (
+    moduleId.includes("/src/components/chat/CompactionTranscriptUi.") ||
+    moduleId.includes("/src/components/chat/transcriptItems.") ||
+    moduleId.includes("/src/components/chat/useAgentCodeReplayConfirmation.") ||
+    moduleId.includes("/src/components/chat/AgentCodeReplayConfirmModal.")
+  ) return "chat-transcript-support";
+  if (
+    moduleId.includes("/src/components/chat/QuestionnaireFooter.") ||
+    moduleId.includes("/src/components/chat/QuestionnaireResponseSummary.") ||
+    moduleId.includes("/src/components/chat/ToolApprovalFooter.") ||
+    moduleId.includes("/src/components/chat/ImplementTaskTodoDropdown.")
+  ) return "chat-footer-support";
+  if (moduleId.includes("/src/stores/")) return "app-stores";
+  if (
+    moduleId.includes("/src/services/architectPlan") ||
+    moduleId.includes("/src/services/architectGit") ||
+    moduleId.includes("/src/services/architectBranch") ||
+    moduleId.includes("/src/services/architectScope") ||
+    moduleId.includes("/src/services/architectStrategy") ||
+    moduleId.includes("/src/services/architectAuto") ||
+    moduleId.includes("/src/services/plan")
+  ) return "architect-services";
+  if (
+    moduleId.includes("/src/services/architectTool") ||
+    moduleId.includes("/src/services/workspaceTool") ||
+    moduleId.includes("/src/shared/macroToolRegistry")
+  ) return "tool-services";
+  if (
+    moduleId.includes("/src/services/chat") ||
+    moduleId.includes("/src/services/context") ||
+    moduleId.includes("/src/services/conversation") ||
+    moduleId.includes("/src/services/streamingChat")
+  ) return "chat-services";
+  if (
+    moduleId.includes("/src/services/provider") ||
+    moduleId.includes("/src/services/reasoning") ||
+    moduleId.includes("/src/services/aiConfig") ||
+    moduleId.includes("/src/services/metadataModel")
+  ) return "provider-services";
+  if (
+    moduleId.includes("/src/services/macro") ||
+    moduleId.includes("/src/services/merge") ||
+    moduleId.includes("/src/services/git") ||
+    moduleId.includes("/src/services/task")
+  ) return "workflow-services";
+  if (moduleId.includes("/src/services/mcp/")) return "mcp-services";
+  if (moduleId.includes("/src/services/")) return "app-services";
+  if (moduleId.includes("/src/hooks/")) return "app-hooks";
+  if (moduleId.includes("/src/i18n/")) return "app-i18n";
+  if (moduleId.includes("/src/components/ui/") || moduleId.includes("/src/components/theme/")) {
+    return "app-ui";
+  }
+  return undefined;
+};
+
+const manualChunk = (id: string): string | undefined =>
+  manualVendorChunk(id) ?? manualAppChunk(id);
+
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {
     return [];
@@ -294,10 +470,12 @@ export default defineConfig(({ command }) => {
   }
 
   return {
+    base: command === "build" ? "./" : "/",
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },
     plugins: [
+      createMermaidParserSourcePlugin(),
       react({
         // Use automatic JSX runtime for smaller bundle
         jsxRuntime: 'automatic',
@@ -311,8 +489,17 @@ export default defineConfig(({ command }) => {
       // Target modern browsers for smaller bundles (Tauri uses WebView2/WebKit)
       target: "esnext",
 
-      // Use esbuild for faster minification (2-3x faster than terser)
-      minify: "esbuild",
+      // Terser keeps the generated Mermaid parser below the existing release budget.
+      minify: "terser",
+
+      terserOptions: {
+        compress: {
+          passes: 2,
+        },
+        format: {
+          comments: false,
+        },
+      },
 
       // Aggressive esbuild options
       esbuildOptions: {
@@ -328,7 +515,7 @@ export default defineConfig(({ command }) => {
       rollupOptions: {
         output: {
           // Manual chunks for optimal code splitting
-          manualChunks: manualVendorChunk,
+          manualChunks: manualChunk,
 
           // Chunk naming strategy
           chunkFileNames: (chunkInfo) => {
@@ -364,8 +551,8 @@ export default defineConfig(({ command }) => {
       // Modern CSS minification
       cssMinify: 'esbuild',
 
-      // Reduce chunk size warnings
-      chunkSizeWarningLimit: 1000,
+      // Macro's desktop shell intentionally keeps the primary app surface bundled.
+      chunkSizeWarningLimit: 1200,
 
       // Disable source maps in production for smaller builds
       sourcemap: false,
@@ -385,6 +572,7 @@ export default defineConfig(({ command }) => {
       include: [
         "react",
         "react-dom",
+        "react-dom/client",
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
         "sonner",
@@ -438,7 +626,17 @@ export default defineConfig(({ command }) => {
 
     // Resolve aliases for cleaner imports
     resolve: {
-      dedupe: ["react", "react-dom"],
+      dedupe: [
+        "react",
+        "react-dom",
+        "@codemirror/autocomplete",
+        "@codemirror/commands",
+        "@codemirror/language",
+        "@codemirror/lint",
+        "@codemirror/search",
+        "@codemirror/state",
+        "@codemirror/view",
+      ],
       alias: {
         "@": "/src",
         "@components": "/src/components",

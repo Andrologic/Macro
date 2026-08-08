@@ -129,7 +129,13 @@ const formatByteSize = (value?: number): string | null => {
 
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
-  const { selectedConversationId, createConversation } = useChatStore();
+  const {
+    selectedConversationId,
+    createConversation,
+    composerContextRefs,
+    addComposerContextRef,
+    removeComposerContextRef,
+  } = useChatStore();
   const { getChatModeTools, isChatToolEnabled, toggleChatTool } = useToolsStore();
   const citations = useCitationsStore((state) => state.citations);
   const addCitation = useCitationsStore((state) => state.addCitation);
@@ -144,6 +150,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [sourceSearch, setSourceSearch] = useState('');
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
+  const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
+  const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
   const [contextConversationId, setContextConversationId] = useState<string | null>(
     selectedConversationId
   );
@@ -204,15 +212,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     [sourceCitations]
   );
   const sourcePassageCount = sourceCitations.length;
-  const sourceCount = useMemo(
-    () =>
-      new Set(
-        sourceCitations
-          .map((citation) => citation.url || citation.source || citation.title)
-          .filter(Boolean)
-      ).size,
-    [sourceCitations]
-  );
   const chatTools = getChatModeTools();
 
   const tabs: Array<{ id: ToolboxTab; label: string; icon: IconName; count?: number }> = [
@@ -345,6 +344,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           snippet: fetched.snippet,
           content: fetched.content,
           url: fetched.url,
+          favicon: fetched.favicon,
         }, conversationId);
       } else {
         await addContextCitationAndReveal({
@@ -378,6 +378,15 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       setIsFetchingUrl(false);
     }
   };
+
+  const handleFaviconError = useCallback((src: string) => {
+    setFailedFaviconUrls((current) => {
+      if (current.has(src)) return current;
+      const next = new Set(current);
+      next.add(src);
+      return next;
+    });
+  }, []);
 
   const handlePaste = useCallback(async () => {
     setActiveTab('context');
@@ -426,6 +435,39 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         return compareLocalized(left.url || left.source || '', right.url || right.source || '', locale);
       });
   }, [locale, sourceCitations, sourceFilter, sourceSearch, sourceSort]);
+
+  const toggleSourceExpansion = useCallback((citationId: string) => {
+    setExpandedSourceIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(citationId)) {
+        next.delete(citationId);
+      } else {
+        next.add(citationId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleAddSourceToComposer = useCallback((citation: Citation) => {
+    addComposerContextRef({
+      id: citation.id,
+      kind: 'source',
+      title: citation.title,
+      subtitle: citation.source,
+      data: citation,
+    });
+  }, [addComposerContextRef]);
+
+  const handleRemoveSourceCitation = useCallback((citationId: string) => {
+    removeCitation(citationId);
+    removeComposerContextRef(citationId, 'source');
+    setExpandedSourceIds((previous) => {
+      if (!previous.has(citationId)) return previous;
+      const next = new Set(previous);
+      next.delete(citationId);
+      return next;
+    });
+  }, [removeCitation, removeComposerContextRef]);
 
   const renderToolTooltip = (toolId: string) => {
     if (toolId === 'web_search' && !hasSelectedWebSearchKey) {
@@ -579,6 +621,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                       citation.url ? extractDomain(citation.url) : citation.source,
                       formatRelativeTimeShort(citation.timestamp, Date.now(), locale),
                     ].filter(Boolean);
+                    const faviconSrc = citation.favicon || (citation.url ? getFaviconUrl(citation.url) : '');
+                    const showFavicon = faviconSrc && !failedFaviconUrls.has(faviconSrc);
                     return (
                       <div
                         key={citation.id}
@@ -588,7 +632,16 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                         )}
                       >
                         <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="w-8 h-8 rounded-md bg-muted flex items-center justify-center shrink-0 overflow-hidden" title={t('chat.contextToolbox.openSource', 'Open source')}>
-                          {citation.url ? <img src={getFaviconUrl(citation.url)} alt="" className="w-4 h-4" onError={(event) => { (event.target as HTMLImageElement).style.display = 'none'; }} /> : <Icon name="globe" size={14} className="text-muted-foreground" />}
+                          {showFavicon ? (
+                            <img
+                              src={faviconSrc}
+                              alt=""
+                              className="w-4 h-4"
+                              onError={() => handleFaviconError(faviconSrc)}
+                            />
+                          ) : (
+                            <Icon name="globe" size={14} className="text-muted-foreground" />
+                          )}
                         </button>
                         <button onClick={() => citation.url && window.open(citation.url, '_blank', 'noopener,noreferrer')} className="flex-1 min-w-0 text-left" title={t('chat.contextToolbox.openSource', 'Open source')}>
                           <p className="text-sm text-foreground truncate hover:text-primary transition-colors">{citation.title}</p>
@@ -702,18 +755,18 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2"><Icon name="book-open" size={12} />{t('chat.contextToolbox.tabs.sources', 'Sources')}</h3>
-              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} sources', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourceCount })}</span>
+              <span className="text-xs text-muted-foreground">{t('chat.contextToolbox.sourceSummary', '{{interesting}} found • {{used}} used • {{total}} passages', { interesting: interestingSourceCitations.length, used: usedSourceCitations.length, total: sourcePassageCount })}</span>
             </div>
             {!isChatToolEnabled('mark_source_passage') && <div className="rounded-md border border-muted bg-muted/50 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground"><span className="font-medium">{t('chat.contextToolbox.collectionDisabledTitle', 'Collection disabled')}</span> {t('chat.contextToolbox.collectionDisabledDescription', 'Enable the Sources tool to save new passages.')}</p></div>}
             <div className="space-y-2">
               <Input value={sourceSearch} onChange={(event) => setSourceSearch(event.target.value)} placeholder={t('chat.contextToolbox.sourceSearchPlaceholder', 'Search sources')} className="h-9" />
               <div className="flex items-center gap-2">
                 {[
-                  { key: 'all' as SourceFilter, label: t('common.all', 'All'), active: 'bg-primary/10 text-primary border-primary/30' },
-                  { key: 'interesting' as SourceFilter, label: t('chat.contextToolbox.found', 'Found'), active: 'bg-amber-500/10 text-amber-600 border-amber-500/30' },
-                  { key: 'used' as SourceFilter, label: t('chat.contextToolbox.used', 'Used'), active: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30' },
+                  { key: 'all' as SourceFilter, label: t('common.all', 'All'), active: 'bg-primary/10 text-primary border-primary/30', title: t('common.all', 'All') },
+                  { key: 'interesting' as SourceFilter, label: t('chat.contextToolbox.found', 'Found'), active: 'bg-muted/50 text-muted-foreground border-border', title: t('chat.contextToolbox.foundTooltip', "Passage spotted during analysis") },
+                  { key: 'used' as SourceFilter, label: t('chat.contextToolbox.used', 'Used'), active: 'bg-primary/10 text-primary border-primary/30', title: t('chat.contextToolbox.usedTooltip', 'Passage used in a response') },
                 ].map((option) => (
-                  <button key={option.key} onClick={() => setSourceFilter(option.key)} className={cn('px-2.5 py-1 text-xs rounded-md border transition-colors', sourceFilter === option.key ? option.active : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent')}>
+                  <button key={option.key} onClick={() => setSourceFilter(option.key)} title={option.title} className={cn('px-2.5 py-1 text-xs rounded-md border transition-colors', sourceFilter === option.key ? option.active : 'border-border text-muted-foreground hover:text-foreground hover:bg-accent')}>
                     {option.label}
                   </button>
                 ))}
@@ -729,33 +782,53 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 {filteredSourceCitations.length > 0 ? filteredSourceCitations.map((citation) => {
                   const kind = citation.kind || 'used';
                   const isInteresting = kind === 'interesting';
+                  const isExpanded = expandedSourceIds.has(citation.id);
+                  const isInComposer = composerContextRefs.some((ref) => ref.id === citation.id && ref.kind === 'source');
+                  const passage = citation.content || citation.snippet;
+                  const kindTooltip = isInteresting
+                    ? t('chat.contextToolbox.foundTooltip', "Passage spotted during analysis")
+                    : t('chat.contextToolbox.usedTooltip', 'Passage used in a response');
                   return (
-                    <div key={citation.id} className={cn('rounded-lg border px-2.5 py-1.5 transition-colors hover:bg-accent/50', isInteresting ? 'border-amber-500/20 bg-amber-500/5' : 'border-emerald-500/20 bg-emerald-500/5')}>
-                      <div className="flex items-start gap-1.5">
-                        <div className={cn('w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5', isInteresting ? 'bg-amber-500/10' : 'bg-emerald-500/10')}>
-                          <Icon name={isInteresting ? 'sparkles' : 'check'} size={10} className={cn(isInteresting ? 'text-amber-500' : 'text-emerald-500')} />
+                    <div key={citation.id} className={cn('rounded-lg border px-2.5 py-1.5 transition-colors hover:bg-accent/50', isInteresting ? 'border-border bg-muted/50' : 'border-primary/30 bg-primary/10')}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSourceExpansion(citation.id)}
+                        aria-expanded={isExpanded}
+                        className="flex w-full items-start gap-1.5 text-left"
+                      >
+                        <div className={cn('w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5', isInteresting ? 'bg-muted/50' : 'bg-primary/10')}>
+                          <Icon name={isInteresting ? 'sparkles' : 'check'} size={10} className={cn(isInteresting ? 'text-muted-foreground' : 'text-primary')} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 min-w-0">
                             <p className="text-[13px] leading-5 text-foreground truncate">{citation.title}</p>
-                            <span className={cn('text-[10px] px-1.5 py-0.5 rounded border shrink-0', isInteresting ? 'text-amber-700 border-amber-500/30 bg-amber-500/10 dark:text-amber-300' : 'text-emerald-700 border-emerald-500/30 bg-emerald-500/10 dark:text-emerald-300')}>
+                            <span title={kindTooltip} className={cn('text-[10px] px-1.5 py-0.5 rounded border shrink-0', isInteresting ? 'text-muted-foreground border-border bg-muted/50' : 'text-primary border-primary/30 bg-primary/10')}>
                               {isInteresting ? t('chat.contextToolbox.found', 'Found') : t('chat.contextToolbox.used', 'Used')}
                             </span>
+                            <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={12} className="ml-auto shrink-0 text-muted-foreground" />
                           </div>
                           <div className="flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground min-w-0">
                             <span className="truncate">{citation.url || citation.source}</span>
                             <span className="shrink-0">•</span>
                             <span className="shrink-0">{formatRelativeTimeShort(citation.timestamp, Date.now(), locale)}</span>
                           </div>
-                          {citation.reason && <p className="text-[11px] leading-4 text-muted-foreground mt-0.5 line-clamp-1">{citation.reason}</p>}
-                          {citation.snippet && <p className="text-[11px] leading-4 text-foreground/90 line-clamp-2 mt-0.5">{citation.snippet}</p>}
+                          {citation.reason && <p className={cn('text-[11px] leading-4 text-muted-foreground mt-0.5', isExpanded ? 'whitespace-pre-wrap' : 'line-clamp-1')}>{citation.reason}</p>}
+                          {passage && <p className={cn('text-[11px] leading-4 text-foreground/90 mt-0.5', isExpanded ? 'whitespace-pre-wrap' : 'line-clamp-2')}>{passage}</p>}
                         </div>
-                      </div>
+                      </button>
                       <div className="mt-1 flex items-center gap-1">
                         {citation.url && <button onClick={() => window.open(citation.url!, '_blank', 'noopener,noreferrer')} title={t('chat.contextToolbox.openSource', 'Open source')} className="p-1 rounded border border-border hover:bg-accent transition-colors"><Icon name="external-link" size={12} className="text-muted-foreground" /></button>}
                         <button onClick={() => window.dispatchEvent(new CustomEvent('macro:focus-message', { detail: { messageId: citation.messageId } }))} title={t('chat.contextToolbox.viewInResponse', 'View in response')} className="p-1 rounded border border-border hover:bg-accent transition-colors"><Icon name="message-square" size={12} className="text-muted-foreground" /></button>
-                        {citation.snippet && <button onClick={() => navigator.clipboard.writeText(citation.snippet!).catch(() => undefined)} title={t('chat.contextToolbox.copySnippet', 'Copy snippet')} className="p-1 rounded border border-border hover:bg-accent transition-colors"><Icon name="copy" size={12} className="text-muted-foreground" /></button>}
-                        <button onClick={() => removeCitation(citation.id)} title={t('common.delete', 'Delete')} className="p-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors ml-auto"><Icon name="trash" size={12} /></button>
+                        {passage && <button onClick={() => navigator.clipboard.writeText(passage).catch(() => undefined)} title={t('chat.contextToolbox.copySnippet', 'Copy snippet')} className="p-1 rounded border border-border hover:bg-accent transition-colors"><Icon name="copy" size={12} className="text-muted-foreground" /></button>}
+                        <button
+                          onClick={() => handleAddSourceToComposer(citation)}
+                          disabled={isInComposer}
+                          title={isInComposer ? t('chat.contextToolbox.sourceAlreadyInComposer', 'Already in composer') : t('chat.contextToolbox.addSourceToComposer', 'Add to composer')}
+                          className={cn('p-1 rounded border border-border transition-colors', isInComposer ? 'text-primary bg-primary/10 cursor-default' : 'text-muted-foreground hover:text-foreground hover:bg-accent')}
+                        >
+                          <Icon name={isInComposer ? 'check' : 'plus'} size={12} />
+                        </button>
+                        <button onClick={() => handleRemoveSourceCitation(citation.id)} title={t('common.delete', 'Delete')} className="p-1 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors ml-auto"><Icon name="trash" size={12} /></button>
                       </div>
                     </div>
                   );

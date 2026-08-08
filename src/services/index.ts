@@ -1,7 +1,7 @@
 import type { ServiceProvider } from './contracts/serviceProvider';
 import {
   getServiceRuntime,
-  type ResolvedServiceRuntime,
+  setRemoteRuntimeCapabilityOverrides as applyRemoteRuntimeCapabilityOverrides,
   type ServiceProviderName,
 } from './serviceRuntime';
 
@@ -14,13 +14,14 @@ export {
   isRemoteServiceRuntime,
   resolveServiceRuntime,
   resolveServiceRuntimeCapabilities,
+  clearRemoteRuntimeCapabilityOverrides,
+  setRemoteRuntimeCapabilityOverrides,
 } from './serviceRuntime';
 export type {
   DataProvider,
   ResolvedServiceRuntime,
   ServiceProviderName,
   ServiceRuntimeCapabilities,
-  ServiceRuntimeWarning,
   ServiceTransport,
 } from './serviceRuntime';
 
@@ -29,7 +30,6 @@ type ServiceProviderModule = {
 };
 
 let providerPromise: Promise<ServiceProvider> | null = null;
-let runtimeWarningsLogged = false;
 
 const loadServiceProviderModule = async (
   targetProvider: ServiceProviderName
@@ -38,28 +38,12 @@ const loadServiceProviderModule = async (
     return import('./providers/remote');
   }
 
-  if (targetProvider === 'mock') {
-    return import('./providers/mock');
-  }
-
   return import('./providers/ipc');
-};
-
-const logRuntimeWarnings = (runtime: ResolvedServiceRuntime): void => {
-  if (!import.meta.env.DEV || runtimeWarningsLogged || runtime.warnings.length === 0) {
-    return;
-  }
-
-  runtimeWarningsLogged = true;
-  runtime.warnings.forEach((warning) => {
-    console.warn(`[services] ${warning.message}`);
-  });
 };
 
 const getServiceProvider = async (): Promise<ServiceProvider> => {
   if (!providerPromise) {
     const runtime = getServiceRuntime();
-    logRuntimeWarnings(runtime);
     providerPromise = loadServiceProviderModule(runtime.effectiveProvider).then(
       (module) => module.provider
     );
@@ -81,7 +65,13 @@ const callProviderMethod = async <MethodName extends keyof ServiceProvider>(
 };
 
 export const services = {
-  getAppBootstrap: () => callProviderMethod('getAppBootstrap'),
+  getAppBootstrap: async () => {
+    const bootstrap = await callProviderMethod('getAppBootstrap');
+    applyRemoteRuntimeCapabilityOverrides(
+      bootstrap.runtimeCapabilities ?? bootstrap.capabilities ?? null
+    );
+    return bootstrap;
+  },
   listConversations: () => callProviderMethod('listConversations'),
   listMessages: (conversationId?: string) => callProviderMethod('listMessages', conversationId),
   listTasks: () => callProviderMethod('listTasks'),
@@ -91,7 +81,8 @@ export const services = {
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) =>
     callProviderMethod(
       'gitWorktreeCreate',
@@ -99,7 +90,8 @@ export const services = {
       taskId,
       branchName,
       fromRef,
-      preferredCommitBranch
+      preferredCommitBranch,
+      fallbackBranches
     ),
   gitWorktreeRemove: (projectId: string, taskId: string) =>
     callProviderMethod('gitWorktreeRemove', projectId, taskId),
@@ -118,8 +110,17 @@ export const services = {
   createProjectWithGitSetup: (
     data: Parameters<ServiceProvider['createProjectWithGitSetup']>[0]
   ) => callProviderMethod('createProjectWithGitSetup', data),
+  createNewProjectRepo: (
+    data: Parameters<ServiceProvider['createNewProjectRepo']>[0]
+  ) => callProviderMethod('createNewProjectRepo', data),
+  cancelProjectOperation: (requestId: string) =>
+    callProviderMethod('cancelProjectOperation', requestId),
   renameProjectGroup: (data: Parameters<ServiceProvider['renameProjectGroup']>[0]) =>
     callProviderMethod('renameProjectGroup', data),
+  createProjectGroup: (data: Parameters<ServiceProvider['createProjectGroup']>[0]) =>
+    callProviderMethod('createProjectGroup', data),
+  moveProjectToGroup: (data: Parameters<ServiceProvider['moveProjectToGroup']>[0]) =>
+    callProviderMethod('moveProjectToGroup', data),
   renameProject: (data: Parameters<ServiceProvider['renameProject']>[0]) =>
     callProviderMethod('renameProject', data),
   updateProjectGitFlow: (data: Parameters<ServiceProvider['updateProjectGitFlow']>[0]) =>
@@ -150,6 +151,24 @@ export const services = {
   getMCPServerSettings: () => callProviderMethod('getMCPServerSettings'),
   updateMCPServerSettings: (settings: Parameters<ServiceProvider['updateMCPServerSettings']>[0]) =>
     callProviderMethod('updateMCPServerSettings', settings),
+  mcpDiscoverTools: (server: Parameters<ServiceProvider['mcpDiscoverTools']>[0]) =>
+    callProviderMethod('mcpDiscoverTools', server),
+  mcpCallTool: (data: Parameters<ServiceProvider['mcpCallTool']>[0]) =>
+    callProviderMethod('mcpCallTool', data),
+  listSkills: (data?: Parameters<ServiceProvider['listSkills']>[0]) =>
+    callProviderMethod('listSkills', data),
+  getSkill: (data: Parameters<ServiceProvider['getSkill']>[0]) =>
+    callProviderMethod('getSkill', data),
+  installSkillFromLocalPath: (data: Parameters<ServiceProvider['installSkillFromLocalPath']>[0]) =>
+    callProviderMethod('installSkillFromLocalPath', data),
+  createSkillTemplate: (data: Parameters<ServiceProvider['createSkillTemplate']>[0]) =>
+    callProviderMethod('createSkillTemplate', data),
+  openSkillLocation: (data: Parameters<ServiceProvider['openSkillLocation']>[0]) =>
+    callProviderMethod('openSkillLocation', data),
+  readSkillResource: (data: Parameters<ServiceProvider['readSkillResource']>[0]) =>
+    callProviderMethod('readSkillResource', data),
+  runSkillScript: (data: Parameters<ServiceProvider['runSkillScript']>[0]) =>
+    callProviderMethod('runSkillScript', data),
 };
 
 export type Services = typeof services;

@@ -47,7 +47,7 @@ L'application dispose deja d'une base solide :
 - sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
 - merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traites via un workflow assiste de resolution et reprise
 - couches de services, stores et IPC deja structurees
-- kernel headless deja present en premiere version
+- fondation headless experimentale presente dans le code, sans capacite produit exposee
 
 En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiques :
 
@@ -56,7 +56,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - notifications et supervision distante non finalisees
 - articulation desktop / remote / mobile encore incomplete
 - experience multi-plan et multi-projet encore a consolider de bout en bout
-- documents de reference maintenant reconstitues autour d'un socle unique et d'une archive minimale non normative
+- documents de reference recentres autour d'un socle unique et d'une archive minimale non normative
 
 ---
 
@@ -70,10 +70,10 @@ Etat attendu :
 - une architecture technique de reference
 - une roadmap exploitable
 
-Etat a consolider :
-- le socle documentaire actif est maintenant recentre sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
-- l'archive documentaire a ete reduite a un historique minimal non normatif
-- les nouveaux documents constituent maintenant l'unique source de verite
+Etat livre pour 0.1 :
+- le socle documentaire actif est recentre sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
+- l'archive documentaire est reduite a un historique minimal non normatif
+- les documents actifs constituent l'unique source de verite
 
 ### 4.2 Mode Architect
 
@@ -129,7 +129,7 @@ Etat a consolider :
 ### 4.5 Git, plans et metadata
 
 Etat attendu :
-- git flow stable autour des plans, branches de feature, branche de base et `@macro`
+- workflow Git stable autour des plans, branches de feature, branche de base et `@macro`
 - worktrees fiables
 - metadata auditables et synchronisables
 - conflicts metadata et merge conflicts techniques traites proprement
@@ -231,7 +231,7 @@ Objectif :
 
 Chantiers :
 - finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
-- durcir le git flow de plan
+- durcir le workflow Git de plan
 - fiabiliser les transitions de taches
 - finaliser l'UX de review et d'edition ciblee
 - stabiliser la lisibilite du multi-plan cote Implement dans la review et la finalisation
@@ -307,6 +307,10 @@ Livrables :
 Critere de sortie :
 - la documentation de reference devient claire et non superposee
 
+Etat :
+- phase livree pour 0.1
+- l'ancienne specification API mobile / remote a ete retiree de l'archive pour eviter une lecture contractuelle
+
 ### Phase 1 - Coeur Architect / Implement stable
 
 Livrables :
@@ -320,7 +324,7 @@ Critere de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
 
 Etat :
-- socle documentaire de reference maintenant assaini et archive historique reduite au minimum utile
+- socle documentaire de reference assaini et archive historique reduite au minimum utile
 - socle desktop local-first considere comme stabilise
 - les prochaines evolutions doivent preserver les contrats deja poses du flow Implement
 
@@ -362,7 +366,7 @@ Etat :
 - la synthese de plans, la file de taches et les filtres restent maintenant coherents quand plusieurs plans vivants coexistent dans un meme groupe, sans regression sur les taches hors plan
 - le prochain verrou majeur de la phase redevient la lisibilite UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Prochaine tranche recommandee apres merge :
+Prochaine tranche recommandee apres merge 0.1 :
 - lisibilite UX groupe / projet / plan / tache cote Implement
 - clarte des filtres, de la navigation et de la review quand plusieurs plans et plusieurs depots restent actifs en parallele
 - meilleure articulation entre review de tache multi-projet, validation globale de plan et finalisation

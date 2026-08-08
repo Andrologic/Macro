@@ -1,12 +1,11 @@
 import React from 'react';
 import { cn } from '../../utils/cn';
 
-interface SwitchProps {
+interface SwitchProps
+  extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'type' | 'onClick'> {
   checked?: boolean;
   onCheckedChange?: (checked: boolean) => void;
-  disabled?: boolean;
-  className?: string;
-  id?: string;
+  onClick?: React.MouseEventHandler<HTMLButtonElement>;
 }
 
 export const Switch: React.FC<SwitchProps> = ({
@@ -14,21 +13,27 @@ export const Switch: React.FC<SwitchProps> = ({
   onCheckedChange,
   disabled = false,
   className,
-  id,
+  onClick,
+  ...buttonProps
 }) => {
   return (
     <button
       type="button"
       role="switch"
-      id={id}
       aria-checked={checked}
       disabled={disabled}
-      onClick={() => onCheckedChange?.(!checked)}
+      onClick={(event) => {
+        if (!disabled) {
+          onCheckedChange?.(!checked);
+        }
+        onClick?.(event);
+      }}
       className={cn(
         "peer inline-flex h-[24px] w-[44px] shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50",
         checked ? "bg-primary" : "bg-input",
         className
       )}
+      {...buttonProps}
     >
       <span
         className={cn(

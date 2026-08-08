@@ -9,6 +9,7 @@ const promptDefaults = {
   promptPlanExplorer: 'Plan explorer default prompt',
   promptTaskReviewer: 'Task reviewer default prompt',
   promptRepoAuditor: 'Repo auditor default prompt',
+  smartCommitPrompt: 'Commit default prompt',
 } as const;
 
 const promptDefinitions = [
@@ -64,6 +65,7 @@ const loadPromptsView = async () => {
     ...actualPreferences,
     PROMPT_PREFERENCE_DEFINITIONS: promptDefinitions,
     PROMPT_PREFERENCE_KEYS: promptDefinitions.map((definition) => definition.key),
+    DEFAULT_SMART_COMMIT_PROMPT: promptDefaults.smartCommitPrompt,
     getDefaultPromptForPreferenceKey: (key: keyof typeof promptDefaults) =>
       promptDefaults[key],
     loadPreferences: (keys: string[]) => loadPreferencesMock(keys),
@@ -93,6 +95,7 @@ describe('PromptsView', () => {
       ...promptDefaults,
       promptPlanExplorer: 'Customized plan explorer prompt',
       promptRepoAuditor: 'Customized repo auditor prompt',
+      smartCommitPrompt: 'Customized commit generation prompt',
     };
 
     loadPreferencesMock.mockImplementation(async () => ({ ...promptValues }));
@@ -123,13 +126,16 @@ describe('PromptsView', () => {
     });
 
     const textareas = Array.from(container?.querySelectorAll('textarea') ?? []);
-    expect(textareas).toHaveLength(6);
+    expect(textareas).toHaveLength(7);
     expect(
       (container?.querySelector('#promptPlanExplorer') as HTMLTextAreaElement | null)?.value
     ).toBe('Customized plan explorer prompt');
     expect(
       (container?.querySelector('#promptRepoAuditor') as HTMLTextAreaElement | null)?.value
     ).toBe('Customized repo auditor prompt');
+    expect(
+      (container?.querySelector('#smartCommitPrompt') as HTMLTextAreaElement | null)?.value
+    ).toBe('Customized commit generation prompt');
   });
 
   it('restores a modified prompt to its default and saves the updated prompt set', async () => {
@@ -168,6 +174,7 @@ describe('PromptsView', () => {
       promptPlanExplorer: promptDefaults.promptPlanExplorer,
       promptTaskReviewer: promptDefaults.promptTaskReviewer,
       promptRepoAuditor: 'Customized repo auditor prompt',
+      smartCommitPrompt: 'Customized commit generation prompt',
     });
   });
 });

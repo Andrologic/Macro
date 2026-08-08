@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { computePlanSelectorRefreshState } from '../components/architect/planSelectorState';
-import type { ArchitectPlanStatus } from '../services/architectPlanService';
+import type {
+  ArchitectPlanReplica,
+  ArchitectPlanSummary,
+  ArchitectPlanStatus,
+} from '../services/architectPlanService';
+import type { PlanNode } from '../types';
 
 type ProjectRecord = {
   id: string;
@@ -24,10 +29,13 @@ type PlanRecord = {
   label?: string;
   description: string;
   status: ArchitectPlanStatus;
+  conversationId?: string | null;
   projectId?: string;
   projectIds?: string[];
   expectedProjectIds?: string[];
   contextProjectIds?: string[];
+  availableProjectIds?: string[];
+  replicas?: ArchitectPlanReplica[];
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
   nodes: unknown[];
@@ -38,13 +46,20 @@ type PlanRecord = {
 
 type ActivationPayloadRecord = {
   plan: PlanRecord;
-  needs: [];
-  chatMessages: [];
-  conversationId: null;
+  needs: unknown[];
+  chatMessages: unknown[];
+  conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
-  resolutionMode: 'blank_fast_path';
+  resolutionMode: string;
 };
+
+type ActivationPayloadOverride = Partial<
+  Pick<
+    ActivationPayloadRecord,
+    'needs' | 'chatMessages' | 'conversationId' | 'sharedConversation' | 'resolutionMode'
+  >
+>;
 
 type ProjectContextRecord = {
   projectId: string;
@@ -55,6 +70,19 @@ type ProjectContextRecord = {
   architectConversationId: string | null;
   implementConversationId: string | null;
   updatedAt: string;
+};
+
+type RegistryReconcileReportRecord = {
+  status: string;
+  discoveredProjects: ProjectRecord[];
+  addedProjects: ProjectRecord[];
+  skippedProjects: Array<{
+    projectId?: string | null;
+    path: string;
+    reason: string;
+  }>;
+  duplicatePaths: string[];
+  invalidPaths: string[];
 };
 
 const DEFAULT_UI_PREFS = {
@@ -73,6 +101,7 @@ const DEFAULT_UI_PREFS = {
   recentProjects: [],
   macroEnabledProjects: [],
   metadataAutoPush: false,
+  metadataMissingUpstreamPolicy: 'ask',
   notificationChannelModes: {},
 } as const;
 
@@ -107,6 +136,7 @@ const buildPlan = (overrides: Partial<PlanRecord> = {}): PlanRecord => ({
   label: overrides.label ?? overrides.id ?? 'plan-1',
   description: overrides.description ?? '',
   status: overrides.status ?? 'draft',
+  conversationId: overrides.conversationId,
   projectId: overrides.projectId ?? 'project-1',
   projectIds: overrides.projectIds ?? [overrides.projectId ?? 'project-1'],
   expectedProjectIds:
@@ -114,6 +144,8 @@ const buildPlan = (overrides: Partial<PlanRecord> = {}): PlanRecord => ({
     overrides.projectIds ??
     [overrides.projectId ?? 'project-1'],
   contextProjectIds: overrides.contextProjectIds ?? [],
+  availableProjectIds: overrides.availableProjectIds,
+  replicas: overrides.replicas,
   targetBranch: overrides.targetBranch ?? 'develop',
   targetBranchesByProjectId:
     overrides.targetBranchesByProjectId ??
@@ -129,7 +161,8 @@ const buildPlan = (overrides: Partial<PlanRecord> = {}): PlanRecord => ({
 });
 
 const collectPlanProjectIds = (
-  plan: Pick<PlanRecord, 'projectId' | 'projectIds' | 'expectedProjectIds'>
+  plan: Pick<PlanRecord, 'projectId' | 'projectIds' | 'expectedProjectIds'> &
+    Partial<Pick<PlanRecord, 'availableProjectIds' | 'replicas'>>
 ): string[] =>
   Array.from(
     new Set(
@@ -137,6 +170,8 @@ const collectPlanProjectIds = (
         plan.projectId,
         ...(plan.projectIds ?? []),
         ...(plan.expectedProjectIds ?? []),
+        ...(plan.availableProjectIds ?? []),
+        ...(plan.replicas ?? []).map((replica) => replica.projectId),
       ].filter(Boolean)
     )
   ) as string[];
@@ -183,6 +218,8 @@ const toPlanSummary = (plan: PlanRecord) => ({
   projectId: plan.projectId,
   projectIds: plan.projectIds,
   expectedProjectIds: plan.expectedProjectIds,
+  availableProjectIds: plan.availableProjectIds,
+  replicas: plan.replicas,
   targetBranch: plan.targetBranch,
   createdAt: plan.createdAt,
   updatedAt: plan.updatedAt,
@@ -225,6 +262,7 @@ const taskStoreState = {
   }>,
   getTaskById: (_taskId: string) => undefined,
   activateTask: mock(async () => undefined),
+  refreshFromPlan: mock(async () => undefined),
 };
 
 const needsStoreState = {
@@ -275,6 +313,9 @@ let importCounter = 0;
 let preferenceValues: Record<string, unknown> = {};
 let projectSwitchPolicy: 'resume_per_project' | 'reset_on_switch' =
   'resume_per_project';
+const setProjectSwitchPolicyMock = mock(
+  async (_policy?: 'resume_per_project' | 'reset_on_switch') => undefined,
+);
 let sessionContext: {
   globalProjectId: string | null;
   selectedGroupId: string | null;
@@ -283,6 +324,7 @@ let sessionContext: {
   updatedAt: string;
 } | null = null;
 let bootstrapProjectGroups: ProjectGroupRecord[] = [];
+let bootstrapStandaloneProjects: ProjectRecord[] = [];
 let bootstrapPlan: unknown = null;
 let bootstrapPlanNodes: unknown[] = [];
 let bootstrapPredictedBranches: unknown[] = [];
@@ -292,6 +334,7 @@ let ensureProjectGroupPlanResult: { action: string; plan: PlanRecord; needs: [] 
 
 const projectContexts = new Map<string, ProjectContextRecord>();
 const planById = new Map<string, PlanRecord>();
+const activationPayloadByPlanId = new Map<string, ActivationPayloadOverride>();
 
 const listArchitectPlansMock = mock(async () => ({
   activePlanId: null,
@@ -307,14 +350,15 @@ const getArchitectPlanActivationPayloadMock = mock(
       return null;
     }
 
+    const override = activationPayloadByPlanId.get(planId);
     return {
       plan,
-      needs: [],
-      chatMessages: [],
-      conversationId: null,
-      sharedConversation: false,
+      needs: override?.needs ?? [],
+      chatMessages: override?.chatMessages ?? [],
+      conversationId: override?.conversationId ?? plan.conversationId ?? null,
+      sharedConversation: override?.sharedConversation ?? false,
       targetBranch: branchName,
-      resolutionMode: 'blank_fast_path',
+      resolutionMode: override?.resolutionMode ?? 'blank_fast_path',
     };
   }
 );
@@ -322,6 +366,7 @@ const getArchitectPlanNeedsMock = mock(async () => []);
 const persistActiveArchitectPlanMock = mock(async () => undefined);
 const getAppBootstrapMock = mock(async () => ({
   plan: bootstrapPlan,
+  standaloneProjects: bootstrapStandaloneProjects,
   projectGroups: bootstrapProjectGroups,
   planNodes: bootstrapPlanNodes,
   predictedBranches: bootstrapPredictedBranches,
@@ -348,6 +393,19 @@ const workspaceRecoverMissingMetadataMock = mock(async () => ({
   restoredCommit: null,
   message: null,
 }));
+const buildUnchangedRegistryReconcileReport =
+  (): RegistryReconcileReportRecord => ({
+    status: 'unchanged',
+    discoveredProjects: [],
+    addedProjects: [],
+    skippedProjects: [],
+    duplicatePaths: [],
+    invalidPaths: [],
+  });
+const workspaceReconcileProjectRegistryFromHintsMock = mock(
+  async (): Promise<RegistryReconcileReportRecord> =>
+    buildUnchangedRegistryReconcileReport()
+);
 const ensureProjectGroupPlanMock = mock(async () => {
   if (ensureProjectGroupPlanResult?.plan) {
     planById.set(
@@ -425,6 +483,12 @@ const registerUseAppStoreMocks = async () => {
   const actualPreferences = await import(
     `../services/preferences.ts?use-app-store-preferences-test=${++importCounter}`
   );
+  const actualImplementTaskCatalog = await import(
+    `../services/implementTaskCatalog.ts?use-app-store-implement-task-catalog-test=${importCounter}`
+  );
+  const actualTauriIpc = await import(
+    `../services/tauriIpc.ts?use-app-store-tauri-ipc-test=${importCounter}`
+  );
 
   registerMockModulePair('./useChatStore', () => ({
     useChatStore: useChatStoreMock,
@@ -466,7 +530,7 @@ const registerUseAppStoreMocks = async () => {
     getProjectSwitchPolicy: async () => projectSwitchPolicy,
     reconcileLocalProjectRegistryState: async () => undefined,
     deleteLocalProjectContextState: deleteLocalProjectContextStateMock,
-    setProjectSwitchPolicy: async () => undefined,
+    setProjectSwitchPolicy: setProjectSwitchPolicyMock,
     upsertLocalProjectContextState: upsertLocalProjectContextStateMock,
     upsertLocalSessionContextState: upsertLocalSessionContextStateMock,
   }));
@@ -476,6 +540,7 @@ const registerUseAppStoreMocks = async () => {
     getArchitectPlan: getArchitectPlanMock,
     getArchitectPlanNeeds: getArchitectPlanNeedsMock,
     getGitFlowBaseBranch: () => 'develop',
+    listArchitectPlanTargetBranches: async () => ['develop'],
     getArchitectPlanProjectIds: collectPlanProjectIds,
     getArchitectPlanVisibleProjectIds: collectPlanProjectIds,
     getArchitectPlanTargetBranchesByProjectId:
@@ -505,18 +570,24 @@ const registerUseAppStoreMocks = async () => {
   }));
 
   registerMockModulePair('../services/implementTaskCatalog', () => ({
+    ...actualImplementTaskCatalog,
     taskMatchesProjectId: taskMatchesMockProjectId,
   }));
 
   registerMockModulePair('../services/tauriIpc', () => ({
-    isTauriAvailable: () => tauriAvailable,
+    ...actualTauriIpc,
+    isTauriAvailable: () => tauriAvailable || actualTauriIpc.isTauriAvailable(),
+    workspaceArchitectInvalidate: async () => undefined,
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
+    workspaceReconcileProjectRegistryFromHints:
+      workspaceReconcileProjectRegistryFromHintsMock,
   }));
 
   registerMockModulePair('../utils/devLogger', () => ({
     devLogger: {
       info: () => undefined,
       log: () => undefined,
+      warn: () => undefined,
     },
   }));
 };
@@ -531,6 +602,7 @@ describe('useAppStore architect plan resolution', () => {
     preferenceValues = { ...DEFAULT_UI_PREFS };
     projectSwitchPolicy = 'resume_per_project';
     sessionContext = null;
+    bootstrapStandaloneProjects = [];
     bootstrapProjectGroups = [buildProjectGroup()];
     bootstrapPlan = null;
     bootstrapPlanNodes = [];
@@ -539,14 +611,17 @@ describe('useAppStore architect plan resolution', () => {
     ensureProjectGroupPlanResult = null;
     projectContexts.clear();
     planById.clear();
+    activationPayloadByPlanId.clear();
     listArchitectPlansMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanMock.mockClear();
     getArchitectPlanNeedsMock.mockClear();
+    setProjectSwitchPolicyMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
     getAppBootstrapMock.mockImplementation(async () => ({
       plan: bootstrapPlan,
+      standaloneProjects: bootstrapStandaloneProjects,
       projectGroups: bootstrapProjectGroups,
       planNodes: bootstrapPlanNodes,
       predictedBranches: bootstrapPredictedBranches,
@@ -575,6 +650,11 @@ describe('useAppStore architect plan resolution', () => {
       restoredCommit: null,
       message: null,
     }));
+    workspaceReconcileProjectRegistryFromHintsMock.mockClear();
+    workspaceReconcileProjectRegistryFromHintsMock.mockImplementation(
+      async (): Promise<RegistryReconcileReportRecord> =>
+        buildUnchangedRegistryReconcileReport()
+    );
     ensureProjectGroupPlanMock.mockClear();
     consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
@@ -584,6 +664,7 @@ describe('useAppStore architect plan resolution', () => {
     needsStoreState.hydrateNeedsForPlan.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
     taskStoreState.activateTask.mockClear();
+    taskStoreState.refreshFromPlan.mockClear();
     chatStoreState.reconcileProjectRegistry.mockClear();
     taskStoreState.tasks = [];
     chatStoreState.conversations = [];
@@ -593,6 +674,40 @@ describe('useAppStore architect plan resolution', () => {
 
   afterEach(() => {
     mock.restore();
+  });
+
+  it('persists the requested project context storage policy', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+
+    await useAppStore.getState().setProjectSwitchPolicy('reset_on_switch');
+
+    expect(useAppStore.getState().projectSwitchPolicy).toBe('reset_on_switch');
+    expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('reset_on_switch');
+  });
+
+  it('selects a recovered standalone project on initialize when no remembered selection is valid', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [
+      {
+        id: 'project-lplr-app-1780329499166',
+        name: 'octan_sales',
+        path: '/Users/oscarlahaie/github/octan_sales',
+        gitFlowSettings: { baseBranch: 'main' },
+      },
+    ];
+    preferenceValues.lastSelectedGroupId = 'missing-group';
+    preferenceValues.lastSelectedProjectId = null;
+    preferenceValues.lastOpenProjectPath = null;
+    preferenceValues.recentProjects = [];
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initializeCritical();
+
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
+    expect(useAppStore.getState().selectedProjectId).toBe(
+      'project-lplr-app-1780329499166',
+    );
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(1);
   });
 
   it('loads the newest visible plan during initialize when no remembered plan is available', async () => {
@@ -617,6 +732,17 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(useAppStore.getState().activeArchitectPlanId).toBe('plan-newest');
     expect(projectContexts.get('group-1')?.lastPlanId).toBe('plan-newest');
+    expect(useAppStore.getState().architectPlanCatalogScopedProjectIds).toEqual([
+      'project-1',
+      'project-2',
+    ]);
+    expect(useAppStore.getState().architectPlanCatalogModernPlanCount).toBe(2);
+    expect(useAppStore.getState().architectPlanCatalogVisiblePlanCount).toBe(2);
+    expect(
+      useAppStore
+        .getState()
+        .visibleArchitectPlans.map((plan: { id: string }) => plan.id)
+    ).toEqual(['plan-newest', 'plan-older']);
 
     const selectorState = computePlanSelectorRefreshState({
       plans: Array.from(planById.values()).map(toPlanSummary),
@@ -630,40 +756,258 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
-  it('recovers metadata locally without pulling when the initial bootstrap fails', async () => {
+  it('does not recover metadata automatically when the initial bootstrap fails', async () => {
     tauriAvailable = true;
-    const recoveredGroup = buildProjectGroup({
-      id: 'group-recovered',
-      projects: [
-        {
-          id: 'project-recovered',
-          name: 'Recovered',
-          path: '/repos/recovered',
-          gitFlowSettings: { baseBranch: 'develop' },
-        },
-      ],
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      throw new Error('metadata missing');
     });
-    getAppBootstrapMock
-      .mockImplementationOnce(async () => {
-        throw new Error('metadata missing');
-      })
-      .mockImplementationOnce(async () => ({
-        plan: null,
-        projectGroups: [recoveredGroup],
-        planNodes: [],
-        predictedBranches: [],
-      }));
 
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initializeCritical();
 
-    expect(workspaceRecoverMissingMetadataMock.mock.calls).toHaveLength(1);
-    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
-      attemptPull: false,
+    expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().projectGroups).toHaveLength(0);
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
+    expect(useAppStore.getState().lastError).toContain(
+      'Macro opened an empty shell',
+    );
+  });
+
+  it('does not restore a remembered standalone project missing from workspace metadata during startup', async () => {
+    tauriAvailable = true;
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    const currentProject: ProjectRecord = {
+      id: 'project-octan-sales-1780653766405',
+      name: 'octan_sales',
+      path: '/repos/octan_sales',
+      gitFlowSettings: { baseBranch: 'main' },
+    };
+    const staleProjectId = 'project-lplr-app-1780329499166';
+    const visiblePhysicalPlan = buildPlan({
+      id: 'plan-refonte-catalogue',
+      title: 'Refonte catalogue produit',
+      label: 'Refonte catalogue produit',
+      conversationId: 'architect-conversation-refonte',
+      projectId: staleProjectId,
+      projectIds: [staleProjectId],
+      expectedProjectIds: [staleProjectId],
+      availableProjectIds: [currentProject.id],
+      targetBranch: 'main',
+      targetBranchesByProjectId: {
+        [staleProjectId]: 'main',
+        [currentProject.id]: 'main',
+      },
+      nodes: [
+        {
+          id: 'node-catalogue',
+          title: 'Catalogue migration',
+          projectId: staleProjectId,
+          projectIds: [staleProjectId],
+          artifactContracts: [
+            {
+              id: 'migration-map',
+              title: 'Migration map',
+            },
+          ],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-catalogue',
+          projectId: staleProjectId,
+          name: 'feature/refonte-catalogue',
+        },
+      ],
+      updatedAt: '2026-05-22T09:00:00.000Z',
     });
-    expect(useAppStore.getState().projectGroups).toHaveLength(1);
-    expect(useAppStore.getState().projectGroups[0]?.id).toBe('group-recovered');
-    expect(useAppStore.getState().lastError).toBeNull();
+    const restoredNeeds = [
+      {
+        id: 'need-catalogue',
+        title: 'Reprendre le catalogue produit',
+        status: 'validated',
+      },
+    ];
+    const restoredChatMessages = [
+      {
+        id: 'message-architect-user',
+        role: 'user',
+        content: 'Refondre le catalogue produit.',
+        createdAt: '2026-05-22T08:30:00.000Z',
+      },
+      {
+        id: 'message-architect-assistant',
+        role: 'assistant',
+        content: 'Plan chargé depuis @macro.',
+        createdAt: '2026-05-22T08:31:00.000Z',
+      },
+    ];
+    planById.set(visiblePhysicalPlan.id, visiblePhysicalPlan);
+    activationPayloadByPlanId.set(visiblePhysicalPlan.id, {
+      needs: restoredNeeds,
+      chatMessages: restoredChatMessages,
+      conversationId: 'architect-conversation-refonte',
+      resolutionMode: 'full',
+    });
+    preferenceValues.lastActiveMode = 'Architect';
+    preferenceValues.lastSelectedGroupId = null;
+    preferenceValues.lastSelectedProjectId = currentProject.id;
+    preferenceValues.lastOpenProjectPath = currentProject.path;
+    preferenceValues.macroEnabledProjects = [
+      {
+        projectId: currentProject.id,
+        groupId: null,
+        name: currentProject.name,
+        path: currentProject.path,
+        lastOpenedAt: '2026-05-22T08:00:00.000Z',
+      },
+    ];
+    workspaceReconcileProjectRegistryFromHintsMock.mockImplementation(
+      async (): Promise<RegistryReconcileReportRecord> => {
+        bootstrapStandaloneProjects = [currentProject];
+        return {
+          status: 'reconciled',
+          discoveredProjects: [],
+          addedProjects: [currentProject],
+          skippedProjects: [],
+          duplicatePaths: [],
+          invalidPaths: [],
+        };
+      },
+    );
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const taskRefreshSnapshots: Array<{
+      selectedProjectId: string | null;
+      activeArchitectPlanId: string | null;
+      planNodeProjectIds: Array<string | undefined>;
+      planNodeArtifactContractIds: string[];
+      pendingPlanProjectIds: string[];
+      visiblePlanIds: string[];
+    }> = [];
+    taskStoreState.refreshFromPlan.mockImplementation(async () => {
+      const state = useAppStore.getState();
+      const planNodes = state.planNodes as PlanNode[];
+      const visiblePlans = state.visibleArchitectPlans as ArchitectPlanSummary[];
+      taskRefreshSnapshots.push({
+        selectedProjectId: state.selectedProjectId,
+        activeArchitectPlanId: state.activeArchitectPlanId,
+        planNodeProjectIds: planNodes.map((node) => node.projectId),
+        planNodeArtifactContractIds: planNodes.flatMap((node) =>
+          (node.artifactContracts ?? [])
+            .map((contract) => contract.id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+        pendingPlanProjectIds:
+          state.pendingArchitectPlanActivationPayload?.plan.projectIds ?? [],
+        visiblePlanIds: Array.from(
+          new Set(visiblePlans.map((plan) => plan.id)),
+        ),
+      });
+    });
+    await useAppStore.getState().initialize();
+
+    expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects).toHaveLength(0);
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
+    expect(useAppStore.getState().selectedProjectId).toBeNull();
+    expect(useAppStore.getState().activeArchitectPlanId).toBeNull();
+    expect(useAppStore.getState().activePlanContext).toBeNull();
+    expect(useAppStore.getState().planNodes).toEqual([]);
+    expect(useAppStore.getState().predictedBranches).toEqual([]);
+    expect(needsStoreState.hydrateNeedsForPlan).not.toHaveBeenCalled();
+    expect(useAppStore.getState().pendingArchitectPlanActivationPayload).toBeNull();
+    expect(taskRefreshSnapshots).toEqual([
+      {
+        selectedProjectId: null,
+        activeArchitectPlanId: null,
+        planNodeProjectIds: [],
+        planNodeArtifactContractIds: [],
+        pendingPlanProjectIds: [],
+        visiblePlanIds: [],
+      },
+    ]);
+    expect(useAppStore.getState().visibleArchitectPlans).toEqual([]);
+    expect(useAppStore.getState().macroEnabledProjects).toEqual([
+      expect.objectContaining({
+        projectId: currentProject.id,
+        name: currentProject.name,
+        path: currentProject.path,
+      }),
+    ]);
+  });
+
+  it('keeps remembered project hints without reconciling them automatically', async () => {
+    tauriAvailable = true;
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    const rememberedProject: ProjectRecord = {
+      id: 'project-octan-sales-1780653766405',
+      name: 'octan_sales',
+      path: '/repos/octan_sales',
+      gitFlowSettings: { baseBranch: 'main' },
+    };
+    preferenceValues.lastSelectedGroupId = null;
+    preferenceValues.lastSelectedProjectId = rememberedProject.id;
+    preferenceValues.lastOpenProjectPath = rememberedProject.path;
+    preferenceValues.macroEnabledProjects = [
+      {
+        projectId: rememberedProject.id,
+        groupId: null,
+        name: rememberedProject.name,
+        path: rememberedProject.path,
+        lastOpenedAt: '2026-06-05T08:00:00.000Z',
+      },
+    ];
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initialize();
+
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects).toEqual([]);
+    expect(useAppStore.getState().selectedProjectId).toBeNull();
+    expect(useAppStore.getState().macroEnabledProjects).toEqual([
+      expect.objectContaining({
+        projectId: rememberedProject.id,
+        name: rememberedProject.name,
+        path: rememberedProject.path,
+      }),
+    ]);
+    expect(useAppStore.getState().recentProjects).toEqual([]);
+  });
+
+  it('does not restore discovered sibling @macro projects automatically', async () => {
+    tauriAvailable = true;
+    const knownGroup = buildProjectGroup({
+      id: 'group-sysml',
+      name: 'sysml',
+      projects: [
+        {
+          id: 'project-sysml',
+          name: 'sysml-drone-demo',
+          path: '/repos/sysml-drone-demo',
+          gitFlowSettings: { baseBranch: 'main' },
+        },
+      ],
+    });
+    bootstrapProjectGroups = [knownGroup];
+    bootstrapStandaloneProjects = [];
+    preferenceValues.recentProjects = [];
+    preferenceValues.macroEnabledProjects = [];
+    preferenceValues.lastOpenProjectPath = null;
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    await useAppStore.getState().initialize();
+
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().standaloneProjects).toEqual([
+      expect.objectContaining({
+        id: 'project-sysml',
+        name: 'sysml-drone-demo',
+        path: '/repos/sysml-drone-demo',
+      }),
+    ]);
+    expect(useAppStore.getState().projectGroups).toEqual([]);
   });
 
   it('opens an empty degraded shell when bootstrap and local recovery fail', async () => {
@@ -671,16 +1015,12 @@ describe('useAppStore architect plan resolution', () => {
     getAppBootstrapMock.mockImplementation(async () => {
       throw new Error('metadata corrupt');
     });
-    workspaceRecoverMissingMetadataMock.mockImplementation(async () => {
-      throw new Error('local recovery blocked');
-    });
 
     const { useAppStore } = await loadIsolatedUseAppStore();
     await useAppStore.getState().initializeCritical();
 
-    expect((workspaceRecoverMissingMetadataMock.mock.calls as unknown[][])[0][0]).toMatchObject({
-      attemptPull: false,
-    });
+    expect(workspaceRecoverMissingMetadataMock).not.toHaveBeenCalled();
+    expect(workspaceReconcileProjectRegistryFromHintsMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectGroups).toEqual([]);
     expect(useAppStore.getState().lastError).toContain(
       'Macro opened an empty shell',
@@ -701,7 +1041,7 @@ describe('useAppStore architect plan resolution', () => {
 
     await useAppStore.getState().debugResetProject('project-1');
 
-    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBe('project-2');
     expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
     expect(projectContexts.has('project-1')).toBe(false);
@@ -721,7 +1061,7 @@ describe('useAppStore architect plan resolution', () => {
 
     await useAppStore.getState().debugResetProject('project-1');
 
-    expect(useAppStore.getState().selectedGroupId).toBe('group-1');
+    expect(useAppStore.getState().selectedGroupId).toBeNull();
     expect(useAppStore.getState().selectedProjectId).toBe('project-2');
     expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
     expect(sessionContext?.selectedProjectId).toBe('project-2');
@@ -984,6 +1324,71 @@ describe('useAppStore architect plan resolution', () => {
     expect(
       useAppStore.getState().pendingArchitectPlanActivationPayload?.plan.id
     ).toBe(nextPlan.id);
+  });
+
+  it('retargets activated architect strategy nodes after a standalone project rename', async () => {
+    const staleProjectId = 'project-lplr-app-1780329499166';
+    const currentProjectId = 'project-octan-sales-1780653766405';
+    const renamedPlan = buildPlan({
+      id: 'plan-renamed-project',
+      projectId: staleProjectId,
+      projectIds: [staleProjectId],
+      expectedProjectIds: [staleProjectId],
+      availableProjectIds: [currentProjectId],
+      nodes: [
+        {
+          id: 'node-1',
+          projectId: staleProjectId,
+          projectIds: [staleProjectId],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-1',
+          projectId: staleProjectId,
+        },
+      ],
+    });
+    planById.set(renamedPlan.id, renamedPlan);
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect',
+      standaloneProjects: [
+        {
+          id: currentProjectId,
+          name: 'octan_sales',
+          path: '/repos/octan_sales',
+          gitFlowSettings: { baseBranch: 'develop' },
+        },
+      ],
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: currentProjectId,
+    });
+
+    await useAppStore.getState().activateArchitectPlan(renamedPlan.id, {
+      allowScopeSwitch: false,
+      planSummaryHint: toPlanSummary(renamedPlan),
+      scopedProjectIdsHint: [currentProjectId],
+    });
+
+    const state = useAppStore.getState();
+    expect(state.activeArchitectPlanId).toBe(renamedPlan.id);
+    expect(
+      (state.planNodes[0] as { projectId?: string; projectIds?: string[] })
+        .projectId
+    ).toBe(currentProjectId);
+    expect(
+      (state.planNodes[0] as { projectId?: string; projectIds?: string[] })
+        .projectIds
+    ).toEqual([currentProjectId]);
+    expect(
+      (state.predictedBranches[0] as { projectId?: string }).projectId
+    ).toBe(currentProjectId);
+    expect(
+      state.pendingArchitectPlanActivationPayload?.plan.projectIds
+    ).toEqual([currentProjectId]);
   });
 
   it('clears the previous strategy state immediately while an architect plan switch is resolving', async () => {

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::core::error::BackendError;
+    use crate::core::error::{io_error_to_backend_error, BackendError};
     use serde_json::json;
 
     #[test]
@@ -23,10 +23,6 @@ mod tests {
             message: "test".to_string(),
         };
 
-        let _ = BackendError::Index {
-            message: "test".to_string(),
-        };
-
         let _ = BackendError::AI {
             message: "test".to_string(),
         };
@@ -40,6 +36,9 @@ mod tests {
         let _ = BackendError::Validation("test".to_string());
         let _ = BackendError::Internal {
             message: "test".to_string(),
+        };
+        let _ = BackendError::ResourcePressure {
+            message: "too many open files".to_string(),
         };
     }
 
@@ -161,8 +160,8 @@ mod tests {
             BackendError::FilesystemDiskFull {
                 message: "disk full".to_string(),
             },
-            BackendError::Index {
-                message: "index".to_string(),
+            BackendError::ResourcePressure {
+                message: "too many open files".to_string(),
             },
             BackendError::AI {
                 message: "ai".to_string(),
@@ -189,5 +188,18 @@ mod tests {
                 .and_then(|value| value.as_str())
                 .is_some());
         }
+    }
+
+    #[test]
+    fn test_too_many_open_files_serializes_as_resource_pressure() {
+        let error = io_error_to_backend_error(
+            std::io::Error::from_raw_os_error(24),
+            std::path::Path::new("/workspace"),
+        );
+        assert_serialized_error(
+            error,
+            "RESOURCE_PRESSURE",
+            "Too many open files while reading workspace path: /workspace",
+        );
     }
 }

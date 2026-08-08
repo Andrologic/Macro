@@ -66,6 +66,8 @@ const isSupportedDesktopNotificationPlatform = (): boolean => {
 const isSupportedRuntime = (): boolean =>
   isTauriEnvironment() && isSupportedDesktopNotificationPlatform();
 
+export const isDesktopNotificationRuntimeSupported = (): boolean => isSupportedRuntime();
+
 const notifyListeners = (): void => {
   listeners.forEach((listener) => listener());
 };

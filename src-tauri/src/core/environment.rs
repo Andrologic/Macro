@@ -84,6 +84,7 @@ fn merge_path_candidates(shell_path: Option<&str>, current_path: Option<&str>) -
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use super::*;
 
     #[cfg(target_os = "macos")]

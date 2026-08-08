@@ -5,10 +5,13 @@ import { useAppStore } from '../../stores/useAppStore';
 import type { Project, ProjectGitFlowDetection, ProjectGroup } from '../../types';
 
 let importCounter = 0;
-let previewProjectGitSetupMock = mock(async (_data: { path: string }) => buildDetection());
-let createProjectMock = mock(async (_payload: unknown) => undefined);
-let createProjectWithGitSetupMock = mock(async (_payload: unknown) => undefined);
+let previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
+let createProjectMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
+let createProjectWithGitSetupMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
+let createNewProjectRepoMock = mock(async (_payload: Record<string, unknown>): Promise<unknown> => undefined);
+let createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
 let closeProjectModalMock = mock(() => undefined);
+let cancelProjectAddOperationMock = mock(async (_requestId: string) => undefined);
 
 const loadProjectModal = async () => {
   mock.restore();
@@ -38,7 +41,7 @@ const loadProjectModal = async () => {
   }));
   mock.module('../../services', () => ({
     services: {
-      previewProjectGitSetup: (data: { path: string }) => previewProjectGitSetupMock(data),
+      previewProjectGitSetup: (data: { path: string; requestId?: string }) => previewProjectGitSetupMock(data),
     },
   }));
 
@@ -117,22 +120,70 @@ const changeInput = async (placeholder: string, value: string) => {
   });
 };
 
+const clickLabelContaining = async (text: string) => {
+  const label = Array.from(document.body.querySelectorAll('label')).find((candidate) =>
+    candidate.textContent?.includes(text)
+  );
+  expect(label).toBeDefined();
+  const input = label!.querySelector('input') as HTMLInputElement | null;
+  expect(input).toBeDefined();
+  const reactPropsKey = Object.keys(input!).find((key) => key.startsWith('__reactProps$'));
+  expect(reactPropsKey).toBeDefined();
+  const reactProps = (input! as unknown as Record<string, { onChange?: (event: unknown) => void }>)[
+    reactPropsKey!
+  ];
+
+  await act(async () => {
+    reactProps.onChange?.({ target: { checked: !input!.checked } });
+    await Promise.resolve();
+  });
+};
+
 describe('ProjectModal', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
 
   beforeEach(() => {
-    previewProjectGitSetupMock = mock(async (_data: { path: string }) => buildDetection());
-    createProjectMock = mock(async (_payload: unknown) => undefined);
-    createProjectWithGitSetupMock = mock(async (_payload: unknown) => undefined);
+    previewProjectGitSetupMock = mock(async (_data: { path: string; requestId?: string }) => buildDetection());
+    createProjectMock = mock(async (payload: Record<string, unknown>) =>
+      buildProject({
+        id: 'created-project',
+        name: typeof payload.name === 'string' ? payload.name : 'Created project',
+        path: typeof payload.path === 'string' ? payload.path : 'C:/work/created-project',
+      })
+    );
+    createProjectWithGitSetupMock = mock(async (payload: Record<string, unknown>) => ({
+      project: buildProject({
+        id: 'created-project',
+        name: typeof payload.name === 'string' ? payload.name : 'Created project',
+        path: typeof payload.path === 'string' ? payload.path : 'C:/work/created-project',
+      }),
+      detection: buildDetection(),
+    }));
+    createNewProjectRepoMock = mock(async (payload: Record<string, unknown>) => ({
+      project: buildProject({
+        id: 'created-project',
+        name: typeof payload.repoName === 'string' ? payload.repoName : 'Created project',
+        path: `${
+          typeof payload.parentPath === 'string' ? payload.parentPath : 'C:/work'
+        }/${typeof payload.folderName === 'string' ? payload.folderName : 'created-project'}`,
+      }),
+      detection: buildDetection(),
+    }));
+    createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
     closeProjectModalMock = mock(() => undefined);
+    cancelProjectAddOperationMock = mock(async (_requestId: string) => undefined);
 
     useAppStore.setState({
       projectModalOpen: true,
       projectModalGroupId: null,
+      standaloneProjects: [],
       projectGroups: [],
       createProject: createProjectMock as never,
       createProjectWithGitSetup: createProjectWithGitSetupMock as never,
+      createNewProjectRepo: createNewProjectRepoMock as never,
+      createProjectGroup: createProjectGroupMock as never,
+      cancelProjectAddOperation: cancelProjectAddOperationMock,
       closeProjectModal: closeProjectModalMock,
     });
 
@@ -160,26 +211,59 @@ describe('ProjectModal', () => {
     });
   };
 
-  it('creates a new global project from a local folder', async () => {
+  const selectExistingRepoSource = async () => {
+    await act(async () => {
+      findButton('Existing project').click();
+      await Promise.resolve();
+    });
+  };
+
+  it('creates a standalone new project by default', async () => {
     await renderModal();
 
-    await changeInput('e.g. Mobile App Suite', 'Suite');
-    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
+    expect(document.body.textContent).toContain('New project');
+    expect(document.body.textContent).toContain('No group');
+
+    await changeInput('e.g. Backend API', 'Backend API');
+    await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
+
+    expect(document.body.textContent).toContain('Project folder');
+    expect(document.body.textContent).toContain('C:/work/backend-api');
 
     await act(async () => {
       findButton('Create project').click();
       await Promise.resolve();
     });
 
-    expect(previewProjectGitSetupMock).toHaveBeenCalledWith({ path: 'C:/work/app' });
-    expect(createProjectMock).toHaveBeenCalledWith({
-      name: 'app',
-      description: '',
+    expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
+    expect(createNewProjectRepoMock).toHaveBeenCalledWith({
+      repoName: 'Backend API',
+      parentPath: 'C:/work',
+      folderName: 'backend-api',
       groupId: null,
-      groupName: 'Suite',
-      path: 'C:/work/app',
+      groupName: null,
+      requestId: expect.any(String),
     });
     expect(closeProjectModalMock).toHaveBeenCalled();
+  });
+
+  it('preselects the context group when opened from a group', async () => {
+    useAppStore.setState({
+      projectModalGroupId: 'group-id',
+      projectGroups: [
+        buildProjectGroup({
+          projects: [
+            buildProject({ id: 'api', name: 'API', path: 'C:/work/api' }),
+            buildProject({ id: 'web', name: 'Web', path: 'C:/work/web' }),
+          ],
+        }),
+      ],
+    });
+    await renderModal();
+
+    expect(document.body.textContent).toContain('Existing group');
+    expect(document.body.textContent).toContain('2 projects in this group');
+    expect(document.body.textContent).not.toContain('Target:');
   });
 
   it('blocks duplicate folder paths before previewing Git setup', async () => {
@@ -192,11 +276,11 @@ describe('ProjectModal', () => {
     });
     await renderModal();
 
-    await changeInput('e.g. Mobile App Suite', 'Suite');
+    await selectExistingRepoSource();
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'c:/work/api/');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Add existing project').click();
       await Promise.resolve();
     });
 
@@ -205,25 +289,117 @@ describe('ProjectModal', () => {
     expect(createProjectMock).not.toHaveBeenCalled();
   });
 
-  it('requires an existing group selection before adding a subproject', async () => {
+  it('cancels the in-flight add operation when closing during Git preview', async () => {
+    previewProjectGitSetupMock = mock(
+      (_data: { path: string; requestId?: string }) =>
+        new Promise<ProjectGitFlowDetection>(() => undefined)
+    );
+    await renderModal();
+
+    await selectExistingRepoSource();
+    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
+
+    await act(async () => {
+      findButton('Add existing project').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findButton('Cancel').click();
+      await Promise.resolve();
+    });
+
+    const requestId = previewProjectGitSetupMock.mock.calls[0]?.[0]?.requestId;
+    expect(requestId).toEqual(expect.any(String));
+    expect(cancelProjectAddOperationMock).toHaveBeenCalledWith(requestId);
+    expect(closeProjectModalMock).toHaveBeenCalled();
+  });
+
+  it('requires an existing group selection before using an existing destination', async () => {
     await renderModal();
 
     await act(async () => {
-      findButton('Existing project').click();
+      findButton('Existing group').click();
       await Promise.resolve();
     });
-    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/api');
+    await changeInput('e.g. Backend API', 'Backend API');
+    await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
 
     await act(async () => {
-      findButton('Add subproject').click();
+      findButton('Create project').click();
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain('Choose an existing global project first');
+    expect(document.body.textContent).toContain('Choose an existing group first');
     expect(previewProjectGitSetupMock).not.toHaveBeenCalled();
+    expect(createNewProjectRepoMock).not.toHaveBeenCalled();
   });
 
-  it('opens rare Git Flow confirmation and persists confirmed branch roles', async () => {
+  it('creates a new group with the added project and selected standalone projects', async () => {
+    useAppStore.setState({
+      standaloneProjects: [
+        buildProject({ id: 'project-api', name: 'API', path: 'C:/work/api' }),
+      ],
+    });
+    await renderModal();
+
+    await act(async () => {
+      findButton('New group').click();
+      await Promise.resolve();
+    });
+    await changeInput('e.g. Mobile Suite', 'Suite');
+    await clickLabelContaining('API');
+    await changeInput('e.g. Backend API', 'Backend API');
+    await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
+
+    await act(async () => {
+      findButton('Create group').click();
+      await Promise.resolve();
+    });
+
+    expect(createNewProjectRepoMock).toHaveBeenCalledWith({
+      repoName: 'Backend API',
+      parentPath: 'C:/work',
+      folderName: 'backend-api',
+      groupId: null,
+      groupName: null,
+      requestId: expect.any(String),
+    });
+    expect(createProjectGroupMock).toHaveBeenCalledWith('Suite', [
+      'created-project',
+      'project-api',
+    ]);
+    expect(closeProjectModalMock).toHaveBeenCalled();
+  });
+
+  it('requires a group name and a standalone project for the new group destination', async () => {
+    await renderModal();
+
+    await act(async () => {
+      findButton('New group').click();
+      await Promise.resolve();
+    });
+    await changeInput('e.g. Backend API', 'Backend API');
+    await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
+
+    await act(async () => {
+      findButton('Create group').click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain('Group name is required');
+    expect(createNewProjectRepoMock).not.toHaveBeenCalled();
+
+    await changeInput('e.g. Mobile Suite', 'Suite');
+    await act(async () => {
+      findButton('Create group').click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain('Choose at least one project to include in the group');
+    expect(createNewProjectRepoMock).not.toHaveBeenCalled();
+  });
+
+  it('opens rare Git workflow confirmation and persists confirmed branch roles', async () => {
     previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
       buildDetection({
         repoDetected: true,
@@ -237,11 +413,11 @@ describe('ProjectModal', () => {
     );
     await renderModal();
 
-    await changeInput('e.g. Mobile App Suite', 'Suite');
+    await selectExistingRepoSource();
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Add existing project').click();
       await Promise.resolve();
     });
 
@@ -263,6 +439,55 @@ describe('ProjectModal', () => {
     );
   });
 
+  it('keeps the new group destination through Git workflow confirmation', async () => {
+    useAppStore.setState({
+      standaloneProjects: [
+        buildProject({ id: 'project-api', name: 'API', path: 'C:/work/api' }),
+      ],
+    });
+    previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
+      buildDetection({
+        repoDetected: true,
+        branches: ['main'],
+        currentBranch: 'main',
+        suggestedMainBranch: 'main',
+        suggestedBaseBranch: 'main',
+        requiresConfirmation: true,
+        setupState: 'needs_branch_confirmation',
+      })
+    );
+    await renderModal();
+
+    await selectExistingRepoSource();
+    await act(async () => {
+      findButton('New group').click();
+      await Promise.resolve();
+    });
+    await changeInput('e.g. Mobile Suite', 'Suite');
+    await clickLabelContaining('API');
+    await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
+
+    await act(async () => {
+      findButton('Create group').click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      findButton('Confirm and save').click();
+      await Promise.resolve();
+    });
+
+    expect(createProjectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'app',
+        groupId: null,
+      })
+    );
+    expect(createProjectGroupMock).toHaveBeenCalledWith('Suite', [
+      'created-project',
+      'project-api',
+    ]);
+  });
+
   it('runs accepted Git setup prompts through createProjectWithGitSetup', async () => {
     previewProjectGitSetupMock = mock(async (_data: { path: string }) =>
       buildDetection({
@@ -275,11 +500,11 @@ describe('ProjectModal', () => {
     );
     await renderModal();
 
-    await changeInput('e.g. Mobile App Suite', 'Suite');
+    await selectExistingRepoSource();
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Add existing project').click();
       await Promise.resolve();
     });
 
@@ -313,11 +538,11 @@ describe('ProjectModal', () => {
     );
     await renderModal();
 
-    await changeInput('e.g. Mobile App Suite', 'Suite');
+    await selectExistingRepoSource();
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Add existing project').click();
       await Promise.resolve();
     });
 
@@ -330,8 +555,9 @@ describe('ProjectModal', () => {
       name: 'app',
       description: '',
       groupId: null,
-      groupName: 'Suite',
+      groupName: null,
       path: 'C:/work/app',
+      requestId: expect.any(String),
     });
     expect(createProjectWithGitSetupMock).not.toHaveBeenCalled();
   });

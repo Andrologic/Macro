@@ -35,7 +35,7 @@ const makeGroups = (): ProjectGroup[] => [
 ];
 
 describe('projectWorkspaceState', () => {
-  it('reports noProjectAvailable when Macro has no registered subproject', () => {
+  it('reports noProjectAvailable when Macro has no registered project', () => {
     expect(
       resolveProjectWorkspaceState({
         projectGroups: [],
@@ -67,7 +67,7 @@ describe('projectWorkspaceState', () => {
     expect(state.readOnlyProjectIds).toEqual(['project-docs']);
   });
 
-  it('reports ready when the selected scope contains an editable subproject', () => {
+  it('reports ready when the selected scope contains an editable project', () => {
     const state = resolveProjectWorkspaceState({
       projectGroups: makeGroups(),
       selectedGroupId: 'group-main',
@@ -77,5 +77,18 @@ describe('projectWorkspaceState', () => {
     expect(state.kind).toBe('ready');
     expect(state.actionableProjectIds).toEqual(['project-api']);
     expect(state.readOnlyProjectIds).toEqual(['project-docs']);
+  });
+
+  it('reports ready for a standalone selected project', () => {
+    const state = resolveProjectWorkspaceState({
+      standaloneProjects: [makeProject('project-solo')],
+      projectGroups: makeGroups(),
+      selectedGroupId: null,
+      selectedProjectId: 'project-solo',
+    });
+
+    expect(state.kind).toBe('ready');
+    expect(state.scopedProjectIds).toEqual(['project-solo']);
+    expect(state.actionableProjectIds).toEqual(['project-solo']);
   });
 });

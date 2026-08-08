@@ -4,6 +4,17 @@ export interface ServiceError {
   details?: unknown;
 }
 
+export const SERVICE_ERROR_CODES = {
+  PLAN_METADATA_MISSING: 'PLAN_METADATA_MISSING',
+  PLAN_REPLICA_DIVERGED: 'PLAN_REPLICA_DIVERGED',
+  RESOURCE_PRESSURE: 'RESOURCE_PRESSURE',
+  WORKSPACE_STATE_UNAVAILABLE: 'WORKSPACE_STATE_UNAVAILABLE',
+  UNEXPECTED_ERROR: 'UNEXPECTED_ERROR',
+} as const;
+
+export type ServiceErrorCode =
+  (typeof SERVICE_ERROR_CODES)[keyof typeof SERVICE_ERROR_CODES];
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -65,4 +76,73 @@ export const toServiceError = (error: unknown): ServiceError => {
     return { code: 'UNEXPECTED_ERROR', message: error.message, details: error.stack };
   }
   return { code: 'UNEXPECTED_ERROR', message: 'Unknown error', details: error };
+};
+
+export class MacroServiceError extends Error implements ServiceError {
+  readonly code: ServiceErrorCode | string;
+  readonly details?: unknown;
+
+  constructor(code: ServiceErrorCode | string, message: string, details?: unknown) {
+    super(message);
+    this.name = 'MacroServiceError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export const createServiceError = (
+  code: ServiceErrorCode | string,
+  message: string,
+  details?: unknown
+): ServiceError => ({
+  code,
+  message,
+  ...(details === undefined ? {} : { details }),
+});
+
+export const createPlanMetadataMissingError = (params: {
+  planId: string;
+  branchName?: string | null;
+  reason?: string | null;
+  details?: unknown;
+}): MacroServiceError =>
+  new MacroServiceError(
+    SERVICE_ERROR_CODES.PLAN_METADATA_MISSING,
+    `Plan not found: ${params.planId}`,
+    {
+      planId: params.planId,
+      branchName: params.branchName ?? null,
+      reason: params.reason ?? 'plan_metadata_missing',
+      ...(params.details === undefined ? {} : { details: params.details }),
+    }
+  );
+
+export const isPlanMetadataMissingError = (error: unknown): boolean => {
+  const normalized = toServiceError(error);
+  const message = normalized.message.toLowerCase();
+  return (
+    normalized.code === SERVICE_ERROR_CODES.PLAN_METADATA_MISSING ||
+    message.includes('plan not found') ||
+    (message.includes('plan') && message.includes('metadata') && message.includes('missing'))
+  );
+};
+
+export const isResourcePressureError = (error: unknown): boolean => {
+  const normalized = toServiceError(error);
+  const message = normalized.message.toLowerCase();
+  return (
+    normalized.code === SERVICE_ERROR_CODES.RESOURCE_PRESSURE ||
+    message.includes('too many open files') ||
+    message.includes('os error 24') ||
+    message.includes('emfile')
+  );
+};
+
+export const isWorkspaceStateUnavailableError = (error: unknown): boolean => {
+  const normalized = toServiceError(error);
+  const message = normalized.message.toLowerCase();
+  return (
+    normalized.code === SERVICE_ERROR_CODES.WORKSPACE_STATE_UNAVAILABLE ||
+    (message.includes('failed to read workspace state') && !isResourcePressureError(error))
+  );
 };

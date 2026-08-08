@@ -11,15 +11,26 @@ import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
+import { isContextOverflowMessage } from './contextOverflow';
 import type { InternalAgentProfile } from './internalAgentProfile';
 import {
+  applyReasoningToChatCompletionsRequest,
+  resolveChatCompletionProviderProtocolProfile,
+  shouldRequestProviderReasoning,
+  type ChatCompletionProviderProtocolProfile,
+} from './providerProtocolProfiles';
+import {
   isMacroToolCopilotBuiltInOverride,
+  type JsonSchema,
+  type MacroToolRegistryEntry,
   requireMacroToolRegistryEntry,
   toFunctionToolShape,
 } from '../shared/macroToolRegistry';
+import { toMCPFunctionToolShape } from './mcp';
 import type {
   AppMode,
   ChatCompletionReason,
+  MCPTool,
   ProjectMount,
   ProviderTurnState,
   ReasoningEffort,
@@ -45,6 +56,29 @@ const TOOL_DOOM_LOOP_THRESHOLD = 3;
 const TOOL_EXECUTION_ABORTED_RESULT = 'Tool execution aborted';
 const REPEATED_TOOL_CALL_ABORT_RESULT =
   'Tool execution aborted: repeated identical tool call.';
+const HISTORICAL_TOOL_RESULT_MAX_CHARS = 1600;
+
+const formatToolExecutionError = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === 'object') {
+    const maybeMessage = 'message' in error ? (error as { message?: unknown }).message : undefined;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
+      return maybeMessage;
+    }
+    const maybeError = 'error' in error ? (error as { error?: unknown }).error : undefined;
+    if (typeof maybeError === 'string' && maybeError.trim()) {
+      return maybeError;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
+};
 
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
@@ -191,7 +225,39 @@ export interface StreamCompletionResult {
   completionReason?: StreamCompletionReason;
 }
 
+export interface LiveStreamContextSnapshot {
+  version: number;
+  visibleContent: string;
+  visibleContentLength: number;
+  toolTraces: ToolTrace[];
+  hiddenContext?: string;
+  providerInputItems?: unknown[];
+  providerTurnState?: ProviderTurnState;
+}
+
 export type StreamCompletionReason = ChatCompletionReason;
+
+export type StreamTimelinePhase =
+  | 'send_requested'
+  | 'messages_ready'
+  | 'compaction_done'
+  | 'provider_stream_start_requested'
+  | 'backend_task_started'
+  | 'provider_request_sent'
+  | 'auth_ready'
+  | 'auth_refreshed'
+  | 'first_provider_event'
+  | 'first_token'
+  | 'done'
+  | 'error';
+
+export interface StreamTimelineEvent {
+  request_id: string;
+  provider_id: string;
+  provider_type: string;
+  phase: StreamTimelinePhase | string;
+  elapsed_ms: number;
+}
 
 type ProviderRuntimeErrorKind =
   | 'reasoning_replay_required'
@@ -210,6 +276,11 @@ class ProviderRuntimeError extends Error {
   readonly status?: number;
   readonly retryAfterMs?: number;
   readonly retryable: boolean;
+  readonly providerError = true;
+  readonly providerMessage?: string;
+  readonly providerCode?: string;
+  readonly providerType?: string;
+  readonly providerRawBodyExcerpt?: string;
 
   constructor(
     message: string,
@@ -218,6 +289,10 @@ class ProviderRuntimeError extends Error {
       status?: number;
       retryAfterMs?: number;
       retryable?: boolean;
+      providerMessage?: string;
+      providerCode?: string;
+      providerType?: string;
+      providerRawBodyExcerpt?: string;
       cause?: unknown;
     } = {}
   ) {
@@ -227,6 +302,10 @@ class ProviderRuntimeError extends Error {
     this.status = options.status;
     this.retryAfterMs = options.retryAfterMs;
     this.retryable = options.retryable ?? false;
+    this.providerMessage = options.providerMessage;
+    this.providerCode = options.providerCode;
+    this.providerType = options.providerType;
+    this.providerRawBodyExcerpt = options.providerRawBodyExcerpt;
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -242,14 +321,7 @@ interface ChatCompletionProviderMessageItem {
   reasoning_details?: unknown[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
-}
-
-interface ChatCompletionProviderCapabilities {
-  replayReasoningContent: boolean;
-  replayReasoningDetails: boolean;
-  toolCallIdPolicy: 'none' | 'claude' | 'mistral';
-  insertAssistantAfterToolBeforeUser: boolean;
-  injectNoopToolWhenHistoryHasTools: boolean;
+  tool_name?: string;
 }
 
 export interface ToolResultResolution {
@@ -266,6 +338,20 @@ export interface ToolInterruptResolution {
 
 export type ToolCallResolution = ToolResultResolution | ToolInterruptResolution;
 
+export type StreamingFollowUpCompactionReason = 'tool_results';
+
+export interface StreamingFollowUpCompactionRequest {
+  reason: StreamingFollowUpCompactionReason;
+  messages: StreamMessage[];
+  turnCount: number;
+  toolResultCount: number;
+}
+
+export interface StreamingFollowUpCompactionResult {
+  messages: StreamMessage[];
+  compacted?: boolean;
+}
+
 export interface StreamingChatOptions {
   sessionId?: string;
   conversationId?: string;
@@ -281,12 +367,15 @@ export interface StreamingChatOptions {
   onToken: (token: string) => void;
   onComplete: (result: StreamCompletionResult) => void;
   onError: (error: Error) => void;
+  onTimeline?: (event: StreamTimelineEvent) => void;
   onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
+  onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
   signal?: AbortSignal;
   // Tool calling options
   enableWebSearch?: boolean;
   enableWebFetch?: boolean;
   webSearchOptions?: WebSearchOptions;
+  mcpTools?: MCPTool[];
   onToolCall?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -297,6 +386,13 @@ export interface StreamingChatOptions {
     | string
     | void;
   onToolResult?: (toolName: string, result: string) => void;
+  onBeforeFollowUpRequest?: (
+    request: StreamingFollowUpCompactionRequest,
+  ) =>
+    | Promise<StreamingFollowUpCompactionResult | StreamMessage[] | void>
+    | StreamingFollowUpCompactionResult
+    | StreamMessage[]
+    | void;
   fileToolContext?: Array<{
     title: string;
     source: string;
@@ -305,6 +401,8 @@ export interface StreamingChatOptions {
     content?: string;
   }>;
   allowedToolIds?: string[];
+  skillToolIds?: string[];
+  runnableSkillToolIds?: string[];
   copilotSendTimeoutMs?: number | null;
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
@@ -325,6 +423,39 @@ const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResul
   toolTraces: [],
 });
 
+const cloneStreamMessage = (message: StreamMessage): StreamMessage =>
+  JSON.parse(JSON.stringify(message)) as StreamMessage;
+
+const maybeCompactFollowUpMessages = async (
+  options: StreamingChatOptions,
+  params: {
+    reason: StreamingFollowUpCompactionReason;
+    messages: StreamMessage[];
+    turnCount: number;
+    toolResultCount: number;
+  },
+): Promise<StreamMessage[]> => {
+  if (!options.onBeforeFollowUpRequest) {
+    return params.messages;
+  }
+  const result = await options.onBeforeFollowUpRequest({
+    reason: params.reason,
+    messages: params.messages.map(cloneStreamMessage),
+    turnCount: params.turnCount,
+    toolResultCount: params.toolResultCount,
+  });
+  if (!result) {
+    return params.messages;
+  }
+  if (Array.isArray(result)) {
+    return result.map(cloneStreamMessage);
+  }
+  if (Array.isArray(result.messages)) {
+    return result.messages.map(cloneStreamMessage);
+  }
+  return params.messages;
+};
+
 const isReasoningUnsupportedError = (message: string): boolean => {
   const normalized = message.toLowerCase();
   return (
@@ -334,6 +465,9 @@ const isReasoningUnsupportedError = (message: string): boolean => {
     normalized.includes('unsupported parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning_effort') ||
+    normalized.includes('unsupported parameter: thinking') ||
+    normalized.includes('unknown parameter: thinking') ||
+    normalized.includes('does not support thinking') ||
     normalized.includes('does not support reasoning')
   );
 };
@@ -348,35 +482,8 @@ const isReasoningReplayRequiredError = (message: string): boolean => {
   );
 };
 
-const CONTEXT_OVERFLOW_PATTERNS = [
-  /prompt is too long/i,
-  /input is too long for requested model/i,
-  /exceeds the context window/i,
-  /input token count.*exceeds the maximum/i,
-  /maximum prompt length is \d+/i,
-  /reduce the length of the messages/i,
-  /maximum context length is \d+ tokens/i,
-  /exceeds the limit of \d+/i,
-  /exceeds the available context size/i,
-  /greater than the context length/i,
-  /context window exceeds limit/i,
-  /exceeded model token limit/i,
-  /context[_ ]length[_ ]exceeded/i,
-  /context_length_exceeded/i,
-  /model_context_window_exceeded/i,
-  /request entity too large/i,
-  /context length is only \d+ tokens/i,
-  /input length.*exceeds.*context length/i,
-  /prompt too long; exceeded (?:max )?context length/i,
-  /too large for model with \d+ maximum context length/i,
-  /^4(00|13)\s*(status code)?\s*\(no body\)/i,
-];
-
 const isContextOverflowError = (message: string, status?: number): boolean => {
-  if (status === 413) {
-    return true;
-  }
-  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
+  return isContextOverflowMessage(message, status);
 };
 
 const disableReasoningForSession = (providerId: string, modelId: string) => {
@@ -384,30 +491,6 @@ const disableReasoningForSession = (providerId: string, modelId: string) => {
     useProviderStore.getState().markReasoningUnsupportedForModel(providerId, modelId);
   } catch {
     // Ignore runtime fallback bookkeeping outside app contexts.
-  }
-};
-
-const applyReasoningToChatCompletionsRequest = (
-  requestBody: Record<string, unknown>,
-  providerType: string,
-  reasoningEffort?: ReasoningEffort | null
-) => {
-  delete requestBody.reasoning_effort;
-  delete requestBody.reasoning;
-  delete requestBody.include_reasoning;
-
-  if (!reasoningEffort) {
-    return;
-  }
-
-  if (providerType === 'openrouter') {
-    requestBody.reasoning = { effort: reasoningEffort };
-    requestBody.include_reasoning = true;
-    return;
-  }
-
-  if (providerType === 'openai' || providerType === 'ollama' || providerType === 'lmstudio') {
-    requestBody.reasoning_effort = reasoningEffort;
   }
 };
 
@@ -429,41 +512,14 @@ const stripThinkingBlocksForModel = (content: string): string =>
     .replace(/<\/think>/gi, '')
     .trim();
 
-const resolveChatCompletionProviderCapabilities = (params: {
+const resolveChatCompletionProviderProfile = (params: {
   providerType: string;
   providerId?: string;
   baseUrl?: string;
   modelId: string;
   forceReasoningContentReplay?: boolean;
-}): ChatCompletionProviderCapabilities => {
-  const providerType = params.providerType.trim().toLowerCase();
-  const providerId = params.providerId?.trim().toLowerCase() || '';
-  const baseUrl = params.baseUrl?.trim().toLowerCase() || '';
-  const modelId = params.modelId.trim().toLowerCase();
-  const providerFingerprint = `${providerId} ${providerType} ${baseUrl} ${modelId}`;
-  const isOpenRouter = providerType === 'openrouter';
-  const isDeepSeekFamily =
-    providerType.includes('deepseek') ||
-    /(^|[/:_-])deepseek([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])deepseek-/i.test(modelId);
-  const isClaudeFamily =
-    providerType.includes('anthropic') ||
-    /(^|[/:_-])anthropic([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])claude([/:_-]|$)/i.test(modelId);
-  const isMistralFamily =
-    providerType.includes('mistral') ||
-    /(^|[/:_-])mistral([/:_-]|$)/i.test(modelId) ||
-    /(^|[/:_-])devstral([/:_-]|$)/i.test(modelId);
-  const isLiteLlmProxy = providerFingerprint.includes('litellm');
-
-  return {
-    replayReasoningContent: Boolean(params.forceReasoningContentReplay) || isDeepSeekFamily,
-    replayReasoningDetails: isOpenRouter,
-    toolCallIdPolicy: isMistralFamily ? 'mistral' : isClaudeFamily ? 'claude' : 'none',
-    insertAssistantAfterToolBeforeUser: isMistralFamily,
-    injectNoopToolWhenHistoryHasTools: isLiteLlmProxy,
-  };
-};
+}): ChatCompletionProviderProtocolProfile =>
+  resolveChatCompletionProviderProtocolProfile(params);
 
 const isChatCompletionProviderMessageItem = (
   item: unknown
@@ -487,7 +543,7 @@ const getChatCompletionProviderItems = (
 
 const normalizeToolCallIdForProvider = (
   id: string,
-  policy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+  policy: ChatCompletionProviderProtocolProfile['toolCallIdPolicy'] = 'none'
 ): string => {
   if (policy === 'claude') {
     const normalized = id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -503,7 +559,7 @@ const normalizeToolCallIdForProvider = (
 
 const cloneToolCalls = (
   toolCalls?: ToolCall[] | null,
-  toolCallIdPolicy: ChatCompletionProviderCapabilities['toolCallIdPolicy'] = 'none'
+  toolCallIdPolicy: ChatCompletionProviderProtocolProfile['toolCallIdPolicy'] = 'none'
 ): ToolCall[] | undefined => {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
     return undefined;
@@ -530,44 +586,85 @@ const normalizeMessageContentForChatCompletions = (
   return stripThinkingBlocksForModel(content);
 };
 
+const providerItemHasToolHistory = (item: ChatCompletionProviderMessageItem): boolean =>
+  item.role === 'tool' || (Array.isArray(item.tool_calls) && item.tool_calls.length > 0);
+
+const streamMessageHasToolHistory = (message: StreamMessage): boolean => {
+  if (
+    message.role === 'tool' ||
+    (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+  ) {
+    return true;
+  }
+
+  return getChatCompletionProviderItems(message.provider_input_items).some(
+    providerItemHasToolHistory
+  );
+};
+
+const shouldReplayProviderReasoningContent = (
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
+): boolean =>
+  profile.reasoningReplay === 'reasoning_content_all' ||
+  (profile.reasoningReplay === 'reasoning_content_tool_chain' && hasToolHistory);
+
+const applyProviderReasoningReplayToMessage = (
+  message: Record<string, unknown>,
+  item: ChatCompletionProviderMessageItem,
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
+) => {
+  const reasoningContent = item.reasoning_content?.trim();
+  if (shouldReplayProviderReasoningContent(profile, hasToolHistory) && reasoningContent) {
+    message.reasoning_content = item.reasoning_content;
+    return;
+  }
+
+  if (profile.reasoningReplay !== 'reasoning_details') {
+    return;
+  }
+
+  if (Array.isArray(item.reasoning_details) && item.reasoning_details.length > 0) {
+    message.reasoning_details = deepCloneJsonValue(item.reasoning_details);
+  } else if (reasoningContent) {
+    message.reasoning = item.reasoning_content;
+  }
+};
+
 const serializeProviderItemForChatCompletions = (
   item: ChatCompletionProviderMessageItem,
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile,
+  hasToolHistory: boolean
 ): Record<string, unknown> | null => {
   if (item.role === 'tool') {
     if (!item.tool_call_id) {
       return null;
     }
 
-    return {
+    const message: Record<string, unknown> = {
       role: 'tool',
       content: item.content,
       tool_call_id: normalizeToolCallIdForProvider(
         item.tool_call_id,
-        capabilities.toolCallIdPolicy
+        profile.toolCallIdPolicy
       ),
     };
+    if (profile.toolMessageName && item.tool_name?.trim()) {
+      message.name = item.tool_name;
+    }
+    return message;
   }
 
   const message: Record<string, unknown> = {
     role: 'assistant',
     content: normalizeMessageContentForChatCompletions('assistant', item.content),
   };
-  const toolCalls = cloneToolCalls(item.tool_calls, capabilities.toolCallIdPolicy);
+  const toolCalls = cloneToolCalls(item.tool_calls, profile.toolCallIdPolicy);
   if (toolCalls) {
     message.tool_calls = toolCalls;
   }
-  const reasoningContent = item.reasoning_content?.trim();
-  if (capabilities.replayReasoningContent && reasoningContent) {
-    message.reasoning_content = item.reasoning_content;
-  }
-  if (
-    capabilities.replayReasoningDetails &&
-    Array.isArray(item.reasoning_details) &&
-    item.reasoning_details.length > 0
-  ) {
-    message.reasoning_details = deepCloneJsonValue(item.reasoning_details);
-  }
+  applyProviderReasoningReplayToMessage(message, item, profile, hasToolHistory);
   return message;
 };
 
@@ -584,11 +681,62 @@ const getChatCompletionMessageToolCallIds = (message: Record<string, unknown>): 
   });
 };
 
+const chatCompletionMessageContentToText = (content: unknown): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .flatMap((part) => {
+        if (!isRecord(part)) return [];
+        const text = part.text;
+        return typeof text === 'string' ? [text] : [];
+      })
+      .join('\n')
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content ?? '');
+  }
+};
+
+const buildHistoricalToolResultMessage = (
+  message: Record<string, unknown>
+): Record<string, unknown> => {
+  const toolName =
+    typeof message.name === 'string' && message.name.trim()
+      ? message.name.trim()
+      : typeof message.tool_call_id === 'string' && message.tool_call_id.trim()
+        ? message.tool_call_id.trim()
+        : 'tool';
+  const content = truncateMiddle(
+    chatCompletionMessageContentToText(message.content).trim(),
+    HISTORICAL_TOOL_RESULT_MAX_CHARS
+  );
+  return {
+    role: 'assistant',
+    content: [
+      `Historical tool result preserved as context. Tool: ${toolName}.`,
+      content,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+  };
+};
+
 const finalizeDanglingToolCallsForChatCompletions = (
   messages: Array<Record<string, unknown>>
 ): Array<Record<string, unknown>> => {
   const normalized: Array<Record<string, unknown>> = [];
   const pendingToolCallIds: string[] = [];
+  const deferredHistoricalToolResults: Array<Record<string, unknown>> = [];
 
   const flushPendingToolCalls = () => {
     while (pendingToolCallIds.length > 0) {
@@ -602,27 +750,50 @@ const finalizeDanglingToolCallsForChatCompletions = (
     }
   };
 
+  const flushDeferredHistoricalToolResults = () => {
+    while (deferredHistoricalToolResults.length > 0) {
+      const historicalMessage = deferredHistoricalToolResults.shift();
+      if (!historicalMessage) continue;
+      normalized.push(historicalMessage);
+    }
+  };
+
   for (const message of messages) {
-    if (message.role !== 'tool') {
-      flushPendingToolCalls();
+    if (message.role === 'tool') {
+      const toolCallId =
+        typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
+      const matchIndex = toolCallId
+        ? pendingToolCallIds.indexOf(toolCallId)
+        : -1;
+      if (matchIndex >= 0) {
+        normalized.push(message);
+        pendingToolCallIds.splice(matchIndex, 1);
+        if (pendingToolCallIds.length === 0) {
+          flushDeferredHistoricalToolResults();
+        }
+        continue;
+      }
+
+      const historicalMessage = buildHistoricalToolResultMessage(message);
+      if (pendingToolCallIds.length > 0) {
+        deferredHistoricalToolResults.push(historicalMessage);
+      } else {
+        normalized.push(historicalMessage);
+      }
+      continue;
     }
 
+    flushPendingToolCalls();
+    flushDeferredHistoricalToolResults();
     normalized.push(message);
 
     if (message.role === 'assistant') {
       pendingToolCallIds.push(...getChatCompletionMessageToolCallIds(message));
-      continue;
-    }
-
-    if (message.role === 'tool' && typeof message.tool_call_id === 'string') {
-      const matchIndex = pendingToolCallIds.indexOf(message.tool_call_id);
-      if (matchIndex >= 0) {
-        pendingToolCallIds.splice(matchIndex, 1);
-      }
     }
   }
 
   flushPendingToolCalls();
+  flushDeferredHistoricalToolResults();
   return normalized;
 };
 
@@ -650,23 +821,30 @@ const insertAssistantAfterToolBeforeUserForChatCompletions = (
 
 const normalizeChatCompletionMessageSequence = (
   messages: Array<Record<string, unknown>>,
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile
 ): Array<Record<string, unknown>> => {
   const withToolResults = finalizeDanglingToolCallsForChatCompletions(messages);
-  return capabilities.insertAssistantAfterToolBeforeUser
+  return profile.insertAssistantAfterToolBeforeUser
     ? insertAssistantAfterToolBeforeUserForChatCompletions(withToolResults)
     : withToolResults;
 };
 
 const buildChatCompletionMessages = (
   messages: StreamMessage[],
-  capabilities: ChatCompletionProviderCapabilities
+  profile: ChatCompletionProviderProtocolProfile
 ): Array<Record<string, unknown>> => {
+  const hasToolHistory = messages.some(streamMessageHasToolHistory);
   const serializedMessages = messages.flatMap((message) => {
     const providerItems = getChatCompletionProviderItems(message.provider_input_items);
     if (providerItems.length > 0) {
       return providerItems
-        .map((item) => serializeProviderItemForChatCompletions(item, capabilities))
+        .map((item) =>
+          serializeProviderItemForChatCompletions(
+            item,
+            profile,
+            hasToolHistory
+          )
+        )
         .filter((item): item is Record<string, unknown> => Boolean(item));
     }
 
@@ -674,19 +852,108 @@ const buildChatCompletionMessages = (
       role: message.role,
       content: normalizeMessageContentForChatCompletions(message.role, message.content),
     };
-    const toolCalls = cloneToolCalls(message.tool_calls, capabilities.toolCallIdPolicy);
+    const toolCalls = cloneToolCalls(message.tool_calls, profile.toolCallIdPolicy);
     if (toolCalls) {
       serialized.tool_calls = toolCalls;
     }
     if (message.tool_call_id) {
       serialized.tool_call_id = normalizeToolCallIdForProvider(
         message.tool_call_id,
-        capabilities.toolCallIdPolicy
+        profile.toolCallIdPolicy
       );
     }
     return [serialized];
   });
-  return normalizeChatCompletionMessageSequence(serializedMessages, capabilities);
+  return normalizeChatCompletionMessageSequence(serializedMessages, profile);
+};
+
+export const estimateChatCompletionSerializedPayloadTokens = (params: {
+  messages: StreamMessage[];
+  providerType?: string;
+  providerId?: string;
+  baseUrl?: string;
+  modelId: string;
+}): number => {
+  const profile = resolveChatCompletionProviderProfile({
+    providerType: params.providerType ?? '',
+    providerId: params.providerId,
+    baseUrl: params.baseUrl,
+    modelId: params.modelId,
+  });
+  const serializedMessages = buildChatCompletionMessages(params.messages, profile);
+  return Math.max(1, Math.ceil(JSON.stringify(serializedMessages).length / 4));
+};
+
+const streamContentToCopilotPromptText = (content: StreamMessageContent): string => {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return content
+    .map((part) => {
+      if (part.type === 'text') {
+        return part.text || '';
+      }
+      if (part.type === 'image_url') {
+        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+      }
+      return '';
+    })
+    .filter((value) => value.trim().length > 0)
+    .join('\n');
+};
+
+const serializeCopilotConversationPrompt = (
+  messages: StreamMessage[]
+): { system: string; prompt: string } => {
+  const systemMessages = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => streamContentToCopilotPromptText(message.content).trim())
+    .filter(Boolean);
+
+  const transcript = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const label = message.role.toUpperCase();
+      const body = streamContentToCopilotPromptText(message.content).trim() || '(empty)';
+      const parts = [`[${label}]`, body];
+
+      if (message.tool_calls?.length) {
+        for (const toolCall of message.tool_calls) {
+          parts.push(
+            `[ASSISTANT_TOOL_REQUEST ${toolCall.id}] ${toolCall.function.name} ${toolCall.function.arguments}`
+          );
+        }
+      }
+
+      if (message.role === 'tool' && message.tool_call_id) {
+        parts[0] = `[TOOL_RESULT ${message.tool_call_id}]`;
+      }
+
+      return parts.join('\n');
+    })
+    .join('\n\n');
+
+  const prompt = [
+    'You are continuing an existing Macro conversation.',
+    'Use the transcript below as the authoritative conversation history.',
+    'Answer the latest user request only. If a workspace tool is needed, use it before answering.',
+    '<conversation>',
+    transcript || '[no prior messages]',
+    '</conversation>',
+  ].join('\n\n');
+
+  return {
+    system: systemMessages.join('\n\n').trim(),
+    prompt,
+  };
+};
+
+export const estimateCopilotSerializedPayloadTokens = (params: {
+  messages: StreamMessage[];
+}): number => {
+  const serialized = serializeCopilotConversationPrompt(params.messages);
+  return Math.max(1, Math.ceil(`${serialized.system}\n\n${serialized.prompt}`.length / 4));
 };
 
 const buildAssistantChatCompletionProviderItem = (params: {
@@ -723,12 +990,14 @@ const buildAssistantChatCompletionProviderItem = (params: {
 
 const buildToolChatCompletionProviderItem = (
   toolCallId: string,
-  content: string
+  content: string,
+  toolName?: string
 ): ChatCompletionProviderMessageItem => ({
   type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE,
   role: 'tool',
   content,
   tool_call_id: toolCallId,
+  ...(toolName?.trim() ? { tool_name: toolName } : {}),
 });
 
 const hasReplayableReasoningContent = (messages: StreamMessage[]): boolean =>
@@ -789,7 +1058,13 @@ const parseRetryAfterMs = (headers: Headers | undefined): number | undefined => 
 const classifyProviderError = (
   message: string,
   status?: number,
-  retryAfterMs?: number
+  retryAfterMs?: number,
+  details?: {
+    providerMessage?: string;
+    providerCode?: string;
+    providerType?: string;
+    providerRawBodyExcerpt?: string;
+  }
 ): ProviderRuntimeError => {
   const normalized = message.toLowerCase();
   let kind: ProviderRuntimeErrorKind = 'unknown';
@@ -826,12 +1101,16 @@ const classifyProviderError = (
     status,
     retryAfterMs,
     retryable,
+    ...details,
   });
 };
 
 const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
   const errorText = await response.text().catch(() => 'Unknown error');
   let errorMessage = `Request failed: ${response.status}`;
+  let providerMessage: string | undefined;
+  let providerCode: string | undefined;
+  let providerType: string | undefined;
 
   try {
     const errorJson = JSON.parse(errorText) as {
@@ -841,21 +1120,43 @@ const extractProviderErrorMessage = async (response: Response): Promise<Provider
       type?: unknown;
     };
     const parsedMessage = errorJson.error?.message ?? errorJson.message;
+    providerMessage = typeof parsedMessage === 'string' ? parsedMessage : undefined;
+    providerCode =
+      typeof errorJson.error?.code === 'string'
+        ? errorJson.error.code
+        : typeof errorJson.code === 'string'
+          ? errorJson.code
+          : undefined;
+    providerType =
+      typeof errorJson.error?.type === 'string'
+        ? errorJson.error.type
+        : typeof errorJson.type === 'string'
+          ? errorJson.type
+          : undefined;
     const contextParts = [
-      typeof parsedMessage === 'string' ? parsedMessage : undefined,
-      typeof errorJson.error?.code === 'string' ? errorJson.error.code : undefined,
-      typeof errorJson.error?.type === 'string' ? errorJson.error.type : undefined,
-      typeof errorJson.code === 'string' ? errorJson.code : undefined,
-      typeof errorJson.type === 'string' ? errorJson.type : undefined,
+      providerMessage,
+      providerCode,
+      providerType,
     ].filter((part): part is string => Boolean(part));
     errorMessage = contextParts.length > 0 ? contextParts.join(' ') : errorMessage;
   } catch {
     if (errorText) {
       errorMessage = errorText;
+      providerMessage = errorText;
     }
   }
 
-  return classifyProviderError(errorMessage, response.status, parseRetryAfterMs(response.headers));
+  return classifyProviderError(
+    errorMessage,
+    response.status,
+    parseRetryAfterMs(response.headers),
+    {
+      providerMessage,
+      providerCode,
+      providerType,
+      providerRawBodyExcerpt: errorText.slice(0, 1200),
+    }
+  );
 };
 
 const getRetryDelayMs = (attempt: number, retryAfterMs?: number): number => {
@@ -952,9 +1253,13 @@ const readStreamChunkWithIdleTimeout = async (
   }
 
   let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
     const idleTimeout = new Promise<never>((_, reject) => {
       timeoutId = globalThis.setTimeout(() => {
+        void reader.cancel().catch(() => {
+          // Ignore cancellation errors while closing an idle stream.
+        });
         reject(
           new ProviderRuntimeError('Provider stream stalled before sending more data', {
             kind: 'stream_idle_timeout',
@@ -963,12 +1268,111 @@ const readStreamChunkWithIdleTimeout = async (
         );
       }, timeoutMs);
     });
-    return await Promise.race([reader.read(), idleTimeout]);
+    const abort = new Promise<never>((_, reject) => {
+      abortHandler = () => {
+        void reader.cancel().catch(() => {
+          // Ignore cancellation errors while aborting a stream.
+        });
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      signal?.addEventListener('abort', abortHandler, { once: true });
+    });
+    return await Promise.race([reader.read(), idleTimeout, abort]);
   } finally {
     if (timeoutId !== undefined) {
       globalThis.clearTimeout(timeoutId);
     }
+    if (abortHandler) {
+      signal?.removeEventListener('abort', abortHandler);
+    }
   }
+};
+
+export const extractSseData = (rawEvent: string): string | undefined => {
+  const dataLines = rawEvent.split('\n').flatMap((rawLine) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith('data:')) {
+      return [];
+    }
+    const data = line.slice('data:'.length);
+    return [data.startsWith(' ') ? data.slice(1) : data];
+  });
+
+  return dataLines.length > 0 ? dataLines.join('\n') : undefined;
+};
+
+export interface SseEventParser {
+  push(chunk: string): string[];
+  flush(): string[];
+}
+
+export const createSseEventParser = (): SseEventParser => {
+  let input = '';
+  let eventLines: string[] = [];
+
+  const dispatchEvent = (events: string[]) => {
+    if (eventLines.length > 0) {
+      events.push(eventLines.join('\n'));
+      eventLines = [];
+    }
+  };
+
+  const drain = (flush: boolean): string[] => {
+    const events: string[] = [];
+    while (true) {
+      const newlineIndex = input.indexOf('\n');
+      const carriageReturnIndex = input.indexOf('\r');
+      let lineEnd = -1;
+      let terminatorLength = 0;
+
+      if (newlineIndex >= 0 && carriageReturnIndex >= 0) {
+        lineEnd = Math.min(newlineIndex, carriageReturnIndex);
+      } else {
+        lineEnd = Math.max(newlineIndex, carriageReturnIndex);
+      }
+
+      if (lineEnd < 0) {
+        break;
+      }
+      if (input[lineEnd] === '\r' && lineEnd === input.length - 1 && !flush) {
+        break;
+      }
+
+      if (input[lineEnd] === '\r' && input[lineEnd + 1] === '\n') {
+        terminatorLength = 2;
+      } else {
+        terminatorLength = 1;
+      }
+
+      const line = input.slice(0, lineEnd);
+      input = input.slice(lineEnd + terminatorLength);
+      if (line.length === 0) {
+        dispatchEvent(events);
+      } else {
+        eventLines.push(line);
+      }
+    }
+
+    if (flush && input.length > 0) {
+      eventLines.push(input);
+      input = '';
+    }
+    if (flush) {
+      dispatchEvent(events);
+    }
+
+    return events;
+  };
+
+  return {
+    push(chunk: string) {
+      input += chunk;
+      return drain(false);
+    },
+    flush() {
+      return drain(true);
+    },
+  };
 };
 
 const escapeToolContextAttribute = (value: string): string =>
@@ -1078,11 +1482,17 @@ const buildToolContextBlock = (
   return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
 };
 
-const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate'>) => {
+const createStreamAccumulator = (
+  options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>
+) => {
   let visibleContent = '';
   const toolTraces = new Map<string, ToolTrace>();
   const toolTraceOrder: string[] = [];
   const hiddenContextBlocks: string[] = [];
+  const liveOnlyHiddenContextBlocks: string[] = [];
+  let providerInputItems: unknown[] | undefined;
+  let providerTurnState: ProviderTurnState | undefined;
+  let liveContextVersion = 0;
 
   const snapshotToolTraces = (): ToolTrace[] =>
     // Preserve first-seen insertion order; the UI treats the serialized tool_traces
@@ -1092,16 +1502,67 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
       .filter((trace): trace is ToolTrace => Boolean(trace))
       .map((trace) => ({ ...trace }));
 
+  const buildHiddenContext = (includeLiveOnly: boolean): string | undefined => {
+    const blocks = includeLiveOnly
+      ? [...hiddenContextBlocks, ...liveOnlyHiddenContextBlocks]
+      : hiddenContextBlocks;
+    const hiddenContext = blocks.join('\n\n').trim();
+    return hiddenContext || undefined;
+  };
+
+  const snapshotLiveContext = (): LiveStreamContextSnapshot => ({
+    version: liveContextVersion,
+    visibleContent,
+    visibleContentLength: visibleContent.length,
+    toolTraces: snapshotToolTraces(),
+    hiddenContext: buildHiddenContext(true),
+    providerInputItems: cloneProviderInputItems(providerInputItems),
+    providerTurnState,
+  });
+
+  const publishLiveContext = () => {
+    if (!options.onLiveContextUpdate) return;
+    liveContextVersion += 1;
+    options.onLiveContextUpdate(snapshotLiveContext());
+  };
+
   const publishToolTraces = () => {
     options.onToolTracesUpdate?.(snapshotToolTraces());
+    publishLiveContext();
+  };
+
+  const isProtectedToolTraceStatus = (status: ToolTrace['status']): boolean =>
+    status === 'pending_approval' || status === 'denied';
+
+  const mergeToolTraceStatus = (
+    existingTrace: ToolTrace | undefined,
+    incomingStatus: ToolTrace['status']
+  ): ToolTrace['status'] => {
+    if (!existingTrace) return incomingStatus;
+    if (isProtectedToolTraceStatus(existingTrace.status)) return existingTrace.status;
+    if (existingTrace.status === 'done' && incomingStatus === 'running') return 'done';
+    return incomingStatus;
   };
 
   const upsertToolTrace = (trace: ToolTrace) => {
     const existingTrace = toolTraces.get(trace.tool_call_id);
+    const status = mergeToolTraceStatus(existingTrace, trace.status);
+    const completedAtMs =
+      status === 'done'
+        ? trace.completed_at_ms ?? existingTrace?.completed_at_ms ?? Date.now()
+        : trace.completed_at_ms ?? existingTrace?.completed_at_ms;
     const nextTrace: ToolTrace = {
-      ...trace,
+      tool_call_id: trace.tool_call_id,
+      tool_name: trace.tool_name || existingTrace?.tool_name || trace.tool_call_id,
+      detail: trace.detail ?? existingTrace?.detail,
+      status,
       visible_offset:
         existingTrace?.visible_offset ?? trace.visible_offset ?? visibleContent.length,
+      execution_mode: trace.execution_mode ?? existingTrace?.execution_mode,
+      batch_id: trace.batch_id ?? existingTrace?.batch_id,
+      order: trace.order ?? existingTrace?.order,
+      started_at_ms: existingTrace?.started_at_ms ?? trace.started_at_ms,
+      completed_at_ms: completedAtMs,
     };
     if (!toolTraces.has(trace.tool_call_id)) {
       toolTraceOrder.push(trace.tool_call_id);
@@ -1115,7 +1576,11 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     for (const toolCallId of toolTraceOrder) {
       const trace = toolTraces.get(toolCallId);
       if (!trace || trace.status !== 'running') continue;
-      toolTraces.set(toolCallId, { ...trace, status: 'done' });
+      toolTraces.set(toolCallId, {
+        ...trace,
+        status: 'done',
+        completed_at_ms: trace.completed_at_ms ?? Date.now(),
+      });
       changed = true;
     }
     if (changed) {
@@ -1130,11 +1595,12 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     }
     visibleContent += chunk;
     options.onToken(chunk);
+    publishLiveContext();
   };
 
   return {
     appendProviderDelta(chunk: string) {
-      appendVisibleChunk(chunk, true);
+      appendVisibleChunk(chunk, false);
     },
     flushProviderDelta() {
       // Provider deltas are appended directly.
@@ -1144,38 +1610,95 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
     },
     markRunningToolTracesDone,
     upsertToolTrace,
+    upsertToolTraceFromProvider(trace: ToolTrace) {
+      upsertToolTrace(trace);
+    },
+    beginToolTrace(
+      toolCallId: string,
+      toolName: string,
+      detail?: string,
+      metadata?: Pick<ToolTrace, 'execution_mode' | 'batch_id' | 'order'>
+    ) {
+      const existingTrace = toolTraces.get(toolCallId);
+      upsertToolTrace({
+        tool_call_id: toolCallId,
+        tool_name: toolName,
+        detail: detail ?? existingTrace?.detail,
+        status: 'running',
+        visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
+        execution_mode: metadata?.execution_mode ?? existingTrace?.execution_mode,
+        batch_id: metadata?.batch_id ?? existingTrace?.batch_id,
+        order: metadata?.order ?? existingTrace?.order,
+        started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
+      });
+    },
+    completeToolTrace(toolCallId: string) {
+      const existingTrace = toolTraces.get(toolCallId);
+      if (!existingTrace || isProtectedToolTraceStatus(existingTrace.status)) return;
+      upsertToolTrace({
+        ...existingTrace,
+        status: 'done',
+        completed_at_ms: Date.now(),
+      });
+    },
     upsertRunningToolTrace(toolCallId: string, toolName: string, detail?: string) {
       const existingTrace = toolTraces.get(toolCallId);
       upsertToolTrace({
         tool_call_id: toolCallId,
         tool_name: toolName,
-        detail,
+        detail: detail ?? existingTrace?.detail,
         status: 'running',
         visible_offset: existingTrace?.visible_offset ?? visibleContent.length,
+        execution_mode: existingTrace?.execution_mode,
+        batch_id: existingTrace?.batch_id,
+        order: existingTrace?.order,
+        started_at_ms: existingTrace?.started_at_ms ?? Date.now(),
       });
     },
     addHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
       const block = buildToolContextBlock(toolCallId, toolName, detail, result);
       if (block) {
         hiddenContextBlocks.push(block);
+        publishLiveContext();
+      }
+    },
+    addLiveOnlyHiddenToolContext(toolCallId: string, toolName: string, detail: string | undefined, result: string) {
+      const block = buildToolContextBlock(toolCallId, toolName, detail, result);
+      if (block) {
+        liveOnlyHiddenContextBlocks.push(block);
+        publishLiveContext();
       }
     },
     addHiddenContextBlock(block: string | undefined) {
       const normalized = block?.trim();
       if (normalized) {
         hiddenContextBlocks.push(normalized);
+        publishLiveContext();
       }
+    },
+    setProviderContext(context: {
+      providerInputItems?: unknown[] | null;
+      providerTurnState?: ProviderTurnState;
+    }) {
+      providerInputItems = cloneProviderInputItems(context.providerInputItems);
+      providerTurnState = context.providerTurnState;
+      publishLiveContext();
     },
     replaceVisibleContent(content: string) {
       visibleContent = content;
+      publishLiveContext();
+    },
+    publishLiveContext,
+    snapshotLiveContext,
+    getFinalHiddenContext() {
+      return buildHiddenContext(false);
     },
     buildResult(): StreamCompletionResult {
       markRunningToolTracesDone();
-      const hiddenContext = hiddenContextBlocks.join('\n\n').trim();
       return {
         visibleContent,
         toolTraces: snapshotToolTraces(),
-        hiddenContext: hiddenContext || undefined,
+        hiddenContext: buildHiddenContext(false),
       };
     },
   };
@@ -1185,6 +1708,7 @@ const createStreamAccumulator = (options: Pick<StreamingChatOptions, 'onToken' |
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
 const QUESTION_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('question'));
+const MAX_SKILL_TOOL_ENUM_IDS = 120;
 const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('mark_source_passage')
 );
@@ -1237,12 +1761,49 @@ export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('plan_set_active')
 );
 const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
+const GET_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_get'));
+const UPDATE_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_update'));
+const LIST_TASK_ARTIFACTS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_list'));
+const GET_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_get'));
+const PUT_TASK_ARTIFACT_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_artifact_put'));
 const UPDATE_STRATEGY_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_update')
 );
 const DELETE_STRATEGY_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('strategy_delete')
 );
+
+const cloneJsonSchema = (schema: JsonSchema): JsonSchema =>
+  JSON.parse(JSON.stringify(schema)) as JsonSchema;
+
+const buildSkillToolShape = (
+  toolId: 'skill_activate' | 'skill_read_resource' | 'skill_run_script',
+  skillIds: string[],
+): unknown => {
+  const entry = requireMacroToolRegistryEntry(toolId);
+  const parameters = cloneJsonSchema(entry.parameters);
+  if (
+    skillIds.length > 0 &&
+    skillIds.length <= MAX_SKILL_TOOL_ENUM_IDS &&
+    parameters.type === 'object'
+  ) {
+    const skillIdSchema = parameters.properties?.skill_id;
+    if (skillIdSchema?.type === 'string') {
+      parameters.properties = {
+        ...parameters.properties,
+        skill_id: {
+          ...skillIdSchema,
+          enum: skillIds,
+        },
+      };
+    }
+  }
+
+  return toFunctionToolShape({
+    ...entry,
+    parameters,
+  } satisfies MacroToolRegistryEntry);
+};
 
 /**
  * Send a streaming chat completion request
@@ -1255,9 +1816,41 @@ const createStreamingRequestId = () => {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const emitStreamTimeline = (
+  options: Pick<
+    StreamingChatOptions,
+    'providerId' | 'providerType' | 'onTimeline'
+  >,
+  event: StreamTimelineEvent
+) => {
+  if (options.onTimeline) {
+    try {
+      options.onTimeline(event);
+    } catch (error) {
+      devLogger.warn('Provider stream timeline callback failed', {
+        error,
+        providerId: options.providerId,
+        providerType: options.providerType,
+        requestId: event.request_id,
+        phase: event.phase,
+      });
+    }
+    return;
+  }
+
+  devLogger.info('Provider stream timeline', {
+    providerId: options.providerId,
+    providerType: options.providerType,
+    requestId: event.request_id,
+    phase: event.phase,
+    elapsedMs: event.elapsed_ms,
+  });
+};
+
 interface StreamingTurnResult {
   content: string;
   toolCalls: ToolCall[];
+  completionReason?: StreamCompletionReason;
   providerInputItems?: unknown[];
   providerTurnState?: ProviderTurnState;
   reasoningSummary?: string;
@@ -1653,8 +2246,19 @@ const collectAllowedTools = (params: {
   enableWebSearch: boolean;
   enableWebFetch: boolean;
   webSearchOptions?: WebSearchOptions;
+  mcpTools?: MCPTool[];
+  skillToolIds?: string[];
+  runnableSkillToolIds?: string[];
 }): unknown[] => {
-  const { allowedTools, enableWebSearch, enableWebFetch, webSearchOptions } = params;
+  const {
+    allowedTools,
+    enableWebSearch,
+    enableWebFetch,
+    webSearchOptions,
+    mcpTools,
+    skillToolIds = [],
+    runnableSkillToolIds = [],
+  } = params;
   const tools: unknown[] = [];
 
   if (allowedTools.has('list')) tools.push(LIST_TOOL);
@@ -1665,6 +2269,15 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
   if (allowedTools.has('question')) tools.push(QUESTION_TOOL);
+  if (allowedTools.has('skill_activate') && skillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_activate', skillToolIds));
+  }
+  if (allowedTools.has('skill_read_resource') && skillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_read_resource', skillToolIds));
+  }
+  if (allowedTools.has('skill_run_script') && runnableSkillToolIds.length > 0) {
+    tools.push(buildSkillToolShape('skill_run_script', runnableSkillToolIds));
+  }
   if (allowedTools.has('read_file')) tools.push(READ_FILE_TOOL);
   if (allowedTools.has('mark_source_passage')) tools.push(MARK_SOURCE_PASSAGE_TOOL);
   if (allowedTools.has('read_sources')) tools.push(READ_SOURCES_TOOL);
@@ -1706,8 +2319,18 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('plan_restore')) tools.push(RESTORE_PLAN_TOOL);
   if (allowedTools.has('plan_set_active')) tools.push(SET_ACTIVE_PLAN_TOOL);
   if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
+  if (allowedTools.has('task_todo_get')) tools.push(GET_TASK_TODOS_TOOL);
+  if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);
+  if (allowedTools.has('task_artifact_list')) tools.push(LIST_TASK_ARTIFACTS_TOOL);
+  if (allowedTools.has('task_artifact_get')) tools.push(GET_TASK_ARTIFACT_TOOL);
+  if (allowedTools.has('task_artifact_put')) tools.push(PUT_TASK_ARTIFACT_TOOL);
   if (allowedTools.has('strategy_update')) tools.push(UPDATE_STRATEGY_TOOL);
   if (allowedTools.has('strategy_delete')) tools.push(DELETE_STRATEGY_TOOL);
+  (mcpTools ?? []).forEach((tool) => {
+    if (allowedTools.has(tool.id)) {
+      tools.push(toMCPFunctionToolShape(tool));
+    }
+  });
 
   return tools;
 };
@@ -1743,7 +2366,7 @@ const chatCompletionMessagesHaveToolHistory = (
 const applyToolsToChatCompletionsRequest = (
   requestBody: Record<string, unknown>,
   tools: unknown[],
-  capabilities: ChatCompletionProviderCapabilities,
+  profile: ChatCompletionProviderProtocolProfile,
   messages: Array<Record<string, unknown>>
 ) => {
   delete requestBody.tools;
@@ -1758,7 +2381,7 @@ const applyToolsToChatCompletionsRequest = (
   }
 
   if (
-    capabilities.injectNoopToolWhenHistoryHasTools &&
+    profile.injectNoopToolWhenHistoryHasTools &&
     chatCompletionMessagesHaveToolHistory(messages)
   ) {
     requestBody.tools = [NOOP_COMPAT_TOOL];
@@ -1779,9 +2402,13 @@ export const __testables = {
   buildToolContextBlock,
   chatCompletionMessagesHaveToolHistory,
   classifyProviderError,
+  collectAllowedTools,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
+  createSseEventParser,
+  estimateCopilotSerializedPayloadTokens,
   extractVisibleTextFromProviderInputItems,
+  extractSseData,
   finalizeDanglingToolCallsForChatCompletions,
   formatToolTraceDetail,
   getActiveStreamingSessionIds,
@@ -1797,9 +2424,12 @@ export const __testables = {
   normalizeChatCompletionMessageSequence,
   normalizeToolCallIdForProvider,
   normalizeToolCallResolution,
-  resolveChatCompletionProviderCapabilities,
+  resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
+  resolveChatCompletionProviderProfile,
+  serializeCopilotConversationPrompt,
   shouldRetryArchitectPostToolResponse,
   shouldRetryMissingRequiredTool,
+  shouldRequestProviderReasoning,
   stripThinkingBlocksForModel,
   summarizeProviderTextPresence,
 };
@@ -1869,9 +2499,17 @@ const streamNativeTurnViaTauri = async (params: {
   focusedProjectId?: string | null;
   signal?: AbortSignal;
   onDelta: (delta: string) => void;
+  onTimeline?: StreamingChatOptions['onTimeline'];
   onToolTrace?: (toolTrace: ToolTrace) => void;
   onToolCall?: StreamingChatOptions['onToolCall'];
   onToolResult?: StreamingChatOptions['onToolResult'];
+  onLiveToolResult?: (toolResult: {
+    toolName: string;
+    args: Record<string, unknown>;
+    toolCallId: string;
+    result: string;
+    hiddenContext?: string;
+  }) => void;
 }): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
@@ -1887,6 +2525,7 @@ const streamNativeTurnViaTauri = async (params: {
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
     let questionToolRequestCount = 0;
+    let nativeToolRequestOrder = 0;
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -1919,6 +2558,16 @@ const streamNativeTurnViaTauri = async (params: {
     void (async () => {
       try {
         const unlisteners = await Promise.all([
+          listen<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
+            if (event.payload.request_id !== requestId) return;
+            params.onTimeline?.({
+              request_id: event.payload.request_id,
+              provider_id: event.payload.provider_id,
+              provider_type: event.payload.provider_type,
+              phase: event.payload.phase,
+              elapsed_ms: event.payload.elapsed_ms,
+            });
+          }),
           listen<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
             if (event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
@@ -1938,6 +2587,20 @@ const streamNativeTurnViaTauri = async (params: {
                 event.payload.args && typeof event.payload.args === 'object'
                   ? event.payload.args
                   : {};
+              const detail = formatToolTraceDetail(toolName, args);
+              const order = nativeToolRequestOrder;
+              nativeToolRequestOrder += 1;
+
+              params.onToolTrace?.({
+                tool_call_id: toolCallId,
+                tool_name: toolName,
+                detail,
+                status: 'running',
+                execution_mode: 'parallel',
+                batch_id: requestId,
+                order,
+                started_at_ms: Date.now(),
+              });
 
               try {
                 let toolResult = '';
@@ -1977,17 +2640,39 @@ const streamNativeTurnViaTauri = async (params: {
                   visibleContent,
                   interrupt,
                 });
+                params.onLiveToolResult?.({
+                  toolName,
+                  args,
+                  toolCallId,
+                  result: toolResult,
+                  hiddenContext,
+                });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
-                const toolResult = `Error executing tool ${toolName}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`;
+                const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
                   toolCallId,
                   result: toolResult,
                 }).catch(() => undefined);
+                params.onLiveToolResult?.({
+                  toolName,
+                  args,
+                  toolCallId,
+                  result: toolResult,
+                });
                 params.onToolResult?.(toolName, toolResult);
+              } finally {
+                params.onToolTrace?.({
+                  tool_call_id: toolCallId,
+                  tool_name: toolName,
+                  detail,
+                  status: 'done',
+                  execution_mode: 'parallel',
+                  batch_id: requestId,
+                  order,
+                  completed_at_ms: Date.now(),
+                });
               }
             })();
           }),
@@ -2017,6 +2702,7 @@ const streamNativeTurnViaTauri = async (params: {
                 reasoningSummary: event.payload.reasoning_summary ?? undefined,
                 toolTraces: event.payload.tool_traces ?? undefined,
                 hiddenContext: event.payload.hidden_context ?? undefined,
+                completionReason: event.payload.completion_reason ?? undefined,
               })
             );
           }),
@@ -2025,11 +2711,25 @@ const streamNativeTurnViaTauri = async (params: {
             if (params.signal) {
               params.signal.removeEventListener('abort', signalHandler);
             }
-            finish(() => reject(new Error(event.payload.message)));
+            finish(() => reject(classifyProviderError(event.payload.message)));
           }),
         ]);
 
         resources.tauriUnlisteners = unlisteners;
+        if (settled || params.signal?.aborted) {
+          unlisteners.forEach((unlisten) => {
+            try {
+              unlisten();
+            } catch {
+              // Ignore listener cleanup errors during an abort race.
+            }
+          });
+          resources.tauriUnlisteners = [];
+          if (!settled) {
+            signalHandler();
+          }
+          return;
+        }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
 
         await tauriIpc.aiStreamChat({
@@ -2116,15 +2816,18 @@ const streamChatViaNativeToolCallingProvider = async (
     enableWebSearch,
     enableWebFetch,
     webSearchOptions,
+    mcpTools: options.mcpTools,
+    skillToolIds: options.skillToolIds,
+    runnableSkillToolIds: options.runnableSkillToolIds,
   });
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
+    onLiveContextUpdate: options.onLiveContextUpdate,
   });
   let currentMessages: StreamMessage[] = [...messages];
   const assistantTranscriptItems: unknown[] = [];
   let latestProviderTurnState: ProviderTurnState | undefined;
-  const readEvidenceBySource = new Map<string, string>();
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
   let guidedRetryCount = 0;
@@ -2139,29 +2842,6 @@ const streamChatViaNativeToolCallingProvider = async (
       providerTurnState: latestProviderTurnState,
       ...(completionReason ? { completionReason } : {}),
     });
-  };
-
-  const normalizeSourceKey = (value?: string): string =>
-    (value || '')
-      .trim()
-      .replace(/\\/g, '/')
-      .replace(/^\.\//, '')
-      .toLowerCase();
-
-  const rememberReadEvidence = (source: string, content: string) => {
-    const key = normalizeSourceKey(source);
-    if (!key || !content.trim()) return;
-    readEvidenceBySource.set(key, content);
-  };
-
-  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
-    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
-    if (!fileHeaderMatch) return;
-
-    const filePath = fileHeaderMatch[1].trim();
-    const separatorIndex = result.indexOf('\n\n');
-    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
-    rememberReadEvidence(filePath, content);
   };
 
   try {
@@ -2190,6 +2870,7 @@ const streamChatViaNativeToolCallingProvider = async (
         focusedProjectId: options.focusedProjectId,
         copilotSendTimeoutMs: options.copilotSendTimeoutMs,
         signal: options.signal,
+        onTimeline: (event) => emitStreamTimeline(options, event),
         onDelta: (delta) => {
           streamedTurnContent += delta;
           if (!shouldBufferTurnOutput) {
@@ -2197,13 +2878,18 @@ const streamChatViaNativeToolCallingProvider = async (
           }
         },
         onToolTrace: (toolTrace) => {
-          streamAccumulator.upsertToolTrace(toolTrace);
+          streamAccumulator.upsertToolTraceFromProvider(toolTrace);
         },
         onToolCall,
         onToolResult,
+        onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+          const detail = formatToolTraceDetail(toolName, args);
+          streamAccumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
+          streamAccumulator.addHiddenContextBlock(hiddenContext);
+        },
       });
       turnResult.toolTraces?.forEach((toolTrace) => {
-        streamAccumulator.upsertToolTrace(toolTrace);
+        streamAccumulator.upsertToolTraceFromProvider(toolTrace);
       });
       if (turnResult.hiddenContext) {
         streamAccumulator.addHiddenContextBlock(turnResult.hiddenContext);
@@ -2250,6 +2936,10 @@ const streamChatViaNativeToolCallingProvider = async (
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems.length > 0) {
           assistantTranscriptItems.push(...turnProviderInputItems);
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+            providerTurnState: latestProviderTurnState,
+          });
         }
         currentMessages.push({
           role: 'assistant',
@@ -2309,7 +2999,8 @@ const streamChatViaNativeToolCallingProvider = async (
         ) {
           throw new Error('Reponse ChatGPT vide apres execution des outils.');
         }
-        break;
+        completeNativeStream(turnResult.completionReason ?? 'completed');
+        return;
       }
 
       const toolResults: ToolResult[] = [];
@@ -2318,12 +3009,18 @@ const streamChatViaNativeToolCallingProvider = async (
         (toolCall) => toolCall.function.name === 'question'
       ).length;
 
-      for (const toolCall of validToolCalls) {
+      const toolBatchId = `native-turn-${turnCount}`;
+      for (const [toolIndex, toolCall] of validToolCalls.entries()) {
         const toolName = toolCall.function.name;
         architectToolNamesUsed.add(toolName);
         let toolResult = '';
         let customToolResult: string | undefined;
         let detail: string | undefined;
+        streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+          execution_mode: 'sequential',
+          batch_id: toolBatchId,
+          order: toolIndex,
+        });
 
         if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
           toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
@@ -2334,13 +3031,18 @@ const streamChatViaNativeToolCallingProvider = async (
             tool_name: toolName,
           });
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+          streamAccumulator.completeToolTrace(toolCall.id);
           continue;
         }
 
         try {
           const args = JSON.parse(toolCall.function.arguments);
           detail = formatToolTraceDetail(toolName, args);
-          streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
+          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+            execution_mode: 'sequential',
+            batch_id: toolBatchId,
+            order: toolIndex,
+          });
 
           if (!allowedTools.has(toolName)) {
             toolResult = `Tool ${toolName} is disabled for the current mode.`;
@@ -2372,10 +3074,6 @@ const streamChatViaNativeToolCallingProvider = async (
           } else if (customResult?.kind === 'result') {
             customToolResult = customResult.result;
           }
-          if (customToolResult && toolName === 'read_file') {
-            rememberReadEvidenceFromWorkspaceResult(customToolResult);
-          }
-
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
           }
@@ -2449,7 +3147,6 @@ const streamChatViaNativeToolCallingProvider = async (
                   toolResult = `Error executing tool read_file: ${workspaceResult}`;
                 } else {
                   toolResult = workspaceResult;
-                  rememberReadEvidenceFromWorkspaceResult(workspaceResult);
                 }
               } else {
                 toolResult = 'Error executing tool read_file: workspace read returned no content.';
@@ -2496,9 +3193,6 @@ const streamChatViaNativeToolCallingProvider = async (
                       : '';
 
                   toolResult = `${base}${extractNotice}`;
-                  if (label) {
-                    rememberReadEvidence(label, content);
-                  }
                 }
               }
             }
@@ -2507,28 +3201,7 @@ const streamChatViaNativeToolCallingProvider = async (
           if (customToolResult && toolName === 'mark_source_passage') {
             toolResult = customToolResult;
           } else if (toolName === 'mark_source_passage') {
-            const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-            const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-            const source = typeof args.source === 'string' ? args.source : '';
-            const title = typeof args.title === 'string' ? args.title : '';
-            const passage = typeof args.passage === 'string' ? args.passage : '';
-            const normalizedPassage = passage.trim();
-
-            const sourceKey = normalizeSourceKey(source || title);
-            const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
-            const anyEvidence = Array.from(readEvidenceBySource.values());
-            const hasMatchingEvidence = normalizedPassage
-              ? (
-                (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
-                anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
-              )
-              : false;
-
-            if (!hasMatchingEvidence) {
-              toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
-            } else {
-              toolResult = `Source passage marked successfully (kind=${kind}).`;
-            }
+            toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
           } else if (toolName === 'read_sources') {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
@@ -2542,9 +3215,11 @@ const streamChatViaNativeToolCallingProvider = async (
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } catch (error) {
-          toolResult = `Error executing tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+          toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+        } finally {
+          streamAccumulator.completeToolTrace(toolCall.id);
         }
 
         toolResults.push({
@@ -2588,6 +3263,10 @@ const streamChatViaNativeToolCallingProvider = async (
           assistantTranscriptItems.push(
             cloneProviderInputItems([providerInputItem])?.[0] ?? providerInputItem
           );
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+            providerTurnState: latestProviderTurnState,
+          });
           return {
             role: 'tool' as const,
             content: result.content,
@@ -2605,6 +3284,12 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResultCount: toolResults.length,
           });
         }
+        currentMessages = await maybeCompactFollowUpMessages(options, {
+          reason: 'tool_results',
+          messages: currentMessages,
+          turnCount,
+          toolResultCount: toolResults.length,
+        });
       }
 
       turnCount++;
@@ -2658,8 +3343,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     return streamChatViaCopilotProvider(options);
   }
 
+  const protocolProfile = resolveChatCompletionProviderProfile({
+    providerType: options.providerType,
+    providerId: options.providerId,
+    baseUrl: options.baseUrl,
+    modelId: options.modelId,
+  });
+
   if (
     shouldUseNativeStreamingProvider(options.providerType) &&
+    !protocolProfile.requiresGenericStreaming &&
     tauriIpc.isTauriAvailable() &&
     (!options.apiKey?.trim() ||
       options.providerType === 'ollama' ||
@@ -2671,8 +3364,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
       }
-      // Generic native streaming reads keys from the desktop keyring. If the
-      // current provider relies on an in-memory key, keep the legacy TS path.
+      // Generic native streaming reads keys from Macro's local secret store. If
+      // the current provider relies on an in-memory key, keep the legacy TS path.
     }
   }
 
@@ -2699,11 +3392,22 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   } = options;
   const sessionId = getStreamSessionId(options.sessionId);
   const activeResources = getOrCreateActiveStreamResources(sessionId);
+  const genericRequestId = createStreamingRequestId();
+  const genericTimelineStartedAt = Date.now();
+  const emitGenericTimeline = (phase: StreamTimelinePhase | string) =>
+    emitStreamTimeline(options, {
+      request_id: genericRequestId,
+      provider_id: providerId,
+      provider_type: providerType,
+      phase,
+      elapsed_ms: Date.now() - genericTimelineStartedAt,
+    });
 
   const allowedTools = new Set(allowedToolIds ?? []);
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
+    onLiveContextUpdate: options.onLiveContextUpdate,
   });
 
   const headers: Record<string, string> = {
@@ -2732,33 +3436,42 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let currentMessages: StreamMessage[] = [...messages];
   const assistantTranscriptItems: unknown[] = [];
   let forceReasoningContentReplay = false;
-  const getChatCompletionCapabilities = () =>
-    resolveChatCompletionProviderCapabilities({
+  const getChatCompletionProfile = () =>
+    resolveChatCompletionProviderProfile({
       providerType,
       providerId,
       baseUrl,
       modelId,
       forceReasoningContentReplay,
     });
+  const initialProfile = getChatCompletionProfile();
 
   // Build request body with optional tools
   const requestBody: Record<string, unknown> = {
     model: modelId,
-    messages: buildChatCompletionMessages(currentMessages, getChatCompletionCapabilities()),
+    messages: buildChatCompletionMessages(currentMessages, initialProfile),
     stream: true,
   };
   let currentReasoningEffort = reasoningEffort;
+  let providerReasoningEnabled = true;
   let didRetryWithoutReasoning = false;
-  applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
+  applyReasoningToChatCompletionsRequest(
+    requestBody,
+    initialProfile,
+    currentReasoningEffort,
+    { enabled: providerReasoningEnabled }
+  );
 
   const tools = collectAllowedTools({
     allowedTools,
     enableWebSearch,
     enableWebFetch,
     webSearchOptions,
+    mcpTools: options.mcpTools,
+    skillToolIds: options.skillToolIds,
+    runnableSkillToolIds: options.runnableSkillToolIds,
   });
 
-  const readEvidenceBySource = new Map<string, string>();
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
   let guidedRetryCount = 0;
@@ -2766,6 +3479,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
   const architectToolNamesUsed = new Set<string>();
   let consecutiveStreamRetryCount = 0;
+  let emittedFirstProviderEvent = false;
+  let emittedFirstToken = false;
 
   const completeGenericStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -2775,32 +3490,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     });
   };
 
-  const normalizeSourceKey = (value?: string): string =>
-    (value || '')
-      .trim()
-      .replace(/\\/g, '/')
-      .replace(/^\.\//, '')
-      .toLowerCase();
-
-  const rememberReadEvidence = (source: string, content: string) => {
-    const key = normalizeSourceKey(source);
-    if (!key || !content.trim()) return;
-    readEvidenceBySource.set(key, content);
-  };
-
-  const rememberReadEvidenceFromWorkspaceResult = (result: string) => {
-    const fileHeaderMatch = result.match(/^FILE:\s*(.+)$/m);
-    if (!fileHeaderMatch) return;
-
-    const filePath = fileHeaderMatch[1].trim();
-    const separatorIndex = result.indexOf('\n\n');
-    const content = separatorIndex >= 0 ? result.slice(separatorIndex + 2) : '';
-    rememberReadEvidence(filePath, content);
-  };
-
   try {
     while (maxTurns === null || turnCount < maxTurns) {
       if (options.signal?.aborted) {
+        emitGenericTimeline('done');
         completeGenericStream();
         return;
       }
@@ -2808,13 +3501,19 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let response: Response | null = null;
       let requestAttempt = 0;
       while (!response) {
-        const capabilities = getChatCompletionCapabilities();
-        const requestMessages = buildChatCompletionMessages(currentMessages, capabilities);
+        const profile = getChatCompletionProfile();
+        const requestMessages = buildChatCompletionMessages(currentMessages, profile);
         requestBody.messages = requestMessages;
-        applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-        applyToolsToChatCompletionsRequest(requestBody, tools, capabilities, requestMessages);
+        applyReasoningToChatCompletionsRequest(
+          requestBody,
+          profile,
+          currentReasoningEffort,
+          { enabled: providerReasoningEnabled }
+        );
+        applyToolsToChatCompletionsRequest(requestBody, tools, profile, requestMessages);
 
         try {
+          emitGenericTimeline('provider_request_sent');
           const candidateResponse = await fetchWithTimeout(
             `${baseUrl}/chat/completions`,
             {
@@ -2833,6 +3532,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           response = candidateResponse;
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
+            emitGenericTimeline('done');
             onComplete({
               ...streamAccumulator.buildResult(),
               providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
@@ -2850,11 +3550,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               });
 
           if (
-            currentReasoningEffort &&
+            shouldRequestProviderReasoning(profile, currentReasoningEffort, {
+              enabled: providerReasoningEnabled,
+            }) &&
             !didRetryWithoutReasoning &&
             runtimeError.kind === 'unsupported_reasoning'
           ) {
             didRetryWithoutReasoning = true;
+            providerReasoningEnabled = false;
             currentReasoningEffort = null;
             disableReasoningForSession(providerId, modelId);
             continue;
@@ -2892,13 +3595,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (!response.body) {
         throw new Error('No response body');
       }
+      if (!emittedFirstProviderEvent) {
+        emittedFirstProviderEvent = true;
+        emitGenericTimeline('first_provider_event');
+      }
 
       // Store references for cancellation
       activeResources.stream = response.body;
       const reader = activeResources.stream.getReader();
       activeResources.reader = reader;
       const decoder = new TextDecoder();
-      let buffer = '';
+      const sseParser = createSseEventParser();
       let isThinking = false;
       let toolCalls: ToolCall[] = [];
       let turnContent = ''; // The text generated *in this specific turn*
@@ -2909,6 +3616,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       const appendTurnChunk = (chunk: string) => {
         if (!chunk) return;
         turnContent += chunk;
+        if (!emittedFirstToken) {
+          emittedFirstToken = true;
+          emitGenericTimeline('first_token');
+        }
         if (!shouldBufferTurnOutput) {
           streamAccumulator.appendProviderDelta(chunk);
         }
@@ -2925,6 +3636,61 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         if (isThinking) {
           appendTurnChunk('</think>');
           isThinking = false;
+        }
+      };
+
+      const processSseEvent = (rawEvent: string) => {
+        const data = extractSseData(rawEvent);
+        if (!data || data === '[DONE]') {
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(data);
+          const choice = parsed.choices?.[0] ?? {};
+          const delta = choice.delta ?? {};
+          const message = choice.message ?? {};
+          const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+          appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
+          appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
+
+          if (typeof reasoning === 'string' && reasoning.length > 0) {
+            turnReasoningContent += reasoning;
+            startThinking();
+            appendTurnChunk(reasoning);
+          }
+
+          // Handle tool calls
+          if (delta?.tool_calls) {
+            for (const toolCallDelta of delta.tool_calls) {
+              const index = toolCallDelta.index ?? 0;
+              if (!toolCalls[index]) {
+                toolCalls[index] = {
+                  id: toolCallDelta.id || '',
+                  type: 'function',
+                  function: { name: '', arguments: '' },
+                };
+              }
+              if (toolCallDelta.id) {
+                toolCalls[index].id = toolCallDelta.id;
+              }
+              if (toolCallDelta.function?.name) {
+                toolCalls[index].function.name = toolCallDelta.function.name;
+              }
+              if (toolCallDelta.function?.arguments) {
+                toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+              }
+            }
+          }
+
+          if (delta?.content) {
+            endThinking();
+            turnApiContent += delta.content;
+            appendTurnChunk(delta.content);
+          }
+        } catch {
+          // Skip malformed JSON - some providers send non-JSON lines.
+          devLogger.debug('Failed to parse SSE data:', data);
         }
       };
 
@@ -2951,77 +3717,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           );
 
           if (done) {
+            for (const event of sseParser.push(decoder.decode())) {
+              processSseEvent(event);
+            }
+            for (const event of sseParser.flush()) {
+              processSseEvent(event);
+            }
             break;
           }
 
-          buffer += decoder.decode(value, { stream: true });
-
-          // Process complete SSE events
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            if (!trimmedLine || trimmedLine === '') {
-              continue;
-            }
-
-            if (trimmedLine.startsWith('data: ')) {
-              const data = trimmedLine.slice(6);
-
-              if (data === '[DONE]') {
-                continue;
-              }
-
-              try {
-                const parsed = JSON.parse(data);
-                const choice = parsed.choices?.[0] ?? {};
-                const delta = choice.delta ?? {};
-                const message = choice.message ?? {};
-                const reasoning = delta?.reasoning ?? delta?.reasoning_content;
-                appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
-                appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
-
-                if (typeof reasoning === 'string' && reasoning.length > 0) {
-                  turnReasoningContent += reasoning;
-                  startThinking();
-                  appendTurnChunk(reasoning);
-                }
-
-                // Handle tool calls
-                if (delta?.tool_calls) {
-                  for (const toolCallDelta of delta.tool_calls) {
-                    const index = toolCallDelta.index ?? 0;
-                    if (!toolCalls[index]) {
-                      toolCalls[index] = {
-                        id: toolCallDelta.id || '',
-                        type: 'function',
-                        function: { name: '', arguments: '' },
-                      };
-                    }
-                    if (toolCallDelta.id) {
-                      toolCalls[index].id = toolCallDelta.id;
-                    }
-                    if (toolCallDelta.function?.name) {
-                      toolCalls[index].function.name = toolCallDelta.function.name;
-                    }
-                    if (toolCallDelta.function?.arguments) {
-                      toolCalls[index].function.arguments += toolCallDelta.function.arguments;
-                    }
-                  }
-                }
-
-                if (delta?.content) {
-                  endThinking();
-                  turnApiContent += delta.content;
-                  appendTurnChunk(delta.content);
-                }
-              } catch (e) {
-                // Skip malformed JSON - some providers send non-JSON lines
-                devLogger.debug('Failed to parse SSE data:', data);
-              }
-            }
+          for (const event of sseParser.push(decoder.decode(value, { stream: true }))) {
+            processSseEvent(event);
           }
         }
         consecutiveStreamRetryCount = 0;
@@ -3039,6 +3745,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             ...streamAccumulator.buildResult(),
             providerInputItems: cloneProviderInputItems(assistantTranscriptItems),
           });
+          emitGenericTimeline('done');
           return;
         }
 
@@ -3105,6 +3812,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (turnContent.trim().length > 0 || validToolCalls.length > 0) {
         if (turnProviderInputItems) {
           assistantTranscriptItems.push(...deepCloneJsonValue(turnProviderInputItems));
+          streamAccumulator.setProviderContext({
+            providerInputItems: assistantTranscriptItems,
+          });
         }
         currentMessages.push({
           role: 'assistant',
@@ -3161,12 +3871,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           (toolCall) => toolCall.function.name === 'question'
         ).length;
 
-        for (const toolCall of validToolCalls) {
+        const toolBatchId = `generic-turn-${turnCount}`;
+        for (const [toolIndex, toolCall] of validToolCalls.entries()) {
           const toolName = toolCall.function.name;
           architectToolNamesUsed.add(toolName);
           let toolResult = '';
           let customToolResult: string | undefined;
           let detail: string | undefined;
+          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+            execution_mode: 'sequential',
+            batch_id: toolBatchId,
+            order: toolIndex,
+          });
 
           if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
             toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
@@ -3176,13 +3892,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               content: toolResult,
             });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+            streamAccumulator.completeToolTrace(toolCall.id);
             continue;
           }
 
           try {
             const args = JSON.parse(toolCall.function.arguments);
             detail = formatToolTraceDetail(toolName, args);
-            streamAccumulator.upsertRunningToolTrace(toolCall.id, toolName, detail);
+            streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
+              execution_mode: 'sequential',
+              batch_id: toolBatchId,
+              order: toolIndex,
+            });
 
             if (!allowedTools.has(toolName)) {
               toolResult = `Tool ${toolName} is disabled for the current mode.`;
@@ -3216,10 +3937,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             } else if (customResult?.kind === 'result') {
               customToolResult = customResult.result;
             }
-            if (customToolResult && toolName === 'read_file') {
-              rememberReadEvidenceFromWorkspaceResult(customToolResult);
-            }
-
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
             }
@@ -3303,7 +4020,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                     toolResult = `Error executing tool read_file: ${workspaceResult}`;
                   } else {
                     toolResult = workspaceResult;
-                    rememberReadEvidenceFromWorkspaceResult(workspaceResult);
                   }
                 } else {
                   toolResult = 'Error executing tool read_file: workspace read returned no content.';
@@ -3351,9 +4067,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                       : '';
 
                   toolResult = `${base}${extractNotice}`;
-                  if (label) {
-                    rememberReadEvidence(label, content);
-                  }
                 }
               }
             }
@@ -3361,28 +4074,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             if (customToolResult && toolName === 'mark_source_passage') {
               toolResult = customToolResult;
             } else if (toolName === 'mark_source_passage') {
-              const rawKind = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-              const kind = rawKind === 'interesting' ? 'interesting' : 'used';
-              const source = typeof args.source === 'string' ? args.source : '';
-              const title = typeof args.title === 'string' ? args.title : '';
-              const passage = typeof args.passage === 'string' ? args.passage : '';
-              const normalizedPassage = passage.trim();
-
-              const sourceKey = normalizeSourceKey(source || title);
-              const sourceEvidence = sourceKey ? readEvidenceBySource.get(sourceKey) : undefined;
-              const anyEvidence = Array.from(readEvidenceBySource.values());
-              const hasMatchingEvidence = normalizedPassage
-                ? (
-                  (sourceEvidence && sourceEvidence.includes(normalizedPassage)) ||
-                  anyEvidence.some((evidence) => evidence.includes(normalizedPassage))
-                )
-                : false;
-
-              if (!hasMatchingEvidence) {
-                toolResult = 'Error executing tool mark_source_passage: passage is not present in previously read file content.';
-              } else {
-                toolResult = `Source passage marked successfully (kind=${kind}).`;
-              }
+              toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
             } else if (toolName === 'read_sources') {
               toolResult = customToolResult || 'No source passages available.';
             } else if (toolName === 'edit_source_passage') {
@@ -3396,9 +4088,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } catch (e) {
-            toolResult = `Error executing tool ${toolName}: ${e instanceof Error ? e.message : String(e)}`;
+            toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(e)}`;
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+          } finally {
+            streamAccumulator.completeToolTrace(toolCall.id);
           }
 
           toolResults.push({
@@ -3414,6 +4108,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         if (interruptResolution) {
           streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);
           onComplete(streamAccumulator.buildResult());
+          emitGenericTimeline('done');
           return;
         }
 
@@ -3459,11 +4154,19 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
           currentMessages.push(
             ...toolResults.map((result) => {
+              const toolName =
+                result.tool_name ??
+                validToolCalls.find((toolCall) => toolCall.id === result.tool_call_id)?.function
+                  .name;
               const providerInputItem = buildToolChatCompletionProviderItem(
                 result.tool_call_id,
-                result.content
+                result.content,
+                toolName
               );
               assistantTranscriptItems.push(deepCloneJsonValue(providerInputItem));
+              streamAccumulator.setProviderContext({
+                providerInputItems: assistantTranscriptItems,
+              });
               return {
                 role: 'tool' as const,
                 content: result.content,
@@ -3495,6 +4198,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           if (guardSystemMessages.length > 0) {
             currentMessages.push(...guardSystemMessages);
           }
+          currentMessages = await maybeCompactFollowUpMessages(options, {
+            reason: 'tool_results',
+            messages: currentMessages,
+            turnCount,
+            toolResultCount: toolResults.length,
+          });
         }
       }
 
@@ -3507,11 +4216,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       if (maxTurns !== null && validToolCalls.length > 0 && turnCount >= maxTurns) {
         streamAccumulator.markRunningToolTracesDone();
         completeGenericStream('tool_turn_limit');
+        emitGenericTimeline('done');
         return;
       }
     }
 
     completeGenericStream();
+    emitGenericTimeline('done');
   } catch (error) {
     // Cleanup on error
     activeResources.reader = null;
@@ -3528,10 +4239,20 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
     if (isLocalProvider && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || err.message.includes('connection'))) {
       const providerName = options.providerType === 'lmstudio' ? 'LM Studio' : 'Ollama';
-      onError(new Error(`Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`));
+      emitGenericTimeline('error');
+      onError(new ProviderRuntimeError(
+        `Cannot connect to ${providerName}. Make sure the server is running and accessible at ${options.baseUrl}`,
+        {
+          kind: 'network',
+          retryable: true,
+          providerMessage: err.message,
+          cause: error,
+        }
+      ));
       return;
     }
 
+    emitGenericTimeline('error');
     onError(err);
   } finally {
     // Always cleanup references to prevent memory leaks
@@ -3614,25 +4335,31 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
   try {
     let currentReasoningEffort = reasoningEffort;
+    let providerReasoningEnabled = true;
     let didRetryWithoutReasoning = false;
     let requestAttempt = 0;
     let response: Response | null = null;
 
     while (!response) {
-      const capabilities = resolveChatCompletionProviderCapabilities({
+      const profile = resolveChatCompletionProviderProfile({
         providerType,
         providerId,
         baseUrl,
         modelId,
       });
-      const requestMessages = buildChatCompletionMessages(messages, capabilities);
+      const requestMessages = buildChatCompletionMessages(messages, profile);
       const requestBody: Record<string, unknown> = {
         model: modelId,
         messages: requestMessages,
         stream: false,
       };
-      applyReasoningToChatCompletionsRequest(requestBody, providerType, currentReasoningEffort);
-      applyToolsToChatCompletionsRequest(requestBody, [], capabilities, requestMessages);
+      applyReasoningToChatCompletionsRequest(
+        requestBody,
+        profile,
+        currentReasoningEffort,
+        { enabled: providerReasoningEnabled }
+      );
+      applyToolsToChatCompletionsRequest(requestBody, [], profile, requestMessages);
 
       const candidateResponse = await fetchWithTimeout(
         `${baseUrl}/chat/completions`,
@@ -3652,11 +4379,14 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
       const runtimeError = await extractProviderErrorMessage(candidateResponse);
       if (
-        currentReasoningEffort &&
+        shouldRequestProviderReasoning(profile, currentReasoningEffort, {
+          enabled: providerReasoningEnabled,
+        }) &&
         !didRetryWithoutReasoning &&
         runtimeError.kind === 'unsupported_reasoning'
       ) {
         didRetryWithoutReasoning = true;
+        providerReasoningEnabled = false;
         currentReasoningEffort = null;
         disableReasoningForSession(providerId, modelId);
         continue;

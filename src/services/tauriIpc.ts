@@ -5,6 +5,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskCatalogDto } from "./contracts/dtos";
+import {
+  getWorkspaceBasePath,
+  remoteRequest,
+  resolveRemoteConfig,
+} from "./providers/remoteHttp";
 import type {
   PredictedGitTree,
   GitCommit,
@@ -19,9 +24,18 @@ import type {
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
   AppMode,
+  ChatCompletionReason,
   Need,
+  MCPServer,
+  MCPTool,
   ProjectMount,
   ProviderTurnState,
+  SkillManifest,
+  SkillLocationOpenRequest,
+  SkillProjectRoot,
+  SkillScriptRunResult,
+  SkillTemplateCreateRequest,
+  SkillTemplateCreateResult,
   ToolTrace,
 } from "../types";
 import { parseToolTracesJson as parseSerializedToolTracesJson } from "./toolTraceState";
@@ -36,6 +50,9 @@ export interface DbConversation {
   task_id: string | null;
   group_id: string | null;
   project_id: string | null;
+  provider_id: string | null;
+  model_id: string | null;
+  reasoning_effort: string | null;
   created_at: string;
   updated_at: string;
   last_message: string | null;
@@ -43,9 +60,15 @@ export interface DbConversation {
   is_pinned: boolean;
 }
 
+export interface DbInitializationStatusDto {
+  status: "initializing" | "ready" | "failed";
+  message: string | null;
+}
+
 export interface DbMessage {
   id: string;
   conversation_id: string;
+  turn_id?: string | null;
   role: string;
   content: string;
   created_at: string;
@@ -54,6 +77,62 @@ export interface DbMessage {
   hidden_context: string | null;
   provider_input_items_json: string | null;
   provider_turn_state_json: string | null;
+  context_refs_json?: string | null;
+  completion_reason?: ChatCompletionReason | null;
+}
+
+export interface DbConversationCitation {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  type: string;
+  scope: string;
+  source: string;
+  title: string;
+  snippet: string | null;
+  content: string | null;
+  url: string | null;
+  favicon: string | null;
+  path: string | null;
+  language: string | null;
+  size_bytes: number | null;
+  kind: string | null;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbUpsertConversationCitationInput {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  type: string;
+  scope: string;
+  source: string;
+  title: string;
+  snippet?: string | null;
+  content?: string | null;
+  url?: string | null;
+  favicon?: string | null;
+  path?: string | null;
+  language?: string | null;
+  size_bytes?: number | null;
+  kind?: string | null;
+  reason?: string | null;
+  timestamp?: string | null;
+}
+
+export interface DbConversationToolboxState {
+  conversation_id: string;
+  composer_context_refs_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbUpsertConversationToolboxStateInput {
+  conversation_id: string;
+  composer_context_refs_json: string;
+  timestamp?: string | null;
 }
 
 export interface DbConversationCompactionState {
@@ -67,15 +146,34 @@ export interface DbConversationCompactionState {
   estimated_tokens_after: number;
   fingerprint: string;
   version: number;
+  pruned_tool_context_message_ids_json?: string | null;
+  reserved_tokens?: number | null;
+  footprint_before_json?: string | null;
+  footprint_after_json?: string | null;
+  degraded_reason?: string | null;
+  compaction_kind?: string | null;
+  compaction_pass?: string | null;
+  summary_format_version?: number | null;
+  summary_source?: string | null;
+  policy_version?: number | null;
+  fingerprint_inputs_json?: string | null;
+  source_hashes_json?: string | null;
+  model_context_window_tokens?: number | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  checkpoint_health?: string | null;
+  last_trigger?: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface DbImportMessageInput {
   id: string;
+  turn_id?: string | null;
   role: string;
   content: string;
   created_at: string;
+  completion_reason?: ChatCompletionReason | null;
 }
 
 export interface DbChatSnapshot {
@@ -190,10 +288,38 @@ export interface GitWorktreeRemoveDto {
   alreadyAbsent: boolean;
 }
 
+export interface GitBranchWorktreeInspectionDto {
+  worktreeKey: string;
+  worktreePath: string;
+  branchName: string | null;
+  status: GitWorktreeInspectionStatus;
+  isDirty: boolean | null;
+}
+
+export interface GitBranchWorktreeEnsureDto {
+  worktreeKey: string;
+  worktreePath: string;
+  branchName: string;
+  status: GitWorktreeEnsureStatus;
+}
+
+export interface GitBranchWorktreeRemoveDto {
+  worktreeKey: string;
+  worktreePath: string;
+  removedPath: boolean;
+  prunedRegistration: boolean;
+  alreadyAbsent: boolean;
+}
+
 export interface GitSyncDto {
   branch: string;
   remote: string;
   output: string;
+}
+
+export interface GitRemoteDto {
+  remote: string;
+  url: string;
 }
 
 export interface GitMergeCheckDto {
@@ -366,6 +492,10 @@ export interface DbAiModel {
   reasoning_efforts: string[] | null;
   default_reasoning_effort: string | null;
   context_window_tokens: number | null;
+  input_limit_tokens: number | null;
+  output_limit_tokens: number | null;
+  context_window_source: string | null;
+  context_limits_updated_at: string | null;
   is_enabled: boolean;
   is_manual: boolean;
   first_seen_at: string;
@@ -440,6 +570,7 @@ export interface DbProjectRegistryRepairReport {
 export interface ProjectRegistryRepairReportDto {
   duplicate_paths_removed: number;
   empty_groups_removed: number;
+  singleton_groups_migrated?: number;
   removed_synthetic_groups: number;
   removed_synthetic_projects: number;
   mount_names_assigned: number;
@@ -454,7 +585,9 @@ export interface ProjectRegistryRepairReportDto {
 }
 
 export interface ProjectRegistryDiagnosticsDto {
+  rawStandaloneProjects?: Project[];
   rawProjectGroups: ProjectGroup[];
+  sanitizedStandaloneProjects?: Project[];
   sanitizedProjectGroups: ProjectGroup[];
   rawGroupCount: number;
   rawProjectCount: number;
@@ -483,6 +616,21 @@ export interface WorkspaceMetadataRecoveryReportDto {
   message?: string | null;
 }
 
+export interface WorkspaceProjectRegistryReconcileSkippedDto {
+  projectId?: string | null;
+  path: string;
+  reason: string;
+}
+
+export interface WorkspaceProjectRegistryReconcileReportDto {
+  status: "unchanged" | "reconciled" | string;
+  discoveredProjects: Project[];
+  addedProjects: Project[];
+  skippedProjects: WorkspaceProjectRegistryReconcileSkippedDto[];
+  duplicatePaths: string[];
+  invalidPaths: string[];
+}
+
 export interface DbProviderModelInput {
   model_id: string;
   name: string;
@@ -494,6 +642,10 @@ export interface DbProviderModelInput {
   reasoning_efforts?: string[] | null;
   default_reasoning_effort?: string | null;
   context_window_tokens?: number | null;
+  input_limit_tokens?: number | null;
+  output_limit_tokens?: number | null;
+  context_window_source?: string | null;
+  context_limits_updated_at?: string | null;
 }
 
 export interface DbUpsertConversationCompactionStateInput {
@@ -507,6 +659,37 @@ export interface DbUpsertConversationCompactionStateInput {
   estimated_tokens_after: number;
   fingerprint: string;
   version: number;
+  pruned_tool_context_message_ids_json?: string | null;
+  reserved_tokens?: number | null;
+  footprint_before_json?: string | null;
+  footprint_after_json?: string | null;
+  degraded_reason?: string | null;
+  compaction_kind?: string | null;
+  compaction_pass?: string | null;
+  summary_format_version?: number | null;
+  summary_source?: string | null;
+  policy_version?: number | null;
+  fingerprint_inputs_json?: string | null;
+  source_hashes_json?: string | null;
+  model_context_window_tokens?: number | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  checkpoint_health?: string | null;
+  last_trigger?: string | null;
+}
+
+export interface DbInsertConversationCompactionEventInput {
+  conversation_id: string;
+  trigger: string;
+  provider_id?: string | null;
+  model_id?: string | null;
+  model_context_window_tokens?: number | null;
+  tokens_before?: number | null;
+  tokens_after?: number | null;
+  status: string;
+  error_code?: string | null;
+  reason?: string | null;
+  metadata_json?: string | null;
 }
 
 export interface AiChatMessageImageUrl {
@@ -567,6 +750,7 @@ export interface AiStreamDoneEvent {
   reasoning_summary?: string | null;
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;
+  completion_reason?: ChatCompletionReason | null;
 }
 
 export const parseProviderInputItemsJson = (
@@ -605,6 +789,14 @@ export const parseToolTracesJson = (raw: string | null): ToolTrace[] | undefined
 export interface AiStreamErrorEvent {
   request_id: string;
   message: string;
+}
+
+export interface AiStreamTimelineEvent {
+  request_id: string;
+  provider_id: string;
+  provider_type: string;
+  phase: string;
+  elapsed_ms: number;
 }
 
 export interface AiAuthStartedEvent {
@@ -662,6 +854,7 @@ export interface CopilotDownloadCompleteEvent {
   provider_id: string;
   runtime_version: string;
   runtime_source: "managed" | "system" | "none";
+  status?: CopilotStatusDto;
 }
 
 export interface CopilotDownloadErrorEvent {
@@ -718,6 +911,26 @@ export interface FsDirEntryDto {
   is_readonly: boolean;
 }
 
+export interface WorkspaceFileSearchRootDto {
+  project_id?: string | null;
+  project_name?: string | null;
+  workspace_path: string;
+  mount_name?: string | null;
+  is_focused: boolean;
+}
+
+export interface WorkspaceFileSearchResultDto {
+  id: string;
+  path: string;
+  relative_path: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  language?: string | null;
+  size_bytes?: number | null;
+  modified?: string | null;
+  is_focused: boolean;
+}
+
 export interface FsFileStatsDto {
   path: string;
   name: string;
@@ -743,6 +956,7 @@ export interface FsWriteResultDto {
 
 export interface WorkspaceBootstrapDto {
   plan: Plan | null;
+  standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
@@ -941,6 +1155,31 @@ export interface ToolModePolicyDto {
   enforce_macro_only_writes: boolean;
 }
 
+export interface MCPDiscoverToolsResponseDto {
+  tools: MCPTool[];
+}
+
+export interface MCPCallToolResponseDto {
+  content: string;
+  isError?: boolean;
+  rawResult?: unknown;
+}
+
+export interface SkillListResponseDto {
+  skills: SkillManifest[];
+}
+
+export interface SkillDetailResponseDto {
+  skill: SkillManifest;
+  body: string;
+}
+
+export interface SkillResourceReadResponseDto {
+  skillId: string;
+  path: string;
+  content: string;
+}
+
 export interface TerminalSessionDto {
   id: string;
   project_id: string;
@@ -953,6 +1192,7 @@ export interface TerminalSessionDto {
   output: string;
   exit_code: number | null;
   timed_out: boolean;
+  output_truncated: boolean;
   updated_at: string;
 }
 
@@ -972,6 +1212,7 @@ export interface TerminalTabDto {
   last_exit_code: number | null;
   has_live_session: boolean;
   is_restored: boolean;
+  output_sequence: number;
   created_at: string;
   updated_at: string;
 }
@@ -986,10 +1227,18 @@ export interface TerminalOutputEvent {
   tab_id: string;
   data: string;
   snapshot: string;
+  sequence: number;
   updated_at: string;
 }
 
 export type WorkspaceScope = "default" | "metadata";
+export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface FrontendLogParams {
+  level: FrontendLogLevel;
+  scope: string;
+  message: string;
+}
 
 const normalizeGitStatus = (
   status: Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">,
@@ -1007,6 +1256,22 @@ const normalizeGitStatus = (
 };
 
 // ============ Conversations ============
+
+export async function frontendLog(params: FrontendLogParams): Promise<void> {
+  return invoke<void>("frontend_log", {
+    level: params.level,
+    scope: params.scope,
+    message: params.message,
+  });
+}
+
+export async function getDatabaseInitializationStatus(): Promise<DbInitializationStatusDto> {
+  return invoke<DbInitializationStatusDto>("db_get_initialization_status");
+}
+
+export async function retryDatabaseInitialization(): Promise<DbInitializationStatusDto> {
+  return invoke<DbInitializationStatusDto>("db_retry_initialize");
+}
 
 export async function listConversations(): Promise<DbConversation[]> {
   return invoke<DbConversation[]>("db_list_conversations");
@@ -1036,6 +1301,9 @@ export async function createConversation(params?: {
   taskId?: string | null;
   groupId?: string | null;
   projectId?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<DbConversation> {
   return invoke<DbConversation>("db_create_conversation", {
     title: params?.title,
@@ -1043,6 +1311,9 @@ export async function createConversation(params?: {
     taskId: params?.taskId ?? null,
     groupId: params?.groupId ?? null,
     projectId: params?.projectId ?? null,
+    providerId: params?.providerId ?? null,
+    modelId: params?.modelId ?? null,
+    reasoningEffort: params?.reasoningEffort ?? null,
   });
 }
 
@@ -1078,6 +1349,20 @@ export async function updateConversationScope(params: {
     taskId: params.taskId ?? null,
     groupId: params.groupId ?? null,
     projectId: params.projectId ?? null,
+  });
+}
+
+export async function updateConversationAISelection(params: {
+  id: string;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: string | null;
+}): Promise<void> {
+  return invoke("db_update_conversation_ai_selection", {
+    id: params.id,
+    providerId: params.providerId ?? null,
+    modelId: params.modelId ?? null,
+    reasoningEffort: params.reasoningEffort ?? null,
   });
 }
 
@@ -1161,21 +1446,89 @@ export async function dbDeleteConversationCompactionState(
   });
 }
 
+export async function dbInsertConversationCompactionEvent(
+  input: DbInsertConversationCompactionEventInput,
+): Promise<void> {
+  return invoke("db_insert_conversation_compaction_event", { input });
+}
+
+export async function listConversationCitations(
+  conversationId: string,
+): Promise<DbConversationCitation[]> {
+  return invoke<DbConversationCitation[]>("db_list_conversation_citations", {
+    conversationId,
+  });
+}
+
+export async function getConversationCitationContent(
+  id: string,
+): Promise<string | null> {
+  return invoke<string | null>("db_get_conversation_citation_content", { id });
+}
+
+export async function upsertConversationCitation(
+  input: DbUpsertConversationCitationInput,
+): Promise<DbConversationCitation> {
+  return invoke<DbConversationCitation>("db_upsert_conversation_citation", {
+    input,
+  });
+}
+
+export async function deleteConversationCitation(id: string): Promise<void> {
+  return invoke("db_delete_conversation_citation", { id });
+}
+
+export async function deleteConversationCitations(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_citations", { conversationId });
+}
+
+export async function getConversationToolboxState(
+  conversationId: string,
+): Promise<DbConversationToolboxState | null> {
+  return invoke<DbConversationToolboxState | null>(
+    "db_get_conversation_toolbox_state",
+    { conversationId },
+  );
+}
+
+export async function upsertConversationToolboxState(
+  input: DbUpsertConversationToolboxStateInput,
+): Promise<DbConversationToolboxState> {
+  return invoke<DbConversationToolboxState>(
+    "db_upsert_conversation_toolbox_state",
+    { input },
+  );
+}
+
+export async function deleteConversationToolboxState(
+  conversationId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_toolbox_state", { conversationId });
+}
+
 export async function createMessage(
   conversationId: string,
   role: string,
   content: string,
   options?: {
+    id?: string;
+    turnId?: string | null;
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
+    contextRefs?: unknown[];
+    completionReason?: ChatCompletionReason;
   },
 ): Promise<DbMessage> {
   return invoke<DbMessage>("db_create_message", {
     params: {
       conversationId,
+      id: options?.id ?? null,
+      turnId: options?.turnId ?? null,
       role,
       content,
       tokenCount: options?.tokenCount ?? null,
@@ -1189,6 +1542,12 @@ export async function createMessage(
       providerTurnStateJson: options?.providerTurnState
         ? JSON.stringify(options.providerTurnState)
         : null,
+      contextRefsJson: options?.contextRefs
+        ? JSON.stringify(options.contextRefs)
+        : null,
+      ...(options?.completionReason
+        ? { completionReason: options.completionReason }
+        : {}),
     },
   });
 }
@@ -1207,16 +1566,20 @@ export async function updateMessage(
   id: string,
   content: string,
   options?: {
+    turnId?: string | null;
     tokenCount?: number;
     toolTraces?: ToolTrace[];
     hiddenContext?: string;
     providerInputItems?: unknown[];
     providerTurnState?: ProviderTurnState;
+    contextRefs?: unknown[];
+    completionReason?: ChatCompletionReason;
   },
 ): Promise<void> {
   return invoke("db_update_message", {
     params: {
       id,
+      turnId: options?.turnId ?? null,
       content,
       tokenCount: options?.tokenCount ?? null,
       toolTracesJson: options?.toolTraces
@@ -1229,6 +1592,12 @@ export async function updateMessage(
       providerTurnStateJson: options?.providerTurnState
         ? JSON.stringify(options.providerTurnState)
         : null,
+      contextRefsJson: options?.contextRefs
+        ? JSON.stringify(options.contextRefs)
+        : null,
+      ...(options?.completionReason
+        ? { completionReason: options.completionReason }
+        : {}),
     },
   });
 }
@@ -1295,6 +1664,22 @@ export async function fsListDir(params: {
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+  });
+}
+
+export async function fsSearchFiles(params: {
+  roots: WorkspaceFileSearchRootDto[];
+  query: string;
+  limit?: number;
+  includeHidden?: boolean;
+  virtualRootEnabled?: boolean;
+}): Promise<WorkspaceFileSearchResultDto[]> {
+  return invoke<WorkspaceFileSearchResultDto[]>("fs_search_files", {
+    roots: params.roots,
+    query: params.query,
+    limit: params.limit ?? null,
+    includeHidden: params.includeHidden ?? null,
+    virtualRootEnabled: params.virtualRootEnabled ?? null,
   });
 }
 
@@ -1899,6 +2284,7 @@ export async function gitWorktreeCreate(params: {
   branchName: string;
   fromRef?: string | null;
   preferredCommitBranch?: string | null;
+  fallbackBranches?: string[] | null;
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
@@ -1906,6 +2292,7 @@ export async function gitWorktreeCreate(params: {
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
     preferredCommitBranch: params.preferredCommitBranch ?? null,
+    fallbackBranches: params.fallbackBranches ?? null,
   });
 }
 
@@ -1923,6 +2310,48 @@ export async function gitWorktreeRemove(params: {
   });
 }
 
+export async function gitBranchWorktreeInspect(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+}): Promise<GitBranchWorktreeInspectionDto> {
+  return invoke<GitBranchWorktreeInspectionDto>("git_branch_worktree_inspect", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+  });
+}
+
+export async function gitBranchWorktreeCreate(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+  fromRef?: string | null;
+  fallbackBranches?: string[] | null;
+}): Promise<GitBranchWorktreeEnsureDto> {
+  return invoke<GitBranchWorktreeEnsureDto>("git_branch_worktree_create", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+    fromRef: params.fromRef ?? null,
+    fallbackBranches: params.fallbackBranches ?? null,
+  });
+}
+
+export async function gitBranchWorktreeRemove(params: {
+  repoPath: string;
+  worktreeKey: string;
+  branchName: string;
+  force?: boolean;
+}): Promise<GitBranchWorktreeRemoveDto> {
+  return invoke<GitBranchWorktreeRemoveDto>("git_branch_worktree_remove", {
+    repoPath: params.repoPath,
+    worktreeKey: params.worktreeKey,
+    branchName: params.branchName,
+    force: params.force ?? null,
+  });
+}
+
 export async function gitPush(params: {
   repoPath: string;
   remote?: string;
@@ -1932,6 +2361,16 @@ export async function gitPush(params: {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
+  });
+}
+
+export async function gitRemoteAddOrigin(params: {
+  repoPath: string;
+  url: string;
+}): Promise<GitRemoteDto> {
+  return invoke<GitRemoteDto>("git_remote_add_origin", {
+    repoPath: params.repoPath,
+    url: params.url,
   });
 }
 
@@ -2027,13 +2466,28 @@ export async function workspaceArchitectListPlans(params: {
   branchName: string;
   includeDeleted?: boolean;
   includeArchived?: boolean;
+  scopedProjectIdsHint?: string[];
 }): Promise<WorkspaceArchitectPlanListDto> {
+  const request = {
+    branchName: params.branchName,
+    includeDeleted: params.includeDeleted ?? false,
+    includeArchived: params.includeArchived ?? false,
+    scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+  };
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanListDto>(
+        `${getWorkspaceBasePath(config)}/architect/plans/list`,
+        {
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanListDto>("workspace_architect_list_plans", {
-    request: {
-      branchName: params.branchName,
-      includeDeleted: params.includeDeleted ?? false,
-      includeArchived: params.includeArchived ?? false,
-    },
+    request,
   });
 }
 
@@ -2043,15 +2497,28 @@ export async function workspaceArchitectActivatePlanHead(params: {
   summaryHint?: WorkspaceArchitectPlanSummaryDto | null;
   scopedProjectIdsHint?: string[];
 }): Promise<WorkspaceArchitectPlanActivationHeadDto | null> {
+  const request = {
+    branchName: params.branchName,
+    planId: params.planId,
+    summaryHint: params.summaryHint ?? null,
+    scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+  };
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanActivationHeadDto | null>(
+        `${getWorkspaceBasePath(config)}/architect/plans/activate-head`,
+        {
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanActivationHeadDto | null>(
     "workspace_architect_activate_plan_head",
     {
-      request: {
-        branchName: params.branchName,
-        planId: params.planId,
-        summaryHint: params.summaryHint ?? null,
-        scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
-      },
+      request,
     },
   );
 }
@@ -2060,6 +2527,18 @@ export async function workspaceArchitectActivatePlanChat(params: {
   branchName: string;
   planId: string;
 }): Promise<WorkspaceArchitectPlanTranscriptDto | null> {
+  if (!isTauriAvailable() && isRemoteBackendAvailable()) {
+    const config = resolveRemoteConfig();
+    if (config) {
+      return remoteRequest<WorkspaceArchitectPlanTranscriptDto | null>(
+        `${getWorkspaceBasePath(config)}/architect/plans/activate-chat`,
+        {
+          method: "POST",
+          body: JSON.stringify(params),
+        },
+      );
+    }
+  }
   return invoke<WorkspaceArchitectPlanTranscriptDto | null>(
     "workspace_architect_activate_plan_chat",
     {
@@ -2078,13 +2557,21 @@ export async function workspaceArchitectInvalidate(params?: {
 
 export async function workspacePreviewProjectGitSetup(params: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> {
   return invoke<ProjectGitFlowDetection>(
     "workspace_preview_project_git_setup",
     {
       path: params.path ?? null,
+      requestId: params.requestId ?? null,
     },
   );
+}
+
+export async function workspaceCancelProjectOperation(
+  requestId: string,
+): Promise<boolean> {
+  return invoke<boolean>("workspace_cancel_project_operation", { requestId });
 }
 
 export async function workspaceCreateProjectWithGitSetup(params: {
@@ -2098,6 +2585,7 @@ export async function workspaceCreateProjectWithGitSetup(params: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection["setupState"];
   expectedRecommendedActionSequence: ProjectGitSetupAction[];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> {
   return invoke<ProjectGitSetupCommitResult>(
     "workspace_create_project_with_git_setup",
@@ -2113,6 +2601,7 @@ export async function workspaceCreateProjectWithGitSetup(params: {
       expectedSetupState: params.expectedSetupState,
       expectedRecommendedActionSequence:
         params.expectedRecommendedActionSequence,
+      requestId: params.requestId ?? null,
     },
   );
 }
@@ -2152,6 +2641,7 @@ export async function workspaceCreateProject(params: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  requestId?: string | null;
 }): Promise<Project> {
   return invoke<Project>("workspace_create_project", {
     name: params.name,
@@ -2160,6 +2650,27 @@ export async function workspaceCreateProject(params: {
     groupName: params.groupName ?? null,
     path: params.path ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    requestId: params.requestId ?? null,
+  });
+}
+
+export async function workspaceCreateNewProjectRepo(params: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId?: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: ProjectGitFlowSettings | null;
+  requestId?: string | null;
+}): Promise<ProjectGitSetupCommitResult> {
+  return invoke<ProjectGitSetupCommitResult>("workspace_create_new_project_repo", {
+    repoName: params.repoName,
+    parentPath: params.parentPath,
+    folderName: params.folderName,
+    groupId: params.groupId ?? null,
+    groupName: params.groupName ?? null,
+    gitFlowSettings: params.gitFlowSettings ?? null,
+    requestId: params.requestId ?? null,
   });
 }
 
@@ -2190,6 +2701,26 @@ export async function workspaceRenameProjectGroup(params: {
   return invoke<ProjectGroup>("workspace_rename_project_group", {
     groupId: params.groupId,
     name: params.name,
+  });
+}
+
+export async function workspaceCreateProjectGroup(params: {
+  name: string;
+  projectIds: string[];
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>("workspace_create_project_group", {
+    name: params.name,
+    projectIds: params.projectIds,
+  });
+}
+
+export async function workspaceMoveProjectToGroup(params: {
+  projectId: string;
+  groupId?: string | null;
+}): Promise<ProjectGroup[]> {
+  return invoke<ProjectGroup[]>("workspace_move_project_to_group", {
+    projectId: params.projectId,
+    groupId: params.groupId ?? null,
   });
 }
 
@@ -2313,6 +2844,32 @@ export async function workspaceRecoverMissingMetadata(params: {
     {
       request: {
         attemptPull: params.attemptPull,
+        projects: params.projects,
+      },
+    },
+  );
+}
+
+export async function workspaceDiscoverRecoverableProjects(params: {
+  maxChildrenPerRoot?: number;
+} = {}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
+  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
+    "workspace_discover_recoverable_projects",
+    {
+      request: {
+        maxChildrenPerRoot: params.maxChildrenPerRoot ?? null,
+      },
+    },
+  );
+}
+
+export async function workspaceReconcileProjectRegistryFromHints(params: {
+  projects: WorkspaceMetadataRecoveryHintDto[];
+}): Promise<WorkspaceProjectRegistryReconcileReportDto> {
+  return invoke<WorkspaceProjectRegistryReconcileReportDto>(
+    "workspace_reconcile_project_registry_from_hints",
+    {
+      request: {
         projects: params.projects,
       },
     },
@@ -2574,7 +3131,7 @@ export async function dbSetAppSetting(params: {
 }): Promise<DbAppSetting> {
   return invoke<DbAppSetting>("db_set_app_setting", {
     key: params.key,
-    value_json: params.valueJson,
+    valueJson: params.valueJson,
   });
 }
 
@@ -2582,7 +3139,7 @@ export async function dbGetProjectContextState(
   projectId: string,
 ): Promise<DbProjectContextState | null> {
   return invoke<DbProjectContextState | null>("db_get_project_context_state", {
-    project_id: projectId,
+    projectId,
   });
 }
 
@@ -2612,7 +3169,7 @@ export async function dbDeleteProjectContextState(
   projectId: string,
 ): Promise<void> {
   return invoke("db_delete_project_context_state", {
-    project_id: projectId,
+    projectId,
   });
 }
 
@@ -2715,6 +3272,130 @@ export async function executeWorkspaceTool(params: {
   });
 }
 
+export async function mcpDiscoverTools(params: {
+  server: MCPServer;
+}): Promise<MCPDiscoverToolsResponseDto> {
+  return invoke<MCPDiscoverToolsResponseDto>("mcp_discover_tools", {
+    server: params.server,
+  });
+}
+
+export async function mcpCallTool(params: {
+  server: MCPServer;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  timeoutMs?: number | null;
+}): Promise<MCPCallToolResponseDto> {
+  return invoke<MCPCallToolResponseDto>("mcp_call_tool", {
+    server: params.server,
+    toolName: params.toolName,
+    arguments: params.arguments,
+    timeoutMs: params.timeoutMs ?? null,
+  });
+}
+
+export async function mcpStoreEnvSecret(params: {
+  serverId: string;
+  key: string;
+  value: string;
+}): Promise<string> {
+  return invoke<string>("mcp_store_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
+    value: params.value,
+  });
+}
+
+export async function mcpDeleteEnvSecret(params: {
+  serverId: string;
+  key: string;
+}): Promise<void> {
+  return invoke("mcp_delete_env_secret", {
+    serverId: params.serverId,
+    key: params.key,
+  });
+}
+
+export async function skillsList(params: {
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillListResponseDto> {
+  return invoke<SkillListResponseDto>("skills_list", {
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsGet(params: {
+  skillId: string;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillDetailResponseDto> {
+  return invoke<SkillDetailResponseDto>("skills_get", {
+    skillId: params.skillId,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsInstallFromLocalPath(params: {
+  sourcePath: string;
+}): Promise<SkillManifest> {
+  return invoke<SkillManifest>("skills_install_from_local_path", {
+    sourcePath: params.sourcePath,
+  });
+}
+
+export async function skillsCreateTemplate(
+  params: SkillTemplateCreateRequest,
+): Promise<SkillTemplateCreateResult> {
+  return invoke<SkillTemplateCreateResult>("skills_create_template", {
+    name: params.name,
+    description: params.description,
+    destinationKind: params.destinationKind,
+    projectId: params.projectId ?? null,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsOpenLocation(
+  params: SkillLocationOpenRequest,
+): Promise<void> {
+  return invoke<void>("skills_open_location", {
+    skillId: params.skillId,
+    target: params.target,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsReadResource(params: {
+  skillId: string;
+  resourcePath: string;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillResourceReadResponseDto> {
+  return invoke<SkillResourceReadResponseDto>("skills_read_resource", {
+    skillId: params.skillId,
+    resourcePath: params.resourcePath,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
+export async function skillsRunScript(params: {
+  skillId: string;
+  scriptPath: string;
+  args?: string[];
+  timeoutMs?: number | null;
+  allowWorkspace?: boolean;
+  workspacePath?: string | null;
+  projectRoots?: SkillProjectRoot[];
+}): Promise<SkillScriptRunResult> {
+  return invoke<SkillScriptRunResult>("skills_run_script", {
+    skillId: params.skillId,
+    scriptPath: params.scriptPath,
+    args: params.args ?? [],
+    timeoutMs: params.timeoutMs ?? null,
+    allowWorkspace: params.allowWorkspace ?? false,
+    workspacePath: params.workspacePath ?? null,
+    projectRoots: params.projectRoots ?? [],
+  });
+}
+
 export async function terminalCreateSession(params: {
   projectId: string;
   cwd?: string | null;
@@ -2768,6 +3449,26 @@ export async function terminalCreateTab(params: {
     title: params.title,
     taskId: params.taskId ?? null,
     promptContext: params.promptContext ?? null,
+  });
+}
+
+export async function terminalStartCommandTab(params: {
+  kind: "manual" | "task" | "worktree_setup";
+  projectId: string;
+  cwd?: string | null;
+  title: string;
+  taskId?: string | null;
+  promptContext?: TerminalPromptContextInput | null;
+  command: string;
+}): Promise<TerminalTabDto> {
+  return invoke<TerminalTabDto>("terminal_start_command_tab", {
+    kind: params.kind,
+    projectId: params.projectId,
+    cwd: params.cwd ?? null,
+    title: params.title,
+    taskId: params.taskId ?? null,
+    promptContext: params.promptContext ?? null,
+    command: params.command,
   });
 }
 
@@ -2856,6 +3557,10 @@ export function isTauriAvailable(): boolean {
   };
 
   return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+}
+
+export function isRemoteBackendAvailable(): boolean {
+  return resolveRemoteConfig() !== null;
 }
 
 /**

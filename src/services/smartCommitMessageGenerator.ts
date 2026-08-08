@@ -14,7 +14,10 @@ import {
   validateConventionalCommitMessage,
   type ConventionalCommitType,
 } from './conventionalCommit';
-import type { SmartCommitModelConfig } from './smartCommitModelConfig';
+import {
+  normalizeMetadataModelConfig,
+  type MetadataModelConfig,
+} from './metadataModelConfig';
 
 export interface SmartCommitMessageFileContext {
   path: string;
@@ -515,7 +518,7 @@ export const formatGeneratedCommitMessageForRepository = (
 };
 
 export interface GenerateSmartCommitMessagesOptions {
-  modelConfig?: SmartCommitModelConfig | null;
+  modelConfig?: MetadataModelConfig | null;
   validationFeedback?: string | null;
 }
 
@@ -525,14 +528,34 @@ export const generateSmartCommitMessages = async (
 ): Promise<GeneratedCommitMessages> => {
   try {
     const providerState = useProviderStore.getState();
-    const providerId = options.modelConfig?.mode === 'dedicated'
-      ? options.modelConfig.providerId
+    const normalizedModelConfig = normalizeMetadataModelConfig(options.modelConfig, {
+      providerConfigs: providerState.providerConfigs,
+      modelsByProvider: providerState.modelsByProvider,
+      getAvailableReasoningEfforts: providerState.getAvailableReasoningEfforts,
+    });
+    if (
+      options.modelConfig?.mode === 'dedicated' &&
+      normalizedModelConfig?.mode !== 'dedicated'
+    ) {
+      throw new SmartCommitMessageGenerationError('Selected commit message model is unavailable.');
+    }
+    if (
+      options.modelConfig?.mode === 'dedicated' &&
+      normalizedModelConfig?.mode === 'dedicated' &&
+      (normalizedModelConfig.providerId !== options.modelConfig.providerId ||
+        normalizedModelConfig.modelId !== options.modelConfig.modelId)
+    ) {
+      throw new SmartCommitMessageGenerationError('Selected commit message model is unavailable for this provider.');
+    }
+
+    const providerId = normalizedModelConfig?.mode === 'dedicated'
+      ? normalizedModelConfig.providerId
       : providerState.selectedProviderId;
-    const modelId = options.modelConfig?.mode === 'dedicated'
-      ? options.modelConfig.modelId
+    const modelId = normalizedModelConfig?.mode === 'dedicated'
+      ? normalizedModelConfig.modelId
       : providerState.selectedModelId;
-    const reasoningEffort = options.modelConfig?.mode === 'dedicated'
-      ? options.modelConfig.reasoningEffort
+    const reasoningEffort = normalizedModelConfig?.mode === 'dedicated'
+      ? normalizedModelConfig.reasoningEffort
       : providerState.selectedReasoningEffort;
     if (!providerId || !modelId) {
       throw new SmartCommitMessageGenerationError('Select an AI provider and model before committing.');

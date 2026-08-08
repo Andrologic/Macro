@@ -15,7 +15,15 @@ import {
   getArchitectPlanDisplayName,
   getArchitectPlanPrimaryName,
 } from '../../services/architectPlanPresentation';
-import { getGitFlowBaseBranch } from '../../services/architectPlanService';
+import {
+  getGitFlowBaseBranch,
+  repairArchitectPlanMetadata,
+} from '../../services/architectPlanService';
+import {
+  getArchitectPlanKind,
+  type ArchitectPlanKind,
+} from '../../services/architectPlanKinds';
+import { getPlanKindIconName } from '../../services/planKindPresentation';
 import {
   isPlanFinalizationTask,
   taskMatchesProjectId,
@@ -54,6 +62,7 @@ import {
   resolveTaskMergeWorkflowProgressLabel,
 } from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
@@ -63,7 +72,14 @@ import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
+import {
+  getTooManyOpenFilesNotificationKey,
+  isTooManyOpenFilesMessage,
+  noteTooManyOpenFilesBackoff,
+} from '../../services/resourcePressureBackoff';
+import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 
 interface TaskQueueProps {
   className?: string;
@@ -158,7 +174,6 @@ interface MultiRepoTaskPresentation {
     label: string;
     title: string;
     state: ReviewRepositoryUiState | null;
-    isCurrent: boolean;
     isNext: boolean;
   }>;
   progressLabel: string;
@@ -202,6 +217,7 @@ interface TaskItemProps {
   multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
   planLabel: string;
+  planKind?: ArchitectPlanKind | null;
   isAssistantRunning: boolean;
   taskCommandRunStatus: 'running' | 'cancelling' | null;
   canRunTaskCommands: boolean;
@@ -220,6 +236,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   multiRepoPresentation,
   isSelected,
   planLabel,
+  planKind,
   isAssistantRunning,
   taskCommandRunStatus,
   canRunTaskCommands,
@@ -242,7 +259,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
     contextBadges.push({
       key: 'plan',
       label: trimmedPlanLabel,
-      icon: 'layers',
+      icon: getPlanKindIconName(planKind ?? 'feature'),
     });
   }
   if (task.task_source === 'plan_finalization') {
@@ -277,9 +294,10 @@ const TaskItem: React.FC<TaskItemProps> = ({
     () =>
       resolveTaskMergeWorkflowPresentationState(
         mergeWorkflowRuntime,
-        task.merge_workflow_summary ?? null
+        task.merge_workflow_summary ?? null,
+        task.status
       ),
-    [mergeWorkflowRuntime, task.merge_workflow_summary]
+    [mergeWorkflowRuntime, task.merge_workflow_summary, task.status]
   );
   const indicatorState = resolveTaskStatusIndicatorState(
     task.status,
@@ -295,11 +313,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
         indicatorState === 'merge_blocked' ||
         indicatorState === 'merge_failed')
   );
-  const lockTooltip = task.is_blocked
-    ? t('implement.blockedBy', 'Blocked by: {{tasks}}', {
-      tasks: task.blocked_by.join(', '),
-    })
-    : '';
+  const lockTooltip = getDependencyBlockedMessage(task, t) ?? '';
   useEffect(() => {
     if (!showMenu) return;
 
@@ -374,7 +388,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           : 'border-border/70 bg-card/70 hover:border-primary/20 hover:bg-accent/30'
       )}
     >
-      <div className="grid h-full grid-rows-[auto,1fr,auto] px-4 py-2">
+      <div className="grid h-full grid-rows-[auto,1fr,auto] p-1.5">
         {actions.length > 0 && (
           <button
             ref={menuButtonRef}
@@ -390,7 +404,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
               setShowMenu(nextValue);
             }}
             onMouseDown={(event) => event.stopPropagation()}
-            className="absolute right-2 top-2.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={t('implement.taskActions', 'Task actions')}
           >
             <Icon name="more-vertical" size={13} />
@@ -408,7 +422,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 className={status.color}
               />
             </div>
-            {task.is_blocked && task.blocked_by.length > 0 && (
+            {task.is_blocked && lockTooltip && (
               <div className="pointer-events-none absolute left-0 top-9 z-20 hidden min-w-56 max-w-72 rounded-md border border-orange-500/30 bg-popover px-2 py-1.5 text-xs text-orange-300 shadow-lg group-hover/lock:block">
                 {lockTooltip}
               </div>
@@ -416,7 +430,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           </div>
 
           <div className="min-w-0 flex-1">
-            <h3 className="pr-7 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
+            <h3 className="pr-3 text-sm font-semibold leading-[1.1rem] text-foreground line-clamp-2">
               {task.title}
             </h3>
           </div>
@@ -445,7 +459,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
           ) : null}
         </div>
 
-        <div className="min-w-0 self-end pr-10">
+        <div className="min-w-0 self-end pr-3">
           {contextBadges.length > 0 && (
             <div
               data-task-card-footer="true"
@@ -460,7 +474,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                     taskContextBadgeToneClassName[badge.tone ?? 'default']
                   )}
                 >
-                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0" />}
+                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0 text-current" />}
                   <span className="truncate">{badge.label}</span>
                 </span>
               ))}
@@ -478,7 +492,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             disabled={taskCommandRunStatus === 'cancelling'}
             className={cn(
-              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               taskCommandRunStatus === 'cancelling'
                 ? 'cursor-not-allowed text-muted-foreground'
                 : 'text-amber-500 hover:bg-accent/70'
@@ -489,11 +503,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 : t('implement.cancelTaskCommands', 'Cancel run')
             }
           >
-            <Icon
-              name={taskCommandRunStatus === 'cancelling' ? 'loader' : 'x'}
-              size={13}
-              className={taskCommandRunStatus === 'cancelling' ? 'animate-spin' : undefined}
-            />
+            {taskCommandRunStatus === 'cancelling' ? (
+              <SpinnerIcon size={13} />
+            ) : (
+              <Icon name="x" size={13} />
+            )}
           </button>
         ) : showRunTaskCommands ? (
           <button
@@ -505,7 +519,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
             disabled={!canRunTaskCommands}
             className={cn(
-              'absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+              'absolute bottom-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
               canRunTaskCommands
                 ? 'text-emerald-500 hover:bg-accent/70'
                 : 'cursor-not-allowed text-muted-foreground/50'
@@ -576,6 +590,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
     openProjectGitFlowModal,
     setSelectedProject,
@@ -584,6 +599,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
+    standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
     setSelectedProject: state.setSelectedProject,
@@ -593,12 +609,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const {
     createConversation,
     conversations,
+    selectedConversationId,
     conversationRuntimeById,
+    conversationCompactionStatusById,
     selectConversation,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
     conversationRuntimeById: state.conversationRuntimeById,
+    conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
   })));
   const {
@@ -617,6 +637,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     mergeWorkflowRuntimeByTaskId,
     runTaskCommands,
     cancelTaskCommands,
+    refreshFromPlan,
     missingBaseBranchIssue,
     clearMissingBaseBranchIssue,
     createMissingBaseBranch,
@@ -637,6 +658,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
     runTaskCommands: state.runTaskCommands,
     cancelTaskCommands: state.cancelTaskCommands,
+    refreshFromPlan: state.refreshFromPlan,
     missingBaseBranchIssue: state.missingBaseBranchIssue,
     clearMissingBaseBranchIssue: state.clearMissingBaseBranchIssue,
     createMissingBaseBranch: state.createMissingBaseBranch,
@@ -661,6 +683,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       projectName: string;
       projectPath: string;
       command: string;
+      worktreeSetupCommand: string;
       openTerminalOnRun: boolean;
     }>;
   } | null>(null);
@@ -782,16 +805,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       return;
     }
 
-    if (pendingTaskId || !selectedGroupId) return;
-    const selectedGroup = projectGroups.find((group) => group.id === selectedGroupId);
-    const actionableProjectIds =
-      selectedGroup?.projects
-        .filter((project) => !project.isReadOnly)
-        .map((project) => project.id) ?? [];
-    const contextProjectIds =
-      selectedGroup?.projects
-        .filter((project) => project.isReadOnly)
-        .map((project) => project.id) ?? [];
+    if (pendingTaskId) return;
+    const actionableProjectIds = scopedActionableProjectIds;
+    const contextProjectIds = scopedReadOnlyProjectIds;
     const conversationProjectId =
       (selectedProjectId && actionableProjectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
       actionableProjectIds[0] ||
@@ -801,7 +817,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       notify.error(
         t(
           'implement.manualFeatureMissingProjects',
-          'No editable repository is available for this global project.'
+          'No editable project is available for the current scope.'
         )
       );
       return;
@@ -848,7 +864,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const mergeWorkflowRuntime = mergeWorkflowRuntimeByTaskId[task.id] ?? null;
     const mergeWorkflowPresentation = resolveTaskMergeWorkflowPresentationState(
       mergeWorkflowRuntime,
-      task.merge_workflow_summary ?? null
+      task.merge_workflow_summary ?? null,
+      task.status
     );
     const repositoryDescriptors = getTaskRepositoryDescriptors(
       task,
@@ -884,7 +901,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         label: descriptor.label,
         title: descriptor.repoPath || descriptor.label,
         state: repositorySummary?.state ?? null,
-        isCurrent: repositorySummary?.id === reviewSummary?.currentRepositoryId,
         isNext: repositorySummary?.id === reviewSummary?.nextRepositoryId,
       };
     });
@@ -908,7 +924,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       );
     } else if (reviewSummary && task.status === 'InReview') {
       const resolvedCount = reviewSummary.stateCounts.committed + reviewSummary.stateCounts.no_changes;
-      progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} subprojects resolved', {
+      progressLabel = t('implement.taskValidationProgress', '{{resolved}}/{{total}} projects resolved', {
         resolved: resolvedCount,
         total: reviewSummary.repositoryCount,
       });
@@ -931,7 +947,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       } else {
         nextActionLabel = t(
           'implement.taskNextActionValidateAllRepositories',
-          'Next: validate and resolve the remaining subprojects'
+          'Next: validate and resolve the remaining projects'
         );
       }
     } else if (task.status === 'InProgress') {
@@ -941,7 +957,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     } else if (task.status === 'InReview') {
       nextActionLabel = t(
         'implement.taskNextActionValidateRepositories',
-        'Next: validate and commit each subproject'
+        'Next: validate and commit each project'
       );
     } else if (task.status === 'Completed') {
       nextActionLabel = t('implement.taskNextActionCompleted', 'Task completed across repositories');
@@ -958,31 +974,51 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     };
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
-  const scopedProjectIds = useMemo(
-    () => getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+  const scopedProjectState = useMemo(() => {
+    const projectRegistry = { standaloneProjects, projectGroups };
+    const projectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
+    const actionableProjectIds = getScopedActionableProjectIds(
+      projectRegistry,
+      selectedGroupId,
+      selectedProjectId
+    );
+    const readOnlyProjectIds = getScopedReadOnlyProjectIds(
+      projectRegistry,
+      selectedGroupId,
+      selectedProjectId
+    );
+    const readOnlyProjects = readOnlyProjectIds
+      .map((projectId) => getProjectById(projectId))
+      .filter((project): project is NonNullable<typeof project> => Boolean(project));
+
+    return {
+      projectIds,
+      actionableProjectIds,
+      readOnlyProjectIds,
+      readOnlyProjects,
+    };
+  }, [getProjectById, projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]);
+  const scopedProjectIds = scopedProjectState.projectIds;
+  const retargetTaskForCurrentScope = useCallback(
+    (task: ImplementTask): ImplementTask =>
+      retargetTaskForProjectSelection(task, {
+        standaloneProjects,
+        projectGroups,
+        selectedGroupId,
+        selectedProjectId,
+      }),
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const scopedActionableProjectIds = useMemo(
-    () => getScopedActionableProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
-  );
-  const scopedReadOnlyProjectIds = useMemo(
-    () => getScopedReadOnlyProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
-  );
+  const scopedActionableProjectIds = scopedProjectState.actionableProjectIds;
+  const scopedReadOnlyProjectIds = scopedProjectState.readOnlyProjectIds;
   const workspaceState = resolveProjectWorkspaceState({
+    standaloneProjects,
     projectGroups,
     selectedGroupId,
     selectedProjectId,
   });
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const scopedReadOnlyProjects = useMemo(
-    () =>
-      scopedReadOnlyProjectIds
-        .map((projectId) => getProjectById(projectId))
-        .filter((project): project is NonNullable<typeof project> => Boolean(project)),
-    [getProjectById, scopedReadOnlyProjectIds]
-  );
+  const scopedReadOnlyProjects = scopedProjectState.readOnlyProjects;
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope =
     scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
@@ -991,19 +1027,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     : firstReadOnlyProject?.readOnlyReason === 'missing_initial_commit'
       ? t('projects.createInitialCommitAction', 'Create initial commit')
       : t('projects.projectSettings', 'Project settings');
-
-  const openReadOnlyProjectSettings = useCallback(() => {
-    if (!firstReadOnlyProject || projectManagementDisabled) {
-      return;
-    }
-    setSelectedProject(firstReadOnlyProject.id);
-    openProjectGitFlowModal(firstReadOnlyProject.id);
-  }, [
-    firstReadOnlyProject,
-    openProjectGitFlowModal,
-    projectManagementDisabled,
-    setSelectedProject,
-  ]);
 
   useEffect(() => {
     if (!isReadOnlyOnlyScope) {
@@ -1023,9 +1046,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
     const description = t(
       'projects.readOnlyWorkspaceImplementBody',
-      'Implementation needs at least one editable repository. Read-only subprojects stay available for navigation, search, and context.'
+      'Implementation needs at least one editable project. Read-only projects stay available for navigation, search, and context.'
     );
     const canOpenSettings = Boolean(firstReadOnlyProject) && !projectManagementDisabled;
+    const openReadOnlyProjectSettings = () => {
+      if (!firstReadOnlyProject || projectManagementDisabled) {
+        return;
+      }
+      setSelectedProject(firstReadOnlyProject.id);
+      openProjectGitFlowModal(firstReadOnlyProject.id);
+    };
 
     if (canOpenSettings) {
       notify.actionRequired(title, {
@@ -1054,9 +1084,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     isReadOnlyOnlyScope,
     projectManagementDisabled,
     readOnlyCtaLabel,
-    openReadOnlyProjectSettings,
+    openProjectGitFlowModal,
     selectedGroupId,
     selectedProjectId,
+    setSelectedProject,
     t,
   ]);
 
@@ -1093,6 +1124,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ])
     );
   }, [availablePlanSummaries]);
+  const planKindsById = useMemo(() => {
+    return new Map(
+      availablePlanSummaries.map((plan) => [
+        plan.id,
+        getArchitectPlanKind(plan),
+      ])
+    );
+  }, [availablePlanSummaries]);
 
   const hasScopedStandaloneTasks = useMemo(() => {
     if (!hasStandaloneTasks) return false;
@@ -1125,10 +1164,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const getTaskCommandProjectIds = (task: ImplementTask): string[] => {
+    const executionTask = retargetTaskForCurrentScope(task);
     const ids = [
-      ...(task.execution_targets?.map((target) => target.projectId) || []),
-      ...(task.project_ids || []),
-      task.project_id,
+      ...(executionTask.execution_targets?.map((target) => target.projectId) || []),
+      ...(executionTask.project_ids || []),
+      executionTask.project_id,
     ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 
     return Array.from(new Set(ids));
@@ -1176,10 +1216,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const buildTaskCommandModalState = async (task: ImplementTask) => {
+    const executionTask = retargetTaskForCurrentScope(task);
     const registry = await loadTaskProjectCommandRegistry();
-    const taskProjectIds = getTaskCommandProjectIds(task);
+    const taskProjectIds = getTaskCommandProjectIds(executionTask);
     const taskGroup =
-      getProjectGroupByProjectId(projectGroups, task.project_id) ||
+      getProjectGroupByProjectId(projectGroups, executionTask.project_id) ||
       getProjectGroupByProjectId(projectGroups, taskProjectIds[0] || null);
     const modalProjectsSource =
       taskGroup?.projects ||
@@ -1188,7 +1229,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
 
     return {
-      taskId: task.id,
+      taskId: executionTask.id,
       groupName: taskGroup?.name || t('project.projectSettings', 'Paramètres du projet'),
       requiredProjectIds: taskProjectIds,
       projects: modalProjectsSource.map((project) => ({
@@ -1196,6 +1237,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         projectName: project.name,
         projectPath: project.path,
         command: getTaskProjectCommand(registry, project.path)?.command || '',
+        worktreeSetupCommand:
+          getTaskProjectCommand(registry, project.path)?.worktreeSetupCommand || '',
         openTerminalOnRun:
           getTaskProjectCommand(registry, project.path)?.openTerminalOnRun ?? true,
       })),
@@ -1267,7 +1310,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {
             description: t(
               'implement.taskCommandRunSuccessDescription',
-              '{{count}} subprojects executed successfully.',
+              '{{count}} projects executed successfully.',
               { count: result.completedCount }
             ),
             category: 'task_run_completed',
@@ -1594,31 +1637,97 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     () =>
       resolveRunningTaskIds({
         conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
         conversationRuntimeById,
+        conversationCompactionStatusById,
       }),
-    [conversationRuntimeById, conversations]
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
   );
   const selectedTaskForError = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) ?? null,
     [selectedTaskId, tasks]
   );
+  const selectedTaskForErrorScope = useMemo(
+    () => selectedTaskForError ? retargetTaskForCurrentScope(selectedTaskForError) : null,
+    [retargetTaskForCurrentScope, selectedTaskForError]
+  );
+  const activeTaskMergeRuntime = selectedTaskForError
+    ? mergeWorkflowRuntimeByTaskId[selectedTaskForError.id] ?? null
+    : null;
+  const activeMergePresentation = selectedTaskForError
+    ? resolveTaskMergeWorkflowPresentationState(
+        activeTaskMergeRuntime,
+        selectedTaskForError.merge_workflow_summary ?? null,
+        selectedTaskForError.status
+      )
+    : null;
+  const activeMergePhase = activeMergePresentation?.phase
+    ?? null;
+  const hasActiveMergeFailurePresentation = activeMergePhase === 'failed'
+    || activeMergePhase === 'blocked'
+    || activeMergePhase === 'partial'
+    || activeMergePhase === 'merging';
+  const isTaskErrorRelevantForSelection = (error: string | null | undefined): {
+    isConfigurationError: boolean;
+    isMergeRuntimeError: boolean;
+  } => {
+    if (!error) {
+      return { isConfigurationError: false, isMergeRuntimeError: false };
+    }
+    const normalized = error.toLowerCase();
+    const isConfigurationError = normalized.includes('worktree')
+      || normalized.includes('base branch')
+      || normalized.includes('task workspace')
+      || normalized.includes('branch is still checked out');
+    const isMergeRuntimeError = normalized.includes('merge')
+      || normalized.includes('diverged')
+      || normalized.includes('non-fast-forward')
+      || normalized.includes('conflict')
+      || normalized.includes('uncommitted changes');
+    return { isConfigurationError, isMergeRuntimeError };
+  };
+  const taskErrorRelevance = taskError ? isTaskErrorRelevantForSelection(taskError) : null;
+  const taskErrorMatchesSelection = Boolean(
+    taskError
+    && taskErrorRelevance
+    && selectedTaskForError
+    && (
+      (taskErrorRelevance.isConfigurationError
+        && selectedTaskForError.status !== 'Completed'
+        && !selectedTaskForError.archived_at)
+      || (taskErrorRelevance.isMergeRuntimeError
+        && hasActiveMergeFailurePresentation
+        && !selectedTaskForError.is_blocked)
+    )
+  );
   const taskErrorPresentation = useMemo(
     () =>
       taskError
         ? presentServiceError(taskError, {
-            projectId: selectedTaskForError?.project_id ?? selectedProjectId,
+            projectId: selectedTaskForErrorScope?.project_id ?? selectedProjectId,
           })
         : null,
-    [selectedProjectId, selectedTaskForError?.project_id, taskError]
+    [selectedProjectId, selectedTaskForErrorScope?.project_id, taskError]
   );
   const taskErrorActionLabel =
     taskErrorPresentation?.primaryAction === 'open_project_settings' ||
     taskErrorPresentation?.primaryAction === 'configure_git'
       ? t('projects.projectSettings', 'Project settings')
+      : taskErrorPresentation?.primaryAction === 'repair_metadata'
+        ? t('architect.planSelector.repairMetadata', 'Repair metadata')
       : t('common.retry', 'Retry');
   const handleTaskErrorAction = useCallback(() => {
     if (!taskErrorPresentation) return;
-    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
     if (
       (taskErrorPresentation.primaryAction === 'open_project_settings' ||
         taskErrorPresentation.primaryAction === 'configure_git') &&
@@ -1636,6 +1745,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     openProjectGitFlowModal,
     selectedProjectId,
     selectedTaskForError,
+    selectedTaskForErrorScope?.project_id,
     setSelectedProject,
     taskErrorPresentation,
   ]);
@@ -1649,28 +1759,43 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       lastErrorToastRef.current = taskError;
       return;
     }
-    if (taskError === lastErrorToastRef.current) return;
+    if (!taskErrorMatchesSelection) {
+      lastErrorToastRef.current = null;
+      return;
+    }
+    const dedupeKey = `${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
+    if (dedupeKey === lastErrorToastRef.current) return;
 
-    lastErrorToastRef.current = taskError;
+    lastErrorToastRef.current = dedupeKey;
     const nextStep = taskErrorPresentation.nextStep
       ? `${t('errors.nextStep', 'Next step')}: ${taskErrorPresentation.nextStep}`
       : null;
     const description = [taskErrorPresentation.body, nextStep]
       .filter((value): value is string => Boolean(value?.trim()))
       .join('\n\n');
-    const notificationKey = `implement-task-error:${taskError}`;
-    const targetProjectId = selectedTaskForError?.project_id || selectedProjectId;
+    const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
     const canOpenProjectSettings =
       (taskErrorPresentation.primaryAction === 'open_project_settings' ||
         taskErrorPresentation.primaryAction === 'configure_git') &&
       Boolean(targetProjectId);
+    const canRepairMetadata =
+      taskErrorPresentation.primaryAction === 'repair_metadata' &&
+      selectedTaskForError?.task_source === 'architect' &&
+      Boolean(selectedTaskForError.plan_id);
     const canRetry =
       !canOpenProjectSettings &&
       taskErrorPresentation.primaryAction === 'retry' &&
       Boolean(selectedTaskForError);
     const tone = taskErrorPresentation.severity === 'danger' ? 'error' : 'warning';
+    const isResourcePressureError = isTooManyOpenFilesMessage(taskError);
+    if (isResourcePressureError) {
+      noteTooManyOpenFilesBackoff();
+    }
+    const notificationKey = isResourcePressureError
+      ? getTooManyOpenFilesNotificationKey()
+      : `implement-task-error:${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
 
-    if (canOpenProjectSettings || canRetry) {
+    if (canOpenProjectSettings || canRetry || canRepairMetadata) {
       notify.actionRequired(taskErrorPresentation.title, {
         notificationKey,
         tone,
@@ -1680,7 +1805,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           {
             label: taskErrorActionLabel,
             variant: 'primary',
-            onClick: handleTaskErrorAction,
+            onClick: async () => {
+              if (canRepairMetadata && selectedTaskForError) {
+                await repairArchitectPlanMetadata({
+                  branchName:
+                    selectedTaskForError.plan_storage_branch ||
+                    selectedTaskForError.plan_target_branch ||
+                    getGitFlowBaseBranch(),
+                  planId: selectedTaskForError.plan_id,
+                });
+                await refreshFromPlan();
+                return;
+              }
+              handleTaskErrorAction();
+            },
           },
         ],
       });
@@ -1703,6 +1841,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     openProjectGitFlowModal,
     selectedProjectId,
     selectedTaskForError,
+    selectedTaskForErrorScope?.project_id,
     setSelectedProject,
     t,
     taskError,
@@ -1710,6 +1849,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskErrorPresentation,
     handleTaskErrorAction,
     missingBaseBranchIssue?.message,
+    refreshFromPlan,
+    taskErrorMatchesSelection,
   ]);
 
   if (isWorkspaceMissing) {
@@ -1792,7 +1933,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           >
-            <Icon name={pendingTaskId ? 'loader' : 'plus'} size={12} className={pendingTaskId ? 'animate-spin' : undefined} />
+            {pendingTaskId ? <SpinnerIcon size={12} /> : <Icon name="plus" size={12} />}
           </button>
         </div>
       </div>
@@ -1884,6 +2025,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
                         planLabel={getTaskPlanLabel(row.task)}
+                        planKind={planKindsById.get(row.task.plan_id) ?? null}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}
                         taskCommandRunStatus={taskCommandRuns[row.task.id]?.status ?? null}
                         canRunTaskCommands={canRunTaskCommandsForTask(row.task)}
@@ -1910,6 +2052,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           projectGroupName={taskCommandModal.groupName}
           projects={taskCommandModal.projects}
           isSubmitting={isSavingTaskCommands}
+          requireRunCommand={taskCommandModal.autoRunAfterSave}
           onClose={() => {
             if (!isSavingTaskCommands) {
               setTaskCommandModal(null);

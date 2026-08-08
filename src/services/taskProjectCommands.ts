@@ -2,13 +2,14 @@ import * as tauriIpc from './tauriIpc';
 
 const APP_SETTING_TASK_PROJECT_COMMANDS_KEY = 'task_project_commands';
 const LEGACY_TASK_PROJECT_COMMANDS_KEY = 'macro_task_project_commands';
-const TASK_PROJECT_COMMANDS_VERSION = 2;
+const TASK_PROJECT_COMMANDS_VERSION = 3;
 
 export interface TaskProjectCommandEntry {
   projectId: string | null;
   projectName: string;
   projectPath: string;
   command: string;
+  worktreeSetupCommand: string;
   openTerminalOnRun: boolean;
   updatedAt: string;
 }
@@ -23,6 +24,7 @@ export interface TaskProjectCommandDraft {
   projectName: string;
   projectPath: string;
   command: string;
+  worktreeSetupCommand?: string;
   openTerminalOnRun: boolean;
 }
 
@@ -45,7 +47,11 @@ const normalizeEntry = (
 ): TaskProjectCommandEntry | null => {
   const projectPath = normalizeTaskProjectCommandPath(value?.projectPath || key);
   const command = typeof value?.command === 'string' ? value.command.trim() : '';
-  if (!projectPath || !command) {
+  const worktreeSetupCommand =
+    typeof value?.worktreeSetupCommand === 'string'
+      ? value.worktreeSetupCommand.trim()
+      : '';
+  if (!projectPath || (!command && !worktreeSetupCommand)) {
     return null;
   }
 
@@ -54,6 +60,7 @@ const normalizeEntry = (
     projectName: typeof value?.projectName === 'string' ? value.projectName : '',
     projectPath,
     command,
+    worktreeSetupCommand,
     openTerminalOnRun:
       typeof value?.openTerminalOnRun === 'boolean' ? value.openTerminalOnRun : true,
     updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : toNowIso(),
@@ -120,7 +127,8 @@ export const mergeTaskProjectCommandRegistry = (
     }
 
     const command = draft.command.trim();
-    if (!command) {
+    const worktreeSetupCommand = (draft.worktreeSetupCommand ?? '').trim();
+    if (!command && !worktreeSetupCommand) {
       delete commandsByProjectPath[projectPath];
       return;
     }
@@ -130,6 +138,7 @@ export const mergeTaskProjectCommandRegistry = (
       projectName: draft.projectName.trim(),
       projectPath,
       command,
+      worktreeSetupCommand,
       openTerminalOnRun: draft.openTerminalOnRun !== false,
       updatedAt: toNowIso(),
     };

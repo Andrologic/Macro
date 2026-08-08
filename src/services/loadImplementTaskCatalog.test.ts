@@ -333,6 +333,287 @@ describe('createLoadImplementTaskCatalog', () => {
     ]);
   });
 
+  it('uses standalone project git flow settings when injecting the active plan from memory', async () => {
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: 'plan-standalone-active',
+        activePlanContext: {
+          id: 'plan-standalone-active',
+          title: 'Standalone Active Plan',
+          description: 'Plan restored from app state after reload',
+          status: 'validated',
+          targetBranch: 'main',
+        },
+        planNodes: [
+          {
+            id: 'standalone-task',
+            title: 'Implement restored standalone task',
+            type: 'task',
+            status: 'pending',
+            dependencies: [],
+            assignedBranch: 'feature/restored-task',
+            projectId: 'project-octan-sales',
+          },
+        ],
+        predictedBranches: [
+          {
+            id: 'standalone-branch',
+            name: 'feature/restored-task',
+            color: '#6366f1',
+            parentBranch: 'main',
+            projectId: 'project-octan-sales',
+            taskIds: ['standalone-task'],
+            status: 'pending',
+          },
+        ],
+        selectedGroupId: null,
+        selectedProjectId: 'project-octan-sales',
+        standaloneProjects: [
+          {
+            id: 'project-octan-sales',
+            name: 'octan_sales',
+            mountName: 'octan-sales',
+            path: '/Users/oscarlahaie/github/octan_sales',
+            created_at: '',
+            status: 'active',
+            gitFlowSettings: {
+              mainBranch: 'main',
+              baseBranch: 'develop',
+              planBranchTemplate: 'plan/{planSlug}',
+              featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+              standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+              releaseBranchTemplate: 'release/{releaseSlug}',
+              hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+              bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+              completionMergePolicy: 'merge_commit',
+            },
+            metadata: {
+              description: '',
+              tags: [],
+              team_members: [],
+              api_contracts: [],
+              dependencies: [],
+            },
+          },
+        ],
+        projectGroups: [],
+      }),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [],
+      }),
+      getArchitectPlan: async () => null,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+    const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-task');
+    const finalizationTask = catalog.tasks.find(
+      (candidate) => candidate.id === 'plan-finalization:plan-standalone-active',
+    );
+
+    expect(task?.plan_target_branch).toBe('develop');
+    expect(task?.plan_target_branches_by_project_id).toEqual({
+      'project-octan-sales': 'develop',
+    });
+    expect(finalizationTask?.execution_targets).toEqual([
+      {
+        projectId: 'project-octan-sales',
+        branchName: 'develop',
+        targetBranchName: 'develop',
+        executionKind: 'repository_root',
+        worktreeKey: 'plan-finalization:project-octan-sales:project-octan-sales',
+      },
+    ]);
+  });
+
+  it('retargets a physically scoped standalone project plan when stored project ids are stale', async () => {
+    const plan = makePlan({
+      id: 'plan-lplr',
+      title: 'Refonte catalogue produit',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'project-lplr-app-1780237886690',
+      projectIds: ['project-lplr-app-1780237886690'],
+      availableProjectIds: ['project-lplr-current'],
+      replicas: [
+        {
+          scopeKey: 'repo:/Users/oscarlahaie/github/lplr-app',
+          projectId: 'project-lplr-current',
+          repoPath: '/Users/oscarlahaie/github/lplr-app',
+          workspacePath: '/Users/oscarlahaie/github/lplr-app',
+          source: 'project',
+          updatedAt: '2026-03-08T00:00:00.000Z',
+        },
+      ],
+      nodes: [
+        {
+          id: 'task-catalogue',
+          title: 'Refondre le catalogue produit',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/catalogue',
+          projectId: 'project-lplr-app-1780237886690',
+          projectIds: ['project-lplr-app-1780237886690'],
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-catalogue',
+          name: 'feature/catalogue',
+          color: '#6366f1',
+          parentBranch: 'develop',
+          projectId: 'project-lplr-app-1780237886690',
+          taskIds: ['task-catalogue'],
+          status: 'pending',
+        },
+      ],
+    });
+    const summary = {
+      ...toSummary(plan),
+      availableProjectIds: ['project-lplr-current'],
+      replicas: plan.replicas,
+    };
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'project-lplr-current',
+        standaloneProjects: [
+          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+        ],
+        projectGroups: [],
+      }),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [summary],
+      }),
+      getArchitectPlan: async () => plan,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+    const task = catalog.tasks.find((candidate) => candidate.id === 'task-catalogue');
+
+    expect(task?.project_id).toBe('project-lplr-current');
+    expect(task?.project_ids).toEqual(['project-lplr-current']);
+    expect(task?.execution_targets.map((target) => target.projectId)).toEqual(['project-lplr-current']);
+    expect(catalog.plans[0]?.projectIds).toEqual(['project-lplr-current']);
+  });
+
+  it('keeps replica diagnostics while retargeting stale plan ids for execution', async () => {
+    let capturedPlans: ArchitectPlanRecord[] = [];
+    const plan = {
+      ...makePlan({
+        id: 'plan-lplr',
+        title: 'Refonte catalogue produit',
+        status: 'validated',
+        targetBranch: 'develop',
+        projectId: 'project-lplr-app-1780237886690',
+        projectIds: ['project-lplr-app-1780237886690'],
+        nodes: [],
+        predictedBranches: [],
+      }),
+      expectedProjectIds: ['project-lplr-app-1780237886690', 'project-docs-old'],
+      availableProjectIds: ['project-lplr-current'],
+      missingProjectIds: ['project-docs-old'],
+      replicationState: 'missing_projects',
+      replicas: [
+        {
+          scopeKey: 'repo:/Users/oscarlahaie/github/lplr-app',
+          projectId: 'project-lplr-current',
+          repoPath: '/Users/oscarlahaie/github/lplr-app',
+          workspacePath: '/Users/oscarlahaie/github/lplr-app',
+          source: 'project',
+          updatedAt: '2026-03-08T00:00:00.000Z',
+        },
+      ],
+    } satisfies ArchitectPlanRecord;
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'project-lplr-current',
+        standaloneProjects: [
+          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+        ],
+        projectGroups: [],
+      }),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [{ ...toSummary(plan), availableProjectIds: plan.availableProjectIds, replicas: plan.replicas }],
+      }),
+      getArchitectPlan: async () => plan,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog: (params) => {
+        capturedPlans = params.plans;
+        return buildImplementTaskCatalog(params);
+      },
+    });
+
+    await loadImplementTaskCatalog([]);
+
+    expect(capturedPlans[0]?.projectIds).toEqual(['project-lplr-current']);
+    expect(capturedPlans[0]?.missingProjectIds).toEqual(['project-docs-old']);
+    expect(capturedPlans[0]?.replicationState).toBe('missing_projects');
+  });
+
+  it('retargets standalone fallback tasks with stale project ids to the selected single project scope', async () => {
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'project-lplr-current',
+        standaloneProjects: [
+          { id: 'project-lplr-current', name: 'lplr-app', mountName: 'lplr-app', path: '/Users/oscarlahaie/github/lplr-app', created_at: '', status: 'active', metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } },
+        ],
+        projectGroups: [],
+      }),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [],
+      }),
+      getArchitectPlan: async () => null,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+
+    const catalog = await loadImplementTaskCatalog([
+      makeTask({
+        id: 'standalone-stale',
+        title: 'Tâche indépendante',
+        project_id: 'project-lplr-app-1780237886690',
+        project_ids: ['project-lplr-app-1780237886690'],
+        status: 'Pending',
+      }),
+    ]);
+    const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-stale');
+
+    expect(task?.project_id).toBe('project-lplr-current');
+    expect(task?.project_ids).toEqual(['project-lplr-current']);
+    expect(task?.execution_targets.map((target) => target.projectId)).toEqual(['project-lplr-current']);
+  });
+
   it('ignores invalid target branches and preserves valid plans when one branch or plan load fails', async () => {
     const webPlan = makePlan({
       id: 'plan-web',

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct WorkspaceState {
     #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default, rename = "standaloneProjects")]
+    pub standalone_projects: Vec<ProjectDto>,
     #[serde(default)]
     pub project_groups: Vec<ProjectGroupDto>,
     #[serde(default)]
@@ -24,6 +26,7 @@ impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
             version: default_version(),
+            standalone_projects: Vec::new(),
             project_groups: Vec::new(),
             current_plan: None,
             plan_nodes: Vec::new(),
@@ -35,12 +38,14 @@ impl Default for WorkspaceState {
 }
 
 const fn default_version() -> u32 {
-    3
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceBootstrapDto {
     pub plan: Option<PlanDto>,
+    #[serde(rename = "standaloneProjects")]
+    pub standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "projectGroups")]
     pub project_groups: Vec<ProjectGroupDto>,
     #[serde(rename = "planNodes")]
@@ -74,6 +79,38 @@ pub struct WorkspaceRecoverMissingMetadataRequestDto {
     pub attempt_pull: bool,
     #[serde(default)]
     pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+    #[serde(default)]
+    pub projects: Vec<WorkspaceMetadataRecoveryHintDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
+    #[serde(default, rename = "maxChildrenPerRoot")]
+    pub max_children_per_root: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectRegistryReconcileSkippedDto {
+    pub project_id: Option<String>,
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectRegistryReconcileReportDto {
+    pub status: String,
+    #[serde(default)]
+    pub discovered_projects: Vec<ProjectDto>,
+    pub added_projects: Vec<ProjectDto>,
+    pub skipped_projects: Vec<WorkspaceProjectRegistryReconcileSkippedDto>,
+    pub duplicate_paths: Vec<String>,
+    pub invalid_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -276,6 +313,7 @@ pub struct WorkspaceArchitectListPlansRequestDto {
     pub branch_name: String,
     pub include_deleted: bool,
     pub include_archived: bool,
+    pub scoped_project_ids_hint: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -427,6 +465,11 @@ pub struct ProjectGitFlowSettingsDto {
     #[serde(default = "default_project_git_main_branch", rename = "mainBranch")]
     pub main_branch: String,
     #[serde(
+        default = "default_project_git_completion_merge_policy",
+        rename = "completionMergePolicy"
+    )]
+    pub completion_merge_policy: String,
+    #[serde(
         default = "default_project_git_plan_branch_template",
         rename = "planBranchTemplate"
     )]
@@ -550,6 +593,7 @@ impl Default for ProjectGitFlowSettingsDto {
         Self {
             base_branch: default_project_git_base_branch(),
             main_branch: default_project_git_main_branch(),
+            completion_merge_policy: default_project_git_completion_merge_policy(),
             plan_branch_template: default_project_git_plan_branch_template(),
             feature_branch_template: default_project_git_feature_branch_template(),
             standalone_feature_branch_template:
@@ -571,6 +615,10 @@ fn default_project_git_detection_repo_resolution() -> String {
 
 fn default_project_git_main_branch() -> String {
     "main".to_string()
+}
+
+fn default_project_git_completion_merge_policy() -> String {
+    "merge_commit".to_string()
 }
 
 fn default_project_git_plan_branch_template() -> String {
@@ -597,6 +645,14 @@ fn default_project_git_bugfix_branch_template() -> String {
     "bugfix/{bugfixSlug}".to_string()
 }
 
+fn default_project_path_kind() -> String {
+    "windows".to_string()
+}
+
+fn is_default_project_path_kind(value: &String) -> bool {
+    value == "windows"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectDto {
     pub id: String,
@@ -616,6 +672,20 @@ pub struct ProjectDto {
     pub is_read_only: bool,
     #[serde(default, rename = "readOnlyReason")]
     pub read_only_reason: Option<String>,
+    #[serde(
+        default = "default_project_path_kind",
+        rename = "pathKind",
+        skip_serializing_if = "is_default_project_path_kind"
+    )]
+    pub path_kind: String,
+    #[serde(default, rename = "wslDistro", skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
+    #[serde(
+        default,
+        rename = "wslLinuxPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub wsl_linux_path: Option<String>,
     pub metadata: ProjectMetadataDto,
 }
 
@@ -688,6 +758,16 @@ pub struct CreateProjectRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNewProjectRepoRequest {
+    pub repo_name: String,
+    pub parent_path: String,
+    pub folder_name: String,
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+    pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportGitRepoRequest {
     pub git_url: String,
     pub project_name: String,
@@ -702,6 +782,8 @@ pub struct ImportGitRepoRequest {
 pub struct ProjectRegistryRepairReportDto {
     pub duplicate_paths_removed: usize,
     pub empty_groups_removed: usize,
+    #[serde(default)]
+    pub singleton_groups_migrated: usize,
     pub removed_synthetic_groups: usize,
     pub removed_synthetic_projects: usize,
     pub mount_names_assigned: usize,
@@ -721,6 +803,7 @@ impl ProjectRegistryRepairReportDto {
     pub fn has_repairs(&self) -> bool {
         self.duplicate_paths_removed > 0
             || self.empty_groups_removed > 0
+            || self.singleton_groups_migrated > 0
             || self.removed_synthetic_groups > 0
             || self.removed_synthetic_projects > 0
             || self.mount_names_assigned > 0
@@ -735,6 +818,22 @@ impl ProjectRegistryRepairReportDto {
             || self.predicted_branches_removed > 0
             || self.git_flow_settings_auto_updated > 0
     }
+
+    pub fn has_destructive_repairs(&self) -> bool {
+        self.duplicate_paths_removed > 0
+            || self.empty_groups_removed > 0
+            || self.removed_synthetic_groups > 0
+            || self.removed_synthetic_projects > 0
+            || !self.removed_group_ids.is_empty()
+            || !self.removed_project_ids.is_empty()
+            || self.current_plan_project_ids_removed > 0
+            || self.current_plan_tasks_removed > 0
+            || self.current_plan_task_targets_removed > 0
+            || self.manual_features_removed > 0
+            || self.manual_feature_targets_removed > 0
+            || self.plan_nodes_removed > 0
+            || self.predicted_branches_removed > 0
+    }
 }
 
 fn default_project_git_setup_state() -> String {
@@ -747,8 +846,12 @@ fn default_project_git_detection_setup_state() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRegistryDiagnosticsDto {
+    #[serde(default, rename = "rawStandaloneProjects")]
+    pub raw_standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "rawProjectGroups")]
     pub raw_project_groups: Vec<ProjectGroupDto>,
+    #[serde(default, rename = "sanitizedStandaloneProjects")]
+    pub sanitized_standalone_projects: Vec<ProjectDto>,
     #[serde(rename = "sanitizedProjectGroups")]
     pub sanitized_project_groups: Vec<ProjectGroupDto>,
     #[serde(rename = "rawGroupCount")]

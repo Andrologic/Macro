@@ -13,7 +13,7 @@ import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { getGlobalProjectById } from '../../services/globalProjects';
 import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
-import { type AppMode } from '../../types';
+import { type AppMode, type Project } from '../../types';
 import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
@@ -52,6 +52,13 @@ interface ModeOption {
 
 export type MacosTitlebarMouseAction = 'none' | 'toggle-maximize' | 'start-dragging';
 
+const projectHasGitIntegration = (
+  project: Pick<Project, 'gitSetupState' | 'readOnlyReason'>
+): boolean => {
+  if (project.gitSetupState === 'not_git') return false;
+  return project.readOnlyReason !== 'missing_git' && project.readOnlyReason !== 'manual_and_missing_git';
+};
+
 export function resolveMacosTitlebarMouseAction({
   button,
   clickCount,
@@ -84,7 +91,9 @@ export function Header({
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
+  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const projectGroups = useAppStore((state) => state.projectGroups);
+  const getProjectById = useAppStore((state) => state.getProjectById);
   const uiZoomMode = useAppStore((state) => state.uiZoomMode);
   const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
 
@@ -176,42 +185,26 @@ export function Header({
     }
 
     let cancelled = false;
+    const position = getMacosTrafficLightPosition(effectiveUiZoomScale);
+    const positionKey = `${position.x}:${position.y}`;
 
-    const syncTrafficLights = () => {
-      if (cancelled) {
-        return;
+    if (lastTrafficLightPositionRef.current === positionKey) {
+      return;
+    }
+
+    lastTrafficLightPositionRef.current = positionKey;
+
+    void windowSetTrafficLightPosition(position.x, position.y).catch((error) => {
+      if (!cancelled) {
+        lastTrafficLightPositionRef.current = null;
+        console.error('Failed to sync macOS traffic light position:', error);
       }
-
-      const position = getMacosTrafficLightPosition(effectiveUiZoomScale);
-      const positionKey = `${position.x}:${position.y}`;
-
-      if (lastTrafficLightPositionRef.current === positionKey) {
-        return;
-      }
-
-      lastTrafficLightPositionRef.current = positionKey;
-
-      void windowSetTrafficLightPosition(position.x, position.y).catch((error) => {
-        if (!cancelled) {
-          lastTrafficLightPositionRef.current = null;
-          console.error('Failed to sync macOS traffic light position:', error);
-        }
-      });
-    };
-
-    syncTrafficLights();
-    window.addEventListener('resize', syncTrafficLights);
+    });
 
     return () => {
       cancelled = true;
-      window.removeEventListener('resize', syncTrafficLights);
     };
-  }, [
-    effectiveUiZoomScale,
-    isNativeMacosTitlebar,
-    isTauriAvailable,
-    titleBarLayout.titleBarHeightPx,
-  ]);
+  }, [effectiveUiZoomScale, isNativeMacosTitlebar, isTauriAvailable]);
 
   const handleHeaderDoubleClick = () => {
     if (isNativeMacosTitlebar || platformChrome.disableCustomDoubleClickZoom) {
@@ -248,7 +241,16 @@ export function Header({
     }
   };
 
-  const projectName = getGlobalProjectById(projectGroups, selectedGroupId)?.name ?? null;
+  const selectedGroup = getGlobalProjectById(projectGroups, selectedGroupId);
+  const selectedProject = selectedProjectId ? getProjectById(selectedProjectId) ?? null : null;
+  const projectName = selectedGroup?.name ?? selectedProject?.name ?? null;
+  const projectPickerIcon: IconName = selectedGroup
+    ? 'layers'
+    : selectedProject
+      ? projectHasGitIntegration(selectedProject)
+        ? 'folder-git-2'
+        : 'folder'
+      : 'layers';
 
   const renderModeButton = (modeOption: ModeOption) => (
     <button
@@ -277,7 +279,7 @@ export function Header({
   ) => (
     <button
       onClick={onClick}
-      className="macro-titlebar-action p-1.5 rounded-lg hover:bg-accent transition-colors"
+      className="macro-titlebar-action rounded-md p-1.5 transition-colors hover:bg-accent"
       title={title}
       aria-label={ariaLabel || title}
       data-tauri-drag-region="false"
@@ -317,18 +319,18 @@ export function Header({
 
             {mode !== 'Chat' ? (
               <>
-                <div className="hidden sm:block w-px h-5 bg-border shrink-0" />
+                <div className="ml-2 hidden h-5 w-px shrink-0 bg-border sm:block" />
                 <button
                   onClick={() => setProjectNavigatorOpen(true)}
                   className={cn(
-                    'macro-titlebar-action flex items-center gap-2 px-3 py-1.5 rounded-lg',
+                    'macro-titlebar-action flex h-8 items-center gap-2 rounded-md px-2.5',
                     'hover:bg-accent transition-colors text-sm',
                     'min-w-[80px] max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] xl:max-w-[320px]'
                   )}
                   data-tauri-drag-region="false"
                   data-tour-id="project-picker"
                 >
-                  <Icon name="layers" size={14} className="text-muted-foreground shrink-0" />
+                  <Icon name={projectPickerIcon} size={15} className="text-muted-foreground shrink-0" />
                   <span className="inline-flex min-w-0 items-center truncate leading-none text-foreground">
                     {projectName || t('header.selectProject')}
                   </span>
@@ -349,7 +351,7 @@ export function Header({
             <div className="lg:hidden relative pointer-events-auto" ref={modeMenuRef}>
               <button
                 onClick={() => setModeMenuOpen((current) => !current)}
-                className="macro-titlebar-action flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent transition-colors text-xs font-medium"
+                className="macro-titlebar-action flex items-center gap-2 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-accent"
                 data-tauri-drag-region="false"
                 data-tour-id="mode-switcher"
               >
@@ -396,7 +398,7 @@ export function Header({
           <div className="macro-topbar-trailing flex min-w-[100px] sm:min-w-[160px] md:min-w-[200px] items-center justify-end gap-2 justify-self-end">
             <button
               onClick={onToggleLeft}
-              className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
+              className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
               title={t('header.toggleLeftPanel')}
               data-tauri-drag-region="false"
               data-tour-id="toggle-left-panel"
@@ -409,7 +411,7 @@ export function Header({
             </button>
             <button
               onClick={onToggleRight}
-              className="macro-titlebar-action hidden sm:block p-1.5 rounded-lg hover:bg-accent transition-colors"
+              className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
               title={t('header.toggleRightPanel')}
               data-tauri-drag-region="false"
               data-tour-id="toggle-right-panel"

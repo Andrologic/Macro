@@ -8,11 +8,10 @@ import {
 } from '../services/gitDiffParser';
 import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
-import type { ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
+import type { Project, ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
 import {
   EMPTY_REVIEW_TASK_SUMMARY,
   buildReviewTaskSummary,
-  selectReviewRepositoryId,
   type ReviewTaskSummary,
 } from '../services/implementMultiRepoSummary';
 import { useAppStore } from './useAppStore';
@@ -22,6 +21,10 @@ import {
   buildFileChangesRepositoryId,
   getFileChangesExecutionTargets,
 } from '../services/fileChangesReviewScope';
+import {
+  resolveCachedPreparedTaskWorktreePath,
+  resolvePreparedTaskWorktreePath,
+} from '../services/preparedTaskWorktrees';
 import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import {
@@ -37,7 +40,12 @@ import {
 import {
   validateConventionalCommitMessage,
 } from '../services/conventionalCommit';
-import type { SmartCommitModelConfig } from '../services/smartCommitModelConfig';
+import type { MetadataModelConfig } from '../services/metadataModelConfig';
+import {
+  buildDefaultCommitMessage,
+  getReadyCommitRepositories,
+  isRepositoryReadyToCommit,
+} from '../services/smartCommitDrafts';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -148,6 +156,21 @@ interface LoadCurrentChangesOptions {
   preserveDiffModalSession?: boolean;
 }
 
+const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
+
+const isFileDiffDebugEnabled = (): boolean =>
+  Boolean(import.meta.env?.DEV) &&
+  typeof window !== 'undefined' &&
+  window.localStorage.getItem(DEBUG_FILE_DIFF_STORAGE_KEY) === '1';
+
+const debugFileDiffStoreLog = (event: string, details?: Record<string, unknown>): void => {
+  if (!isFileDiffDebugEnabled()) {
+    return;
+  }
+
+  console.debug(`[FileChangesStore] ${event}`, details ?? {});
+};
+
 const EMPTY_STATS: ReviewRepositoryStats = {
   pendingVisibleFileCount: 0,
   validatedStagedFileCount: 0,
@@ -190,6 +213,7 @@ type FileChangesTauriDeps = Pick<
   | 'gitAdd'
   | 'gitCommit'
   | 'gitRestorePaths'
+  | 'gitWorktreeInspect'
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
   gitReviewSnapshot?: typeof tauriIpc.gitReviewSnapshot;
@@ -200,6 +224,7 @@ interface FileChangesAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => FileChangesProjectRef | null | undefined;
 }
@@ -217,8 +242,9 @@ interface FileChangesTaskStoreState {
 }
 
 type FileChangesSetTaskState = (partial: {
-  activeBranchName: string | null;
-  activeRepositoryPath: string | null;
+  activeBranchName?: string | null;
+  activeRepositoryPath?: string | null;
+  branchWorktrees?: Record<string, string>;
 }) => void;
 
 export interface FileChangesStoreDependencies {
@@ -407,12 +433,7 @@ const normalizeBranchName = (value?: string | null): string => {
   return trimmed || 'work';
 };
 
-const toDefaultCommitMessage = (title?: string | null): string => {
-  const trimmed = title?.trim();
-  if (!trimmed) return 'chore: update task changes';
-  const normalized = trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
-  return `chore: ${normalized}`;
-};
+const toDefaultCommitMessage = buildDefaultCommitMessage;
 
 const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => {
   const pendingChanges = changes.filter((change) => change.hasPendingVisibleChange);
@@ -651,17 +672,6 @@ const mapReviewFileToEntry = (
   requiresHydration: false,
 });
 
-const syncActiveReviewRepository = (
-  deps: FileChangesStoreDependencies,
-  repository: ReviewRepositoryState | null | undefined
-): void => {
-  if (!repository) return;
-  deps.setTaskState({
-    activeBranchName: repository.branchName,
-    activeRepositoryPath: repository.worktreePath,
-  });
-};
-
 const getScopedExecutionTargets = (
   deps: FileChangesStoreDependencies,
   task: FileChangesTaskLike
@@ -678,7 +688,10 @@ const getScopedExecutionTargets = (
   }
 
   const scopedProjectIds = getRepositoryScopedProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    },
     appState.selectedGroupId,
     appState.selectedProjectId
   );
@@ -704,11 +717,54 @@ const ensureReviewTask = (deps: FileChangesStoreDependencies): FileChangesTaskLi
 
 const resolveRepositoryWorktreePath = (
   deps: FileChangesStoreDependencies,
-  target: TaskExecutionTarget,
-  _task: FileChangesTaskLike
+  target: TaskExecutionTarget
 ): string | null => {
   const taskState = deps.getTaskState();
-  return taskState.branchWorktrees[target.worktreeKey] ?? null;
+  return resolveCachedPreparedTaskWorktreePath(target, taskState.branchWorktrees);
+};
+
+const resolveRepositoryWorktreePaths = async (
+  deps: FileChangesStoreDependencies,
+  targets: TaskExecutionTarget[]
+): Promise<{
+  unresolvedTargets: TaskExecutionTarget[];
+  hydratedWorktrees: Record<string, string>;
+}> => {
+  const hydratedWorktrees: Record<string, string> = {};
+  const unresolvedTargets: TaskExecutionTarget[] = [];
+
+  for (const target of targets) {
+    const taskState = deps.getTaskState();
+    const branchWorktrees = {
+      ...taskState.branchWorktrees,
+      ...hydratedWorktrees,
+    };
+
+    if (branchWorktrees[target.worktreeKey]) {
+      continue;
+    }
+
+    const cachedPath = resolveCachedPreparedTaskWorktreePath(target, branchWorktrees);
+    if (cachedPath) {
+      hydratedWorktrees[target.worktreeKey] = cachedPath;
+      continue;
+    }
+
+    const resolvedPath = await resolvePreparedTaskWorktreePath({
+      target,
+      branchWorktrees,
+      getProjectById: deps.getAppState().getProjectById,
+      tauri: deps.tauri,
+    });
+
+    if (resolvedPath) {
+      hydratedWorktrees[target.worktreeKey] = resolvedPath;
+    } else {
+      unresolvedTargets.push(target);
+    }
+  }
+
+  return { unresolvedTargets, hydratedWorktrees };
 };
 
 const buildFirstChangesMessage = (): string =>
@@ -719,8 +775,21 @@ const buildFirstChangesMessage = (): string =>
 
 const buildMissingWorktreeMessage = (
   _task: FileChangesTaskLike,
-  _targets: TaskExecutionTarget[]
-): string => buildFirstChangesMessage();
+  targets: TaskExecutionTarget[]
+): string => {
+  const targetBranches = targets
+    .map((target) => target.branchName || target.worktreeKey)
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  const targetLabel = targetBranches.length > 0
+    ? targetBranches.join(', ')
+    : tChanges('implement.taskWorkspace', 'the task workspace');
+
+  return tChanges(
+    'implement.missingTaskWorktreeMapping',
+    'Macro could not find the prepared task worktree for {{target}}.',
+    { target: targetLabel }
+  );
+};
 
 const buildAwaitingWorktreeMessage = (task: FileChangesTaskLike): string => {
   if (task.status === 'Blocked') {
@@ -770,7 +839,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedProject?.name || tChanges(
           'implement.selectedSubproject',
-          'the selected subproject'
+          'the selected project'
         ),
       }
     );
@@ -783,7 +852,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedGroup.name || tChanges(
           'implement.selectedGlobalProject',
-          'the selected global project'
+          'the selected group'
         ),
       }
     );
@@ -796,7 +865,7 @@ const buildOutOfScopeMessage = (deps: FileChangesStoreDependencies): string => {
       {
         project: selectedProject.name || tChanges(
           'implement.selectedSubproject',
-          'the selected subproject'
+          'the selected project'
         ),
       }
     );
@@ -872,7 +941,7 @@ const loadRepositoryState = async (params: {
   const appState = deps.getAppState();
   const project = appState.getProjectById(target.projectId);
   const repoPath = project?.path ?? target.repoPath ?? null;
-  const worktreePath = resolveRepositoryWorktreePath(deps, target, task);
+  const worktreePath = resolveRepositoryWorktreePath(deps, target);
 
   if (!repoPath || !worktreePath) {
     throw new Error(
@@ -1085,15 +1154,10 @@ const buildCompletionRepositoryRecord = (
 });
 
 const deriveReviewState = (
-  repositories: ReviewRepositoryState[],
-  selectedRepositoryId?: string | null
-): Pick<FileChangesState, 'selectedRepositoryId' | 'reviewSummary'> => {
-  const nextSelectedRepositoryId = selectReviewRepositoryId(repositories, selectedRepositoryId);
-  return {
-    selectedRepositoryId: nextSelectedRepositoryId,
-    reviewSummary: buildReviewTaskSummary(repositories, nextSelectedRepositoryId),
-  };
-};
+  repositories: ReviewRepositoryState[]
+): Pick<FileChangesState, 'reviewSummary'> => ({
+  reviewSummary: buildReviewTaskSummary(repositories),
+});
 
 const buildDiffModalSession = (
   repositoryId: string,
@@ -1111,13 +1175,84 @@ const buildDiffModalSession = (
   ...overrides,
 });
 
+const findDiffTargetChange = (
+  repositories: ReviewRepositoryState[],
+  target: SelectedDiffTarget | null
+): FileChangeEntry | null => {
+  if (!target) {
+    return null;
+  }
+
+  return repositories
+    .find((repository) => repository.id === target.repositoryId)
+    ?.changes.find((change) => change.id === target.changeId) ?? null;
+};
+
+const resolveLatestDiffModalSessionAfterRefresh = ({
+  repositories,
+  latestState,
+  taskId,
+  shouldPreserve,
+}: {
+  repositories: ReviewRepositoryState[];
+  latestState: FileChangesState;
+  taskId: string;
+  shouldPreserve: boolean;
+}): Pick<FileChangesState, 'selectedDiffTarget' | 'diffModalSession' | 'isDiffModalOpen'> => {
+  if (!shouldPreserve || latestState.currentTaskId !== taskId || !latestState.isDiffModalOpen) {
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  const session = latestState.diffModalSession;
+  const target = latestState.selectedDiffTarget;
+  if (!session || !target) {
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  const refreshedChange = findDiffTargetChange(repositories, target);
+  if (!refreshedChange) {
+    debugFileDiffStoreLog('loadCurrentChanges.modalClosedAfterRefresh', {
+      repositoryId: target.repositoryId,
+      changeId: target.changeId,
+      reason: 'change_missing',
+    });
+    return {
+      selectedDiffTarget: null,
+      diffModalSession: null,
+      isDiffModalOpen: false,
+    };
+  }
+
+  return {
+    selectedDiffTarget: target,
+    diffModalSession: {
+      ...session,
+      originalContent: refreshedChange.originalContent,
+      rightDraftContent: session.isDirty
+        ? session.rightDraftContent
+        : refreshedChange.modifiedContent,
+      lastLoadedModifiedContent: refreshedChange.modifiedContent,
+      isSaving: false,
+      isHydratingFullContext: false,
+    },
+    isDiffModalOpen: true,
+  };
+};
+
 interface FileChangesState {
   currentTaskId: string | null;
   currentTaskLoadState: FileChangesTaskLoadState;
   currentTaskLoadMessage: string | null;
   loadRequestId: number;
   repositories: ReviewRepositoryState[];
-  selectedRepositoryId: string | null;
   reviewSummary: ReviewTaskSummary;
   selectedDiffTarget: SelectedDiffTarget | null;
   diffModalSession: FileDiffModalSession | null;
@@ -1131,7 +1266,6 @@ interface FileChangesState {
 
   loadCurrentChanges: (options?: LoadCurrentChangesOptions) => Promise<void>;
   resetReviewState: () => void;
-  selectRepository: (repositoryId: string | null) => void;
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
   stageChanges: (repositoryId: string, changeIds: string[]) => Promise<void>;
@@ -1145,12 +1279,11 @@ interface FileChangesState {
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
   commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
   commitAllReadyTaskRepositories: (options?: {
-    modelConfig?: SmartCommitModelConfig | null;
+    modelConfig?: MetadataModelConfig | null;
     messagesByRepositoryId?: Record<string, string>;
   }) => Promise<CommitTaskRepositoriesResult>;
   setCommitMessageDraft: (repositoryId: string, message: string) => void;
   getRepository: (repositoryId: string) => ReviewRepositoryState | undefined;
-  getSelectedRepository: () => ReviewRepositoryState | undefined;
   getChange: (repositoryId: string, changeId: string) => FileChangeEntry | undefined;
   getDiffModalSession: () => FileDiffModalSession | null;
   getSelectedDiffTarget: () => SelectedDiffTarget | null;
@@ -1306,7 +1439,6 @@ export const createFileChangesStore = (
     currentTaskLoadMessage: null,
     loadRequestId: 0,
     repositories: [],
-    selectedRepositoryId: null,
     reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
     selectedDiffTarget: null,
     diffModalSession: null,
@@ -1325,7 +1457,6 @@ export const createFileChangesStore = (
 
     const resetLoadState = {
       repositories: [],
-      selectedRepositoryId: null,
       reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
       selectedDiffTarget: null,
       diffModalSession: null,
@@ -1374,10 +1505,15 @@ export const createFileChangesStore = (
       (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
     );
     const executionRecords = sameTask ? previousState.executionRecords : {};
-    const previousSelectedRepositoryId = sameTask ? previousState.selectedRepositoryId : null;
-    const previousSelectedDiffTarget = sameTask ? previousState.selectedDiffTarget : null;
-    const previousDiffModalSession = sameTask ? previousState.diffModalSession : null;
-    const previousIsDiffModalOpen = sameTask && previousState.isDiffModalOpen;
+    const shouldPreserveModalAfterRefresh = silentReload || options?.preserveDiffModalSession === true;
+
+    debugFileDiffStoreLog('loadCurrentChanges.start', {
+      taskId: task.id,
+      silent: options?.silent === true,
+      preserveDiffModalSession: options?.preserveDiffModalSession === true,
+      isDiffModalOpen: previousState.isDiffModalOpen,
+      selectedDiffTarget: previousState.selectedDiffTarget,
+    });
 
     if (silentReload) {
       set({
@@ -1423,9 +1559,8 @@ export const createFileChangesStore = (
         return;
       }
 
-      const unresolvedTargets = scopedExecutionTargets.filter(
-        (target) => !resolveRepositoryWorktreePath(deps, target, task)
-      );
+      const { unresolvedTargets, hydratedWorktrees } =
+        await resolveRepositoryWorktreePaths(deps, scopedExecutionTargets);
 
       if (unresolvedTargets.length > 0) {
         if (isStaleRequest(nextLoadRequestId, task.id)) {
@@ -1448,6 +1583,19 @@ export const createFileChangesStore = (
         return;
       }
 
+      if (Object.keys(hydratedWorktrees).length > 0) {
+        if (isStaleRequest(nextLoadRequestId, task.id)) {
+          return;
+        }
+
+        deps.setTaskState({
+          branchWorktrees: {
+            ...deps.getTaskState().branchWorktrees,
+            ...hydratedWorktrees,
+          },
+        });
+      }
+
       const repositories = await Promise.all(
         scopedExecutionTargets.map((target) => {
           const repositoryId = buildFileChangesRepositoryId(target);
@@ -1465,47 +1613,32 @@ export const createFileChangesStore = (
         return;
       }
 
-      const derivedReviewState = deriveReviewState(repositories, previousSelectedRepositoryId);
-      const selectedDiffTarget =
-        previousSelectedDiffTarget &&
-          repositories.some((repository) =>
-            repository.id === previousSelectedDiffTarget.repositoryId &&
-            repository.changes.some((change) => change.id === previousSelectedDiffTarget.changeId)
-          )
-          ? previousSelectedDiffTarget
-          : null;
-      const diffModalSession =
-        options?.preserveDiffModalSession &&
-        previousDiffModalSession &&
-        selectedDiffTarget &&
-        previousDiffModalSession.repositoryId === selectedDiffTarget.repositoryId &&
-        previousDiffModalSession.changeId === selectedDiffTarget.changeId
-          ? {
-            ...previousDiffModalSession,
-            isSaving: false,
-            isHydratingFullContext: false,
-          }
-          : null;
+      const derivedReviewState = deriveReviewState(repositories);
+      const latestDiffModalState = resolveLatestDiffModalSessionAfterRefresh({
+        repositories,
+        latestState: get(),
+        taskId: task.id,
+        shouldPreserve: shouldPreserveModalAfterRefresh,
+      });
+
+      debugFileDiffStoreLog('loadCurrentChanges.finish', {
+        taskId: task.id,
+        repositoryCount: repositories.length,
+        preservedDiffModal: latestDiffModalState.isDiffModalOpen,
+        selectedDiffTarget: latestDiffModalState.selectedDiffTarget,
+      });
 
       set({
         currentTaskId: task.id,
         currentTaskLoadState: 'ready',
         currentTaskLoadMessage: null,
         repositories,
-        selectedRepositoryId: derivedReviewState.selectedRepositoryId,
         reviewSummary: derivedReviewState.reviewSummary,
-        selectedDiffTarget,
-        diffModalSession,
-        isDiffModalOpen: Boolean(selectedDiffTarget) && previousIsDiffModalOpen,
+        ...latestDiffModalState,
         isLoading: false,
         lastError: null,
         executionRecords,
       });
-
-      syncActiveReviewRepository(
-        deps,
-        repositories.find((repository) => repository.id === derivedReviewState.selectedRepositoryId) || repositories[0]
-      );
     } catch (error) {
       if (isStaleRequest(nextLoadRequestId, task.id)) {
         return;
@@ -1532,7 +1665,6 @@ export const createFileChangesStore = (
       currentTaskLoadMessage: null,
       loadRequestId: get().loadRequestId + 1,
       repositories: [],
-      selectedRepositoryId: null,
       reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
       selectedDiffTarget: null,
       diffModalSession: null,
@@ -1546,15 +1678,6 @@ export const createFileChangesStore = (
     });
   },
 
-  selectRepository: (repositoryId) => {
-    const derivedReviewState = deriveReviewState(get().repositories, repositoryId);
-    const repository = derivedReviewState.selectedRepositoryId
-      ? get().repositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId)
-      : null;
-    set(derivedReviewState);
-    syncActiveReviewRepository(deps, repository);
-  },
-
   openDiffModal: (repositoryId, changeId) => {
     const repositories = get().repositories;
     const change = repositories
@@ -1563,13 +1686,13 @@ export const createFileChangesStore = (
     if (!change) {
       return;
     }
-    const derivedReviewState = deriveReviewState(repositories, repositoryId);
-    const repository = derivedReviewState.selectedRepositoryId
-      ? repositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId) ?? null
-      : null;
+    debugFileDiffStoreLog('openDiffModal', {
+      repositoryId,
+      changeId,
+      path: change.path,
+    });
     set({
-      selectedRepositoryId: derivedReviewState.selectedRepositoryId,
-      reviewSummary: derivedReviewState.reviewSummary,
+      ...deriveReviewState(repositories),
       selectedDiffTarget: { repositoryId, changeId },
       diffModalSession: buildDiffModalSession(repositoryId, change, {
         isHydratingFullContext: true,
@@ -1577,10 +1700,14 @@ export const createFileChangesStore = (
       isDiffModalOpen: true,
     });
     void hydrateDiffModalFile(repositoryId, changeId);
-    syncActiveReviewRepository(deps, repository);
   },
 
   closeDiffModal: () => {
+    const state = get();
+    debugFileDiffStoreLog('closeDiffModal', {
+      selectedDiffTarget: state.selectedDiffTarget,
+      hadSession: Boolean(state.diffModalSession),
+    });
     set({
       selectedDiffTarget: null,
       diffModalSession: null,
@@ -1774,12 +1901,11 @@ export const createFileChangesStore = (
   },
 
   stageAllChanges: async (repositoryId) => {
-    const targetRepositoryId = repositoryId || get().selectedRepositoryId;
-    if (!targetRepositoryId) return;
-    const repository = get().getRepository(targetRepositoryId);
+    if (!repositoryId) return;
+    const repository = get().getRepository(repositoryId);
     if (!repository) return;
     await get().stageChanges(
-      targetRepositoryId,
+      repositoryId,
       repository.changes
         .filter((change) => change.hasPendingVisibleChange)
         .map((change) => change.id)
@@ -2001,7 +2127,7 @@ export const createFileChangesStore = (
           }));
           return {
             repositories,
-            ...deriveReviewState(repositories, state.selectedRepositoryId),
+            ...deriveReviewState(repositories),
           };
         })(),
         diffModalSession: state.diffModalSession
@@ -2102,7 +2228,7 @@ export const createFileChangesStore = (
         }));
         return {
           repositories,
-          ...deriveReviewState(repositories, state.selectedRepositoryId),
+          ...deriveReviewState(repositories),
         };
       })(),
     }));
@@ -2147,21 +2273,16 @@ export const createFileChangesStore = (
             }
           : currentRepository
       ));
-      const derivedReviewState = deriveReviewState(nextRepositories, refreshedState.selectedRepositoryId);
-      const nextSelectedRepository = derivedReviewState.selectedRepositoryId
-        ? nextRepositories.find((candidate) => candidate.id === derivedReviewState.selectedRepositoryId) ?? null
-        : null;
+      const derivedReviewState = deriveReviewState(nextRepositories);
 
       set({
         repositories: nextRepositories,
-        selectedRepositoryId: derivedReviewState.selectedRepositoryId,
         reviewSummary: derivedReviewState.reviewSummary,
         executionRecords: nextExecutionRecords,
         isCommitting: false,
         lastCommitHash: hash,
         lastError: null,
       });
-      syncActiveReviewRepository(deps, nextSelectedRepository);
 
       const completionRecords = nextRepositories.map((currentRepository) =>
         nextExecutionRecords[currentRepository.id] ||
@@ -2194,7 +2315,7 @@ export const createFileChangesStore = (
           }));
           return {
             repositories,
-            ...deriveReviewState(repositories, state.selectedRepositoryId),
+            ...deriveReviewState(repositories),
           };
         })(),
       }));
@@ -2205,12 +2326,7 @@ export const createFileChangesStore = (
   commitAllReadyTaskRepositories: async (options = {}) => {
     const task = ensureReviewTask(deps);
 
-    const targetRepositories = get().repositories
-      .filter((repository) =>
-        repository.commitState === 'idle' &&
-        repository.stats.validatedStagedFileCount > 0 &&
-        repository.stagedPaths.length > 0
-      );
+    const targetRepositories = getReadyCommitRepositories(get().repositories);
     const targetRepositoryIds = targetRepositories.map((repository) => repository.id);
 
     if (targetRepositoryIds.length === 0) {
@@ -2261,12 +2377,7 @@ export const createFileChangesStore = (
 
     for (const repositoryId of targetRepositoryIds) {
       const repository = get().getRepository(repositoryId);
-      if (
-        !repository ||
-        repository.commitState !== 'idle' ||
-        repository.stats.validatedStagedFileCount === 0 ||
-        repository.stagedPaths.length === 0
-      ) {
+      if (!repository || !isRepositoryReadyToCommit(repository)) {
         continue;
       }
 
@@ -2333,12 +2444,6 @@ export const createFileChangesStore = (
     return get().repositories.find((repository) => repository.id === repositoryId);
   },
 
-  getSelectedRepository: () => {
-    const selectedRepositoryId = get().selectedRepositoryId;
-    if (!selectedRepositoryId) return undefined;
-    return get().repositories.find((repository) => repository.id === selectedRepositoryId);
-  },
-
   getChange: (repositoryId, changeId) => {
     return get().repositories
       .find((repository) => repository.id === repositoryId)
@@ -2350,9 +2455,8 @@ export const createFileChangesStore = (
   getSelectedDiffTarget: () => get().selectedDiffTarget,
 
   getStats: (repositoryId) => {
-    const targetRepositoryId = repositoryId || get().selectedRepositoryId;
-    if (!targetRepositoryId) return EMPTY_STATS;
-    return get().repositories.find((repository) => repository.id === targetRepositoryId)?.stats || EMPTY_STATS;
+    if (!repositoryId) return EMPTY_STATS;
+    return get().repositories.find((repository) => repository.id === repositoryId)?.stats || EMPTY_STATS;
   },
 
   getOverallStats: () => {

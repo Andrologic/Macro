@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
 import type { TaskStatusIndicatorState } from '../../services/taskStatusPresentation';
 
@@ -160,6 +161,18 @@ export const TaskStatusIndicator: React.FC<TaskStatusIndicatorProps> = ({
             style={{ width: dotSize, height: dotSize }}
           />
         </span>
+      </span>
+    );
+  }
+
+  if (shouldAnimateIcon && iconName === 'loader') {
+    return (
+      <span
+        data-task-status-indicator-state={state}
+        data-task-status-indicator-layout={layout}
+        className={cn('inline-flex items-center justify-center', className)}
+      >
+        <SpinnerIcon size={size} />
       </span>
     );
   }

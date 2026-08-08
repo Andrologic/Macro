@@ -10,6 +10,9 @@ pub struct AppConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub ai: AIConfig,
+
+    #[serde(skip)]
+    pub workspace_path_source: WorkspacePathSource,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +30,19 @@ pub struct AIConfig {
     pub local_api_url: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspacePathSource {
+    #[default]
+    Default,
+    Configured,
+}
+
+impl WorkspacePathSource {
+    pub fn is_default(self) -> bool {
+        matches!(self, Self::Default)
+    }
+}
+
 fn default_workspace_path() -> PathBuf {
     PathBuf::from(".")
 }
@@ -40,6 +56,7 @@ impl Default for AppConfig {
         Self {
             workspace_path: default_workspace_path(),
             ai: AIConfig::default(),
+            workspace_path_source: WorkspacePathSource::Default,
         }
     }
 }
@@ -80,19 +97,80 @@ fn normalize_workspace_path(workspace_path: PathBuf) -> PathBuf {
     }
 }
 
+fn workspace_path_source_for_config(
+    settings_file: Option<&str>,
+) -> crate::core::Result<WorkspacePathSource> {
+    let Some(settings_file) = settings_file else {
+        return Ok(WorkspacePathSource::Default);
+    };
+
+    let settings = config::Config::builder()
+        .add_source(config::File::with_name(settings_file).required(false))
+        .build()
+        .map_err(|error| crate::core::error::BackendError::Config {
+            message: error.to_string(),
+        })?;
+
+    if settings.get_string("workspace_path").is_ok() {
+        Ok(WorkspacePathSource::Configured)
+    } else {
+        Ok(WorkspacePathSource::Default)
+    }
+}
+
+pub fn resolve_desktop_default_workspace_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("workspace")
+}
+
+fn finalize_desktop_workspace_path_for_mode(
+    config: &mut AppConfig,
+    app_data_dir: &Path,
+    use_app_data_default: bool,
+) {
+    if config.workspace_path_source.is_default() && use_app_data_default {
+        config.workspace_path = resolve_desktop_default_workspace_path(app_data_dir);
+    }
+}
+
+pub fn finalize_desktop_workspace_path(
+    config: &mut AppConfig,
+    app_data_dir: &Path,
+) -> crate::core::Result<()> {
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, !cfg!(debug_assertions));
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn test_resolve_workspace_path_for_cwd(workspace_path: PathBuf, cwd: &Path) -> PathBuf {
     resolve_workspace_path_for_cwd(workspace_path, cwd)
 }
 
+#[cfg(test)]
+pub(crate) fn test_workspace_path_source_for_config(
+    settings_file: Option<&str>,
+) -> crate::core::Result<WorkspacePathSource> {
+    workspace_path_source_for_config(settings_file)
+}
+
+#[cfg(test)]
+pub(crate) fn test_finalize_desktop_workspace_path_for_mode(
+    config: &mut AppConfig,
+    app_data_dir: &Path,
+    use_app_data_default: bool,
+) {
+    finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default);
+}
+
 pub fn load_config() -> crate::core::Result<AppConfig> {
+    let settings_file = std::env::var("MACRO_CONFIG").ok();
+    let workspace_path_source = workspace_path_source_for_config(settings_file.as_deref())?;
     let mut settings = config::Config::builder()
         .set_default("workspace_path", ".")?
         .set_default("ai.local_api_url", "http://localhost:11434")?;
 
     // Try to load from config file if it exists
-    if let Ok(settings_file) = std::env::var("MACRO_CONFIG") {
-        settings = settings.add_source(config::File::with_name(&settings_file).required(false));
+    if let Some(settings_file) = settings_file.as_ref() {
+        settings = settings.add_source(config::File::with_name(settings_file).required(false));
     }
 
     let mut config: AppConfig = settings
@@ -106,6 +184,7 @@ pub fn load_config() -> crate::core::Result<AppConfig> {
         })?;
 
     config.workspace_path = normalize_workspace_path(config.workspace_path);
+    config.workspace_path_source = workspace_path_source;
 
     Ok(config)
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { mockInternalTools } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../../services/tools/builtInTools';
 import { Icon, isIconName } from './Icon';
 
 describe('Icon', () => {
@@ -36,7 +36,7 @@ describe('Icon', () => {
   });
 
   it('supports every visible built-in tool icon', () => {
-    const unsupportedToolIcons = mockInternalTools
+    const unsupportedToolIcons = BUILT_IN_TOOLS
       .filter((tool) => tool.config?.visible !== false)
       .filter((tool) => !isIconName(tool.icon))
       .map((tool) => `${tool.id}:${tool.icon}`);

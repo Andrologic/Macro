@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     task_id TEXT,
     group_id TEXT,
     project_id TEXT,
+    provider_id TEXT,
+    model_id TEXT,
+    reasoning_effort TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_message TEXT,
@@ -19,6 +22,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL,
+    turn_id TEXT,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -27,6 +31,8 @@ CREATE TABLE IF NOT EXISTS messages (
     hidden_context TEXT,
     provider_input_items_json TEXT,
     provider_turn_state_json TEXT,
+    context_refs_json TEXT,
+    completion_reason TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
@@ -159,6 +165,36 @@ CREATE TABLE IF NOT EXISTS architect_plan_conversation_sync (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS conversation_citations (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    snippet TEXT,
+    content TEXT,
+    url TEXT,
+    favicon TEXT,
+    path TEXT,
+    language TEXT,
+    size_bytes INTEGER,
+    kind TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS conversation_toolbox_state (
+    conversation_id TEXT PRIMARY KEY,
+    composer_context_refs_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_scope_mode
 ON conversations(scope_mode, updated_at DESC);
 
@@ -182,6 +218,15 @@ ON messages(created_at, id);
 
 CREATE INDEX IF NOT EXISTS idx_architect_plan_conversation_sync_plan
 ON architect_plan_conversation_sync(plan_id, target_branch, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_citations_conversation
+ON conversation_citations(conversation_id, updated_at DESC, id ASC);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_citations_message
+ON conversation_citations(conversation_id, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_toolbox_state_updated_at
+ON conversation_toolbox_state(updated_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_git_repositories_path
 ON git_repositories(path);

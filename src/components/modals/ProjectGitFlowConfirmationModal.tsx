@@ -37,7 +37,7 @@ export const ProjectGitFlowConfirmationModal: React.FC<ProjectGitFlowConfirmatio
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/55" onClick={onClose} />
 
       <div className="relative mx-4 flex max-h-[calc(100vh-2rem)] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">

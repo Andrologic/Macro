@@ -1,6 +1,11 @@
-import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
 import type { MCPServer, Tool } from '../../types';
 import { normalizeArchitectToolId } from '../architectToolNames';
+import {
+  isMCPServerRecord,
+  normalizeMCPIdentifier,
+  normalizeMCPServer,
+} from '../mcp';
 import type { MCPServerSettingsDto, ToolSettingsDto } from '../contracts/dtos';
 
 export const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
@@ -80,7 +85,7 @@ export const buildToolSettingsPayload = (): ToolSettingsDto => {
   writeStoredToolEnablement(enabledTools);
 
   const tools: Record<string, Tool> = {};
-  mockInternalTools.forEach((tool) => {
+  BUILT_IN_TOOLS.forEach((tool) => {
     const enabled = enabledTools[tool.id] !== false;
     tools[tool.id] = {
       ...tool,
@@ -108,24 +113,73 @@ export const writeStoredMCPServerEnablement = (servers: Record<string, boolean>)
   writeStoredRecord(MCP_SERVER_SETTINGS_STORAGE_KEY, servers);
 };
 
+export const readStoredMCPServers = (): Record<string, MCPServer> => {
+  const parsed = readStoredRecord(MCP_SERVER_SETTINGS_STORAGE_KEY);
+  const rawServers =
+    parsed.servers && typeof parsed.servers === 'object' && !Array.isArray(parsed.servers)
+      ? (parsed.servers as Record<string, unknown>)
+      : parsed;
+
+  return Object.fromEntries(
+    Object.entries(rawServers).map(([id, value]) => {
+      if (isMCPServerRecord(value)) {
+        const normalized = normalizeMCPServer({ ...value, id: value.id || id });
+        return [normalized.id, normalized];
+      }
+
+      const normalizedId = normalizeMCPIdentifier(id);
+      const legacyEnabled =
+        typeof value === 'boolean'
+          ? value
+          : Boolean(
+              value &&
+                typeof value === 'object' &&
+                'enabled' in value &&
+                (value as { enabled?: unknown }).enabled === true
+            );
+      const normalized = normalizeMCPServer({
+        id: normalizedId,
+        name: id,
+        status: 'unconfigured',
+        description: 'Migrated MCP server placeholder. Add transport settings to use it.',
+        config: { enabled: legacyEnabled },
+      });
+      return [normalized.id, normalized];
+    })
+  );
+};
+
+export const writeStoredMCPServers = (servers: Record<string, MCPServer>): void => {
+  const normalized = Object.fromEntries(
+    Object.values(servers).map((server) => {
+      const normalizedServer = normalizeMCPServer(server);
+      return [normalizedServer.id, normalizedServer];
+    })
+  );
+  writeStoredRecord(MCP_SERVER_SETTINGS_STORAGE_KEY, normalized);
+};
+
 export const buildMCPServerSettingsPayload = (): MCPServerSettingsDto => {
-  const enabledServers = readStoredMCPServerEnablement();
+  const storedServers = readStoredMCPServers();
   const servers: Record<string, MCPServer> = Object.fromEntries(
-    mockMCPServers.map((server) => [
+    BUILT_IN_MCP_SERVERS.map((server) => [
       server.id,
-      {
+      normalizeMCPServer({
         ...server,
-        status: (enabledServers[server.id] ? 'online' : 'offline') as MCPServer['status'],
+        ...(storedServers[server.id] ?? {}),
         config: {
           ...server.config,
-          enabled: enabledServers[server.id] ?? false,
+          ...(storedServers[server.id]?.config ?? {}),
         },
-      },
+      }),
     ])
   );
 
   return {
-    servers,
+    servers: {
+      ...servers,
+      ...storedServers,
+    },
   };
 };
 
@@ -149,6 +203,44 @@ export const normalizeMCPServerEnablementInput = (
           : false;
 
       return [id, enabled];
+    })
+  );
+};
+
+export const normalizeMCPServerSettingsInput = (
+  settings: MCPServerSettingsDto
+): Record<string, MCPServer> => {
+  return Object.fromEntries(
+    Object.entries(settings.servers || {}).map(([id, value]) => {
+      if (typeof value === 'boolean') {
+        const normalized = normalizeMCPServer({
+          id,
+          name: id,
+          status: 'unconfigured',
+          description: 'Migrated MCP server placeholder. Add transport settings to use it.',
+          config: { enabled: value },
+        });
+        return [normalized.id, normalized];
+      }
+
+      if (isMCPServerRecord(value)) {
+        const normalized = normalizeMCPServer({ ...value, id: value.id || id });
+        return [normalized.id, normalized];
+      }
+
+      const enabled =
+        value &&
+        typeof value === 'object' &&
+        'enabled' in value &&
+        (value as { enabled?: unknown }).enabled === true;
+      const normalized = normalizeMCPServer({
+        id,
+        name: id,
+        status: 'unconfigured',
+        description: 'Migrated MCP server placeholder. Add transport settings to use it.',
+        config: { enabled },
+      });
+      return [normalized.id, normalized];
     })
   );
 };

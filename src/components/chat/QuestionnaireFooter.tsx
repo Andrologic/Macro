@@ -163,7 +163,6 @@ export const QuestionnaireFooter: React.FC<QuestionnaireFooterProps> = ({
               variant="ghost"
               size="sm"
               onClick={onCancel}
-              disabled={isBusySending}
               className="h-11 shrink-0 rounded-xl border border-border/70 px-4"
             >
               {t('common.cancel', 'Annuler')}

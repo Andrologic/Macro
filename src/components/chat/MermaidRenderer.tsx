@@ -22,6 +22,71 @@ const cleanupRenderArtifacts = (diagramId: string): void => {
   document.getElementById(`d${diagramId}`)?.remove();
 };
 
+export const sanitizeMermaidSvg = (rawSvg: string): string => {
+  let root: Element | null = null;
+
+  if (typeof DOMParser !== 'undefined') {
+    const parsedDocument = new DOMParser().parseFromString(rawSvg, 'image/svg+xml');
+    if (!parsedDocument.querySelector('parsererror')) {
+      root = parsedDocument.documentElement;
+    }
+  } else if (typeof document !== 'undefined') {
+    const template = document.createElement('template');
+    template.innerHTML = rawSvg;
+    root = template.content.firstElementChild;
+  }
+
+  if (!root) {
+    return rawSvg;
+  }
+
+  root
+    .querySelectorAll('script, foreignObject, iframe, object, embed, link')
+    .forEach((element) => element.remove());
+
+  const elements = [
+    root,
+    ...Array.from(root.querySelectorAll('*')),
+  ];
+
+  for (const element of elements) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = Array.from(attribute.value.trim().toLowerCase())
+        .filter((character) => {
+          const codePoint = character.charCodeAt(0);
+          return codePoint > 0x1f && codePoint !== 0x7f && !/\s/.test(character);
+        })
+        .join('');
+
+      if (name.startsWith('on')) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (
+        (name === 'href' || name === 'xlink:href' || name === 'src') &&
+        (value.startsWith('javascript:') ||
+          (value.startsWith('data:') &&
+            !value.startsWith('data:image/png') &&
+            !value.startsWith('data:image/gif') &&
+            !value.startsWith('data:image/jpeg') &&
+            !value.startsWith('data:image/webp') &&
+            !value.startsWith('data:image/svg+xml')))
+      ) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (name === 'style' && /url\(["']?javascript:/i.test(attribute.value)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+
+  return root.outerHTML;
+};
+
 export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey }) => {
   const { t } = useTranslation();
   const { isDark } = useTheme();
@@ -83,7 +148,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
       try {
         mermaid.initialize({
           startOnLoad: false,
-          securityLevel: 'loose',
+          securityLevel: 'strict',
           theme: isDark ? 'dark' : 'default',
           fontFamily: '"Inter", system-ui, sans-serif',
           suppressErrorRendering: true,
@@ -97,10 +162,11 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
         cleanupRenderArtifacts(diagramId);
         const { svg: renderedSvg } = await mermaid.render(diagramId, cleanCode);
         cleanupRenderArtifacts(diagramId);
+        const sanitizedSvg = sanitizeMermaidSvg(renderedSvg);
 
         if (isMounted) {
-          mermaidCache.set(cacheKey, renderedSvg);
-          setSvg(renderedSvg);
+          mermaidCache.set(cacheKey, sanitizedSvg);
+          setSvg(sanitizedSvg);
           setError(null);
         }
       } catch (err) {
@@ -172,7 +238,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     if (!isExpanded) return null;
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
         <div className="flex h-[min(86vh,calc(100vh-2rem))] w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">

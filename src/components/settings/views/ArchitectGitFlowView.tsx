@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
 import { loadPreference, PREF_KEYS, savePreference } from '../../../services/preferences';
@@ -13,6 +13,7 @@ import { cn } from '../../../utils/cn';
 const defaultSettings: ArchitectGitNamingSettings = {
   mainBranch: 'main',
   baseBranch: 'main',
+  completionMergePolicy: 'merge_commit',
   planBranchTemplate: 'plan/{planSlug}',
   featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
   standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
@@ -25,6 +26,7 @@ const defaultSettings: ArchitectGitNamingSettings = {
 export const ArchitectGitFlowView: React.FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ArchitectGitNamingSettings>(defaultSettings);
+  const settingsTouchedRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -33,6 +35,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       const [
         mainBranch,
         baseBranch,
+        completionMergePolicy,
         planTemplate,
         featureTemplate,
         standaloneFeatureTemplate,
@@ -43,6 +46,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       ] = await Promise.all([
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH),
         loadPreference<string>(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH),
+        loadPreference<string>(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY),
         loadPreference<string>(PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE),
         loadPreference<string>(PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE),
@@ -52,9 +56,15 @@ export const ArchitectGitFlowView: React.FC = () => {
         loadPreference<boolean>(PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH),
       ]);
 
+      if (cancelled || settingsTouchedRef.current) {
+        return;
+      }
+
       setSettings({
         mainBranch: mainBranch || defaultSettings.mainBranch,
         baseBranch: baseBranch || defaultSettings.baseBranch,
+        completionMergePolicy:
+          completionMergePolicy === 'fast_forward' ? 'fast_forward' : 'merge_commit',
         planBranchTemplate: planTemplate || defaultSettings.planBranchTemplate,
         featureBranchTemplate: featureTemplate || defaultSettings.featureBranchTemplate,
         standaloneFeatureBranchTemplate:
@@ -66,8 +76,18 @@ export const ArchitectGitFlowView: React.FC = () => {
       });
     };
 
+    let cancelled = false;
     void loadSettings();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const updateSettings = (updater: React.SetStateAction<ArchitectGitNamingSettings>) => {
+    settingsTouchedRef.current = true;
+    setSettings(updater);
+  };
 
   const validationErrors = useMemo(() => validateArchitectGitNamingSettings(settings), [settings]);
 
@@ -111,11 +131,13 @@ export const ArchitectGitFlowView: React.FC = () => {
 
   const handleSave = async () => {
     if (validationErrors.length > 0) return;
+    settingsTouchedRef.current = true;
     setIsSaving(true);
     setSaveSuccess(false);
     await Promise.all([
       savePreference(PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH, settings.mainBranch.trim() || defaultSettings.mainBranch),
       savePreference(PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH, settings.baseBranch.trim() || defaultSettings.baseBranch),
+      savePreference(PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY, settings.completionMergePolicy),
       savePreference(
         PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE,
         settings.planBranchTemplate.trim() || defaultSettings.planBranchTemplate
@@ -148,6 +170,7 @@ export const ArchitectGitFlowView: React.FC = () => {
   };
 
   const handleReset = () => {
+    settingsTouchedRef.current = true;
     setSettings(defaultSettings);
     setSaveSuccess(false);
   };
@@ -156,12 +179,12 @@ export const ArchitectGitFlowView: React.FC = () => {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
         <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.architectGitFlow.title', 'Architect Git Workflow')}
+          {t('settings.architectGitFlow.title', 'Git workflow')}
         </h4>
         <p className="text-xs text-muted-foreground">
           {t(
             'settings.architectGitFlow.subtitle',
-            'Configure the default Git workflow applied to new subprojects, including the development target and feature branch templates. Existing subprojects can override these values individually.'
+            'Configure the default Git workflow applied to new projects, including the development target and feature branch templates. Existing projects can override these values individually.'
           )}
         </p>
       </section>
@@ -173,7 +196,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.mainBranch}
-            onChange={(event) => setSettings((prev) => ({ ...prev, mainBranch: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, mainBranch: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="main"
           />
@@ -185,10 +208,40 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.baseBranch}
-            onChange={(event) => setSettings((prev) => ({ ...prev, baseBranch: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, baseBranch: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="main"
           />
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">
+            {t('settings.architectGitFlow.completionMergePolicyLabel', 'Task completion merge policy')}
+          </label>
+          <select
+            value={settings.completionMergePolicy}
+            onChange={(event) =>
+              updateSettings((prev) => ({
+                ...prev,
+                completionMergePolicy:
+                  event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
+              }))
+            }
+            className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="merge_commit">
+              {t('settings.architectGitFlow.completionMergePolicyMergeCommit', 'Merge commit')}
+            </option>
+            <option value="fast_forward">
+              {t('settings.architectGitFlow.completionMergePolicyFastForward', 'Fast-forward when possible')}
+            </option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              'settings.architectGitFlow.completionMergePolicyHelp',
+              'Merge commit keeps a visible task boundary. Fast-forward advances directly when Git can do so cleanly.'
+            )}
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -197,7 +250,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.planBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, planBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, planBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="plan/{planSlug}"
           />
@@ -209,7 +262,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.featureBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, featureBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, featureBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="feature/{planSlug}/{featureSlug}"
           />
@@ -225,7 +278,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           <input
             value={settings.standaloneFeatureBranchTemplate}
             onChange={(event) =>
-              setSettings((prev) => ({ ...prev, standaloneFeatureBranchTemplate: event.target.value }))
+              updateSettings((prev) => ({ ...prev, standaloneFeatureBranchTemplate: event.target.value }))
             }
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="feature/{featureSlug}"
@@ -238,7 +291,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.releaseBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, releaseBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="release/v{releaseSlug}"
           />
@@ -250,7 +303,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.hotfixBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, hotfixBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, hotfixBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="hotfix/{hotfixSlug}"
           />
@@ -262,7 +315,7 @@ export const ArchitectGitFlowView: React.FC = () => {
           </label>
           <input
             value={settings.bugfixBranchTemplate}
-            onChange={(event) => setSettings((prev) => ({ ...prev, bugfixBranchTemplate: event.target.value }))}
+            onChange={(event) => updateSettings((prev) => ({ ...prev, bugfixBranchTemplate: event.target.value }))}
             className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
             placeholder="bugfix/{bugfixSlug}"
           />
@@ -273,7 +326,7 @@ export const ArchitectGitFlowView: React.FC = () => {
             type="checkbox"
             checked={settings.syncTargetBeforeFinish}
             onChange={(event) =>
-              setSettings((prev) => ({ ...prev, syncTargetBeforeFinish: event.target.checked }))
+              updateSettings((prev) => ({ ...prev, syncTargetBeforeFinish: event.target.checked }))
             }
             className="mt-0.5 h-4 w-4 rounded border-border bg-background"
           />

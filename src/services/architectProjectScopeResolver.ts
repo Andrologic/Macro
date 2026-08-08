@@ -74,6 +74,7 @@ const hasNegativeCue = (text: string, keyword: string): boolean =>
   ).test(text);
 
 const getCandidateProjects = (
+  standaloneProjects: Project[] = [],
   projectGroups: ProjectGroup[],
   selectedGroupId?: string | null,
   selectedProjectId?: string | null
@@ -90,9 +91,13 @@ const getCandidateProjects = (
     if (selectedGroup?.projects.length) {
       return selectedGroup.projects;
     }
+    const standaloneProject = standaloneProjects.find((project) => project.id === selectedProjectId);
+    if (standaloneProject) {
+      return [standaloneProject];
+    }
   }
 
-  return projectGroups.flatMap((group) => group.projects);
+  return [...standaloneProjects, ...projectGroups.flatMap((group) => group.projects)];
 };
 
 const inferProfileTagsFromEntries = (paths: string[]): string[] => {
@@ -271,6 +276,7 @@ const shouldPreserveScopeAdditively = (status: ArchitectPlanRecord['status']): b
 export const inferArchitectPlanProjectScope = async (params: {
   activePlan: Pick<ArchitectPlanRecord, 'status' | 'projectIds' | 'contextProjectIds' | 'title' | 'label' | 'description'>;
   nodes: Array<Pick<PlanNode, 'title' | 'description' | 'projectId' | 'projectIds'>>;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -278,6 +284,7 @@ export const inferArchitectPlanProjectScope = async (params: {
 }): Promise<ArchitectResolvedProjectScope> => {
   const tauri = params.tauri || tauriIpc;
   const candidates = getCandidateProjects(
+    params.standaloneProjects ?? [],
     params.projectGroups,
     params.selectedGroupId,
     params.selectedProjectId

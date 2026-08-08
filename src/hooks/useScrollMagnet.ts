@@ -19,7 +19,7 @@ interface ViewportAnchor {
 }
 
 /**
- * useScrollMagnet – Manages auto-scroll magnetism during streaming.
+ * useScrollMagnet – Manages auto-scroll magnetism during assistant activity.
  *
  * The separator color bar acts as a "gate": while locked, the user's wheel
  * events are absorbed (preventDefault). Scrolling up triggers the detaching
@@ -27,7 +27,7 @@ interface ViewportAnchor {
  * This prevents the vibration caused by auto-scroll fighting user input.
  *
  * State machine:
- *   idle ─(streaming starts)──► locked ─(streaming ends)──► releasing ──► idle
+ *   idle ─(activity starts)──► locked ─(activity ends)──► releasing ──► idle
  *                                  │                                       ▲
  *                                  ├─(user scrolls up)──► detaching ──► detached
  *                                  │                                       │
@@ -35,7 +35,7 @@ interface ViewportAnchor {
  *                                           via reattaching ──► locked
  */
 export function useScrollMagnet(
-    isStreaming: boolean,
+    isActive: boolean,
     deps: unknown[],
 ): {
     scrollContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -48,14 +48,15 @@ export function useScrollMagnet(
     const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
     const programmaticScrollRef = useRef(false);
     const scrollCaptureRafRef = useRef<number | null>(null);
-    const prevStreamingRef = useRef(isStreaming);
+    const pinnedScrollRafRef = useRef<number | null>(null);
+    const prevActiveRef = useRef(isActive);
     // Keep a mutable ref in sync with state so event handlers always read fresh
     const stateRef = useRef<SeparatorState>(state);
     useEffect(() => { stateRef.current = state; }, [state]);
 
-    // Also keep a mutable ref for isStreaming to avoid re-registering listeners
-    const isStreamingRef = useRef(isStreaming);
-    useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+    // Also keep a mutable ref for activity to avoid re-registering listeners.
+    const isActiveRef = useRef(isActive);
+    useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
     // ---------------------------------------------------------------------------
     // Helpers
@@ -79,6 +80,26 @@ export function useScrollMagnet(
         if (!el) return;
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }, []);
+
+    const isPinnedState = useCallback((nextState: SeparatorState) => (
+        nextState === 'locked' ||
+        nextState === 'detaching' ||
+        nextState === 'reattaching'
+    ), []);
+
+    const schedulePinnedScrollToBottom = useCallback(() => {
+        if (!isPinnedState(stateRef.current)) return;
+        if (pinnedScrollRafRef.current !== null) {
+            cancelAnimationFrame(pinnedScrollRafRef.current);
+        }
+        pinnedScrollRafRef.current = requestAnimationFrame(() => {
+            pinnedScrollRafRef.current = null;
+            if (!isPinnedState(stateRef.current)) return;
+            const el = scrollContainerRef.current;
+            if (!el) return;
+            el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+        });
+    }, [isPinnedState]);
 
     const findViewportAnchor = useCallback((): ViewportAnchor | null => {
         const el = scrollContainerRef.current;
@@ -145,21 +166,21 @@ export function useScrollMagnet(
     }, [captureViewportAnchor]);
 
     // ---------------------------------------------------------------------------
-    // React to streaming start / stop
+    // React to assistant activity start / stop
     // ---------------------------------------------------------------------------
 
     useEffect(() => {
-        const wasStreaming = prevStreamingRef.current;
-        prevStreamingRef.current = isStreaming;
+        const wasActive = prevActiveRef.current;
+        prevActiveRef.current = isActive;
 
-        if (isStreaming && !wasStreaming) {
-            // New streaming started → force lock regardless of current state
+        if (isActive && !wasActive) {
+            // New assistant activity started -> force lock regardless of current state.
             clearTimer();
             setState('locked');
             // Immediately scroll to bottom
             requestAnimationFrame(() => scrollToBottom());
-        } else if (!isStreaming && wasStreaming) {
-            // Streaming ended
+        } else if (!isActive && wasActive) {
+            // Assistant activity ended.
             setState((prev) => {
                 if (prev === 'locked' || prev === 'reattaching') {
                     // Transition locked → releasing → idle
@@ -180,7 +201,7 @@ export function useScrollMagnet(
                 return 'idle';
             });
         }
-    }, [isStreaming, clearTimer, scrollToBottom]);
+    }, [isActive, clearTimer, scrollToBottom]);
 
     // ---------------------------------------------------------------------------
     // Auto-scroll while locked or detaching (react to message changes)
@@ -188,17 +209,50 @@ export function useScrollMagnet(
     // ---------------------------------------------------------------------------
 
     useEffect(() => {
-        if (state === 'locked' || state === 'detaching' || state === 'reattaching') {
+        if (isPinnedState(state)) {
             viewportAnchorRef.current = null;
-            requestAnimationFrame(() => {
-                const el = scrollContainerRef.current;
-                if (el) {
-                    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-                }
-            });
+            schedulePinnedScrollToBottom();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [...deps, state]);
+    }, [...deps, state, isPinnedState, schedulePinnedScrollToBottom]);
+
+    // ---------------------------------------------------------------------------
+    // Keep pinned when existing content changes height.
+    //
+    // Message deps cover streamed text and new rows, but expanding an already
+    // rendered block (for example a completed tool accordion) can increase the
+    // transcript height without changing message data. Observe the scroll
+    // content itself so locked magnetism follows those layout-only changes.
+    // ---------------------------------------------------------------------------
+
+    useEffect(() => {
+        const el = scrollContainerRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+
+        const resizeObserver = new ResizeObserver(() => {
+            schedulePinnedScrollToBottom();
+        });
+
+        const observeScrollContent = () => {
+            resizeObserver.disconnect();
+            resizeObserver.observe(el);
+            Array.from(el.children).forEach((child) => {
+                if (child instanceof HTMLElement) {
+                    resizeObserver.observe(child);
+                }
+            });
+        };
+
+        observeScrollContent();
+
+        const mutationObserver = new MutationObserver(observeScrollContent);
+        mutationObserver.observe(el, { childList: true });
+
+        return () => {
+            mutationObserver.disconnect();
+            resizeObserver.disconnect();
+        };
+    }, [schedulePinnedScrollToBottom]);
 
     // ---------------------------------------------------------------------------
     // Preserve the user's viewport while detached.
@@ -264,7 +318,7 @@ export function useScrollMagnet(
             }
 
             // --- User actively scrolls DOWN while detached & near bottom → reattach ---
-            if ((s === 'detached' || s === 'idle') && e.deltaY > 0 && isNearBottom() && isStreamingRef.current) {
+            if ((s === 'detached' || s === 'idle') && e.deltaY > 0 && isNearBottom() && isActiveRef.current) {
                 e.preventDefault();
                 clearTimer();
                 timerRef.current = setTimeout(() => {
@@ -318,6 +372,15 @@ export function useScrollMagnet(
     useEffect(() => {
         return () => clearTimer();
     }, [clearTimer]);
+
+    useEffect(() => {
+        return () => {
+            if (pinnedScrollRafRef.current !== null) {
+                cancelAnimationFrame(pinnedScrollRafRef.current);
+                pinnedScrollRafRef.current = null;
+            }
+        };
+    }, []);
 
     return { scrollContainerRef, separatorState: state, scrollToBottom };
 }

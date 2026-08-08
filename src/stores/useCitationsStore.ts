@@ -4,6 +4,7 @@
  */
 
 import { create } from 'zustand';
+import * as tauriIpc from '../services/tauriIpc';
 
 export type CitationType = 'web' | 'file' | 'document' | 'source_passage';
 export type CitationScope = 'context' | 'source';
@@ -36,6 +37,12 @@ interface CitationsState {
   citations: Citation[];
   
   // Actions
+  hydrateConversationCitations: (conversationId: string) => Promise<void>;
+  ensureCitationContentLoaded: (id: string) => Promise<Citation | null>;
+  ensureConversationCitationContentsLoaded: (
+    conversationId: string,
+    filter?: (citation: Citation) => boolean,
+  ) => Promise<Citation[]>;
   addCitation: (citation: Omit<Citation, 'id' | 'timestamp'>) => string;
   addSourcePassage: (payload: {
     conversationId: string;
@@ -76,10 +83,152 @@ export interface WebSearchResult {
   title: string;
   snippet: string;
   score?: number;
+  favicon?: string;
 }
+
+const isCitationType = (value: string): value is CitationType =>
+  value === 'web' || value === 'file' || value === 'document' || value === 'source_passage';
+
+const isCitationScope = (value: string): value is CitationScope =>
+  value === 'context' || value === 'source';
+
+const isSourcePassageKind = (value: string | null | undefined): value is SourcePassageKind =>
+  value === 'interesting' || value === 'used';
+
+const mapDbCitation = (citation: tauriIpc.DbConversationCitation): Citation | null => {
+  if (!isCitationType(citation.type) || !isCitationScope(citation.scope)) return null;
+  return {
+    id: citation.id,
+    type: citation.type,
+    scope: citation.scope,
+    source: citation.source,
+    title: citation.title,
+    snippet: citation.snippet ?? undefined,
+    content: citation.content ?? undefined,
+    messageId: citation.message_id,
+    conversationId: citation.conversation_id,
+    timestamp: citation.updated_at || citation.created_at,
+    url: citation.url ?? undefined,
+    favicon: citation.favicon ?? undefined,
+    path: citation.path ?? undefined,
+    language: citation.language ?? undefined,
+    sizeBytes: citation.size_bytes ?? undefined,
+    kind: isSourcePassageKind(citation.kind) ? citation.kind : undefined,
+    reason: citation.reason ?? undefined,
+  };
+};
+
+const toDbCitationInput = (citation: Citation): tauriIpc.DbUpsertConversationCitationInput => ({
+  id: citation.id,
+  conversation_id: citation.conversationId,
+  message_id: citation.messageId,
+  type: citation.type,
+  scope: citation.scope,
+  source: citation.source,
+  title: citation.title,
+  snippet: citation.snippet ?? null,
+  content: citation.content ?? null,
+  url: citation.url ?? null,
+  favicon: citation.favicon ?? null,
+  path: citation.path ?? null,
+  language: citation.language ?? null,
+  size_bytes: citation.sizeBytes ?? null,
+  kind: citation.kind ?? null,
+  reason: citation.reason ?? null,
+  timestamp: citation.timestamp,
+});
+
+const persistCitationAsync = (citation: Citation): void => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  void tauriIpc.upsertConversationCitation(toDbCitationInput(citation)).catch((error) => {
+    console.warn('[citations] Failed to persist citation:', error);
+  });
+};
+
+const deletePersistedCitationAsync = (id: string): void => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  void tauriIpc.deleteConversationCitation(id).catch((error) => {
+    console.warn('[citations] Failed to delete persisted citation:', error);
+  });
+};
+
+const deletePersistedConversationCitationsAsync = (conversationId: string): void => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  void tauriIpc.deleteConversationCitations(conversationId).catch((error) => {
+    console.warn('[citations] Failed to delete persisted conversation citations:', error);
+  });
+};
+
+const contentLoadPromisesByCitationId = new Map<string, Promise<Citation | null>>();
 
 export const useCitationsStore = create<CitationsState>((set, get) => ({
   citations: [],
+
+  hydrateConversationCitations: async (conversationId) => {
+    if (!tauriIpc.isTauriAvailable()) return;
+    try {
+      const loaded = (await tauriIpc.listConversationCitations(conversationId))
+        .map(mapDbCitation)
+        .filter((citation): citation is Citation => Boolean(citation));
+      set((state) => ({
+        citations: [
+          ...state.citations.filter((citation) => citation.conversationId !== conversationId),
+          ...loaded,
+        ],
+      }));
+    } catch (error) {
+      console.warn('[citations] Failed to hydrate conversation citations:', error);
+    }
+  },
+
+  ensureCitationContentLoaded: async (id) => {
+    const existing = get().citations.find((citation) => citation.id === id) ?? null;
+    if (!existing) return null;
+    if (typeof existing.content === 'string') return existing;
+    if (!tauriIpc.isTauriAvailable()) return existing;
+
+    const pending = contentLoadPromisesByCitationId.get(id);
+    if (pending) return pending;
+
+    const loadPromise = tauriIpc
+      .getConversationCitationContent(id)
+      .then((content) => {
+        if (typeof content !== 'string') {
+          return get().citations.find((citation) => citation.id === id) ?? null;
+        }
+        let updatedCitation: Citation | null = null;
+        set((state) => ({
+          citations: state.citations.map((citation) =>
+            citation.id === id
+              ? (updatedCitation = { ...citation, content })
+              : citation
+          ),
+        }));
+        return updatedCitation ?? get().citations.find((citation) => citation.id === id) ?? null;
+      })
+      .catch((error) => {
+        console.warn('[citations] Failed to load citation content:', error);
+        return get().citations.find((citation) => citation.id === id) ?? null;
+      })
+      .finally(() => {
+        contentLoadPromisesByCitationId.delete(id);
+      });
+
+    contentLoadPromisesByCitationId.set(id, loadPromise);
+    return loadPromise;
+  },
+
+  ensureConversationCitationContentsLoaded: async (conversationId, filter) => {
+    const citations = get().citations.filter(
+      (citation) =>
+        citation.conversationId === conversationId &&
+        (!filter || filter(citation)),
+    );
+    const loaded = await Promise.all(
+      citations.map((citation) => get().ensureCitationContentLoaded(citation.id)),
+    );
+    return loaded.filter((citation): citation is Citation => Boolean(citation));
+  },
 
   addCitation: (citationData) => {
     if (citationData.type === 'web' || citationData.type === 'file') {
@@ -93,10 +242,11 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       });
       if (existing) {
         const timestamp = new Date().toISOString();
+        let updatedCitation: Citation | null = null;
         set((state) => ({
           citations: state.citations.map((citation) =>
             citation.id === existing.id
-              ? {
+              ? (updatedCitation = {
                   ...citation,
                   ...citationData,
                   id: citation.id,
@@ -104,13 +254,15 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
                   snippet: citationData.snippet ?? citation.snippet,
                   content: citationData.content ?? citation.content,
                   url: citationData.url ?? citation.url,
+                  favicon: citationData.favicon ?? citation.favicon,
                   path: citationData.path ?? citation.path,
                   language: citationData.language ?? citation.language,
                   sizeBytes: citationData.sizeBytes ?? citation.sizeBytes,
-                }
+                })
               : citation
           ),
         }));
+        if (updatedCitation) persistCitationAsync(updatedCitation);
         return existing.id;
       }
     }
@@ -125,6 +277,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     set((state) => ({
       citations: [...state.citations, citation],
     }));
+    persistCitationAsync(citation);
     
     return id;
   },
@@ -137,13 +290,31 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
 
     const existing = get().citations.find((c) =>
       c.conversationId === conversationId &&
-      c.messageId === messageId &&
       c.type === 'source_passage' &&
-      (c.kind || 'used') === kind &&
       c.title === normalizedTitle &&
       (c.snippet || '') === normalizedPassage
     );
-    if (existing) return existing.id;
+    if (existing) {
+      const existingKind = existing.kind || 'used';
+      if (kind === 'used' && existingKind === 'interesting') {
+        const timestamp = new Date().toISOString();
+        let updatedCitation: Citation | null = null;
+        set((state) => ({
+          citations: state.citations.map((citation) =>
+            citation.id === existing.id
+              ? (updatedCitation = {
+                  ...citation,
+                  kind: 'used',
+                  reason: normalizedReason || citation.reason,
+                  timestamp,
+                })
+              : citation
+          ),
+        }));
+        if (updatedCitation) persistCitationAsync(updatedCitation);
+      }
+      return existing.id;
+    }
 
     const citation: Citation = {
       id,
@@ -164,27 +335,25 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     set((state) => ({
       citations: [...state.citations, citation],
     }));
+    persistCitationAsync(citation);
 
     return id;
   },
 
   addWebCitations: (results, messageId, conversationId) => {
-    const newCitations: Citation[] = results.map((result, index) => ({
-      id: `cite-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 9)}`,
-      type: 'web' as CitationType,
-      scope: 'context' as CitationScope,
-      source: result.url,
-      title: result.title,
-      snippet: result.snippet,
-      url: result.url,
-      messageId,
-      conversationId,
-      timestamp: new Date().toISOString(),
-    }));
-
-    set((state) => ({
-      citations: [...state.citations, ...newCitations],
-    }));
+    results.forEach((result) => {
+      get().addCitation({
+        type: 'web',
+        scope: 'context',
+        source: result.url,
+        title: result.title,
+        snippet: result.snippet,
+        url: result.url,
+        favicon: result.favicon,
+        messageId,
+        conversationId,
+      });
+    });
   },
 
   updateSourcePassage: ({ conversationId, citationId, title, passage, source, url, kind, reason }) => {
@@ -206,10 +375,11 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
 
     if (!nextTitle || !nextPassage) return false;
 
+    let updatedCitation: Citation | null = null;
     set((state) => ({
       citations: state.citations.map((c) =>
         c.id === citationId
-          ? {
+          ? (updatedCitation = {
               ...c,
               title: nextTitle,
               snippet: nextPassage,
@@ -219,10 +389,11 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
               kind: nextKind,
               reason: nextReason,
               timestamp: new Date().toISOString(),
-            }
+            })
           : c
       ),
     }));
+    if (updatedCitation) persistCitationAsync(updatedCitation);
 
     return true;
   },
@@ -231,12 +402,14 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     set((state) => ({
       citations: state.citations.filter((c) => c.id !== id),
     }));
+    deletePersistedCitationAsync(id);
   },
 
   clearConversationCitations: (conversationId) => {
     set((state) => ({
       citations: state.citations.filter((c) => c.conversationId !== conversationId),
     }));
+    deletePersistedConversationCitationsAsync(conversationId);
   },
 
   clearConversationCitationsBulk: (conversationIds) => {
@@ -245,10 +418,14 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     set((state) => ({
       citations: state.citations.filter((citation) => !ids.has(citation.conversationId)),
     }));
+    conversationIds.forEach(deletePersistedConversationCitationsAsync);
   },
 
   pruneConversationSourceCitations: (conversationId, keepMessageIds) => {
     const keepSet = new Set(keepMessageIds);
+    const removedIds = get().citations
+      .filter((c) => c.conversationId === conversationId && c.scope === 'source' && !keepSet.has(c.messageId))
+      .map((citation) => citation.id);
     set((state) => ({
       citations: state.citations.filter((c) => {
         if (c.conversationId !== conversationId) return true;
@@ -257,6 +434,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
         return true;
       }),
     }));
+    removedIds.forEach(deletePersistedCitationAsync);
   },
 
   getConversationCitations: (conversationId) => {

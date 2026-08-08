@@ -6,6 +6,7 @@ import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import type { TaskStatus } from '../../types';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 let useAppStore!: typeof UseAppStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
@@ -215,7 +216,18 @@ describe('TaskQueue', () => {
 
   const seedStores = (
     taskStatus: TaskStatus,
-    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+    options?: {
+      isStreaming?: boolean;
+      runtimePhase?: 'preparing' | 'streaming';
+      compactionPhase?:
+        | 'compacting'
+        | 'safety_compacting'
+        | 'model_switch_compacting'
+        | 'recovering_overflow'
+        | 'compacted';
+      compactionConversationId?: string;
+      conversationTaskId?: string | null;
+    }
   ) => {
     seedTasks([makeTask('task-1', taskStatus, {
       title: 'Render task status indicator',
@@ -228,7 +240,18 @@ describe('TaskQueue', () => {
 
   const seedTasks = (
     tasks: Array<Record<string, unknown>>,
-    options?: { isStreaming?: boolean; runtimePhase?: 'preparing' | 'streaming' }
+    options?: {
+      isStreaming?: boolean;
+      runtimePhase?: 'preparing' | 'streaming';
+      compactionPhase?:
+        | 'compacting'
+        | 'safety_compacting'
+        | 'model_switch_compacting'
+        | 'recovering_overflow'
+        | 'compacted';
+      compactionConversationId?: string;
+      conversationTaskId?: string | null;
+    }
   ) => {
     const runtimePhase = options?.runtimePhase ?? (options?.isStreaming ? 'streaming' : null);
     const conversationRuntimeById = runtimePhase
@@ -274,10 +297,20 @@ describe('TaskQueue', () => {
       conversations: [
         {
           id: 'conversation-1',
-          task_id: 'task-1',
+          task_id:
+            options?.conversationTaskId === undefined
+              ? 'task-1'
+              : options.conversationTaskId,
         },
       ] as never,
       conversationRuntimeById: conversationRuntimeById as never,
+      conversationCompactionStatusById: options?.compactionPhase
+        ? ({
+            [options.compactionConversationId ?? 'conversation-1']: {
+              phase: options.compactionPhase,
+            },
+          } as never)
+        : {},
       isStreaming: runtimePhase === 'streaming',
       selectedConversationId: 'conversation-1',
     });
@@ -315,7 +348,19 @@ describe('TaskQueue', () => {
       text: badge.textContent?.replace(/\s+/g, ' ').trim(),
     }));
 
+  const getTaskContextBadgeIconIdentity = (key: string) => {
+    const badge = document.body.querySelector(`[data-task-context-badge="${key}"]`);
+    const icon = Array.from(badge?.children ?? []).find((child) =>
+      ['svg', 'span'].includes(child.tagName.toLowerCase())
+    );
+    return {
+      dataIcon: icon?.getAttribute('data-icon') ?? '',
+      className: icon?.getAttribute('class') ?? '',
+    };
+  };
+
   beforeEach(async () => {
+    installTauriRuntimeMock();
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
     initialChatState = useChatStore.getState();
@@ -348,6 +393,7 @@ describe('TaskQueue', () => {
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
+    removeTauriRuntimeMock();
     mock.restore();
   });
 
@@ -405,6 +451,136 @@ describe('TaskQueue', () => {
     expect(activateTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('suppresses a stale merge-runtime error on a Pending task without an active merge runtime', async () => {
+    seedStores('Pending');
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale failed merge summaries after a task is reopened', async () => {
+    seedTasks([
+      makeTask('task-1', 'InProgress', {
+        title: 'Reopened task',
+        merge_workflow_summary: {
+          kind: 'task_completion',
+          phase: 'failed',
+          taskStatus: 'Failed',
+          repositoryCount: 2,
+          mergedRepositoryCount: 0,
+          blockedRepositoryCount: 0,
+          unresolvedRepositoryCount: 2,
+          updatedAt: '2026-04-23T09:00:00.000Z',
+          message: 'Automatic merge failed',
+        },
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="merge_failed"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a worktree-style error on a dependency-blocked task', async () => {
+    seedTasks([makeTask('task-1', 'Pending', {
+      is_blocked: true,
+      blocked_by: ['task-0'],
+      blocked_by_task_ids: ['task-0'],
+    })]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).not.toHaveBeenCalled();
+    expect(notifyMock.error).not.toHaveBeenCalled();
+    expect(notifyMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a merge-runtime error when a task has an active failed merge runtime', async () => {
+    seedTasks([makeTask('task-1', 'Failed', {
+      is_blocked: false,
+    })]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': {
+          taskId: 'task-1',
+          kind: 'task_completion',
+          phase: 'failed',
+          taskStatus: 'Failed',
+          review: {
+            taskId: 'task-1',
+            title: 'Task 1',
+            taskSource: 'standalone',
+            planId: null,
+            planTitle: null,
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Resolve the repository blockers before retrying the merge.',
+          lastLoadedAt: '2026-04-22T10:00:00.000Z',
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes the toast notification key to the selected task id', async () => {
+    seedStores('Pending');
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      lastError: 'Cannot create a task worktree for feature/demo because that branch is still checked out in the primary repository and has uncommitted changes',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const options = notifyMock.actionRequired.mock.calls[0]?.[1] as { notificationKey?: string };
+    expect(options?.notificationKey).toContain('implement-task-error:task-1:');
+  });
+
   it('sends read-only scope warnings to an actionable notification instead of rendering inline', async () => {
     seedStores('Pending');
     const setSelectedProject = mock(() => undefined);
@@ -435,7 +611,7 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.textContent).not.toContain('This scope is currently read-only.');
-    expect(document.body.textContent).not.toContain('Implementation needs at least one editable repository.');
+    expect(document.body.textContent).not.toContain('Implementation needs at least one editable project.');
     expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
     const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
       string,
@@ -449,7 +625,7 @@ describe('TaskQueue', () => {
     expect(title).toBe('This scope is currently read-only.');
     expect(options.tone).toBe('warning');
     expect(options.notificationKey).toBe('implement-read-only-scope:group-1');
-    expect(options.description).toContain('Implementation needs at least one editable repository.');
+    expect(options.description).toContain('Implementation needs at least one editable project.');
     expect(options.actions[0]?.label).toBe('Initialize Git');
 
     await act(async () => {
@@ -590,6 +766,143 @@ describe('TaskQueue', () => {
     ).not.toBeNull();
   });
 
+  it('renders a running indicator while the task conversation is compacting', async () => {
+    seedStores('InProgress', { compactionPhase: 'compacting' });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('updates the task indicator when compaction starts and finishes after render', async () => {
+    seedStores('InProgress');
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      useChatStore.setState({
+        ...useChatStore.getState(),
+        conversationCompactionStatusById: {
+          'conversation-1': { phase: 'compacting' },
+        } as never,
+      });
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+
+    await act(async () => {
+      useChatStore.setState({
+        ...useChatStore.getState(),
+        conversationCompactionStatusById: {
+          'conversation-1': { phase: 'compacted' },
+        } as never,
+      });
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
+  it('runs the task indicator when compaction is linked through task conversation_id', async () => {
+    seedTasks([makeTask('task-1', 'InProgress', {
+      title: 'Render task status indicator',
+      description: 'Check the status marker',
+      task_source: 'architect',
+      plan_id: 'plan-1',
+      plan_title: 'Plan One',
+      conversation_id: 'conversation-1',
+    })], {
+      compactionPhase: 'compacting',
+      conversationTaskId: null,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('runs the selected standalone task indicator when compaction has no persisted task link yet', async () => {
+    seedTasks([makeTask('task-1', 'InProgress', {
+      title: 'Standalone task with stale links',
+      description: 'Compaction should still mark it active',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      conversation_id: null,
+    })], {
+      compactionPhase: 'compacting',
+      conversationTaskId: null,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
+  it('stops the running indicator when task compaction completes', async () => {
+    seedStores('InProgress', { compactionPhase: 'compacted' });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
+  it('does not mark a task running for another conversation compaction', async () => {
+    seedStores('InProgress', {
+      compactionPhase: 'compacting',
+      compactionConversationId: 'other-conversation',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).toBeNull();
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')
+    ).not.toBeNull();
+  });
+
   it('renders the architect plan badge in the task footer', async () => {
     seedTasks([
       makeTask('architect-1', 'Pending', {
@@ -607,6 +920,7 @@ describe('TaskQueue', () => {
           slug: '1710000000000',
           title: '1710000000000',
           label: 'Checkout refresh',
+          planKind: 'release',
           status: 'in_progress',
           targetBranch: 'develop',
           projectIds: ['project-1'],
@@ -626,6 +940,84 @@ describe('TaskQueue', () => {
     expect(getTaskContextBadges()).toEqual([
       { key: 'plan', text: 'Checkout refresh' },
     ]);
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('flag');
+    expect(icon.className).not.toContain('border');
+    expect(icon.className).not.toContain('rounded-full');
+    expect(icon.className).not.toContain('bg-');
+  });
+
+  it('renders hotfix plan badges with the hotfix icon', async () => {
+    seedTasks([
+      makeTask('architect-hotfix', 'Pending', {
+        title: 'Architect hotfix task',
+        task_source: 'architect',
+        plan_id: 'plan-hotfix',
+        plan_title: 'Hotfix plan',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: 'plan-hotfix',
+          slug: 'plan-hotfix',
+          title: 'Hotfix plan',
+          label: 'Production patch',
+          planKind: 'hotfix',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('zap');
+  });
+
+  it('falls back to the feature icon when the plan kind is missing', async () => {
+    seedTasks([
+      makeTask('architect-feature', 'Pending', {
+        title: 'Architect feature task',
+        task_source: 'architect',
+        plan_id: 'plan-feature',
+        plan_title: 'Feature plan',
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      planSummaries: [
+        {
+          id: 'plan-feature',
+          slug: 'plan-feature',
+          title: 'Feature plan',
+          label: 'Checkout refresh',
+          status: 'in_progress',
+          targetBranch: 'develop',
+          projectIds: ['project-1'],
+          taskCount: 1,
+          completedTaskCount: 0,
+          activeTaskCount: 1,
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const icon = getTaskContextBadgeIconIdentity('plan');
+    expect(`${icon.dataIcon} ${icon.className}`).toContain('sparkles');
   });
 
   it('renders the standalone badge without a plan badge for independent tasks', async () => {

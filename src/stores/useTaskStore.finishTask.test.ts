@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 
 const actualArchitectPlanService = await import('../services/architectPlanService');
 const actualArchitectGitFlowService = await import('../services/architectGitFlowService');
 const actualArchitectGitNaming = await import('../services/architectGitNaming');
+const actualServices = await import('../services');
 const actualTauriIpc = await import('../services/tauriIpc');
 
 let isolatedTaskStoreImportCounter = 0;
@@ -32,6 +34,12 @@ let planState = {
       assignedBranch: 'feature/task-1',
       projectId: 'project-1',
       projectIds: ['project-1'],
+      todos: undefined as
+        | Array<{ id: string; title: string; status: 'pending' | 'in-progress' | 'done' }>
+        | undefined,
+      artifactContracts: undefined as
+        | Array<{ id: string; title: string; kind: string; required: boolean }>
+        | undefined,
       archivedAt: null as string | null,
       archiveReason: null as 'merged' | null,
       mergedAt: null as string | null,
@@ -81,6 +89,12 @@ const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/worktrees/task-1',
 }));
+const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
 const gitBranchListMock = mock(async (): Promise<{
   local: Array<{ name: string; is_head: boolean; commit: string }>;
   remote: Array<{ name: string; is_head: boolean; commit: string }>;
@@ -96,6 +110,13 @@ const gitMergeCheckMock = mock(async () => ({
   conflictFiles: [] as string[],
   hasChanges: true,
 }));
+const gitMergeMock = mock(async ({
+  branchName,
+  intoBranch,
+}: {
+  branchName: string;
+  intoBranch: string;
+}) => `Merged ${branchName} into ${intoBranch}`);
 const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/checkout');
 const gitRebaseCheckMock = mock(async () => ({
   rebaseable: true,
@@ -106,7 +127,7 @@ const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitBranchDeleteRemoteMock = mock(async () => undefined);
 const gitPullMock = mock(async () => undefined);
-const fsReadFileWithOptionsMock = mock(async () => {
+const fsReadFileWithOptionsMock = mock(async (_params?: { path?: string }): Promise<{ content: string }> => {
   throw new Error('not found');
 });
 const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
@@ -117,6 +138,8 @@ const syncTerminalDisplayMetadataMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
+
+let projectCompletionMergePolicy: 'merge_commit' | 'fast_forward' = 'merge_commit';
 
 const appStoreState = {
   selectedTaskId: 'task-1' as string | null,
@@ -132,6 +155,13 @@ const appStoreState = {
     id: 'project-1',
     name: 'Project One',
     path: '/repos/web',
+    gitFlowSettings: {
+      baseBranch: 'develop',
+      planBranchTemplate: 'plan/{slug}',
+      taskBranchTemplate: 'feature/{slug}',
+      defaultTaskBranchPrefix: 'feature/',
+      completionMergePolicy: projectCompletionMergePolicy,
+    },
   }),
   setSelectedTask: mock((taskId: string | null) => {
     appStoreState.selectedTaskId = taskId;
@@ -198,9 +228,11 @@ mock.module('../services/tauriIpc', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitMerge: gitMergeMock,
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -221,9 +253,11 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitDiff: gitDiffMock,
   gitCheckout: gitCheckoutMock,
   gitMergeCheck: gitMergeCheckMock,
+  gitMerge: gitMergeMock,
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -260,6 +294,18 @@ mock.module('../services/manualFeatureMetadataService', () => ({
 const loadIsolatedTaskStore = async () => {
   isolatedTaskStoreImportCounter += 1;
   return import(`./useTaskStore.ts?finish-task=${isolatedTaskStoreImportCounter}`);
+};
+
+const flushPromises = async () => {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
+};
+
+const waitForMergeCall = async () => {
+  for (let index = 0; index < 20 && gitMergeMock.mock.calls.length === 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 };
 
 const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
@@ -309,8 +355,40 @@ const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const listTasksMock = mock(async () => ({
+  tasks: [
+    buildArchitectTask({
+      status: planState.nodes[0]?.status === 'completed' ? 'Completed' : 'InReview',
+      archived_at: planState.nodes[0]?.archivedAt ?? null,
+      archive_reason: planState.nodes[0]?.archiveReason ?? null,
+      merged_at: planState.nodes[0]?.mergedAt ?? null,
+    }),
+  ],
+  plans: [],
+  hasStandaloneTasks: false,
+  source: 'desktop',
+}));
+
+mock.module('../services', () => ({
+  ...actualServices,
+  services: {
+    ...actualServices.services,
+    listTasks: listTasksMock,
+  },
+}));
+
+mock.module('../services/index', () => ({
+  ...actualServices,
+  services: {
+    ...actualServices.services,
+    listTasks: listTasksMock,
+  },
+}));
+
 describe('useTaskStore.finishTask', () => {
   beforeEach(() => {
+    installTauriRuntimeMock();
+
     planState = {
       id: 'plan-1',
       slug: 'plan-1',
@@ -336,6 +414,8 @@ describe('useTaskStore.finishTask', () => {
           assignedBranch: 'feature/task-1',
           projectId: 'project-1',
           projectIds: ['project-1'],
+          todos: undefined,
+          artifactContracts: undefined,
           archivedAt: null,
           archiveReason: null,
           mergedAt: null,
@@ -353,6 +433,7 @@ describe('useTaskStore.finishTask', () => {
     gitWorktreeInspectMock.mockClear();
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
+    gitBranchWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitWorktreeRemoveMock.mockImplementation(async () => ({
       removed: true,
@@ -377,16 +458,24 @@ describe('useTaskStore.finishTask', () => {
       ahead: 1,
       behind: 1,
     }));
+    gitMergeMock.mockClear();
     gitFastForwardMock.mockClear();
+    projectCompletionMergePolicy = 'merge_commit';
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
     gitPullMock.mockClear();
+    fsReadFileWithOptionsMock.mockClear();
+    fsReadFileWithOptionsMock.mockImplementation(async () => {
+      throw new Error('not found');
+    });
+    fsWriteFileMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     syncTerminalDisplayMetadataMock.mockClear();
     syncManualFeatureMetadataFromTaskMock.mockClear();
     commitManualFeatureMetadataMock.mockClear();
     removeManualFeatureMetadataMock.mockClear();
+    listTasksMock.mockClear();
     appStoreState.selectedTaskId = 'task-1';
     appStoreState.activeArchitectPlanId = 'plan-1';
     appStoreState.activePlanContext = {
@@ -398,6 +487,10 @@ describe('useTaskStore.finishTask', () => {
     appStoreState.setPredictedBranches.mockClear();
     appStoreState.setActivePlanContext.mockClear();
     appStoreState.setActiveArchitectPlanId.mockClear();
+  });
+
+  afterEach(() => {
+    removeTauriRuntimeMock();
   });
 
   it('archives architect tasks after merging them into the plan branch', async () => {
@@ -428,12 +521,12 @@ describe('useTaskStore.finishTask', () => {
 
     await useTaskStore.getState().finishTask('task-1');
 
-    expect(mergeFeatureBranchIntoPlanBranchMock).toHaveBeenCalledWith({
-      projectId: 'project-1',
+    expect(gitMergeMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       branchName: 'feature/task-1',
-      planBranchName: 'plan/checkout',
-      repoPath: '/repos/web',
+      intoBranch: 'plan/checkout',
     });
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
     expect(planState.nodes[0]?.status).toBe('completed');
     expect(planState.nodes[0]?.archiveReason).toBe('merged');
     expect(typeof planState.nodes[0]?.archivedAt).toBe('string');
@@ -447,6 +540,268 @@ describe('useTaskStore.finishTask', () => {
     expect(writeArchitectTaskExecutionMock).toHaveBeenCalledTimes(1);
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
+
+  it('coalesces concurrent finish requests into one merge workflow', async () => {
+    let resolveMerge: (output: string) => void = () => undefined;
+    gitMergeMock.mockImplementationOnce(
+      async () => await new Promise<string>((resolve) => {
+        resolveMerge = resolve;
+      })
+    );
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    const firstFinish = useTaskStore.getState().finishTask('task-1');
+    await waitForMergeCall();
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    const secondFinish = useTaskStore.getState().finishTask('task-1');
+    await flushPromises();
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    resolveMerge('Merged feature/task-1 into plan/checkout');
+    await Promise.all([firstFinish, secondFinish]);
+
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
+  });
+
+  it('blocks architect task completion while task todos remain open', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [
+            { id: 'todo-1', title: 'Wire the checkout API', status: 'done' },
+            { id: 'todo-2', title: 'Update the branch view', status: 'pending' },
+          ],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [
+            { id: 'todo-1', title: 'Wire the checkout API', status: 'done' },
+            { id: 'todo-2', title: 'Update the branch view', status: 'pending' },
+          ],
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Update the branch view',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Update the branch view');
+  });
+
+  it('blocks architect task completion with fresh plan todos when the task snapshot is stale', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [{ id: 'todo-1', title: 'Fresh plan todo', status: 'pending' }],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [{ id: 'todo-1', title: 'Stale done todo', status: 'done' }],
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Fresh plan todo',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Fresh plan todo');
+  });
+
+  it('blocks architect task completion while required artifacts are missing', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: undefined,
+          artifactContracts: [
+            {
+              id: 'audit-findings',
+              title: 'Audit findings',
+              kind: 'audit',
+              required: true,
+            },
+          ],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({ status: 'InReview', todos: undefined })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Audit findings',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Audit findings');
+  });
+
+  it('blocks architect task completion while produced artifacts remain unvalidated', async () => {
+    fsReadFileWithOptionsMock.mockImplementation(async (params?: { path?: string }) => {
+      if (params?.path?.endsWith('/artifacts/index.json')) {
+        return {
+          content: JSON.stringify({
+            schemaVersion: 1,
+            planId: 'plan-1',
+            updatedAt: '2026-05-26T00:00:00.000Z',
+            artifacts: [
+              {
+                id: 'handoff-note',
+                planId: 'plan-1',
+                taskId: 'task-1',
+                kind: 'note',
+                title: 'Handoff note',
+                summary: 'Important handoff',
+                contentType: 'markdown',
+                path: 'branches/develop/plans/plan-1/artifacts/tasks/task-1/handoff-note.md',
+                contentHash: 'hash',
+                createdAt: '2026-05-26T00:00:00.000Z',
+                updatedAt: '2026-05-26T00:00:00.000Z',
+                createdBy: 'agent',
+              },
+            ],
+            reviews: [],
+          }),
+        };
+      }
+      throw new Error('not found');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({ status: 'InReview', todos: undefined })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'Handoff note',
+    );
+
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Handoff note');
+  });
+
+  it('blocks direct completed status with fresh plan todos when the task snapshot is stale', async () => {
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: [{ id: 'todo-1', title: 'Direct status blocker', status: 'pending' }],
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: [{ id: 'todo-1', title: 'Stale done todo', status: 'done' }],
+        }),
+      ] as never[],
+      lastError: null,
+    });
+
+    await useTaskStore.getState().setTaskStatus('task-1', 'Completed');
+
+    expect(useTaskStore.getState().lastError).toContain('Direct status blocker');
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+  });
+
+  it('does not block legacy architect task completion when todos were never generated', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    planState = {
+      ...planState,
+      nodes: [
+        {
+          ...planState.nodes[0],
+          todos: undefined,
+        },
+      ],
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          status: 'InReview',
+          todos: undefined,
+        }),
+      ] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
   });
 
   it('uses fast-forward when the merge workflow action requests it', async () => {
@@ -473,7 +828,7 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });
@@ -483,6 +838,65 @@ describe('useTaskStore.finishTask', () => {
       branchName: 'feature/task-1',
       force: true,
     });
+  });
+
+  it('uses merge commit by default when fast-forward is available', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(gitMergeMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
+      branchName: 'feature/task-1',
+      intoBranch: 'plan/checkout',
+    });
+    expect(gitFastForwardMock).not.toHaveBeenCalled();
+  });
+
+  it('uses fast-forward by default when the project policy requests it', async () => {
+    projectCompletionMergePolicy = 'fast_forward';
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: 1,
+      behind: 0,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(gitFastForwardMock).toHaveBeenCalledWith({
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
+      sourceBranch: 'feature/task-1',
+      targetBranch: 'plan/checkout',
+    });
+    expect(gitMergeMock).not.toHaveBeenCalled();
   });
 
   it('completes an in-progress task after a successful merge workflow', async () => {
@@ -538,13 +952,13 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitRebaseBranchMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       branchName: 'feature/task-1',
       ontoBranch: 'plan/checkout',
       confirm: true,
     });
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });
@@ -592,7 +1006,7 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });

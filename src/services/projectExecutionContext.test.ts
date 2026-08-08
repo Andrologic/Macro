@@ -119,7 +119,148 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePathsByProjectId['macro-api']).toBe('C:/dev/macro-api');
   });
 
-  it('prefers task worktrees for targeted subprojects in implement mode', async () => {
+  it('uses a selected standalone project as a ready single-project scope', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'solo-app',
+      name: 'Solo App',
+      mountName: 'solo-app',
+      path: '/repos/solo-app',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Architect',
+      projects: [standaloneProject],
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'solo-app',
+    });
+
+    expect(context.groupId).toBeNull();
+    expect(context.groupName).toBeNull();
+    expect(context.projectId).toBe('solo-app');
+    expect(context.projectIds).toEqual(['solo-app']);
+    expect(context.actionableProjectIds).toEqual(['solo-app']);
+    expect(context.focusedProjectId).toBe('solo-app');
+    expect(context.virtualRootEnabled).toBe(false);
+    expect(context.projectMounts).toEqual([
+      {
+        projectId: 'solo-app',
+        groupId: null,
+        mountName: 'solo-app',
+        displayName: 'Solo App',
+        workspacePath: '/repos/solo-app',
+        isReadOnly: false,
+      },
+    ]);
+    expect(context.workspacePath).toBe('/repos/solo-app');
+  });
+
+  it('retargets a stale single-project task to the selected standalone project', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'project-lplr-current',
+      name: 'lplr-app',
+      mountName: 'lplr-app',
+      path: '/repos/lplr-app',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [standaloneProject],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-stale',
+          project_id: 'project-lplr-app-1780237886690',
+          project_ids: ['project-lplr-app-1780237886690'],
+          assigned_branch: 'feature/catalogue',
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780237886690',
+              branchName: 'feature/catalogue',
+              worktreeKey: 'stale-worktree',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: 'project-lplr-current',
+      selectedTaskId: 'task-stale',
+    });
+
+    expect(context.projectId).toBe('project-lplr-current');
+    expect(context.projectIds).toEqual(['project-lplr-current']);
+    expect(context.actionableProjectIds).toEqual(['project-lplr-current']);
+    expect(context.workspacePath).toBe('/repos/lplr-app');
+  });
+
+  it('prefers the current registry path over stale task repoPath snapshots', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const standaloneProject = {
+      ...projects[0],
+      id: 'project-lplr-app-1780329499166',
+      name: 'octan_sales',
+      mountName: 'octan_sales',
+      path: '/repos/octan_sales',
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [standaloneProject],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-renamed',
+          project_id: 'project-lplr-app-1780329499166',
+          project_ids: ['project-lplr-app-1780329499166'],
+          assigned_branch: 'feature/catalogue',
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780329499166',
+              branchName: 'feature/catalogue',
+              worktreeKey: 'branch-project-lplr-app-feature-catalogue',
+              repoPath: '/repos/lplr-app',
+            },
+          ],
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: 'project-lplr-app-1780329499166',
+      selectedTaskId: 'task-renamed',
+    });
+
+    expect(context.projectId).toBe('project-lplr-app-1780329499166');
+    expect(context.workspacePath).toBe('/repos/octan_sales');
+    expect(context.workspacePathsByProjectId).toEqual({
+      'project-lplr-app-1780329499166': '/repos/octan_sales',
+    });
+  });
+
+  it('does not expose a truly unknown task project without a valid fallback', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [projects[0]],
+      projectGroups: [],
+      tasks: [
+        {
+          id: 'task-unknown',
+          project_id: 'missing-project',
+          project_ids: ['missing-project'],
+          assigned_branch: 'feature/missing',
+        },
+      ],
+      selectedGroupId: null,
+      selectedProjectId: null,
+      selectedTaskId: 'task-unknown',
+    });
+
+    expect(context.projectId).toBeNull();
+    expect(context.projectIds).toEqual([]);
+    expect(context.workspacePath).toBeNull();
+  });
+
+  it('prefers task worktrees for targeted projects in implement mode', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Implement',
@@ -361,7 +502,7 @@ describe('resolveProjectExecutionContext', () => {
     });
   });
 
-  it('falls back to the primary subproject of the selected global project when no focus repo is set', async () => {
+  it('falls back to the primary project of the selected group when no focus repo is set', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Architect',

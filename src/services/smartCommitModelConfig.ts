@@ -1,10 +1,8 @@
-import type { ReasoningEffort } from '../types';
-
-export type SmartCommitModelConfig =
-  | { mode: 'conversation' }
-  | {
-      mode: 'dedicated';
-      providerId: string;
-      modelId: string;
-      reasoningEffort: ReasoningEffort | null;
-    };
+export {
+  findFallbackMetadataDedicatedModel as findFallbackSmartCommitDedicatedModel,
+  metadataModelConfigsEqual as smartCommitModelConfigsEqual,
+  normalizeMetadataModelConfig as normalizeSmartCommitModelConfig,
+  providerCanGenerateMetadata as providerCanGenerateSmartCommitMessages,
+  type MetadataModelConfig as SmartCommitModelConfig,
+  type MetadataModelConfigContext as SmartCommitModelConfigContext,
+} from './metadataModelConfig';

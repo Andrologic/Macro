@@ -1,4 +1,4 @@
-import type { PlanNode, PredictedBranch, ProjectGroup, Task } from '../types';
+import type { PlanNode, PredictedBranch, Project, ProjectGroup, Task } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import {
   getArchitectPlan,
@@ -18,6 +18,13 @@ import {
 import { readArchitectPlanRuntime } from './architectPlanRuntimeService';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { buildPlanFinalizationTaskId } from './planFinalization';
+import {
+  collectKnownProjects,
+  collectKnownProjectIds,
+  projectRefMatchesExecutionScope,
+  retargetPlanForExecution,
+  retargetTaskForExecution,
+} from './projectIdentityReconciliation';
 
 interface ActivePlanContextState {
   id: string;
@@ -35,6 +42,7 @@ interface AppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   projectGroups: ProjectGroup[];
+  standaloneProjects?: Project[];
   activeArchitectPlanId: string | null;
   activePlanContext: ActivePlanContextState | null;
   planNodes: PlanNode[];
@@ -51,13 +59,18 @@ interface LoadImplementTaskCatalogDependencies {
   buildImplementTaskCatalog: typeof buildImplementTaskCatalog;
 }
 
-const normalizeProjectIds = (projectIds?: string[], projectId?: string): string[] =>
-  Array.from(new Set(
-    [
-      ...(Array.isArray(projectIds) ? projectIds : []),
-      ...(projectId ? [projectId] : []),
-    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-  ));
+const reconcileFallbackTasksForCurrentScope = (
+  tasks: Task[],
+  relevantProjectIds: string[] | null,
+  validProjectIds: string[]
+): Task[] => {
+  return tasks.map((task) =>
+    retargetTaskForExecution(task, {
+      scopedProjectIds: relevantProjectIds,
+      knownProjectIds: validProjectIds,
+    })
+  );
+};
 
 const resolveRelevantProjectIds = (
   appState: Pick<AppState, 'selectedGroupId' | 'selectedProjectId' | 'projectGroups'>
@@ -80,20 +93,16 @@ const resolveRelevantProjectIds = (
 };
 
 const planMatchesRelevantProjects = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds'> | Pick<ArchitectPlanSummary, 'projectId' | 'projectIds'>,
+  plan:
+    | Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'>
+    | Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'>,
   relevantProjectIds: string[] | null
 ): boolean => {
   if (!relevantProjectIds || relevantProjectIds.length === 0) {
     return true;
   }
 
-  const planProjectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
-  if (planProjectIds.length === 0) {
-    return true;
-  }
-
-  const relevantProjectIdSet = new Set(relevantProjectIds);
-  return planProjectIds.some((projectId) => relevantProjectIdSet.has(projectId));
+  return projectRefMatchesExecutionScope(plan, relevantProjectIds);
 };
 
 const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecord | null => {
@@ -115,6 +124,10 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
         ...appState.predictedBranches.map((branch) => branch.projectId),
       ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     )
+  );
+
+  const knownProjectById = new Map(
+    collectKnownProjects(appState).map((project) => [project.id, project])
   );
 
   const draftPlan = {
@@ -143,9 +156,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
       draftPlan,
       {
         getProjectGitFlowSettings: (projectId) =>
-          appState.projectGroups
-            .flatMap((group) => group.projects)
-            .find((project) => project.id === projectId)?.gitFlowSettings ?? null,
+          knownProjectById.get(projectId)?.gitFlowSettings ?? null,
       }
     ),
   };
@@ -188,7 +199,7 @@ const resolveCandidateTargetBranches = (
     try {
       resolvedBranches.push(resolveBranch(branchName));
     } catch {
-      // Ignore unexpected metadata branch folders that do not match the supported Git Flow patterns.
+      // Ignore unexpected metadata branch folders that do not match the supported Git workflow patterns.
     }
   }
 
@@ -209,6 +220,7 @@ export const createLoadImplementTaskCatalog = (
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
     const relevantProjectIds = resolveRelevantProjectIds(appState);
+    const validProjectIds = collectKnownProjectIds(appState);
     const activeTargetBranch = resolveCandidateTargetBranches(
       [appState.activePlanContext?.targetBranch || null],
       dependencies.resolveTargetBranch
@@ -232,7 +244,12 @@ export const createLoadImplementTaskCatalog = (
             try {
               return {
                 branchName,
-                index: await dependencies.listArchitectPlans(branchName),
+                index: await dependencies.listArchitectPlans(
+                  branchName,
+                  false,
+                  false,
+                  { scopedProjectIdsHint: relevantProjectIds ?? undefined }
+                ),
               };
             } catch {
               return null;
@@ -254,7 +271,13 @@ export const createLoadImplementTaskCatalog = (
       const loadedPlans = await Promise.all(
         executablePlanRefs.map(async ({ branchName, planId }) => {
           try {
-            return await dependencies.getArchitectPlan(branchName, planId);
+            const plan = await dependencies.getArchitectPlan(branchName, planId);
+            return plan
+              ? retargetPlanForExecution(plan, {
+                  scopedProjectIds: relevantProjectIds,
+                  knownProjectIds: validProjectIds,
+                })
+              : null;
           } catch {
             return null;
           }
@@ -267,12 +290,23 @@ export const createLoadImplementTaskCatalog = (
 
     const activePlan = buildExecutableActivePlanRecord(appState);
     if (activePlan && planMatchesRelevantProjects(activePlan, relevantProjectIds)) {
-      plans = upsertPlanRecord(plans, activePlan);
+      plans = upsertPlanRecord(
+        plans,
+        retargetPlanForExecution(activePlan, {
+          scopedProjectIds: relevantProjectIds,
+          knownProjectIds: validProjectIds,
+        })
+      );
     }
+    const reconciledFallbackTasks = reconcileFallbackTasksForCurrentScope(
+      fallbackTasks,
+      relevantProjectIds,
+      validProjectIds
+    );
 
     const catalog = dependencies.buildImplementTaskCatalog({
       plans,
-      fallbackTasks,
+      fallbackTasks: reconciledFallbackTasks,
     });
 
     const runtimeEntries = (

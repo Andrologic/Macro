@@ -16,11 +16,19 @@ type AppStoreState = {
   mode: AppMode;
   setMode: (mode: AppMode) => void;
   openSettings: () => void;
-  openAccount: () => void;
   uiZoomMode: 'auto' | 'override';
   uiZoomLevel: number;
   selectedGroupId: string | null;
+  selectedProjectId: string | null;
   projectGroups: unknown[];
+  getProjectById: (projectId: string) =>
+    | {
+        id: string;
+        name: string;
+        gitSetupState?: 'ready' | 'not_git' | 'unborn';
+        readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
+      }
+    | undefined;
 };
 
 type TauriWindowState = {
@@ -109,7 +117,8 @@ const registerHeaderMocks = () => {
   }));
 
   mock.module('../../services/globalProjects', () => ({
-    getGlobalProjectById: () => ({ name: 'Macro Repo' }),
+    getGlobalProjectById: (_groups: unknown[], groupId: string | null | undefined) =>
+      groupId ? { name: 'Macro Repo' } : null,
   }));
 };
 
@@ -128,11 +137,12 @@ describe('Header', () => {
       mode: 'Architect',
       setMode: () => undefined,
       openSettings: () => undefined,
-      openAccount: () => undefined,
       uiZoomMode: 'auto',
       uiZoomLevel: 1,
       selectedGroupId: 'group-1',
+      selectedProjectId: null,
       projectGroups: [],
+      getProjectById: () => undefined,
     };
     tauriWindowState = {
       isAvailable: true,
@@ -303,6 +313,145 @@ describe('Header', () => {
     });
 
     expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+  });
+
+  it('leaves fullscreen traffic light recovery to the native macOS layer', async () => {
+    const { Header } = await loadHeader();
+    chromeState = {
+      platform: 'macos',
+      isTauriWindow: true,
+      showCustomWindowControls: false,
+      disableCustomDoubleClickZoom: true,
+      usesNativeMacosTitlebar: true,
+    };
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <Header
+          isLeftOpen
+          isRightOpen
+          onToggleLeft={() => undefined}
+          onToggleRight={() => undefined}
+        />
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).toHaveBeenCalledWith(15, 30);
+
+    windowSetTrafficLightPositionMock.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+      await Promise.resolve();
+    });
+
+    expect(windowSetTrafficLightPositionMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the selected standalone project name in the project picker', async () => {
+    const { Header } = await loadHeader();
+    appState = {
+      ...appState,
+      selectedGroupId: null,
+      selectedProjectId: 'project-solo',
+      getProjectById: (projectId) =>
+        projectId === 'project-solo' ? { id: projectId, name: 'Solo Project' } : undefined,
+    };
+
+    const html = renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(html).toContain('Solo Project');
+    expect(html).not.toContain('header.selectProject');
+  });
+
+  it('uses the group icon for a selected group in the project picker', async () => {
+    const { Header } = await loadHeader();
+
+    const html = renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(html).toContain('Macro Repo');
+    expect(html).toContain('lucide-layers');
+  });
+
+  it('uses the git folder icon for a selected standalone git project in the project picker', async () => {
+    const { Header } = await loadHeader();
+    appState = {
+      ...appState,
+      selectedGroupId: null,
+      selectedProjectId: 'project-solo',
+      getProjectById: (projectId) =>
+        projectId === 'project-solo'
+          ? {
+              id: projectId,
+              name: 'Solo Git Project',
+              gitSetupState: 'ready',
+              readOnlyReason: null,
+            }
+          : undefined,
+    };
+
+    const html = renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(html).toContain('Solo Git Project');
+    expect(html).toContain('lucide-folder-git-2');
+  });
+
+  it('uses the plain folder icon for a selected standalone non-git project in the project picker', async () => {
+    const { Header } = await loadHeader();
+    appState = {
+      ...appState,
+      selectedGroupId: null,
+      selectedProjectId: 'project-folder',
+      getProjectById: (projectId) =>
+        projectId === 'project-folder'
+          ? {
+              id: projectId,
+              name: 'Folder Project',
+              gitSetupState: 'not_git',
+              readOnlyReason: null,
+            }
+          : undefined,
+    };
+
+    const html = renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(html).toContain('Folder Project');
+    expect(html).toContain('lucide-folder');
+    expect(html).not.toContain('lucide-folder-git-2');
   });
 
   it('starts dragging on macOS title bar mouse down', async () => {

@@ -2,7 +2,8 @@ use super::chatgpt::types::{
     AiChatMessageContent, AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
     AiToolCall, AiToolCallFunction,
 };
-use crate::ai::AiState;
+use crate::ai::provider_capabilities::resolve_provider_capabilities;
+use crate::ai::{emit_timeline, AiState, ProviderTimeline};
 use crate::db::models::ProviderConfig;
 use crate::db::repository;
 use crate::secrets;
@@ -10,7 +11,8 @@ use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::str;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, timeout};
 
@@ -36,12 +38,22 @@ pub async fn stream_chat(
 
     let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
+    let task_started_at = Instant::now();
 
     let handle = tokio::spawn(async move {
         let result = stream_chat_inner(app_for_task.clone(), pool, request).await;
         if let Err(message) = result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "openai_compatible",
+                task_started_at,
+                "error",
+            );
             let _ = app_for_task.emit(
                 "ai:error",
                 AiStreamErrorEvent {
@@ -51,8 +63,19 @@ pub async fn stream_chat(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.stream_tasks.lock().await;
-        tasks.remove(&task_request_id);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&task_request_id)
+                    .map(|handle| handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&task_request_id);
+        }
     });
 
     let mut tasks = ai_state.stream_tasks.lock().await;
@@ -65,30 +88,65 @@ async fn stream_chat_inner(
     pool: SqlitePool,
     request: AiChatRequest,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
     let provider = repository::get_provider_config(&pool, &request.provider_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
+    let provider_type = provider.provider_type.clone();
+    let capabilities = resolve_provider_capabilities(
+        &request.provider_id,
+        &provider_type,
+        Some(&provider.base_url),
+    );
+    if capabilities.provider_id == "opencode-go" {
+        tracing::debug!(
+            provider_id = %request.provider_id,
+            provider_type = %provider_type,
+            operation = "opencode_http_probe",
+            http_only = capabilities.http_only,
+            uses_local_runtime = capabilities.uses_local_runtime,
+            supports_model_scan = capabilities.supports_model_scan,
+            "resolved OpenCode provider capabilities"
+        );
+    }
+    let timeline = ProviderTimeline::new(
+        &app_handle,
+        &request.request_id,
+        &request.provider_id,
+        &provider_type,
+        started_at,
+    );
+    timeline.emit("backend_task_started");
+    let secret_started_at = Instant::now();
     let api_key = secrets::get_api_key(&request.provider_id)
         .map_err(|error| format!("Failed to read provider API key: {}", error))?
         .unwrap_or_default();
-    let body = build_chat_completions_request(&request, &provider)?;
+    if secret_started_at.elapsed().as_millis() > 50 {
+        timeline.emit("auth_ready");
+    }
+    let request_body = build_chat_completions_request(&request, &provider)?;
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?;
+    timeline.emit("provider_request_sent");
     let response =
-        send_chat_completions_request(&client, &provider, &request, &api_key, &body).await?;
+        send_chat_completions_request(&client, &provider, &request, &api_key, &request_body)
+            .await?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(extract_provider_error(status.as_u16(), &body));
+        let error_body = response.text().await.unwrap_or_default();
+        return Err(extract_provider_error(status.as_u16(), &error_body));
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut parser = SseParser::default();
     let mut accumulator = ChatCompletionAccumulator::default();
+    let mut emitted_first_provider_event = false;
+    let mut emitted_first_token = false;
+    let mut saw_completion = false;
 
     loop {
         let chunk = match timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
@@ -102,22 +160,42 @@ async fn stream_chat_inner(
             }
         };
         let chunk = chunk.map_err(|error| format!("Failed to read provider stream: {}", error))?;
-        let text = String::from_utf8_lossy(&chunk);
-        buffer.push_str(&text);
-        if buffer.contains("\r\n") {
-            buffer = buffer.replace("\r\n", "\n");
-        }
-
-        while let Some(split_index) = buffer.find("\n\n") {
-            let event = buffer[..split_index].to_string();
-            buffer = buffer[split_index + 2..].to_string();
-            process_sse_event(&app_handle, &request.request_id, &event, &mut accumulator)?;
+        for event in parser.push(&chunk)? {
+            if !emitted_first_provider_event {
+                emitted_first_provider_event = true;
+                timeline.emit("first_provider_event");
+            }
+            saw_completion |= process_sse_event(
+                &app_handle,
+                &request,
+                &provider_type,
+                started_at,
+                &mut emitted_first_token,
+                &event,
+                &mut accumulator,
+            )?;
         }
     }
 
-    if !buffer.trim().is_empty() {
-        process_sse_event(&app_handle, &request.request_id, &buffer, &mut accumulator)?;
+    for event in parser.finish()? {
+        if !emitted_first_provider_event {
+            timeline.emit("first_provider_event");
+        }
+        saw_completion |= process_sse_event(
+            &app_handle,
+            &request,
+            &provider_type,
+            started_at,
+            &mut emitted_first_token,
+            &event,
+            &mut accumulator,
+        )?;
     }
+
+    if !saw_completion {
+        return Err("Provider stream ended before a completion marker was received.".to_string());
+    }
+
     if accumulator.is_reasoning {
         emit_delta(
             &app_handle,
@@ -128,11 +206,12 @@ async fn stream_chat_inner(
         accumulator.is_reasoning = false;
     }
 
+    timeline.emit("done");
     app_handle
         .emit(
             "ai:done",
             AiStreamDoneEvent {
-                request_id: request.request_id,
+                request_id: request.request_id.clone(),
                 output_text: accumulator.output_text,
                 tool_calls: normalize_tool_calls(accumulator.tool_calls),
                 response_id: None,
@@ -142,6 +221,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
+                completion_reason: None,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -281,16 +361,22 @@ async fn send_chat_completions_request(
 
 fn process_sse_event(
     app_handle: &AppHandle,
-    request_id: &str,
+    request: &AiChatRequest,
+    provider_type: &str,
+    started_at: Instant,
+    emitted_first_token: &mut bool,
     raw_event: &str,
     accumulator: &mut ChatCompletionAccumulator,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let Some(data) = extract_sse_data(raw_event) else {
-        return Ok(());
+        return Ok(false);
     };
     let data = data.trim();
-    if data.is_empty() || data == "[DONE]" {
-        return Ok(());
+    if data.is_empty() {
+        return Ok(false);
+    }
+    if data == "[DONE]" {
+        return Ok(true);
     }
 
     let value: Value = serde_json::from_str(data)
@@ -300,7 +386,7 @@ fn process_sse_event(
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
     else {
-        return Ok(());
+        return Ok(is_terminal_sse_value(&value));
     };
 
     let delta = choice.get("delta").unwrap_or(&Value::Null);
@@ -313,10 +399,10 @@ fn process_sse_event(
         if !reasoning.is_empty() {
             accumulator.reasoning_summary.push_str(reasoning);
             if !accumulator.is_reasoning {
-                emit_delta(app_handle, request_id, "<think>", accumulator)?;
+                emit_delta(app_handle, &request.request_id, "<think>", accumulator)?;
                 accumulator.is_reasoning = true;
             }
-            emit_delta(app_handle, request_id, reasoning, accumulator)?;
+            emit_delta(app_handle, &request.request_id, reasoning, accumulator)?;
         }
     }
 
@@ -331,10 +417,17 @@ fn process_sse_event(
     if let Some(content) = delta.get("content").and_then(Value::as_str) {
         if !content.is_empty() {
             if accumulator.is_reasoning {
-                emit_delta(app_handle, request_id, "</think>", accumulator)?;
+                emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
                 accumulator.is_reasoning = false;
             }
-            emit_delta(app_handle, request_id, content, accumulator)?;
+            emit_first_token_timeline(
+                app_handle,
+                request,
+                provider_type,
+                started_at,
+                emitted_first_token,
+            );
+            emit_delta(app_handle, &request.request_id, content, accumulator)?;
             emitted_content_delta = true;
         }
     }
@@ -343,30 +436,168 @@ fn process_sse_event(
         if let Some(content) = message.get("content").and_then(Value::as_str) {
             if !content.is_empty() {
                 if accumulator.is_reasoning {
-                    emit_delta(app_handle, request_id, "</think>", accumulator)?;
+                    emit_delta(app_handle, &request.request_id, "</think>", accumulator)?;
                     accumulator.is_reasoning = false;
                 }
-                emit_delta(app_handle, request_id, content, accumulator)?;
+                emit_first_token_timeline(
+                    app_handle,
+                    request,
+                    provider_type,
+                    started_at,
+                    emitted_first_token,
+                );
+                emit_delta(app_handle, &request.request_id, content, accumulator)?;
             }
         }
     }
 
-    Ok(())
+    Ok(choice
+        .get("finish_reason")
+        .filter(|value| !value.is_null())
+        .is_some()
+        || is_terminal_sse_value(&value))
+}
+
+fn emit_first_token_timeline(
+    app_handle: &AppHandle,
+    request: &AiChatRequest,
+    provider_type: &str,
+    started_at: Instant,
+    emitted_first_token: &mut bool,
+) {
+    if *emitted_first_token {
+        return;
+    }
+    *emitted_first_token = true;
+    emit_timeline(
+        app_handle,
+        &request.request_id,
+        &request.provider_id,
+        provider_type,
+        started_at,
+        "first_token",
+    );
 }
 
 fn extract_sse_data(raw_event: &str) -> Option<String> {
     let data_lines = raw_event
-        .lines()
+        .split('\n')
         .filter_map(|line| {
-            let line = line.trim_end_matches('\r');
-            line.strip_prefix("data:")
-                .map(|data| data.trim_start().to_string())
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let data = line.strip_prefix("data:")?;
+            Some(data.strip_prefix(' ').unwrap_or(data).to_string())
         })
         .collect::<Vec<_>>();
     if data_lines.is_empty() {
         None
     } else {
         Some(data_lines.join("\n"))
+    }
+}
+
+fn is_terminal_sse_value(value: &Value) -> bool {
+    value.get("done").and_then(Value::as_bool) == Some(true)
+}
+
+#[derive(Debug, Default)]
+struct SseParser {
+    input: String,
+    event: String,
+    utf8_tail: Vec<u8>,
+}
+
+impl SseParser {
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, String> {
+        self.append_utf8(chunk)?;
+        Ok(self.drain_events(false))
+    }
+
+    fn finish(&mut self) -> Result<Vec<String>, String> {
+        if !self.utf8_tail.is_empty() {
+            return Err("Provider stream ended with invalid UTF-8.".to_string());
+        }
+
+        Ok(self.drain_events(true))
+    }
+
+    fn append_utf8(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let mut bytes = std::mem::take(&mut self.utf8_tail);
+        bytes.extend_from_slice(chunk);
+
+        match str::from_utf8(&bytes) {
+            Ok(text) => self.input.push_str(text),
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                self.input.push_str(
+                    str::from_utf8(&bytes[..valid_up_to])
+                        .expect("valid UTF-8 prefix should decode"),
+                );
+                if error.error_len().is_some() {
+                    return Err("Provider stream contained invalid UTF-8.".to_string());
+                }
+                self.utf8_tail.extend_from_slice(&bytes[valid_up_to..]);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn drain_events(&mut self, flush: bool) -> Vec<String> {
+        let mut events = Vec::new();
+        loop {
+            let Some((line_end, terminator_len)) = self.find_line_end(flush) else {
+                break;
+            };
+            let line = self.input[..line_end].to_string();
+            self.input.drain(..line_end + terminator_len);
+            if line.is_empty() {
+                self.dispatch_event(&mut events);
+            } else {
+                self.append_line(&line);
+            }
+        }
+
+        if flush {
+            if !self.input.is_empty() {
+                let line = std::mem::take(&mut self.input);
+                self.append_line(&line);
+            }
+            self.dispatch_event(&mut events);
+        }
+
+        events
+    }
+
+    fn find_line_end(&self, flush: bool) -> Option<(usize, usize)> {
+        let bytes = self.input.as_bytes();
+        for index in 0..bytes.len() {
+            match bytes[index] {
+                b'\n' => return Some((index, 1)),
+                b'\r' => {
+                    if index + 1 == bytes.len() && !flush {
+                        return None;
+                    }
+                    let terminator_len =
+                        usize::from(index + 1 < bytes.len() && bytes[index + 1] == b'\n') + 1;
+                    return Some((index, terminator_len));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn append_line(&mut self, line: &str) {
+        if !self.event.is_empty() {
+            self.event.push('\n');
+        }
+        self.event.push_str(line);
+    }
+
+    fn dispatch_event(&mut self, events: &mut Vec<String>) {
+        if !self.event.is_empty() {
+            events.push(std::mem::take(&mut self.event));
+        }
     }
 }
 
@@ -558,6 +789,69 @@ mod tests {
             extract_sse_data("data: [DONE]\n"),
             Some("[DONE]".to_string())
         );
+    }
+
+    #[test]
+    fn sse_parser_handles_cr_lf_crlf_and_flushes_final_event() {
+        let mut parser = SseParser::default();
+        assert!(parser
+            .push(b"data: first\r")
+            .expect("first chunk")
+            .is_empty());
+        assert_eq!(
+            parser
+                .push(b"\ndata: second\r\n\r\n")
+                .expect("second chunk"),
+            vec!["data: first\ndata: second".to_string()]
+        );
+        assert!(parser
+            .push(b"data: [DONE]\r\n")
+            .expect("terminal chunk")
+            .is_empty());
+        assert_eq!(
+            parser.finish().expect("final flush"),
+            vec!["data: [DONE]".to_string()]
+        );
+    }
+
+    #[test]
+    fn sse_parser_preserves_utf8_split_across_chunks() {
+        let bytes = "data: café\n\n".as_bytes();
+        let split_at = bytes
+            .iter()
+            .position(|byte| *byte == b'\xc3')
+            .expect("multibyte character")
+            + 1;
+        let mut parser = SseParser::default();
+
+        assert!(parser
+            .push(&bytes[..split_at])
+            .expect("first chunk")
+            .is_empty());
+        assert_eq!(
+            parser.push(&bytes[split_at..]).expect("second chunk"),
+            vec!["data: café".to_string()]
+        );
+    }
+
+    #[test]
+    fn truncated_sse_event_has_no_completion_marker() {
+        let mut parser = SseParser::default();
+        parser
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}")
+            .expect("chunk");
+        let events = parser.finish().expect("flush");
+        assert_eq!(events.len(), 1);
+        assert!(!is_terminal_sse_value(
+            &serde_json::from_str::<Value>(&extract_sse_data(&events[0]).expect("data"))
+                .expect("payload")
+        ));
+    }
+
+    #[test]
+    fn invalid_utf8_is_rejected_instead_of_replaced() {
+        let mut parser = SseParser::default();
+        assert!(parser.push(b"data: \xff").is_err());
     }
 
     #[test]

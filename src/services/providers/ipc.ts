@@ -30,14 +30,25 @@ import type {
 } from '../../types';
 import { useAppStore } from '../../stores/useAppStore';
 import * as tauriIpc from '../tauriIpc';
-import { mockInternalTools, mockMCPServers } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../tools/builtInTools';
 import { normalizeArchitectToolId } from '../architectToolNames';
-import { sendChat as sendChatFallback } from './mock';
+import { sendChatCompletion } from './chatCompletions';
 import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 import { parseToolTracesJson } from '../toolTraceState';
+import { parseDbContextRefs } from '../chatDbMappers';
+import {
+  buildMCPServerSettingsPayload,
+  normalizeMCPServerSettingsInput,
+  readStoredMCPServers,
+  writeStoredMCPServers,
+} from './clientSettingsStorage';
+import {
+  collectMCPEnvSecretRefs,
+  isMCPEnvSecretRef,
+  isSensitiveMCPEnvKey,
+} from '../mcp';
 
 const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
-const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
   'web-search': 'web_search',
   'file-read': 'read_file',
@@ -61,14 +72,57 @@ const loadLocalToolSettings = (): Record<string, boolean> => {
   }
 };
 
-const loadLocalMcpSettings = (): Record<string, boolean> => {
-  try {
-    const raw = localStorage.getItem(MCP_SERVER_SETTINGS_STORAGE_KEY);
-    if (!raw || raw === 'undefined') return {};
-    return normalizeToolSettings(JSON.parse(raw));
-  } catch {
-    return {};
-  }
+const secureMCPServerEnv = async (
+  servers: ReturnType<typeof normalizeMCPServerSettingsInput>
+): Promise<ReturnType<typeof normalizeMCPServerSettingsInput>> => {
+  const securedEntries = await Promise.all(
+    Object.entries(servers).map(async ([id, server]) => {
+      if (server.transport?.type !== 'stdio') {
+        return [id, server] as const;
+      }
+
+      const envEntries = await Promise.all(
+        Object.entries(server.transport.env ?? {}).map(async ([key, value]) => {
+          if (!isSensitiveMCPEnvKey(key) || !value || isMCPEnvSecretRef(value)) {
+            return [key, value] as const;
+          }
+
+          const secretRef = await tauriIpc.mcpStoreEnvSecret({
+            serverId: server.id,
+            key,
+            value,
+          });
+          return [key, secretRef] as const;
+        })
+      );
+
+      return [
+        id,
+        {
+          ...server,
+          transport: {
+            ...server.transport,
+            env: Object.fromEntries(envEntries),
+          },
+        },
+      ] as const;
+    })
+  );
+
+  return Object.fromEntries(securedEntries);
+};
+
+const deleteRemovedMCPEnvSecrets = async (
+  before: ReturnType<typeof normalizeMCPServerSettingsInput>,
+  after: ReturnType<typeof normalizeMCPServerSettingsInput>
+): Promise<void> => {
+  const beforeRefs = collectMCPEnvSecretRefs(before);
+  const afterRefs = collectMCPEnvSecretRefs(after);
+  await Promise.all(
+    Array.from(beforeRefs.entries())
+      .filter(([id]) => !afterRefs.has(id))
+      .map(([, ref]) => tauriIpc.mcpDeleteEnvSecret(ref))
+  );
 };
 
 const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation => ({
@@ -96,6 +150,7 @@ const toMessageDto = (message: tauriIpc.DbMessage): ChatMessage => ({
   hidden_context: message.hidden_context ?? undefined,
   provider_input_items: tauriIpc.parseProviderInputItemsJson(message.provider_input_items_json),
   provider_turn_state: tauriIpc.parseProviderTurnStateJson(message.provider_turn_state_json),
+  context_refs: parseDbContextRefs(message.context_refs_json),
 });
 
 const toProviderDto = (provider: tauriIpc.DbProviderConfig): AIProvider => ({
@@ -124,6 +179,16 @@ const toModelDto = (model: tauriIpc.DbAiModel): AIModel => ({
   isEnabled: model.is_enabled,
   isManual: model.is_manual,
   contextWindowTokens: model.context_window_tokens ?? undefined,
+  inputLimitTokens: model.input_limit_tokens ?? undefined,
+  outputLimitTokens: model.output_limit_tokens ?? undefined,
+  contextWindowSource:
+    (model.context_window_source as AIModel['contextWindowSource'] | null) ??
+    (model.context_window_tokens
+      ? model.is_manual
+        ? 'user_override'
+        : 'model_metadata'
+      : undefined),
+  contextLimitsUpdatedAt: model.context_limits_updated_at ?? undefined,
   first_seen_at: model.first_seen_at,
   last_seen_at: model.last_seen_at,
   db_id: model.id,
@@ -133,6 +198,7 @@ export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   const bootstrap = await tauriIpc.workspaceGetBootstrap();
   return {
     plan: bootstrap.plan,
+    standaloneProjects: bootstrap.standaloneProjects ?? [],
     projectGroups: bootstrap.projectGroups,
     planNodes: bootstrap.planNodes,
     predictedBranches: bootstrap.predictedBranches,
@@ -181,7 +247,8 @@ export const gitWorktreeCreate = async (
   taskId: string,
   branchName: string,
   fromRef?: string | null,
-  preferredCommitBranch?: string | null
+  preferredCommitBranch?: string | null,
+  fallbackBranches?: string[] | null
 ): Promise<{
   taskId: string;
   worktreePath: string;
@@ -197,6 +264,7 @@ export const gitWorktreeCreate = async (
     branchName,
     fromRef: fromRef ?? null,
     preferredCommitBranch: preferredCommitBranch ?? null,
+    fallbackBranches: fallbackBranches ?? null,
   });
 };
 
@@ -256,13 +324,15 @@ export const listModels = async (providerId?: string): Promise<ModelsDto> => {
 
 export const sendChat = async (
   request: ChatCompletionRequestDto
-): Promise<ChatCompletionResponseDto> => sendChatFallback(request);
+): Promise<ChatCompletionResponseDto> => sendChatCompletion(request);
 
 export const previewProjectGitSetup = async (data: {
   path?: string;
+  requestId?: string | null;
 }): Promise<ProjectGitFlowDetection> => {
   return tauriIpc.workspacePreviewProjectGitSetup({
     path: data.path,
+    requestId: data.requestId ?? null,
   });
 };
 
@@ -273,6 +343,7 @@ export const createProject = async (data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
     name: data.name,
@@ -281,6 +352,7 @@ export const createProject = async (data: {
     groupName: data.groupName,
     path: data.path,
     gitFlowSettings: data.gitFlowSettings,
+    requestId: data.requestId ?? null,
   });
 
   return { project };
@@ -297,6 +369,7 @@ export const createProjectWithGitSetup = async (data: {
   expectedRepoRootPath?: string | null;
   expectedSetupState: ProjectGitFlowDetection['setupState'];
   expectedRecommendedActionSequence: ProjectGitFlowDetection['recommendedActionSequence'];
+  requestId?: string | null;
 }): Promise<ProjectGitSetupCommitResult> => {
   return tauriIpc.workspaceCreateProjectWithGitSetup({
     name: data.name,
@@ -309,8 +382,32 @@ export const createProjectWithGitSetup = async (data: {
     expectedRepoRootPath: data.expectedRepoRootPath ?? null,
     expectedSetupState: data.expectedSetupState,
     expectedRecommendedActionSequence: data.expectedRecommendedActionSequence,
+    requestId: data.requestId ?? null,
   });
 };
+
+export const createNewProjectRepo = async (data: {
+  repoName: string;
+  parentPath: string;
+  folderName: string;
+  groupId: string | null;
+  groupName?: string | null;
+  gitFlowSettings?: Project['gitFlowSettings'];
+  requestId?: string | null;
+}): Promise<ProjectGitSetupCommitResult> => {
+  return tauriIpc.workspaceCreateNewProjectRepo({
+    repoName: data.repoName,
+    parentPath: data.parentPath,
+    folderName: data.folderName,
+    groupId: data.groupId,
+    groupName: data.groupName,
+    gitFlowSettings: data.gitFlowSettings,
+    requestId: data.requestId ?? null,
+  });
+};
+
+export const cancelProjectOperation = async (requestId: string): Promise<boolean> =>
+  tauriIpc.workspaceCancelProjectOperation(requestId);
 
 export const importGitRepo = async (data: {
   gitUrl: string;
@@ -344,6 +441,24 @@ export const renameProjectGroup = async (data: {
   });
 
   return { projectGroup };
+};
+
+export const createProjectGroup: ServiceProvider['createProjectGroup'] = async (data) => {
+  const projectGroups = await tauriIpc.workspaceCreateProjectGroup({
+    name: data.name,
+    projectIds: data.projectIds,
+  });
+
+  return { projectGroups };
+};
+
+export const moveProjectToGroup: ServiceProvider['moveProjectToGroup'] = async (data) => {
+  const projectGroups = await tauriIpc.workspaceMoveProjectToGroup({
+    projectId: data.projectId,
+    groupId: data.groupId,
+  });
+
+  return { projectGroups };
 };
 
 export const renameProject = async (data: {
@@ -476,7 +591,7 @@ export const closeProject = async (data: {
 export const getToolSettings = async (): Promise<ToolSettingsDto> => {
   const enabledMap = loadLocalToolSettings();
   const tools = Object.fromEntries(
-    mockInternalTools.map((tool) => {
+    BUILT_IN_TOOLS.map((tool) => {
       const enabled = enabledMap[tool.id] ?? tool.config?.enabled !== false;
       return [
         tool.id,
@@ -500,39 +615,45 @@ export const updateToolSettings = async (settings: ToolSettingsDto): Promise<voi
 };
 
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
-  const enabledMap = loadLocalMcpSettings();
-  const servers = Object.fromEntries(
-    mockMCPServers.map((server) => {
-      const enabled = enabledMap[server.id] ?? false;
-      return [
-        server.id,
-        {
-          ...server,
-          status: (enabled ? 'online' : 'offline') as 'online' | 'offline',
-          config: {
-            ...server.config,
-            enabled,
-          },
-        },
-      ];
-    })
-  );
-
-  return { servers };
+  return buildMCPServerSettingsPayload();
 };
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  const enabledMap: Record<string, boolean> = {};
-  Object.entries(settings.servers || {}).forEach(([id, server]) => {
-    const enabled =
-      typeof server === 'boolean'
-        ? server
-        : (server as unknown as { config?: { enabled?: boolean } }).config?.enabled ?? false;
-    enabledMap[id] = enabled;
-  });
-
-  localStorage.setItem(MCP_SERVER_SETTINGS_STORAGE_KEY, JSON.stringify(enabledMap));
+  const previousServers = readStoredMCPServers();
+  const securedServers = await secureMCPServerEnv(normalizeMCPServerSettingsInput(settings));
+  await deleteRemovedMCPEnvSecrets(previousServers, securedServers);
+  writeStoredMCPServers(securedServers);
 };
+
+export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async (server) => {
+  const response = await tauriIpc.mcpDiscoverTools({ server });
+  return { tools: response.tools };
+};
+
+export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
+  return tauriIpc.mcpCallTool(data);
+};
+
+export const listSkills: ServiceProvider['listSkills'] = async (data) =>
+  tauriIpc.skillsList({ projectRoots: data?.projectRoots ?? [] });
+
+export const getSkill: ServiceProvider['getSkill'] = async (data) =>
+  tauriIpc.skillsGet(data);
+
+export const installSkillFromLocalPath: ServiceProvider['installSkillFromLocalPath'] = async (data) =>
+  tauriIpc.skillsInstallFromLocalPath(data);
+
+export const createSkillTemplate: ServiceProvider['createSkillTemplate'] = async (data) =>
+  tauriIpc.skillsCreateTemplate(data);
+
+export const openSkillLocation: ServiceProvider['openSkillLocation'] = async (data) =>
+  tauriIpc.skillsOpenLocation(data);
+
+export const readSkillResource: ServiceProvider['readSkillResource'] = async (data) =>
+  tauriIpc.skillsReadResource(data);
+
+export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) =>
+  tauriIpc.skillsRunScript(data);
 
 export const provider: ServiceProvider = {
   getAppBootstrap,
@@ -550,8 +671,12 @@ export const provider: ServiceProvider = {
   previewProjectGitSetup,
   createProject,
   createProjectWithGitSetup,
+  createNewProjectRepo,
+  cancelProjectOperation,
   importGitRepo,
   renameProjectGroup,
+  createProjectGroup,
+  moveProjectToGroup,
   renameProject,
   updateProjectGitFlow,
   updateProjectGitFlowWithSetup,
@@ -567,4 +692,13 @@ export const provider: ServiceProvider = {
   updateToolSettings,
   getMCPServerSettings,
   updateMCPServerSettings,
+  mcpDiscoverTools,
+  mcpCallTool,
+  listSkills,
+  getSkill,
+  installSkillFromLocalPath,
+  createSkillTemplate,
+  openSkillLocation,
+  readSkillResource,
+  runSkillScript,
 };

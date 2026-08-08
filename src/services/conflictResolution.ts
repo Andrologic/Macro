@@ -30,7 +30,7 @@ const PLAN_NEXT_STEP_LABELS: Record<PlanFinalizationNextAction, string> = {
 
 const MACRO_NEXT_STEP_LABELS: Record<NonNullable<MacroSyncNextAction>, string> = {
   commit: 'Commit metadata changes before retrying sync.',
-  push: 'Push the @macro branch after resolving the current issue.',
+  push: 'Push @macro to publish it and set the upstream.',
   pull: 'Pull the @macro branch again after resolving the current issue.',
   resolve_conflict: 'Resolve the conflicted metadata files, then retry sync.',
   configure_remote: 'Configure the origin remote before retrying sync.',

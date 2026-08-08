@@ -6,6 +6,7 @@ import type {
   ToolSecurityActionGroup,
   ToolSecurityDecision,
 } from "../types";
+import { isMCPToolId, parseMCPToolId } from "./mcpToolNames";
 import { getToolModePolicy } from "./toolModePolicy";
 
 type RememberStrategy =
@@ -39,6 +40,9 @@ export const DEFAULT_TOOL_RISK_LEVEL: ToolRiskLevel = "balanced";
 
 export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "question",
+  "skill_activate",
+  "skill_read_resource",
+  "skill_run_script",
   "read_file",
   "web_search",
   "mark_source_passage",
@@ -51,6 +55,8 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "strategy_generate",
   "strategy_update",
   "strategy_delete",
+  "task_todo_update",
+  "task_artifact_put",
   "plan_update",
 ]);
 
@@ -67,6 +73,24 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Read an attached file",
     attachmentOnly: true,
+  },
+  skill_activate: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Load skill instructions",
+  },
+  skill_read_resource: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read a skill resource",
+  },
+  skill_run_script: {
+    actionGroup: "escape",
+    rememberStrategy: "tool",
+    destructiveStrategy: "always",
+    summary: "Run a skill script",
   },
   read_sources: {
     actionGroup: "observe",
@@ -164,6 +188,24 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Read a strategy",
   },
+  task_todo_get: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read task todos",
+  },
+  task_artifact_list: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "List task artifacts",
+  },
+  task_artifact_get: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read a task artifact",
+  },
   write: {
     actionGroup: "change",
     rememberStrategy: "path",
@@ -217,6 +259,18 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "tool",
     destructiveStrategy: "always",
     summary: "Update a strategy",
+  },
+  task_todo_update: {
+    actionGroup: "change",
+    rememberStrategy: "tool",
+    destructiveStrategy: "always",
+    summary: "Update task todos",
+  },
+  task_artifact_put: {
+    actionGroup: "change",
+    rememberStrategy: "tool",
+    destructiveStrategy: "always",
+    summary: "Store a task artifact",
   },
   git_add: {
     actionGroup: "change",
@@ -366,7 +420,9 @@ const cleanString = (value: unknown): string | null => {
 };
 
 const isAbsolutePath = (value: string): boolean =>
-  /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/");
+  /^[a-zA-Z]:[\\/]/.test(value) ||
+  value.startsWith("/") ||
+  /^\\\\wsl(?:\.localhost|\$)\\/i.test(value);
 
 const normalizePathForComparison = (value: string): string => {
   const normalized = value.replace(/\\/g, "/").trim();
@@ -535,6 +591,15 @@ const getPrimaryDetail = (
   if (toolId === "read_file") {
     return cleanString(args.file) ?? undefined;
   }
+  if (toolId === "skill_activate") {
+    return cleanString(args.skill_id) ?? undefined;
+  }
+  if (toolId === "skill_read_resource") {
+    return cleanString(args.path) ?? cleanString(args.skill_id) ?? undefined;
+  }
+  if (toolId === "skill_run_script") {
+    return cleanString(args.script_path) ?? cleanString(args.skill_id) ?? undefined;
+  }
   if (pathCandidates.length === 1) {
     return pathCandidates[0];
   }
@@ -645,12 +710,22 @@ const normalizeToolSecurityCall = (
   args: Record<string, unknown>,
   options: EvaluateToolSecurityOptions,
 ): NormalizedToolSecurityCall => {
-  const definition = TOOL_SECURITY_DEFINITIONS[toolId] ?? {
-    actionGroup: "escape" as const,
-    rememberStrategy: "tool" as const,
-    destructiveStrategy: "never" as const,
-    summary: `Use ${toolId}`,
-  };
+  const mcpToolIdentity = parseMCPToolId(toolId);
+  const definition =
+    TOOL_SECURITY_DEFINITIONS[toolId] ??
+    (mcpToolIdentity
+      ? {
+          actionGroup: "escape" as const,
+          rememberStrategy: "tool" as const,
+          destructiveStrategy: "never" as const,
+          summary: `Call MCP tool ${mcpToolIdentity.toolSlug} on ${mcpToolIdentity.serverId}`,
+        }
+      : {
+          actionGroup: "escape" as const,
+          rememberStrategy: "tool" as const,
+          destructiveStrategy: "never" as const,
+          summary: `Use ${toolId}`,
+        });
 
   const pathCandidates = getPathCandidates(toolId, args);
 
@@ -727,7 +802,7 @@ export const evaluateToolSecurity = (
   options: EvaluateToolSecurityOptions,
 ): ToolSecurityEvaluation => {
   const modePolicy = getToolModePolicy(options.mode);
-  if (!modePolicy.allowedToolIds.includes(toolId)) {
+  if (!modePolicy.allowedToolIds.includes(toolId) && !isMCPToolId(toolId)) {
     const normalizedCall = normalizeToolSecurityCall(toolId, args, options);
     return {
       decision: "deny",
@@ -764,6 +839,9 @@ export const filterDeniedToolIdsForRiskLevel = (
   }
 
   return [...new Set(toolIds)].filter((toolId) => {
+    if (isMCPToolId(toolId)) {
+      return false;
+    }
     const definition = TOOL_SECURITY_DEFINITIONS[toolId];
     return !definition || definition.actionGroup !== "escape";
   });

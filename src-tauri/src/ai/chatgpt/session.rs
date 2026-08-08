@@ -14,9 +14,12 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use tracing::{debug, error, info, warn};
 
-pub async fn migrate_provider_secret(pool: &SqlitePool, provider_id: &str) -> Result<(), String> {
+pub async fn sync_local_provider_secret_metadata(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> Result<(), String> {
     let Some(secret) =
-        secrets::migrate_legacy_chatgpt_secret(provider_id).map_err(|error| error.to_string())?
+        secrets::get_chatgpt_secret(provider_id).map_err(|error| error.to_string())?
     else {
         return Ok(());
     };
@@ -43,7 +46,7 @@ pub(super) async fn ensure_fresh_secret(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
-    migrate_provider_secret(pool, provider_id).await?;
+    sync_local_provider_secret_metadata(pool, provider_id).await?;
 
     let secret = secrets::get_chatgpt_secret(provider_id)
         .map_err(|error| error.to_string())?
@@ -100,13 +103,26 @@ pub(super) async fn force_refresh_secret(
     if let Err(error) =
         repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
     {
+        let db_message = db_error_to_string(error);
+        if let Err(rollback_error) = restore_chatgpt_secret(provider_id, Some(secret)) {
+            error!(
+                provider_id = %provider_id,
+                phase = "refresh_rollback",
+                error = %rollback_error,
+                "failed to roll back refreshed ChatGPT secret after metadata persistence failure"
+            );
+            return Err(format!(
+                "{} Secret rollback also failed: {}",
+                db_message, rollback_error
+            ));
+        }
         error!(
             provider_id = %provider_id,
             phase = "refresh_persist",
-            error = %error,
+            error = %db_message,
             "failed to persist refreshed ChatGPT auth metadata"
         );
-        return Err(db_error_to_string(error));
+        return Err(db_message);
     }
     info!(
         provider_id = %provider_id,
@@ -201,6 +217,8 @@ pub(super) async fn persist_chatgpt_session(
         has_account_id = secret.account_id.is_some(),
         "persisting ChatGPT session secret"
     );
+    let previous_secret = secrets::get_chatgpt_secret(provider_id)
+        .map_err(|error| PersistChatGptSessionError::Secret(error.to_string()))?;
     if let Err(error) = secrets::set_chatgpt_secret(provider_id, secret) {
         error!(
             provider_id = %provider_id,
@@ -213,15 +231,26 @@ pub(super) async fn persist_chatgpt_session(
     if let Err(error) =
         repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
     {
+        let db_message = db_error_to_string(error);
+        if let Err(rollback_error) = restore_chatgpt_secret(provider_id, previous_secret.as_ref()) {
+            error!(
+                provider_id = %provider_id,
+                phase = "metadata_rollback",
+                error = %rollback_error,
+                "failed to roll back ChatGPT session secret after metadata persistence failure"
+            );
+            return Err(PersistChatGptSessionError::Metadata(format!(
+                "{} Secret rollback also failed: {}",
+                db_message, rollback_error
+            )));
+        }
         error!(
             provider_id = %provider_id,
             phase = "metadata_persist",
-            error = %error,
+            error = %db_message,
             "failed to persist ChatGPT auth metadata"
         );
-        return Err(PersistChatGptSessionError::Metadata(db_error_to_string(
-            error,
-        )));
+        return Err(PersistChatGptSessionError::Metadata(db_message));
     }
 
     repository::get_provider_config(pool, provider_id)
@@ -230,6 +259,18 @@ pub(super) async fn persist_chatgpt_session(
         .ok_or_else(|| {
             PersistChatGptSessionError::Metadata(format!("Provider {provider_id} not found."))
         })
+}
+
+fn restore_chatgpt_secret(
+    provider_id: &str,
+    previous_secret: Option<&ChatGptSecret>,
+) -> Result<(), String> {
+    match previous_secret {
+        Some(secret) => {
+            secrets::set_chatgpt_secret(provider_id, secret).map_err(|error| error.to_string())
+        }
+        None => secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string()),
+    }
 }
 
 pub(super) fn build_provider_auth_metadata(

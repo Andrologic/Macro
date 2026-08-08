@@ -3,7 +3,10 @@ use crate::ai::chatgpt::types::{
     AiStreamToolTraceEvent, AiToolTrace,
 };
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
-use crate::ai::{AiState, AuthTask, DownloadTask};
+use crate::ai::{
+    emit_timeline, AiState, AuthTask, CopilotRuntimeCache, DownloadTask, ProviderTimeline,
+};
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderModelInput};
 use crate::db::repository;
 use crate::tool_host::ToolHostConfig;
@@ -19,11 +22,13 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Instant;
 use tar::Archive;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{watch, Mutex};
+use uuid::Uuid;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -41,6 +46,25 @@ const COPILOT_DEFAULT_DEVICE_URL: &str = "https://github.com/login/device";
 const DEFAULT_COPILOT_SEND_TIMEOUT_MS: i64 = 30 * 60 * 1000;
 const MIN_COPILOT_SEND_TIMEOUT_MS: i64 = 60 * 1000;
 const DOWNLOAD_PROGRESS_GRANULARITY_BYTES: u64 = 1_048_576;
+const MAX_REQUEST_ID_LENGTH: usize = 128;
+
+pub(crate) fn validate_request_id(request_id: &str) -> Result<(), String> {
+    if request_id.is_empty()
+        || request_id.len() > MAX_REQUEST_ID_LENGTH
+        || request_id == "."
+        || request_id == ".."
+        || !request_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return Err(
+            "Invalid request ID. Request IDs may contain only ASCII letters, digits, '.', '-' or '_'."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct BridgeHealthResult {
@@ -173,6 +197,7 @@ pub struct CopilotDownloadCompleteEvent {
     pub provider_id: String,
     pub runtime_version: String,
     pub runtime_source: String,
+    pub status: CopilotStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,6 +294,15 @@ impl RuntimeSource {
             Self::None => "none",
         }
     }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "managed" => Some(Self::Managed),
+            "system" => Some(Self::System),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
 }
 
 fn packaged_runtime_filename(base_name: &str) -> String {
@@ -340,17 +374,36 @@ fn bridge_candidates(_app_handle: &AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
-fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
+fn resource_candidates_from_paths(
+    resolved_resource_path: Option<PathBuf>,
+    resource_dir: Option<PathBuf>,
+    manifest_dir: &Path,
+    relative_path: &str,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join(relative_path));
+    if let Some(resolved_resource_path) = resolved_resource_path {
+        candidates.push(resolved_resource_path);
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join(relative_path),
-    );
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join(relative_path));
+        candidates.push(resource_dir.join("resources").join(relative_path));
+    }
+    candidates.push(manifest_dir.join("resources").join(relative_path));
     candidates
+}
+
+fn resource_candidates(app_handle: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
+    let resolved_resource_path = app_handle
+        .path()
+        .resolve(relative_path, BaseDirectory::Resource)
+        .ok();
+    let resource_dir = app_handle.path().resource_dir().ok();
+    resource_candidates_from_paths(
+        resolved_resource_path,
+        resource_dir,
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        relative_path,
+    )
 }
 
 fn resolve_bridge_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -517,7 +570,13 @@ fn spawn_bridge(
     envs: &[(String, String)],
 ) -> Result<Child, String> {
     let bridge_path = resolve_bridge_path(app_handle)?;
-    let mut command = Command::new(bridge_path);
+    let mut command = background_tokio_command(bridge_path);
+    tracing::debug!(
+        operation = "copilot_runtime_spawn",
+        args = ?args,
+        hidden_console = cfg!(target_os = "windows"),
+        "starting Macro AI runtime"
+    );
     command
         .args(args)
         .stdin(Stdio::piped())
@@ -532,19 +591,6 @@ fn spawn_bridge(
     command
         .spawn()
         .map_err(|error| format!("Failed to start Macro AI runtime: {}", error))
-}
-
-fn parse_json_lines(output: &str) -> Vec<Value> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<Value>(trimmed).ok()
-        })
-        .collect()
 }
 
 fn bridge_error_message(values: &[Value], fallback: &str) -> String {
@@ -573,29 +619,86 @@ async fn run_bridge_json_command<T: for<'de> Deserialize<'de>>(
             .write_all(payload.as_bytes())
             .await
             .map_err(|error| format!("Failed to write AI runtime request: {}", error))?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|error| format!("Failed to write AI runtime request newline: {}", error))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
     }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let values = parse_json_lines(&stdout);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "AI runtime stdout is unavailable.".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "AI runtime stderr is unavailable.".to_string())?;
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr_reader = BufReader::new(stderr).lines();
+        let mut lines = Vec::new();
+        while let Ok(Some(line)) = stderr_reader.next_line().await {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+        lines.join("\n")
+    });
 
-    if !output.status.success() {
-        let stderr_message = stderr.trim();
-        let message = if !values.is_empty() {
-            bridge_error_message(&values, stderr_message)
-        } else if !stderr_message.is_empty() {
-            stderr_message.to_string()
+    let mut parsed_values: Vec<Value> = Vec::new();
+    while let Some(line) = stdout_reader
+        .next_line()
+        .await
+        .map_err(|error| format!("Failed to read AI runtime output: {}", error))?
+    {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("error") {
+            let message = bridge_error_message(&[value], "Macro AI runtime command failed.");
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stderr_task.abort();
+            return Err(message);
+        }
+        match serde_json::from_value::<T>(value.clone()) {
+            Ok(parsed) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                stderr_task.abort();
+                return Ok(parsed);
+            }
+            Err(_) => parsed_values.push(value),
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("Failed to wait for AI runtime process: {}", error))?;
+    let stderr_output = stderr_task.await.unwrap_or_default();
+
+    if !status.success() {
+        let message = if !parsed_values.is_empty() {
+            bridge_error_message(&parsed_values, stderr_output.trim())
+        } else if !stderr_output.trim().is_empty() {
+            stderr_output
         } else {
             "Macro AI runtime command failed.".to_string()
         };
         return Err(message);
     }
 
-    let value = values
+    let value = parsed_values
         .last()
         .cloned()
         .ok_or_else(|| "Macro AI runtime returned no JSON output.".to_string())?;
@@ -667,22 +770,55 @@ fn bridge_health_to_status(runtime: &ResolvedRuntime, health: BridgeHealthResult
     }
 }
 
+fn bridge_send_error_to_status(
+    runtime: &ResolvedRuntime,
+    code: Option<&str>,
+    message: &str,
+) -> CopilotStatus {
+    let auth_status = match code {
+        Some("login_required") => "login_required",
+        Some("policy_blocked") => "policy_blocked",
+        Some("quota_or_auth_error") => "quota_or_auth_error",
+        _ => "error",
+    };
+
+    CopilotStatus {
+        ok: false,
+        runtime_source: runtime.source.as_str().to_string(),
+        runtime_status: "ready".to_string(),
+        runtime_version: Some(runtime.version.clone()),
+        min_cli_version: MIN_CLI_VERSION.to_string(),
+        auth_status: auth_status.to_string(),
+        auth_source: None,
+        account_label: None,
+        status_message: Some(message.to_string()),
+        error_code: code.map(str::to_string),
+        error_message: Some(message.to_string()),
+    }
+}
+
 async fn run_cli_command(cli_path: &Path, args: &[&str]) -> Result<(i32, String), String> {
-    let output = Command::new(cli_path)
+    let mut command = background_tokio_command(cli_path);
+    tracing::debug!(
+        operation = "copilot_status_probe",
+        cli_path = %cli_path.display(),
+        args = ?args,
+        hidden_console = cfg!(target_os = "windows"),
+        "running Copilot CLI probe"
+    );
+    command
         .args(args)
         .env(COPILOT_AUTO_UPDATE_ENV.0, COPILOT_AUTO_UPDATE_ENV.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| {
-            format!(
-                "Failed to run Copilot CLI at {}: {}",
-                cli_path.display(),
-                error
-            )
-        })?;
+        .kill_on_drop(true);
+    let output = command.output().await.map_err(|error| {
+        format!(
+            "Failed to run Copilot CLI at {}: {}",
+            cli_path.display(),
+            error
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -841,7 +977,15 @@ fn system_cli_candidates() -> Vec<PathBuf> {
     } else {
         "which"
     };
-    let output = std::process::Command::new(resolver).arg("copilot").output();
+    let mut command = background_command(resolver);
+    command.arg("copilot");
+    tracing::debug!(
+        operation = "copilot_status_probe",
+        resolver,
+        hidden_console = cfg!(target_os = "windows"),
+        "resolving system Copilot CLI"
+    );
+    let output = command.output();
     let Ok(output) = output else {
         return Vec::new();
     };
@@ -928,6 +1072,56 @@ async fn resolve_runtime(
     })
 }
 
+fn cached_runtime_matches(
+    cached: &CopilotRuntimeCache,
+    manifest_version: &str,
+    platform_key: &str,
+    asset: &CopilotRuntimeAsset,
+) -> bool {
+    cached.manifest_version == manifest_version
+        && cached.platform_key == platform_key
+        && cached.version == asset.version
+        && cached.path.exists()
+        && RuntimeSource::from_str(&cached.source).is_some()
+}
+
+async fn ensure_copilot_runtime_for_send(
+    app_handle: &AppHandle,
+    ai_state: &AiState,
+) -> Result<ResolvedRuntime, String> {
+    let (platform_key, manifest, asset) = current_runtime_asset(app_handle)?;
+    {
+        let cache = ai_state.copilot_runtime_cache.lock().await;
+        if let Some(cached) = cache.as_ref() {
+            if cached_runtime_matches(cached, &manifest._version, &platform_key, &asset) {
+                if let Some(source) = RuntimeSource::from_str(&cached.source) {
+                    return Ok(ResolvedRuntime {
+                        source,
+                        path: cached.path.clone(),
+                        version: cached.version.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    let (runtime, _) = resolve_runtime(app_handle)
+        .await
+        .map_err(|issue| issue.error_message)?;
+    {
+        let mut cache = ai_state.copilot_runtime_cache.lock().await;
+        *cache = Some(CopilotRuntimeCache {
+            manifest_version: manifest._version,
+            platform_key,
+            path: runtime.path.clone(),
+            version: runtime.version.clone(),
+            source: runtime.source.as_str().to_string(),
+            validated_at: Instant::now(),
+        });
+    }
+    Ok(runtime)
+}
+
 async fn read_bridge_health(
     app_handle: &AppHandle,
     runtime: &ResolvedRuntime,
@@ -1009,6 +1203,10 @@ fn models_to_inputs(models: &[BridgeModelRecord]) -> Vec<ProviderModelInput> {
                     Some(reasoning.reasoning_efforts)
                 },
                 context_window_tokens: None,
+                input_limit_tokens: None,
+                output_limit_tokens: None,
+                context_window_source: None,
+                context_limits_updated_at: None,
                 default_reasoning_effort: reasoning.default_reasoning_effort,
             }
         })
@@ -1057,6 +1255,7 @@ fn emit_download_complete(
     request_id: &str,
     provider_id: &str,
     runtime_version: &str,
+    status: CopilotStatus,
 ) -> Result<(), String> {
     app_handle
         .emit(
@@ -1066,6 +1265,7 @@ fn emit_download_complete(
                 provider_id: provider_id.to_string(),
                 runtime_version: runtime_version.to_string(),
                 runtime_source: RuntimeSource::Managed.as_str().to_string(),
+                status,
             },
         )
         .map_err(|error| error.to_string())
@@ -1254,6 +1454,52 @@ fn cleanup_old_managed_versions(
     Ok(())
 }
 
+struct DirectoryCleanupGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl DirectoryCleanupGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DirectoryCleanupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn remove_runtime_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn restore_previous_runtime(final_dir: &Path, backup_dir: &Path) -> Result<(), String> {
+    remove_runtime_path(final_dir)?;
+    if backup_dir.exists() {
+        fs::rename(backup_dir, final_dir)
+            .map_err(|error| format!("Failed to restore previous Copilot runtime: {}", error))?;
+    }
+    Ok(())
+}
+
 async fn install_runtime_archive(
     app_handle: &AppHandle,
     pool: &SqlitePool,
@@ -1263,12 +1509,15 @@ async fn install_runtime_archive(
     asset: &CopilotRuntimeAsset,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
+    validate_request_id(request_id)?;
     let temp_root = copilot_temp_root(app_handle)?;
-    let request_root = temp_root.join(format!("download-{}", request_id));
+    let install_id = Uuid::new_v4().simple().to_string();
+    let request_root = temp_root.join(format!("download-{}", install_id));
     if request_root.exists() {
-        let _ = fs::remove_dir_all(&request_root);
+        remove_runtime_path(&request_root)?;
     }
     fs::create_dir_all(&request_root).map_err(|error| error.to_string())?;
+    let request_cleanup = DirectoryCleanupGuard::new(request_root.clone());
 
     let archive_path = request_root.join("runtime.tgz");
     let extract_root = request_root.join("extract");
@@ -1406,14 +1655,13 @@ async fn install_runtime_archive(
     )?;
 
     let final_dir = managed_runtime_dir(app_handle, platform_key, asset)?;
-    let staging_dir = final_dir.with_extension(format!("staging-{}", request_id));
+    let staging_dir = final_dir.with_extension(format!("staging-{}", install_id));
+    let backup_dir = final_dir.with_extension(format!("backup-{}", install_id));
     if staging_dir.exists() {
-        let _ = fs::remove_dir_all(&staging_dir);
-    }
-    if final_dir.exists() {
-        let _ = fs::remove_dir_all(&final_dir);
+        remove_runtime_path(&staging_dir)?;
     }
     fs::create_dir_all(&staging_dir).map_err(|error| error.to_string())?;
+    let mut staging_cleanup = DirectoryCleanupGuard::new(staging_dir.clone());
 
     let final_binary = staging_dir.join(&asset.binary_name);
     fs::copy(&extracted_binary, &final_binary)
@@ -1429,13 +1677,51 @@ async fn install_runtime_archive(
     }
 
     copy_license_to_runtime(app_handle, &staging_dir)?;
-    fs::rename(&staging_dir, &final_dir)
-        .map_err(|error| format!("Failed to finalize Copilot runtime install: {}", error))?;
+    let had_previous_runtime = final_dir.exists();
+    if had_previous_runtime {
+        fs::rename(&final_dir, &backup_dir).map_err(|error| {
+            format!(
+                "Failed to stage the previous Copilot runtime for replacement: {}",
+                error
+            )
+        })?;
+    }
+
+    if let Err(error) = fs::rename(&staging_dir, &final_dir) {
+        let restore_error = if had_previous_runtime {
+            restore_previous_runtime(&final_dir, &backup_dir).err()
+        } else {
+            None
+        };
+        return Err(match restore_error {
+            Some(restore_error) => format!(
+                "Failed to finalize Copilot runtime install: {} Runtime rollback failed: {}",
+                error, restore_error
+            ),
+            None => format!("Failed to finalize Copilot runtime install: {}", error),
+        });
+    }
+    staging_cleanup.disarm();
 
     let final_binary_path = final_dir.join(&asset.binary_name);
-    write_managed_runtime_metadata(pool, platform_key, &final_binary_path, asset).await?;
+    if let Err(error) =
+        write_managed_runtime_metadata(pool, platform_key, &final_binary_path, asset).await
+    {
+        let rollback_error = restore_previous_runtime(&final_dir, &backup_dir).err();
+        return Err(match rollback_error {
+            Some(rollback_error) => format!(
+                "Failed to persist Copilot runtime metadata: {} Runtime rollback failed: {}",
+                error, rollback_error
+            ),
+            None => format!("Failed to persist Copilot runtime metadata: {}", error),
+        });
+    }
+
+    if had_previous_runtime {
+        let _ = remove_runtime_path(&backup_dir);
+    }
     cleanup_old_managed_versions(app_handle, platform_key, &asset.version)?;
-    let _ = fs::remove_dir_all(&request_root);
+    drop(request_cleanup);
     Ok(())
 }
 
@@ -1477,11 +1763,14 @@ pub async fn start_runtime_download(
                 &mut cancel_rx,
             )
             .await?;
+            let status =
+                get_status_inner(&app_for_task, &pool_for_task, &provider_for_task, false).await?;
             emit_download_complete(
                 &app_for_task,
                 &request_for_task,
                 &provider_for_task,
                 &asset.version,
+                status,
             )?;
             Ok::<(), String>(())
         }
@@ -1502,8 +1791,19 @@ pub async fn start_runtime_download(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.download_tasks.lock().await;
-        tasks.remove(&request_for_task);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&request_for_task)
+                    .map(|task| task.handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&request_for_task);
+        }
     });
 
     let mut tasks = ai_state.download_tasks.lock().await;
@@ -1565,13 +1865,22 @@ async fn run_login_flow(
     request_id: String,
     runtime: ResolvedRuntime,
 ) -> Result<(), String> {
-    let mut child = Command::new(&runtime.path)
+    let mut command = background_tokio_command(&runtime.path);
+    tracing::debug!(
+        operation = "copilot_runtime_spawn",
+        flow = "login",
+        runtime_path = %runtime.path.display(),
+        hidden_console = cfg!(target_os = "windows"),
+        "starting Copilot login runtime"
+    );
+    command
         .arg("login")
         .env(COPILOT_AUTO_UPDATE_ENV.0, COPILOT_AUTO_UPDATE_ENV.1)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start GitHub Copilot login: {}", error))?;
 
@@ -1735,8 +2044,19 @@ pub async fn start_auth(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.auth_tasks.lock().await;
-        tasks.remove(&request_for_task);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&request_for_task)
+                    .map(|task| task.handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&request_for_task);
+        }
     });
 
     let mut tasks = ai_state.auth_tasks.lock().await;
@@ -1822,13 +2142,23 @@ pub async fn stream_chat(
 
     let request_id = request.request_id.clone();
     let task_request_id = request.request_id.clone();
+    let task_provider_id = request.provider_id.clone();
     let app_for_task = app_handle.clone();
     let state_for_task = ai_state.clone();
+    let task_started_at = Instant::now();
 
     let handle = tokio::spawn(async move {
         let result =
             stream_chat_inner(app_for_task.clone(), pool, state_for_task.clone(), request).await;
         if let Err(message) = result {
+            emit_timeline(
+                &app_for_task,
+                &task_request_id,
+                &task_provider_id,
+                "copilot",
+                task_started_at,
+                "error",
+            );
             let _ = app_for_task.emit(
                 "ai:error",
                 AiStreamErrorEvent {
@@ -1838,10 +2168,21 @@ pub async fn stream_chat(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.stream_tasks.lock().await;
-        tasks.remove(&task_request_id);
-        let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
-        tool_writers.remove(&task_request_id);
+        let is_current_task = task_id
+            .map(|task_id| {
+                tasks
+                    .get(&task_request_id)
+                    .map(|handle| handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if is_current_task {
+            tasks.remove(&task_request_id);
+            let mut tool_writers = state_for_task.copilot_tool_writers.lock().await;
+            tool_writers.remove(&task_request_id);
+        }
     });
 
     let mut tasks = ai_state.stream_tasks.lock().await;
@@ -1850,12 +2191,13 @@ pub async fn stream_chat(
 }
 
 pub async fn cancel_stream(ai_state: &AiState, request_id: &str) -> Result<(), String> {
+    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await?;
     {
         let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
         tool_writers.remove(request_id);
     }
 
-    crate::ai::chatgpt::cancel_stream(ai_state, request_id).await
+    Ok(())
 }
 
 pub async fn submit_tool_result(
@@ -1907,33 +2249,31 @@ async fn stream_chat_inner(
     ai_state: AiState,
     request: AiChatRequest,
 ) -> Result<(), String> {
+    let mut request = request;
+    let started_at = Instant::now();
+    let timeline = ProviderTimeline::new(
+        &app_handle,
+        &request.request_id,
+        &request.provider_id,
+        "copilot",
+        started_at,
+    );
+    timeline.emit("backend_task_started");
     let provider = repository::get_provider_config(&pool, &request.provider_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Provider {} not found.", request.provider_id))?;
 
-    let mut status = get_status(&app_handle, &pool, &ai_state, &provider.id).await?;
-    normalize_status_auth_source(&mut status);
-    persist_provider_status(&pool, &provider.id, &status).await?;
-
-    if status.runtime_status != "ready" || status.auth_status != "connected" {
-        return Err(status
-            .error_message
-            .or(status.status_message)
-            .unwrap_or_else(|| "GitHub Copilot is not connected.".to_string()));
-    }
-
     let provider_settings = repository::get_provider_settings(&pool, &provider.id)
         .await
         .map_err(|error| error.to_string())?;
-    let mut request = request;
     request.copilot_send_timeout_ms = Some(normalize_copilot_send_timeout_ms(
-        provider_settings.copilot_send_timeout_ms,
+        request
+            .copilot_send_timeout_ms
+            .or(provider_settings.copilot_send_timeout_ms),
     ));
 
-    let (runtime, _asset) = resolve_runtime(&app_handle)
-        .await
-        .map_err(|issue| issue.error_message)?;
+    let runtime = ensure_copilot_runtime_for_send(&app_handle, &ai_state).await?;
     let payload = serde_json::to_string(&request)
         .map_err(|error| format!("Failed to serialize Copilot request: {}", error))?;
     let mut child = spawn_bridge(&app_handle, &["send"], &bridge_envs(&app_handle, &runtime))?;
@@ -1958,6 +2298,7 @@ async fn stream_chat_inner(
             .await
             .map_err(|error| format!("Failed to flush AI runtime request: {}", error))?;
     }
+    timeline.emit("provider_request_sent");
     {
         let mut tool_writers = ai_state.copilot_tool_writers.lock().await;
         tool_writers.insert(request.request_id.clone(), stdin);
@@ -1986,7 +2327,9 @@ async fn stream_chat_inner(
     });
 
     let mut saw_done = false;
-    let mut last_error: Option<String> = None;
+    let mut last_error: Option<(Option<String>, String)> = None;
+    let mut emitted_first_provider_event = false;
+    let mut emitted_first_token = false;
 
     while let Some(line) = stdout_reader
         .next_line()
@@ -2003,6 +2346,14 @@ async fn stream_chat_inner(
 
         match event {
             BridgeSendEvent::Delta { delta } => {
+                if !emitted_first_provider_event {
+                    emitted_first_provider_event = true;
+                    timeline.emit("first_provider_event");
+                }
+                if !emitted_first_token {
+                    emitted_first_token = true;
+                    timeline.emit("first_token");
+                }
                 app_handle
                     .emit(
                         "ai:stream",
@@ -2020,6 +2371,11 @@ async fn stream_chat_inner(
                 tool_traces,
             } => {
                 saw_done = true;
+                if !emitted_first_provider_event {
+                    emitted_first_provider_event = true;
+                    timeline.emit("first_provider_event");
+                }
+                timeline.emit("done");
                 app_handle
                     .emit(
                         "ai:done",
@@ -2034,17 +2390,27 @@ async fn stream_chat_inner(
                             reasoning_summary,
                             tool_traces,
                             hidden_context,
+                            completion_reason: None,
                         },
                     )
                     .map_err(|error| error.to_string())?;
             }
             BridgeSendEvent::Error { code, message } => {
-                last_error = Some(
-                    code.map(|code| format!("{}: {}", code, message))
-                        .unwrap_or(message),
-                );
+                if !emitted_first_provider_event {
+                    emitted_first_provider_event = true;
+                    timeline.emit("first_provider_event");
+                }
+                let mut status =
+                    bridge_send_error_to_status(&runtime, code.as_deref(), message.as_str());
+                normalize_status_auth_source(&mut status);
+                let _ = persist_provider_status(&pool, &provider.id, &status).await;
+                last_error = Some((code, message));
             }
             BridgeSendEvent::ToolTrace { tool_trace } => {
+                if !emitted_first_provider_event {
+                    emitted_first_provider_event = true;
+                    timeline.emit("first_provider_event");
+                }
                 app_handle
                     .emit(
                         "ai:tool-trace",
@@ -2061,6 +2427,10 @@ async fn stream_chat_inner(
                 tool_name,
                 args,
             } => {
+                if !emitted_first_provider_event {
+                    emitted_first_provider_event = true;
+                    timeline.emit("first_provider_event");
+                }
                 app_handle
                     .emit(
                         "ai:tool-request",
@@ -2087,8 +2457,10 @@ async fn stream_chat_inner(
         return Ok(());
     }
 
-    if let Some(message) = last_error {
-        return Err(message);
+    if let Some((code, message)) = last_error {
+        return Err(code
+            .map(|code| format!("{}: {}", code, message))
+            .unwrap_or(message));
     }
 
     if !status.success() {
@@ -2098,25 +2470,7 @@ async fn stream_chat_inner(
         return Err("Macro AI runtime exited unexpectedly.".to_string());
     }
 
-    app_handle
-        .emit(
-            "ai:done",
-            AiStreamDoneEvent {
-                request_id: request.request_id,
-                output_text: String::new(),
-                tool_calls: Vec::new(),
-                response_id: None,
-                output_items: None,
-                provider_input_items: None,
-                provider_turn_state: None,
-                reasoning_summary: None,
-                tool_traces: None,
-                hidden_context: None,
-            },
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(())
+    Err("Macro AI runtime exited without a completion event.".to_string())
 }
 
 #[cfg(test)]
@@ -2132,6 +2486,14 @@ mod tests {
             normalize_copilot_send_timeout_ms(Some(2_400_000)),
             2_400_000
         );
+    }
+
+    #[test]
+    fn request_id_validation_rejects_path_traversal() {
+        assert!(validate_request_id("req-123").is_ok());
+        assert!(validate_request_id("../runtime").is_err());
+        assert!(validate_request_id("runtime\\stage").is_err());
+        assert!(validate_request_id("/").is_err());
     }
 
     #[test]
@@ -2159,5 +2521,137 @@ mod tests {
             }
             _ => panic!("expected done event"),
         }
+    }
+
+    #[test]
+    fn resource_candidates_include_flat_packaged_legacy_packaged_and_dev_paths() {
+        let resolved =
+            PathBuf::from("/App/Macro.app/Contents/Resources/copilot-runtime-manifest.json");
+        let resource_dir = PathBuf::from("/App/Macro.app/Contents/Resources");
+        let manifest_dir = PathBuf::from("/repo/src-tauri");
+
+        let candidates = resource_candidates_from_paths(
+            Some(resolved.clone()),
+            Some(resource_dir.clone()),
+            &manifest_dir,
+            COPILOT_RUNTIME_MANIFEST_RESOURCE,
+        );
+
+        assert_eq!(candidates[0], resolved);
+        assert!(candidates.contains(
+            &resource_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_MANIFEST_RESOURCE)
+        ));
+        assert!(candidates.contains(
+            &manifest_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_MANIFEST_RESOURCE)
+        ));
+    }
+
+    #[test]
+    fn resource_candidates_handle_nested_license_path() {
+        let resource_dir = PathBuf::from("/App/Macro.app/Contents/Resources");
+        let manifest_dir = PathBuf::from("/repo/src-tauri");
+
+        let candidates = resource_candidates_from_paths(
+            Some(resource_dir.join(COPILOT_RUNTIME_LICENSE_RESOURCE)),
+            Some(resource_dir.clone()),
+            &manifest_dir,
+            COPILOT_RUNTIME_LICENSE_RESOURCE,
+        );
+
+        assert!(candidates.contains(&resource_dir.join(COPILOT_RUNTIME_LICENSE_RESOURCE)));
+        assert!(candidates.contains(
+            &resource_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_LICENSE_RESOURCE)
+        ));
+        assert!(candidates.contains(
+            &manifest_dir
+                .join("resources")
+                .join(COPILOT_RUNTIME_LICENSE_RESOURCE)
+        ));
+    }
+
+    #[test]
+    fn cached_runtime_requires_matching_manifest_platform_version_and_existing_path() {
+        let temp_path =
+            std::env::temp_dir().join(format!("macro-copilot-cache-test-{}", std::process::id()));
+        std::fs::write(&temp_path, "runtime").expect("temp runtime");
+        let asset = CopilotRuntimeAsset {
+            package_name: "@github/copilot-darwin-arm64".to_string(),
+            version: "1.0.12".to_string(),
+            platform: "darwin".to_string(),
+            arch: "arm64".to_string(),
+            url: "https://example.test/runtime.tgz".to_string(),
+            archive_sha256: "archive".to_string(),
+            archive_size: 1,
+            binary_name: "copilot".to_string(),
+            binary_sha256: "binary".to_string(),
+            binary_size: 1,
+        };
+        let cache = CopilotRuntimeCache {
+            manifest_version: "manifest-1".to_string(),
+            platform_key: "macos-arm64".to_string(),
+            path: temp_path.clone(),
+            version: "1.0.12".to_string(),
+            source: "managed".to_string(),
+            validated_at: Instant::now(),
+        };
+
+        assert!(cached_runtime_matches(
+            &cache,
+            "manifest-1",
+            "macos-arm64",
+            &asset
+        ));
+        assert!(!cached_runtime_matches(
+            &cache,
+            "manifest-2",
+            "macos-arm64",
+            &asset
+        ));
+        assert!(!cached_runtime_matches(
+            &cache,
+            "manifest-1",
+            "macos-x64",
+            &asset
+        ));
+
+        let _ = std::fs::remove_file(temp_path);
+        assert!(!cached_runtime_matches(
+            &cache,
+            "manifest-1",
+            "macos-arm64",
+            &asset
+        ));
+    }
+
+    #[test]
+    fn bridge_send_error_status_preserves_auth_classification() {
+        let runtime = ResolvedRuntime {
+            source: RuntimeSource::Managed,
+            path: PathBuf::from("/tmp/copilot"),
+            version: "1.0.12".to_string(),
+        };
+
+        let login_status =
+            bridge_send_error_to_status(&runtime, Some("login_required"), "Please log in.");
+        assert_eq!(login_status.runtime_status, "ready");
+        assert_eq!(login_status.auth_status, "login_required");
+        assert_eq!(login_status.error_code.as_deref(), Some("login_required"));
+
+        let quota_status = bridge_send_error_to_status(
+            &runtime,
+            Some("quota_or_auth_error"),
+            "Quota or auth failed.",
+        );
+        assert_eq!(quota_status.auth_status, "quota_or_auth_error");
+
+        let generic_status = bridge_send_error_to_status(&runtime, None, "Unexpected failure.");
+        assert_eq!(generic_status.auth_status, "error");
+        assert_eq!(generic_status.runtime_version.as_deref(), Some("1.0.12"));
     }
 }

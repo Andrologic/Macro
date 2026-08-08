@@ -10,6 +10,7 @@ interface TaskProjectCommandModalProject {
   projectName: string;
   projectPath: string;
   command: string;
+  worktreeSetupCommand: string;
   openTerminalOnRun: boolean;
 }
 
@@ -18,6 +19,7 @@ interface TaskProjectCommandsModalProps {
   projectGroupName: string;
   projects: TaskProjectCommandModalProject[];
   isSubmitting?: boolean;
+  requireRunCommand?: boolean;
   onClose: () => void;
   onSave: (
     projects: Array<{
@@ -25,6 +27,7 @@ interface TaskProjectCommandsModalProps {
       projectName: string;
       projectPath: string;
       command: string;
+      worktreeSetupCommand: string;
       openTerminalOnRun: boolean;
     }>
   ) => void;
@@ -35,6 +38,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
   projectGroupName,
   projects,
   isSubmitting = false,
+  requireRunCommand = false,
   onClose,
   onSave,
 }) => {
@@ -48,8 +52,13 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
   }, [isOpen, projects]);
 
   const hasMissingCommand = useMemo(
-    () => drafts.some((project) => !project.command.trim()),
-    [drafts]
+    () =>
+      requireRunCommand
+        ? drafts.some((project) => !project.command.trim())
+        : drafts.some(
+            (project) => !project.command.trim() && !project.worktreeSetupCommand.trim()
+          ),
+    [drafts, requireRunCommand]
   );
 
   if (!isOpen) {
@@ -59,7 +68,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/50"
         onClick={() => {
           if (!isSubmitting) {
             onClose();
@@ -76,7 +85,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 'implement.taskCommandsModalDescription',
-                'Définis une commande par sous-projet pour {{project}}. Ces commandes seront réutilisées par toutes les tâches.',
+                'Définis une commande par projet pour {{project}}. Ces commandes seront réutilisées par toutes les tâches.',
                 { project: projectGroupName }
               )}
             </p>
@@ -108,15 +117,38 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                 <span
                   className={cn(
                     'inline-flex rounded-full border px-2 py-0.5 text-[11px]',
-                    project.command.trim()
+                    project.command.trim() || project.worktreeSetupCommand.trim()
                       ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500'
                       : 'border-amber-500/20 bg-amber-500/10 text-amber-500'
                   )}
                 >
-                  {project.command.trim()
+                  {project.command.trim() || project.worktreeSetupCommand.trim()
                     ? t('implement.taskCommandConfigured', 'Configured')
                     : t('implement.taskCommandMissing', 'Missing')}
                 </span>
+              </div>
+
+              <div className="mt-3">
+                <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t('implement.worktreeSetupCommandLabel', 'Worktree setup command')}
+                </label>
+                <textarea
+                  value={project.worktreeSetupCommand}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setDrafts((current) =>
+                      current.map((entry, entryIndex) =>
+                        entryIndex === index ? { ...entry, worktreeSetupCommand: value } : entry
+                      )
+                    );
+                  }}
+                  rows={3}
+                  className="min-h-[88px] w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  placeholder={t(
+                    'implement.worktreeSetupCommandPlaceholder',
+                    'Ex: bun install'
+                  )}
+                />
               </div>
 
               <div className="mt-3">
@@ -174,13 +206,18 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
         <footer className="flex shrink-0 flex-col gap-3 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground">
             {hasMissingCommand
-              ? t(
-                  'implement.taskCommandsModalIncomplete',
-                  'Renseigne une commande pour chaque sous-projet avant de sauvegarder.'
-                )
+              ? requireRunCommand
+                ? t(
+                    'implement.taskCommandsModalRunIncomplete',
+                    'Renseigne une commande de run pour chaque projet requis avant de sauvegarder.'
+                  )
+                : t(
+                    'implement.taskCommandsModalIncomplete',
+                    'Renseigne une commande ou un setup pour chaque projet avant de sauvegarder.'
+                  )
               : t(
                   'implement.taskCommandsModalReady',
-                  'Les commandes seront exécutées dans le worktree de la tâche pour chaque sous-projet concerné.'
+                  'Les commandes seront exécutées dans le worktree de la tâche pour chaque projet concerné.'
                 )}
           </p>
           <div className="flex shrink-0 items-center justify-end gap-2">
@@ -198,6 +235,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                     projectName: project.projectName,
                     projectPath: project.projectPath,
                     command: project.command.trim(),
+                    worktreeSetupCommand: project.worktreeSetupCommand.trim(),
                     openTerminalOnRun: project.openTerminalOnRun,
                   }))
                 )

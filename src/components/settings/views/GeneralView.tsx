@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
 import { SUPPORTED_LANGUAGE_METADATA } from '../../../i18n/languages';
-import type { ProjectSwitchPolicy } from '../../../services/localProjectContext';
 import {
     getEmptyProjectOpenSelection,
     loadProjectOpenSettings,
@@ -12,7 +11,6 @@ import {
     type ProjectOpenAppOption,
     type ProjectOpenAppSelection,
 } from '../../../services/projectOpeners';
-import { useAppStore } from '../../../stores/useAppStore';
 import {
     CHAT_MAX_TURNS_DEFAULT,
     CHAT_MAX_TURNS_DISABLED,
@@ -30,8 +28,6 @@ import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
-    const projectSwitchPolicy = useAppStore((state) => state.projectSwitchPolicy);
-    const setProjectSwitchPolicy = useAppStore((state) => state.setProjectSwitchPolicy);
     const selectedLanguage = resolveSupportedLanguage(i18n.resolvedLanguage || i18n.language);
     const [projectOpenApps, setProjectOpenApps] = useState<ProjectOpenAppCatalog>({
         editor: [],
@@ -46,6 +42,7 @@ export const GeneralView: React.FC = () => {
     const [chatMaxTurnsDraft, setChatMaxTurnsDraft] = useState(
         String(CHAT_MAX_TURNS_DEFAULT)
     );
+    const chatMaxTurnsTouchedRef = useRef(false);
     const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
 
     useEffect(() => {
@@ -78,7 +75,7 @@ export const GeneralView: React.FC = () => {
         let cancelled = false;
 
         void loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS).then((maxTurns) => {
-            if (cancelled) {
+            if (cancelled || chatMaxTurnsTouchedRef.current) {
                 return;
             }
 
@@ -101,6 +98,7 @@ export const GeneralView: React.FC = () => {
     }, []);
 
     const commitChatMaxTurnsDraft = () => {
+        chatMaxTurnsTouchedRef.current = true;
         if (!isChatMaxTurnsEnabled) {
             setChatMaxTurnsDraft(String(chatMaxTurns));
             return;
@@ -127,6 +125,7 @@ export const GeneralView: React.FC = () => {
     };
 
     const updateChatMaxTurnsEnabled = (enabled: boolean) => {
+        chatMaxTurnsTouchedRef.current = true;
         setIsChatMaxTurnsEnabled(enabled);
         if (enabled) {
             const nextValue = normalizeChatMaxTurns(chatMaxTurns);
@@ -255,35 +254,6 @@ export const GeneralView: React.FC = () => {
                 <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
-                    <div className="flex items-center justify-between gap-4">
-                        <div className="space-y-1">
-                            <label className="text-sm font-medium text-foreground">
-                                {t('settings.projectContextPolicy', 'Project context memory')}
-                            </label>
-                            <p className="text-xs text-muted-foreground">
-                                {t('settings.projectContextPolicyDesc', 'Control whether Architect/Implement context is restored per project when switching.')}
-                            </p>
-                        </div>
-                        <div className="w-[250px]">
-                            <Select
-                                value={projectSwitchPolicy}
-                                onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
-                                    const nextPolicy = (event.target.value === 'reset_on_switch'
-                                        ? 'reset_on_switch'
-                                        : 'resume_per_project') as ProjectSwitchPolicy;
-                                    void setProjectSwitchPolicy(nextPolicy);
-                                }}
-                            >
-                                <option value="resume_per_project">
-                                    {t('settings.projectContextPolicyResume', 'Resume per project')}
-                                </option>
-                                <option value="reset_on_switch">
-                                    {t('settings.projectContextPolicyReset', 'Reset on project switch')}
-                                </option>
-                            </Select>
-                        </div>
-                    </div>
-                    <div className="h-px bg-border/50" />
                     <div className="flex flex-col gap-3">
                         <div className="space-y-1">
                             <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">
@@ -321,7 +291,10 @@ export const GeneralView: React.FC = () => {
                                     step={1}
                                     value={chatMaxTurnsDraft}
                                     disabled={!isChatMaxTurnsEnabled}
-                                    onChange={(event) => setChatMaxTurnsDraft(event.target.value)}
+                                    onChange={(event) => {
+                                        chatMaxTurnsTouchedRef.current = true;
+                                        setChatMaxTurnsDraft(event.target.value);
+                                    }}
                                     onBlur={commitChatMaxTurnsDraft}
                                     onKeyDown={handleChatMaxTurnsKeyDown}
                                     className="w-28"
@@ -333,7 +306,7 @@ export const GeneralView: React.FC = () => {
                     <div className="space-y-4">
                         <div className="space-y-1">
                             <label className="text-sm font-medium text-foreground">
-                                {t('settings.openSubprojectsWith', 'Open subprojects with')}
+                                {t('settings.openSubprojectsWith', 'Open projects with')}
                             </label>
                             <p className="text-xs text-muted-foreground">
                                 {t(
@@ -348,7 +321,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.codeEditorApp', 'Code editor'),
                                 t(
                                     'settings.codeEditorAppDesc',
-                                    'Used when clicking the code editor quick action for a subproject.'
+                                    'Used when clicking the code editor quick action for a project.'
                                 )
                             )}
                             {renderProjectOpenSelect(
@@ -356,7 +329,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.terminalApp', 'Terminal'),
                                 t(
                                     'settings.terminalAppDesc',
-                                    'Used when clicking the terminal quick action for a subproject.'
+                                    'Used when clicking the terminal quick action for a project.'
                                 )
                             )}
                             {renderProjectOpenSelect(
@@ -364,7 +337,7 @@ export const GeneralView: React.FC = () => {
                                 t('settings.fileExplorerApp', 'File explorer'),
                                 t(
                                     'settings.fileExplorerAppDesc',
-                                    'Used when clicking the file explorer quick action for a subproject.'
+                                    'Used when clicking the file explorer quick action for a project.'
                                 )
                             )}
                         </div>
