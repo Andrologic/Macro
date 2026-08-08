@@ -2,7 +2,7 @@ use super::load_or_default_state;
 use super::metadata::{
     WorkspaceArchitectActivatePlanChatRequestDto, WorkspaceArchitectActivatePlanHeadRequestDto,
     WorkspaceArchitectChatMessageDto, WorkspaceArchitectListPlansRequestDto,
-    WorkspaceArchitectNeedDto, WorkspaceArchitectPlanActivationHeadDto,
+    WorkspaceArchitectPlanActivationHeadDto,
     WorkspaceArchitectPlanListDto, WorkspaceArchitectPlanRecordDto,
     WorkspaceArchitectPlanReplicaDto, WorkspaceArchitectPlanRuntimeStatusDto,
     WorkspaceArchitectPlanSummaryDto, WorkspaceArchitectPlanTranscriptDto,
@@ -74,8 +74,6 @@ struct ArchitectPlanContentHashesDto {
     #[serde(default)]
     plan: String,
     #[serde(default)]
-    needs: String,
-    #[serde(default)]
     chat: String,
 }
 
@@ -111,8 +109,6 @@ struct ArchitectPlanManifestDto {
     updated_at: String,
     #[serde(default, rename = "contentHashes")]
     content_hashes: ArchitectPlanContentHashesDto,
-    #[serde(default, rename = "needCount")]
-    need_count: Option<usize>,
     #[serde(default)]
     conversation: ArchitectPlanConversationSnapshotDto,
 }
@@ -195,7 +191,6 @@ fn is_blank_activatable_summary(summary: &WorkspaceArchitectPlanSummaryDto) -> b
         && summary.description.trim().is_empty()
         && summary.node_count == 0
         && summary.predicted_branch_count.unwrap_or(0) == 0
-        && summary.need_count.unwrap_or(0) == 0
         && summary.chat_message_count.unwrap_or(0) == 0
         && summary.conversation_id.is_none()
 }
@@ -390,7 +385,6 @@ fn build_comparable_summary(summary: &WorkspaceArchitectPlanSummaryDto) -> Value
         "createdAt": summary.created_at,
         "nodeCount": summary.node_count,
         "predictedBranchCount": summary.predicted_branch_count,
-        "needCount": summary.need_count,
         "expectedProjectIds": summary.expected_project_ids,
     })
 }
@@ -1016,7 +1010,6 @@ fn summary_to_blank_head(
             replicas: summary.replicas.clone(),
             has_replica_divergence: summary.has_replica_divergence,
         },
-        needs: Vec::new(),
         conversation_id: None,
         shared_conversation: false,
         target_branch: summary.target_branch.clone(),
@@ -1081,22 +1074,6 @@ fn pick_canonical_snapshot(
             right.scope.repo_path.as_deref(),
         )
     })
-}
-
-async fn read_needs_for_snapshot(
-    snapshot: &ArchitectPlanHeadSnapshot,
-    branch_name: &str,
-    hinted_need_count: usize,
-) -> Result<Vec<WorkspaceArchitectNeedDto>> {
-    if hinted_need_count == 0 {
-        return Ok(Vec::new());
-    }
-    let plan_id = sanitize_id(&snapshot.plan.id);
-    let path =
-        architect_plan_dir(&snapshot.scope.metadata_root, branch_name, &plan_id).join("needs.json");
-    Ok(read_json_file::<Vec<WorkspaceArchitectNeedDto>>(&path)
-        .await?
-        .unwrap_or_default())
 }
 
 async fn read_transcript_for_scope(
@@ -1209,15 +1186,6 @@ pub async fn activate_plan_head(
         return Ok(None);
     };
 
-    let needs = read_needs_for_snapshot(
-        canonical_snapshot,
-        &normalized_branch,
-        summary
-            .need_count
-            .or(canonical_snapshot.manifest.need_count)
-            .unwrap_or(0),
-    )
-    .await?;
     let conversation_id = canonical_snapshot
         .manifest
         .conversation
@@ -1250,7 +1218,6 @@ pub async fn activate_plan_head(
 
     Ok(Some(WorkspaceArchitectPlanActivationHeadDto {
         plan,
-        needs,
         conversation_id: conversation_id.clone(),
         shared_conversation,
         target_branch: normalized_branch,
@@ -1390,7 +1357,6 @@ mod tests {
             updated_at: "2026-06-01T08:00:00.000Z".to_string(),
             node_count: 1,
             predicted_branch_count: Some(1),
-            need_count: Some(1),
             chat_message_count: Some(1),
             revision: Some(2),
             ..WorkspaceArchitectPlanSummaryDto::default()
@@ -1574,10 +1540,8 @@ mod tests {
                 updated_at: "2026-06-01T08:00:00.000Z".to_string(),
                 content_hashes: ArchitectPlanContentHashesDto {
                     plan: "plan-hash".to_string(),
-                    needs: "needs-hash".to_string(),
                     chat: "chat-hash".to_string(),
                 },
-                need_count: Some(1),
                 conversation: ArchitectPlanConversationSnapshotDto {
                     conversation_id: Some("conversation-standalone".to_string()),
                     title: Some("Refonte catalogue produit".to_string()),
@@ -1585,10 +1549,6 @@ mod tests {
                     last_message_at: Some("2026-06-01T08:00:00.000Z".to_string()),
                 },
             },
-        );
-        write_json(
-            &plan_dir.join("needs.json"),
-            &vec![serde_json::json!({ "id": "need-1", "title": "Need one" })],
         );
         std_fs::write(
             plan_dir.join("chat.jsonl"),
@@ -1661,7 +1621,6 @@ mod tests {
             activation.conversation_id.as_deref(),
             Some("conversation-standalone")
         );
-        assert_eq!(activation.needs.len(), 1);
         assert_eq!(
             activation.chat_transcript_revision.as_deref(),
             Some("chat-hash")

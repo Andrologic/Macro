@@ -46,7 +46,6 @@ type PlanRecord = {
 
 type ActivationPayloadRecord = {
   plan: PlanRecord;
-  needs: unknown[];
   chatMessages: unknown[];
   conversationId: string | null;
   sharedConversation: boolean;
@@ -57,7 +56,7 @@ type ActivationPayloadRecord = {
 type ActivationPayloadOverride = Partial<
   Pick<
     ActivationPayloadRecord,
-    'needs' | 'chatMessages' | 'conversationId' | 'sharedConversation' | 'resolutionMode'
+    'chatMessages' | 'conversationId' | 'sharedConversation' | 'resolutionMode'
   >
 >;
 
@@ -265,11 +264,6 @@ const taskStoreState = {
   refreshFromPlan: mock(async () => undefined),
 };
 
-const needsStoreState = {
-  beginArchitectPlanSwitch: mock(() => undefined),
-  hydrateNeedsForPlan: mock(() => undefined),
-};
-
 const useChatStoreMock = Object.assign(
   <TSelected = typeof chatStoreState>(
     selector?: (state: typeof chatStoreState) => TSelected
@@ -296,19 +290,6 @@ const useTaskStoreMock = Object.assign(
   }
 );
 
-const useNeedsStoreMock = Object.assign(
-  <TSelected = typeof needsStoreState>(
-    selector?: (state: typeof needsStoreState) => TSelected
-  ) =>
-    selector
-      ? selector(needsStoreState)
-      : (needsStoreState as unknown as TSelected),
-  {
-    getState: () => needsStoreState,
-    subscribe: () => () => undefined,
-  }
-);
-
 let importCounter = 0;
 let preferenceValues: Record<string, unknown> = {};
 let projectSwitchPolicy: 'resume_per_project' | 'reset_on_switch' =
@@ -329,7 +310,7 @@ let bootstrapPlan: unknown = null;
 let bootstrapPlanNodes: unknown[] = [];
 let bootstrapPredictedBranches: unknown[] = [];
 let tauriAvailable = false;
-let ensureProjectGroupPlanResult: { action: string; plan: PlanRecord; needs: [] } | null =
+let ensureProjectGroupPlanResult: { action: string; plan: PlanRecord } | null =
   null;
 
 const projectContexts = new Map<string, ProjectContextRecord>();
@@ -353,7 +334,6 @@ const getArchitectPlanActivationPayloadMock = mock(
     const override = activationPayloadByPlanId.get(planId);
     return {
       plan,
-      needs: override?.needs ?? [],
       chatMessages: override?.chatMessages ?? [],
       conversationId: override?.conversationId ?? plan.conversationId ?? null,
       sharedConversation: override?.sharedConversation ?? false,
@@ -362,7 +342,6 @@ const getArchitectPlanActivationPayloadMock = mock(
     };
   }
 );
-const getArchitectPlanNeedsMock = mock(async () => []);
 const persistActiveArchitectPlanMock = mock(async () => undefined);
 const getAppBootstrapMock = mock(async () => ({
   plan: bootstrapPlan,
@@ -493,9 +472,6 @@ const registerUseAppStoreMocks = async () => {
   registerMockModulePair('./useChatStore', () => ({
     useChatStore: useChatStoreMock,
   }));
-  registerMockModulePair('./useNeedsStore', () => ({
-    useNeedsStore: useNeedsStoreMock,
-  }));
   registerMockModulePair('./useTaskStore', () => ({
     useTaskStore: useTaskStoreMock,
   }));
@@ -538,7 +514,6 @@ const registerUseAppStoreMocks = async () => {
   registerMockModulePair('../services/architectPlanService', () => ({
     getArchitectPlanActivationPayload: getArchitectPlanActivationPayloadMock,
     getArchitectPlan: getArchitectPlanMock,
-    getArchitectPlanNeeds: getArchitectPlanNeedsMock,
     getGitFlowBaseBranch: () => 'develop',
     listArchitectPlanTargetBranches: async () => ['develop'],
     getArchitectPlanProjectIds: collectPlanProjectIds,
@@ -615,7 +590,6 @@ describe('useAppStore architect plan resolution', () => {
     listArchitectPlansMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanMock.mockClear();
-    getArchitectPlanNeedsMock.mockClear();
     setProjectSwitchPolicyMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
@@ -660,8 +634,6 @@ describe('useAppStore architect plan resolution', () => {
     upsertLocalProjectContextStateMock.mockClear();
     deleteLocalProjectContextStateMock.mockClear();
     upsertLocalSessionContextStateMock.mockClear();
-    needsStoreState.beginArchitectPlanSwitch.mockClear();
-    needsStoreState.hydrateNeedsForPlan.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
     taskStoreState.activateTask.mockClear();
     taskStoreState.refreshFromPlan.mockClear();
@@ -822,13 +794,6 @@ describe('useAppStore architect plan resolution', () => {
       ],
       updatedAt: '2026-05-22T09:00:00.000Z',
     });
-    const restoredNeeds = [
-      {
-        id: 'need-catalogue',
-        title: 'Reprendre le catalogue produit',
-        status: 'validated',
-      },
-    ];
     const restoredChatMessages = [
       {
         id: 'message-architect-user',
@@ -845,7 +810,6 @@ describe('useAppStore architect plan resolution', () => {
     ];
     planById.set(visiblePhysicalPlan.id, visiblePhysicalPlan);
     activationPayloadByPlanId.set(visiblePhysicalPlan.id, {
-      needs: restoredNeeds,
       chatMessages: restoredChatMessages,
       conversationId: 'architect-conversation-refonte',
       resolutionMode: 'full',
@@ -917,7 +881,6 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().activePlanContext).toBeNull();
     expect(useAppStore.getState().planNodes).toEqual([]);
     expect(useAppStore.getState().predictedBranches).toEqual([]);
-    expect(needsStoreState.hydrateNeedsForPlan).not.toHaveBeenCalled();
     expect(useAppStore.getState().pendingArchitectPlanActivationPayload).toBeNull();
     expect(taskRefreshSnapshots).toEqual([
       {
@@ -1302,9 +1265,7 @@ describe('useAppStore architect plan resolution', () => {
     await useAppStore.getState().initialize();
 
     getArchitectPlanActivationPayloadMock.mockClear();
-    getArchitectPlanNeedsMock.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
-    needsStoreState.hydrateNeedsForPlan.mockClear();
 
     await useAppStore.getState().activateArchitectPlan(nextPlan.id);
 
@@ -1313,11 +1274,6 @@ describe('useAppStore architect plan resolution', () => {
       'develop',
       nextPlan.id,
       expect.any(Object)
-    );
-    expect(getArchitectPlanNeedsMock).not.toHaveBeenCalled();
-    expect(needsStoreState.hydrateNeedsForPlan).toHaveBeenCalledWith(
-      nextPlan.id,
-      []
     );
     expect(useAppStore.getState().activeArchitectPlanId).toBe(nextPlan.id);
     expect(useAppStore.getState().activePlanContext?.id).toBe(nextPlan.id);
@@ -1444,13 +1400,9 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().planNodes).toEqual([]);
     expect(useAppStore.getState().predictedBranches).toEqual([]);
     expect(useAppStore.getState().architectPlanSwitch.status).toBe('resolving');
-    expect(needsStoreState.beginArchitectPlanSwitch).toHaveBeenCalledWith(
-      nextPlan.id
-    );
 
     resolveActivation({
       plan: nextPlan,
-      needs: [],
       chatMessages: [],
       conversationId: null,
       sharedConversation: false,
@@ -1528,7 +1480,6 @@ describe('useAppStore architect plan resolution', () => {
 
     resolveFast({
       plan: fastPlan,
-      needs: [],
       chatMessages: [],
       conversationId: null,
       sharedConversation: false,
@@ -1539,7 +1490,6 @@ describe('useAppStore architect plan resolution', () => {
 
     resolveSlow({
       plan: slowPlan,
-      needs: [],
       chatMessages: [],
       conversationId: null,
       sharedConversation: false,

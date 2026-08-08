@@ -48,9 +48,6 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "mark_source_passage",
   "read_sources",
   "edit_source_passage",
-  "need_add",
-  "need_update",
-  "need_delete",
   "plan_create",
   "strategy_generate",
   "strategy_update",
@@ -158,18 +155,6 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Inspect the repository tree",
   },
-  need_get: {
-    actionGroup: "observe",
-    rememberStrategy: "tool",
-    destructiveStrategy: "never",
-    summary: "Read a plan need",
-  },
-  need_list: {
-    actionGroup: "observe",
-    rememberStrategy: "tool",
-    destructiveStrategy: "never",
-    summary: "List plan needs",
-  },
   plan_get: {
     actionGroup: "observe",
     rememberStrategy: "tool",
@@ -229,18 +214,6 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "tool",
     destructiveStrategy: "edit_source_passage_delete",
     summary: "Edit a saved source passage",
-  },
-  need_add: {
-    actionGroup: "change",
-    rememberStrategy: "tool",
-    destructiveStrategy: "never",
-    summary: "Add a plan need",
-  },
-  need_update: {
-    actionGroup: "change",
-    rememberStrategy: "tool",
-    destructiveStrategy: "always",
-    summary: "Update a plan need",
   },
   plan_update: {
     actionGroup: "change",
@@ -349,12 +322,6 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Stop a terminal session",
-  },
-  need_delete: {
-    actionGroup: "escape",
-    rememberStrategy: "tool",
-    destructiveStrategy: "always",
-    summary: "Delete a plan need",
   },
   strategy_delete: {
     actionGroup: "escape",

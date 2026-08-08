@@ -13,8 +13,6 @@
       "Control whether Architect and Implement context is restored per project when switching.": "Définir si le contexte Architect et Implement est restauré par projet lors d'un changement.",
       "Architect/Implement: enabled tools may run automatically when the model needs them; usage is shown inline in chat.": "Architect/Implement : les tools activés peuvent s'exécuter automatiquement quand le modèle en a besoin ; l'usage s'affiche inline dans le chat.",
       "Architect: @macro only": "Architect : @macro uniquement",
-      "Chat with the Architect to uncover project requirements.": "Échangez avec Architect pour faire émerger les besoins du projet.",
-      "Discuss needs in Architect chat, then use Generate Strategy to create this graph.": "Discutez des besoins dans le chat Architect, puis utilisez Générer la stratégie pour construire ce graph.",
       "Delete Architect conversation": "Supprimer la conversation Architect",
       "Delete Implement conversation": "Supprimer la conversation Implement",
       "Graph": "Graph",

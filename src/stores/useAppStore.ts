@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { useChatStore } from "./useChatStore";
-import { useNeedsStore } from "./useNeedsStore";
 import { useTaskStore } from "./useTaskStore";
 import {
   AppMode,
@@ -33,7 +32,6 @@ import {
   getArchitectPlanVisibleProjectIds,
   getArchitectPlan,
   getArchitectPlanActivationPayload,
-  getArchitectPlanNeeds,
   getGitFlowBaseBranch,
   isArchitectPlanVisibleForScope,
   planMatchesProjectId,
@@ -774,7 +772,6 @@ const hydrateArchitectPlanInStore = async (input: {
     strategyMutationPreview: null,
     pendingArchitectPlanActivationPayload: reconciledActivationPayload,
   });
-  useNeedsStore.getState().hydrateNeedsForPlan(plan.id, reconciledActivationPayload.needs);
 
   const runtime = await readArchitectPlanRuntime({
     branchName: reconciledActivationPayload.targetBranch,
@@ -828,7 +825,6 @@ const clearActiveArchitectPlanInStore = (): void => {
     predictedBranches: [],
     strategyMutationPreview: null,
   });
-  useNeedsStore.getState().beginArchitectPlanSwitch(null);
 };
 
 const beginArchitectPlanSwitchInStore = (input: {
@@ -865,7 +861,6 @@ const beginArchitectPlanSwitchInStore = (input: {
     predictedBranches: [],
     strategyMutationPreview: null,
   });
-  useNeedsStore.getState().beginArchitectPlanSwitch(input.planId);
   useChatStore
     .getState()
     .beginArchitectPlanSwitch({ requestId: input.requestId });
@@ -1019,7 +1014,6 @@ const activateArchitectPlanInStore = async (input: {
     activationPayload:
       activationPayload ?? {
         plan,
-        needs: await getArchitectPlanNeeds(targetBranch, plan.id),
         chatMessages: [],
         conversationId: plan.conversationId ?? null,
         sharedConversation: false,

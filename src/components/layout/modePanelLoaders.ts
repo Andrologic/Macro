@@ -72,14 +72,6 @@ export const createModePanelLoader = ({
   };
 };
 
-const needsPanelLoader = createModePanelLoader({
-  id: 'architect:left:needs',
-  label: 'Needs',
-  mode: 'Architect',
-  panel: 'left',
-  importComponent: async () => (await import('../architect/NeedsPanel')).default,
-});
-
 const strategyGraphLoader = createModePanelLoader({
   id: 'architect:right:strategy-graph',
   label: 'Strategy graph',
@@ -136,12 +128,10 @@ const chatZoneLoader = createModePanelLoader({
   importComponent: async () => (await import('../chat/ChatZone')).default,
 });
 
-export const modePanelLoaders: Record<
-  AppMode,
-  Record<ModePanelSlot, ModePanelLoader>
-> = {
+export type ModePanelConfiguration = Partial<Record<ModePanelSlot, ModePanelLoader>>;
+
+export const modePanelLoaders: Record<AppMode, ModePanelConfiguration> = {
   Architect: {
-    left: needsPanelLoader,
     center: chatZoneLoader,
     right: strategyGraphLoader,
   },
@@ -156,6 +146,9 @@ export const modePanelLoaders: Record<
     right: contextToolboxLoader,
   },
 };
+
+export const hasModePanel = (mode: AppMode, panel: ModePanelSlot): boolean =>
+  Boolean(modePanelLoaders[mode][panel]);
 
 const getVisiblePanelSlots = (options: {
   includeLeft?: boolean;
@@ -187,7 +180,9 @@ export const preloadModePanels = async (
     timeoutMs?: number;
   } = {},
 ): Promise<ModePanelPreloadResult> => {
-  const loaders = getVisiblePanelSlots(options).map((panel) => modePanelLoaders[mode][panel]);
+  const loaders = getVisiblePanelSlots(options)
+    .map((panel) => modePanelLoaders[mode][panel])
+    .filter((loader): loader is ModePanelLoader => Boolean(loader));
   const loaded: string[] = [];
   const failed: Array<{ id: string; error: unknown }> = [];
 

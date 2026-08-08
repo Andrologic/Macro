@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 type AppStoreState = {
+  mode: 'Chat' | 'Architect' | 'Implement';
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
   setLeftPanelOpen: (open: boolean) => void;
@@ -155,6 +156,7 @@ describe('App layout containment', () => {
 
   beforeEach(() => {
     appState = {
+      mode: 'Chat',
       isLeftPanelOpen: true,
       isRightPanelOpen: true,
       setLeftPanelOpen: () => undefined,
@@ -231,6 +233,25 @@ describe('App layout containment', () => {
     expect(centerPanelWrapper?.className).toContain('overflow-hidden');
     expect(rightPanelWrapper?.className).toContain('min-h-0');
     expect(rightPanelWrapper?.className).toContain('overflow-hidden');
+  });
+
+  it('does not render or reserve the absent Architect left panel', async () => {
+    appState.mode = 'Architect';
+    const { default: App } = await loadApp();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<App />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="panel-left"]')).toBeNull();
+    expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="panel-right"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="mock-resizer"]')).toHaveLength(1);
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

@@ -195,10 +195,6 @@ type ProviderState = {
   ensureSelectedModelContextMetadata: ReturnType<typeof mock>;
 };
 
-type NeedsState = {
-  needs: unknown[];
-};
-
 type ShortcutsState = {
   promptHistoryNavigationMode: string;
 };
@@ -278,7 +274,6 @@ const createStoreHook = <T extends object,>(
 let appState: AppStoreState;
 let chatState: MockChatState;
 let providerState: ProviderState;
-let needsState: NeedsState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
 let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
@@ -321,9 +316,6 @@ const useChatStore = createStoreHook(() => chatState, (nextState) => {
 });
 const useProviderStore = createStoreHook(() => providerState, (nextState) => {
   providerState = nextState;
-});
-const useNeedsStore = createStoreHook(() => needsState, (nextState) => {
-  needsState = nextState;
 });
 const useSkillsStore = createStoreHook(() => skillsState, (nextState) => {
   skillsState = nextState;
@@ -423,10 +415,6 @@ const loadChatZoneModule = async () => {
 
   mock.module('../../stores/useSkillsStore', () => ({
     useSkillsStore,
-  }));
-
-  mock.module('../../stores/useNeedsStore', () => ({
-    useNeedsStore,
   }));
 
   mock.module('../../stores/useProviderStore', () => ({
@@ -831,9 +819,6 @@ const resetState = () => {
     ensureSelectedModelContextMetadata: mock(async () => []),
   };
 
-  needsState = {
-    needs: [],
-  };
 
   skillsState = {
     getSkillById: mock(() => null),
@@ -3394,18 +3379,15 @@ describe('ChatZone', () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     chatState.messages = [];
-    needsState.needs = [];
 
     await act(async () => {
       requireRoot().render(<ChatZone />);
     });
 
-    expect(requireContainer().textContent).not.toContain('Identify Needs');
-    expect(requireContainer().textContent).not.toContain('Clarify Needs');
     expect(requireContainer().textContent).not.toContain('Generate Strategy');
   });
 
-  it('sends the Architect identify-needs action after the first explanation', async () => {
+  it('offers direct strategy generation after the first explanation', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = 'plan-1';
     chatState.messages = [
@@ -3415,14 +3397,12 @@ describe('ChatZone', () => {
         content: 'I want to rebuild the onboarding flow.',
       }),
     ];
-    needsState.needs = [];
-
     await act(async () => {
       requireRoot().render(<ChatZone />);
     });
 
     const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Identify Needs')
+      candidate.textContent?.includes('Generate Strategy')
     );
 
     expect(button).toBeDefined();
@@ -3435,72 +3415,11 @@ describe('ChatZone', () => {
     expect(composerEditorFocusCalls).toBe(0);
     expect(chatState.sendMessage).toHaveBeenCalledWith({
       conversationId: 'conv-1',
-      content: expect.stringContaining('need_add'),
+      content: expect.stringContaining('strategy_generate'),
     });
     expect(chatState.sendMessage).toHaveBeenCalledWith({
       conversationId: 'conv-1',
       content: expect.stringContaining('question'),
-    });
-  });
-
-  it('sends the Architect clarify-needs action while keeping generation available', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    needsState.needs = [
-      {
-        id: 'need-1',
-        planId: 'plan-1',
-        status: 'refined',
-      },
-    ];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const buttons = Array.from(requireContainer().querySelectorAll('button'));
-    const button = buttons.find((candidate) =>
-      candidate.textContent?.includes('Clarify Needs')
-    );
-    const generateButton = buttons.find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    ) as HTMLButtonElement | undefined;
-
-    expect(button).toBeDefined();
-    expect(generateButton).toBeDefined();
-    expect(generateButton?.disabled).toBe(false);
-    expect(generateButton?.title).toBe('Generate strategy from current needs');
-    expect(buttons.indexOf(button as HTMLButtonElement)).toBeLessThan(
-      buttons.indexOf(generateButton as HTMLButtonElement),
-    );
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(composerEditorSetTextCalls).toHaveLength(0);
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('need_update'),
-    });
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('validated'),
-    });
-    expect(chatState.sendMessage).not.toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('strategy_generate'),
-    });
-
-    chatState.sendMessage.mockClear();
-
-    await act(async () => {
-      generateButton?.click();
-    });
-
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('call `strategy_generate`'),
     });
   });
 
@@ -3521,7 +3440,7 @@ describe('ChatZone', () => {
     });
 
     const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Identify Needs')
+      candidate.textContent?.includes('Generate Strategy')
     );
 
     await act(async () => {
@@ -3534,33 +3453,8 @@ describe('ChatZone', () => {
     expect(notifyInfoMock).not.toHaveBeenCalled();
     expect(chatState.sendMessage).toHaveBeenCalledWith({
       conversationId: 'conv-1',
-      content: expect.stringContaining('need_add'),
+      content: expect.stringContaining('strategy_generate'),
     });
-  });
-
-  it('renders Architect action prompts as compact action bubbles', async () => {
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-action-identify',
-        role: 'user',
-        content:
-          'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const row = requireContainer().querySelector('#chat-message-msg-action-identify');
-    expect(row).not.toBeNull();
-    expect(row?.querySelector('[data-testid="architect-action-message"]')).not.toBeNull();
-    expect(row?.textContent).toContain('Identify Needs');
-    expect(row?.textContent).toContain(
-      'Ask Architect to inspect the codebase and structure the first needs'
-    );
-    expect(row?.textContent).not.toContain('need_add');
-    expect(row?.querySelector('[data-user-message-content="true"]')).toBeNull();
   });
 
   it('keeps normal user messages in the standard user bubble', async () => {
@@ -3588,7 +3482,13 @@ describe('ChatZone', () => {
     appState.activeArchitectPlanId = 'plan-1';
     appState.planNodes = [];
     appState.predictedBranches = [];
-    needsState.needs = [{ id: 'need-1', planId: 'plan-1', status: 'validated' }];
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-user-strategy',
+        role: 'user',
+        content: 'Rebuild the onboarding flow.',
+      }),
+    ];
 
     await act(async () => {
       requireRoot().render(<ChatZone />);
@@ -3606,7 +3506,7 @@ describe('ChatZone', () => {
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
       conversationId: 'conv-1',
-      content: expect.stringContaining('call `strategy_generate`'),
+      content: expect.stringContaining('Call `strategy_generate`'),
     });
     expect(chatState.sendMessage).toHaveBeenCalledWith({
       conversationId: 'conv-1',
@@ -3625,7 +3525,13 @@ describe('ChatZone', () => {
       targetBranch: 'develop',
     };
     appState.planNodes = [{ id: 'node-1', title: 'Existing strategy node' }];
-    needsState.needs = [{ id: 'need-1', planId: 'plan-1', status: 'validated' }];
+    chatState.messages = [
+      buildMessage({
+        id: 'msg-user-regenerate',
+        role: 'user',
+        content: 'Rebuild the onboarding flow.',
+      }),
+    ];
 
     await act(async () => {
       requireRoot().render(<ChatZone />);

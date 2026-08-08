@@ -36,11 +36,6 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_diff",
         "git_get_tree",
         "plan_create",
-        "need_add",
-        "need_list",
-        "need_get",
-        "need_update",
-        "need_delete",
         "strategy_generate",
         "plan_list",
         "plan_get",
@@ -53,11 +48,6 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
 
 fn normalize_architect_tool_id(tool_id: &str) -> &str {
     match tool_id {
-        "add_need" => "need_add",
-        "list_needs" => "need_list",
-        "get_need" => "need_get",
-        "update_need" => "need_update",
-        "delete_need" => "need_delete",
         "generate_plan" => "strategy_generate",
         "create_plan" => "plan_create",
         "list_plans" => "plan_list",
@@ -331,7 +321,6 @@ mod tests {
         assert!(!policy
             .allowed_tool_ids
             .contains(&"terminal_run".to_string()));
-        assert!(!policy.allowed_tool_ids.contains(&"need_add".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"plan_create".to_string()));
         assert!(!policy
             .allowed_tool_ids

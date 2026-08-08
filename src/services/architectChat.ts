@@ -1,4 +1,4 @@
-import type { Need, PlanNode, PredictedBranch } from '../types';
+import type { PlanNode, PredictedBranch } from '../types';
 import { normalizePlanNodeTodos } from './planNodeTodos';
 import { normalizeArtifactContracts } from './architectPlanArtifactService';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
@@ -97,27 +97,6 @@ const summarizeFrozenPlanNode = (node: FrozenPlanNode) => ({
   project_ids: node.projectIds,
 });
 
-const summarizeNeedListItem = (need: Need) => ({
-  id: need.id,
-  title: need.title,
-  priority: need.priority,
-});
-
-const summarizeNeedDetails = (need: Need) => ({
-  id: need.id,
-  title: need.title,
-  description: cleanLine(need.description) || '',
-  category: need.category,
-  priority: need.priority,
-  status: need.status,
-  tags: need.tags,
-  ...(need.groupId ? { group_id: need.groupId } : {}),
-  ...(need.projectId ? { project_id: need.projectId } : {}),
-  ...(need.sourceMessageId ? { source_message_id: need.sourceMessageId } : {}),
-  created_at: need.createdAt,
-  updated_at: need.updatedAt,
-});
-
 const formatArchitectToolResult = (summary: string, payload?: unknown): string =>
   `${summary.trim()}${payload === undefined ? '' : compactJsonBlock(payload)}`.trim();
 
@@ -144,90 +123,6 @@ const countMaxDependencies = (nodes: PlanNode[]): number =>
 
 export const buildArchitectPlanToolFollowUpInstruction = (): string =>
   ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION;
-
-export const formatArchitectNeedAddToolResult = (params: {
-  planId: string;
-  needId: string;
-  title: string;
-  category: string;
-  priority: string;
-  tags: string[];
-  totalNeeds: number;
-}): string =>
-  formatArchitectToolResult(
-    `Need added to plan ${params.planId}: "${params.title}" (${params.category}, priority ${params.priority}). The active plan now has ${params.totalNeeds} identified need${params.totalNeeds === 1 ? '' : 's'}.`,
-    {
-      plan_id: params.planId,
-      need_id: params.needId,
-      title: params.title,
-      category: params.category,
-      priority: params.priority,
-      tags: params.tags,
-      total_needs: params.totalNeeds,
-    }
-  );
-
-export const formatArchitectNeedListToolResult = (params: {
-  planId: string;
-  filters: {
-    status?: string;
-    category?: string;
-    priority?: string;
-    tag?: string;
-  };
-  needs: Need[];
-}): string =>
-  formatArchitectToolResult(
-    `Listed ${params.needs.length} need${params.needs.length === 1 ? '' : 's'} for plan ${params.planId}.`,
-    {
-      plan_id: params.planId,
-      filters: params.filters,
-      total_needs: params.needs.length,
-      needs: params.needs.map(summarizeNeedListItem),
-    }
-  );
-
-export const formatArchitectNeedGetToolResult = (params: {
-  planId: string;
-  need: Need;
-}): string =>
-  formatArchitectToolResult(
-    `Loaded need "${params.need.title}" from plan ${params.planId}.`,
-    {
-      plan_id: params.planId,
-      need: summarizeNeedDetails(params.need),
-    }
-  );
-
-export const formatArchitectNeedUpdateToolResult = (params: {
-  planId: string;
-  need: Need;
-  changedFields: string[];
-}): string =>
-  formatArchitectToolResult(
-    `Updated need "${params.need.title}" on plan ${params.planId}. Changed field${params.changedFields.length === 1 ? '' : 's'}: ${params.changedFields.join(', ') || 'none'}.`,
-    {
-      plan_id: params.planId,
-      changed_fields: params.changedFields,
-      need: summarizeNeedDetails(params.need),
-    }
-  );
-
-export const formatArchitectNeedDeleteToolResult = (params: {
-  planId: string;
-  needId: string;
-  title: string;
-  remainingNeeds: number;
-}): string =>
-  formatArchitectToolResult(
-    `Deleted need "${params.title}" from plan ${params.planId}. ${params.remainingNeeds} need${params.remainingNeeds === 1 ? '' : 's'} remain.`,
-    {
-      plan_id: params.planId,
-      need_id: params.needId,
-      title: params.title,
-      remaining_needs: params.remainingNeeds,
-    }
-  );
 
 export const formatArchitectPlanListToolResult = (params: {
   targetBranch: string;

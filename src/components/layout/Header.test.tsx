@@ -191,6 +191,24 @@ describe('Header', () => {
     expect(html).not.toContain('macro-native-titlebar');
   });
 
+  it('only exposes the left-panel toggle when the current mode has that slot', async () => {
+    const { Header } = await loadHeader();
+    const render = () => renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(render()).not.toContain('data-tour-id="toggle-left-panel"');
+    appState.mode = 'Chat';
+    expect(render()).toContain('data-tour-id="toggle-left-panel"');
+    appState.mode = 'Implement';
+    expect(render()).toContain('data-tour-id="toggle-left-panel"');
+  });
+
   it('uses a single native macOS top bar without custom window controls', async () => {
     const { Header } = await loadHeader();
     chromeState = {

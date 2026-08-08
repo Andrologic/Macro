@@ -2365,10 +2365,10 @@ describe('streamingChat tool rendering helpers', () => {
           listeners.get('ai:tool-request')?.({
             payload: {
               request_id: request.request_id,
-              tool_call_id: 'call_need',
-              tool_name: 'need_add',
+              tool_call_id: 'call_plan',
+              tool_name: 'plan_get',
               args: {
-                title: 'Clarify release scope',
+                plan_id: 'plan-1',
               },
             },
           });
@@ -2386,9 +2386,9 @@ describe('streamingChat tool rendering helpers', () => {
           listeners.get('ai:done')?.({
             payload: {
               request_id: request.request_id,
-              output_text: 'Need recorded.',
+              output_text: 'Plan loaded.',
               tool_calls: [],
-              hidden_context: `<tool_context tool_call_id="call_need" tool="need_add">\n${request.result}\n</tool_context>`,
+              hidden_context: `<tool_context tool_call_id="call_plan" tool="plan_get">\n${request.result}\n</tool_context>`,
             },
           });
         });
@@ -2403,7 +2403,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const onToolCall = mock(async (toolName: string, args: Record<string, unknown>) => ({
       kind: 'result' as const,
-      result: `${toolName}:${args.title}`,
+      result: `${toolName}:${args.plan_id}`,
     }));
     const onComplete = mock((_result: unknown) => undefined);
 
@@ -2413,8 +2413,8 @@ describe('streamingChat tool rendering helpers', () => {
       providerType: 'copilot',
       baseUrl: 'copilot://cli',
       modelId: 'gpt-5',
-      messages: [{ role: 'user', content: 'Ajoute un besoin.' }],
-      allowedToolIds: ['need_add'],
+      messages: [{ role: 'user', content: 'Charge le plan.' }],
+      allowedToolIds: ['plan_get'],
       enableWebSearch: false,
       enableWebFetch: false,
       onToken: () => undefined,
@@ -2426,17 +2426,17 @@ describe('streamingChat tool rendering helpers', () => {
     });
 
     expect(onToolCall).toHaveBeenCalledWith(
-      'need_add',
-      { title: 'Clarify release scope' },
-      'call_need',
+      'plan_get',
+      { plan_id: 'plan-1' },
+      'call_plan',
     );
 
     const submitCall = invokeMock.mock.calls.find((call) => call[0] === 'ai_submit_tool_result');
     expect(submitCall?.[1]).toEqual({
       request: {
         request_id: expect.any(String),
-        tool_call_id: 'call_need',
-        result: 'need_add:Clarify release scope',
+        tool_call_id: 'call_plan',
+        result: 'plan_get:plan-1',
         hidden_context: null,
         visible_content: null,
         interrupt: false,
@@ -2444,8 +2444,8 @@ describe('streamingChat tool rendering helpers', () => {
     });
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({
-        visibleContent: 'Need recorded.',
-        hiddenContext: expect.stringContaining('need_add:Clarify release scope'),
+        visibleContent: 'Plan loaded.',
+        hiddenContext: expect.stringContaining('plan_get:plan-1'),
       })
     );
   });

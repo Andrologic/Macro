@@ -177,7 +177,6 @@ const seedReplica = (plan = buildStoredPlan()): void => {
     reservedPlanSlugs: [plan.slug],
   });
   writeWorkspaceJson('/repos/web', `branches/develop/plans/${plan.id}/plan.json`, plan);
-  writeWorkspaceJson('/repos/web', `branches/develop/plans/${plan.id}/needs.json`, []);
 };
 
 const gitStatusMock = mock(async () => ({

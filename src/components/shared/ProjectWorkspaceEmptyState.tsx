@@ -9,7 +9,7 @@ interface ProjectWorkspaceEmptyStateProps {
   className?: string;
   compact?: boolean;
   variant?: 'primary' | 'secondary';
-  panelKind?: 'needs' | 'strategy' | 'tasks' | 'changes' | 'generic';
+  panelKind?: 'strategy' | 'tasks' | 'changes' | 'generic';
   onPrimaryAction?: () => void;
 }
 
@@ -25,7 +25,6 @@ export const ProjectWorkspaceEmptyState: React.FC<ProjectWorkspaceEmptyStateProp
   const isNoProjectAvailable = stateKind === 'noProjectAvailable';
   const isSecondary = variant === 'secondary';
   const secondaryCopy = {
-    needs: t('project.emptyWorkspaceNeedsPanel', 'Les besoins seront disponibles après l’ajout d’un projet.'),
     strategy: t('project.emptyWorkspaceStrategyPanel', 'La stratégie sera disponible après l’ajout d’un projet.'),
     tasks: t('project.emptyWorkspaceTasksPanel', 'Les tâches seront disponibles après l’ajout d’un projet.'),
     changes: t('project.emptyWorkspaceChangesPanel', 'Les changements seront disponibles après l’ajout d’un projet.'),

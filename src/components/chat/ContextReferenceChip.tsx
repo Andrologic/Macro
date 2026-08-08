@@ -1,11 +1,9 @@
 import React from 'react';
-import type { ContextRefKind, Need } from '../../types';
+import type { ContextRefKind } from '../../types';
 import { cn } from '../../utils/cn';
-import { NeedReferenceChip } from '../architect/NeedReferenceChip';
 import { Icon, type IconName } from '../ui/Icon';
 
 const KIND_CONFIG: Record<ContextRefKind, { label: string; icon: IconName; color: string; bg: string }> = {
-  'need': { label: '', icon: 'target', color: 'text-yellow-500', bg: 'bg-yellow-500/10' },
   'plan-node': { label: 'Node', icon: 'circle-dot', color: 'text-blue-400', bg: 'bg-blue-400/10' },
   'predicted-branch': { label: 'Branch', icon: 'git-branch', color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
   'skill': { label: 'Skill', icon: 'sparkles', color: 'text-fuchsia-400', bg: 'bg-fuchsia-400/10' },
@@ -16,8 +14,6 @@ const KIND_CONFIG: Record<ContextRefKind, { label: string; icon: IconName; color
 interface ContextReferenceChipProps {
   kind: ContextRefKind;
   title: string;
-  need?: Need;
-  priorityLabel?: string;
   renderAction?: React.ReactNode;
   surface?: 'composer' | 'message' | 'message-edit';
 }
@@ -25,23 +21,9 @@ interface ContextReferenceChipProps {
 export const ContextReferenceChip: React.FC<ContextReferenceChipProps> = ({
   kind,
   title,
-  need,
-  priorityLabel,
   renderAction,
   surface = 'composer',
 }) => {
-  if (kind === 'need') {
-    return (
-      <NeedReferenceChip
-        need={need}
-        title={title}
-        surface={surface}
-        renderAction={renderAction}
-        priorityLabel={priorityLabel}
-      />
-    );
-  }
-
   const config = KIND_CONFIG[kind];
 
   return (

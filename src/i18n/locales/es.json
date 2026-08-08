@@ -105,7 +105,7 @@
         "title": "Selector de modo",
         "body": "Estos tres botones cambian toda la superficie de trabajo. Architect sirve para definir el alcance, Implement para ejecutar y Chat para conversar libremente con contexto.",
         "points": [
-          "Architect: necesidades, planes y estrategia.",
+          "Architect: conversaciones, planes y estrategia.",
           "Implement: tareas, terminal y validación de cambios.",
           "Chat: conversaciones, fuentes y herramientas generales."
         ]
@@ -124,19 +124,15 @@
       },
       "architect-mode": {
         "title": "Modo Architect",
-        "body": "Architect transforma una conversación en necesidades y luego en una estrategia de ramas y tareas. Úsalo antes de programar cuando el alcance aún no está claro."
+        "body": "Architect convierte una conversación en una estrategia cuando el usuario lo solicita explícitamente."
       },
       "architect-plan-selector": {
         "title": "Planes",
-        "body": "El selector de plan aísla conversaciones, necesidades y estrategias. Puedes crear un plan feature, release, hotfix o bugfix según el flujo Git esperado."
-      },
-      "architect-needs": {
-        "title": "Necesidades identificadas",
-        "body": "El panel izquierdo lista las necesidades extraídas o refinadas durante la conversación Architect. Los filtros por categoría evitan releer todo cuando el plan crece."
+        "body": "El selector de planes aísla las conversaciones y estrategias de cada plan."
       },
       "architect-generate": {
         "title": "Generar la estrategia",
-        "body": "Esta es la acción importante de Architect. Convierte las necesidades en un grafo de tareas y ramas predecibles, solo cuando hay contexto suficiente."
+        "body": "Esta acción crea el grafo de tareas y las ramas predecibles a partir de la conversación y el contexto del proyecto."
       },
       "architect-strategy": {
         "title": "Estrategia y ramas",
@@ -979,7 +975,6 @@
     "name": "Nombre del proyecto",
     "emptyWorkspaceTitle": "Agrega un proyecto para empezar con Macro.",
     "emptyWorkspaceBody": "Architect e Implement necesitan un proyecto antes de crear planes, tareas, ramas y worktrees.",
-    "emptyWorkspaceNeedsPanel": "Las necesidades estarán disponibles después de agregar un proyecto.",
     "emptyWorkspaceStrategyPanel": "La estrategia estará disponible después de agregar un proyecto.",
     "emptyWorkspaceTasksPanel": "Las tareas estarán disponibles después de agregar un proyecto.",
     "emptyWorkspaceChangesPanel": "Los cambios estarán disponibles después de agregar un proyecto.",
@@ -1219,7 +1214,6 @@
     "noTasksForProject": "No hay tareas para este proyecto."
   },
   "architect": {
-    "needs": "Necesidades identificadas",
     "status": {
       "blank": "Vacío",
       "editing": "Prep.",
@@ -1346,9 +1340,6 @@
       "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
-    "needsEmptyTitle": "Aún no se han identificado necesidades para este proyecto.",
-    "needsEmptyDescription": "Charle con el arquitecto para descubrir los requisitos del proyecto.",
-    "needsEmptyAfterUserMessageDescription": "Architect ahora debe convertir esta explicación en necesidades estructuradas.",
     "strategy": "Estrategia",
     "graphExplorer": "Explorador de gráficos de estrategia",
     "openGraphExplorer": "Abrir explorador de gráficos",
@@ -1360,30 +1351,20 @@
     "dependencyFlow": "Dependency Flow",
     "itemsCount": "{{count}} artículos",
     "noStrategyTitle": "Aún no se ha generado ninguna estrategia",
-    "noStrategyDescription": "Analice las necesidades en el chat de arquitecto y luego utilice Generar estrategia para crear este gráfico.",
-    "noStrategyNeedsMissingDescription": "Identifique y valide las necesidades antes de generar la estrategia.",
-    "noStrategyNeedsUnvalidatedDescription": "Aclara las necesidades si hace falta o genera la estrategia ahora.",
-    "noStrategyReadyDescription": "Las necesidades están listas. Genere la estrategia cuando quiera que Macro cree el grafo de tareas.",
+    "noStrategyDescription": "Habla del plan en el chat de Architect y luego usa Generar estrategia para crear este grafo.",
     "noBranchesMatchingFilters": "Ninguna branch coincide con los filtros actuales.",
     "planCompleted": "Plan completado",
     "planValidated": "Plan validado",
     "validatingPlan": "Validando...",
     "noActivePlan": "Ningún plan activo",
-    "identifyNeeds": "Identificar necesidades",
-    "clarifyNeeds": "Aclarar necesidades",
     "generateStrategy": "Generar estrategia",
     "regenerateStrategy": "Estrategia de regeneración",
-    "identifyNeedsHint": "Pedir a Architect que analice la codebase y estructure las primeras necesidades",
-    "clarifyNeedsHint": "Pedir a Architect que resuelva dudas y valide las necesidades",
-    "generateStrategyHint": "Generar estrategia a partir de necesidades actuales",
-    "regenerateStrategyHint": "Regenerar la estrategia a partir de las necesidades actuales.",
+    "generateStrategyHint": "Generar la estrategia desde la conversación del plan y el contexto del proyecto",
+    "regenerateStrategyHint": "Regenerar la estrategia desde la conversación del plan y el contexto del proyecto",
     "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "Seleccione un plan activo primero",
-    "generateStrategyNeedPrompt": "Añade al menos una necesidad antes de generar una estrategia",
     "strategyProgressDraftTitle": "Borrador conservado",
     "strategyProgressDraftDescription": "Envíe o vacíe el composer antes de que Macro prepare el siguiente paso de Architect.",
-    "identifyNeedsPrompt": "Analiza la codebase para este plan, identifica los principales retos de producto y técnicos, y luego agrega necesidades estructuradas con `need_add`. Usa primero `need_list` y `need_get` si resulta útil. Si falta información importante, hazme preguntas específicas con la herramienta `question` antes de continuar.",
-    "clarifyNeedsPrompt": "Revisa las necesidades actuales de este plan con `need_list` y `need_get`, inspecciona la codebase cuando sea útil, identifica información faltante o ambigua, haz preguntas específicas con la herramienta `question` y actualiza las necesidades con `need_update` hasta que cada necesidad esté `validated`.",
     "nodeStatus": {
       "pending": "Pendiente",
       "in-progress": "En progreso",
@@ -1405,21 +1386,6 @@
     "progress": "Progreso",
     "branchSearch": "Buscar tareas...",
     "filterStatusAll": "Todos los estados",
-    "needCategory": {
-      "functional": "Funcional",
-      "technical": "Técnico",
-      "ux": "experiencia de usuario",
-      "performance": "Rendimiento",
-      "security": "Seguridad",
-      "data": "Datos",
-      "business": "Negocios",
-      "other": "Otro"
-    },
-    "needPriority": {
-      "high": "Alto",
-      "medium": "Medio",
-      "low": "Bajo"
-    },
     "frozenReasonCompleted": "Completed work",
     "frozenReasonDependencyLocked": "Locked dependency",
     "frozenReasonStarted": "Started work",
@@ -1444,7 +1410,8 @@
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Selecciona o crea un plan para empezar a diseñar.",
     "createPlanAction": "Crear un plan",
-    "selectPlanAction": "Seleccionar un plan"
+    "selectPlanAction": "Seleccionar un plan",
+    "noStrategyDiscussionDescription": "Habla del plan con Architect y genera la estrategia cuando el alcance esté claro."
   },
   "git": {
     "gitTree": "Árbol Git",

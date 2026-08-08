@@ -15,20 +15,15 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import {
-  NEED_CATEGORY_COLORS,
-  NEED_CATEGORY_ICONS,
-} from '../../architect/NeedReferenceChip';
 import { useAppStore } from '../../../stores/useAppStore';
 import { useChatStore } from '../../../stores/useChatStore';
 import { useCitationsStore } from '../../../stores/useCitationsStore';
-import { useNeedsStore } from '../../../stores/useNeedsStore';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useTaskStore } from '../../../stores/useTaskStore';
 import { resolveProjectExecutionContext } from '../../../services/projectExecutionContext';
 import { searchWorkspaceFiles } from '../../../services/workspaceFileSearch';
 import type { Citation } from '../../../stores/useCitationsStore';
-import type { ContextRefKind, Need, Project, SkillManifest, WorkspaceFileReference } from '../../../types';
+import type { ContextRefKind, Project, SkillManifest, WorkspaceFileReference } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
@@ -46,7 +41,7 @@ interface SlashTriggerState {
   rect: DOMRect;
 }
 
-type SlashContextKind = 'need' | 'skill' | 'file' | 'source';
+type SlashContextKind = 'skill' | 'file' | 'source';
 
 interface SlashContextMenuItem extends SlashContextRankCandidate {
   key: string;
@@ -62,7 +57,7 @@ interface SlashContextMenuItem extends SlashContextRankCandidate {
   label?: string;
   searchText: string;
   disabled?: boolean;
-  data: Need | SkillManifest | WorkspaceFileReference | Citation;
+  data: SkillManifest | WorkspaceFileReference | Citation;
   score?: number;
 }
 
@@ -150,9 +145,6 @@ const formatSourceLabel = (
   t: (key: string, fallback: string) => string,
 ): string => `${formatNamespaceLabel(skill, t)} · ${formatScopeLabel(skill, t)}`;
 
-const getNeedSubtitle = (need: Need): string | undefined =>
-  need.description.trim() ? need.description : undefined;
-
 const getPathBasename = (path: string): string => {
   const normalized = path.replace(/\\/g, '/');
   const parts = normalized.split('/').filter(Boolean);
@@ -188,7 +180,6 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const activeArchitectPlanId = useAppStore((state) => state.activeArchitectPlanId);
   const selectedConversationId = useChatStore((state) => state.selectedConversationId);
   const conversations = useChatStore((state) => state.conversations);
-  const allNeeds = useNeedsStore((state) => state.needs);
   const allSkills = useSkillsStore((state) => state.skills);
   const citations = useCitationsStore((state) => state.citations);
   const settingsBySkillId = useSkillsStore((state) => state.settingsBySkillId);
@@ -352,37 +343,6 @@ export const SlashContextMenuPlugin: React.FC = () => {
 
   const menuItems = useMemo<SlashContextMenuItem[]>(() => {
     const query = trigger?.query.trim() ?? '';
-    const activeNeeds = activeArchitectPlanId
-      ? allNeeds.filter((need) => need.planId === activeArchitectPlanId)
-      : [];
-
-    const needItems: SlashContextMenuItem[] = activeNeeds.map((need) => {
-      const categoryLabel = t(`architect.needCategory.${need.category}`, need.category);
-      const key = `need:${need.id}`;
-      return {
-        key,
-        kind: 'need',
-        refKind: 'need',
-        id: need.id,
-        title: need.title,
-        subtitle: getNeedSubtitle(need),
-        icon: NEED_CATEGORY_ICONS[need.category],
-        iconClassName: NEED_CATEGORY_COLORS[need.category],
-        label: categoryLabel,
-        searchText: [
-          need.title,
-          need.description,
-          need.category,
-          need.priority,
-          need.status,
-          ...need.tags,
-        ].join(' '),
-        useCount: slashUsage[key]?.useCount,
-        lastUsedAt: slashUsage[key]?.lastUsedAt,
-        data: need,
-      };
-    });
-
     const skillItems: SlashContextMenuItem[] = allSkills
       .filter((skill) => {
         if (!skill.isValid) return false;
@@ -492,7 +452,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
     });
 
     return rankSlashContextCandidates(
-      [...needItems, ...sourceItems, ...skillItems, ...fileItems],
+      [...sourceItems, ...skillItems, ...fileItems],
       {
         query,
         mode,
@@ -501,7 +461,6 @@ export const SlashContextMenuPlugin: React.FC = () => {
     ).slice(0, MAX_SLASH_ITEMS);
   }, [
     activeArchitectPlanId,
-    allNeeds,
     allSkills,
     citations,
     fileResults,

@@ -40,7 +40,6 @@ const SYSTEM_TOOL_IDS = new Set([
 ]);
 const DELETE_TOOL_IDS = new Set([
   "delete",
-  "need_delete",
   "strategy_delete",
   "plan_delete",
 ]);

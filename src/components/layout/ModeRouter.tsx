@@ -198,6 +198,10 @@ export const ModeRouter: React.FC<ModeRouterProps> = ({ panel }) => {
   const loader = modePanelLoaders[mode][panel];
   const fallback = panelSkeletons[panel];
 
+  if (!loader) {
+    return null;
+  }
+
   return <AsyncPanel loader={loader} fallback={fallback} />;
 };
 

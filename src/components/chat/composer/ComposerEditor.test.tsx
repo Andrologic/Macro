@@ -7,7 +7,7 @@ import {
   installReactI18nextMock,
 } from '../../../test-utils/reactI18nextMock';
 import type { ComposerEditorHandle } from './ComposerEditor';
-import type { Need, ProjectGroup, SkillManifest, SkillSettings, WorkspaceFileReference } from '../../../types';
+import type { ProjectGroup, SkillManifest, SkillSettings, WorkspaceFileReference } from '../../../types';
 
 const translationMock = createTranslationMock({});
 
@@ -24,7 +24,6 @@ let composerContextRefs: Array<{
   data?: unknown;
 }>;
 let activeArchitectPlanId: string | null;
-let needs: Need[];
 let skills: SkillManifest[];
 let settingsBySkillId: Record<string, SkillSettings>;
 let fileSearchResults: WorkspaceFileReference[];
@@ -60,20 +59,6 @@ const buildSkill = (
   scripts: [],
   validationErrors: [],
   isValid: true,
-  ...overrides,
-});
-
-const buildNeed = (id: string, overrides: Partial<Need> = {}): Need => ({
-  id,
-  planId: 'plan-1',
-  title: id,
-  description: 'Tracked product need',
-  category: 'functional',
-  status: 'identified',
-  priority: 'medium',
-  tags: [],
-  createdAt: '2026-05-01T00:00:00.000Z',
-  updatedAt: '2026-05-01T00:00:00.000Z',
   ...overrides,
 });
 
@@ -196,19 +181,6 @@ const installStoreMock = () => {
     useTaskStore,
   }));
 
-  const needsState = {
-    get needs() {
-      return needs;
-    },
-  };
-  const useNeedsStore = ((selector?: (state: typeof needsState) => unknown) =>
-    selector ? selector(needsState) : needsState) as typeof import('../../../stores/useNeedsStore').useNeedsStore;
-  useNeedsStore.getState = () =>
-    needsState as unknown as ReturnType<typeof useNeedsStore.getState>;
-  mock.module('../../../stores/useNeedsStore', () => ({
-    useNeedsStore,
-  }));
-
   const citationsState = {
     citations: [],
   };
@@ -271,7 +243,6 @@ describe('ComposerEditor context references', () => {
     installReactI18nextMock(translationMock);
     composerContextRefs = [];
     activeArchitectPlanId = 'plan-1';
-    needs = [];
     skills = [];
     settingsBySkillId = {};
     fileSearchResults = [];
@@ -828,12 +799,9 @@ describe('ComposerEditor context references', () => {
     expect(editorRef.current?.getTextContent()).toBe('hello \t');
   });
 
-  it('shows skills and active-plan needs in the slash context menu', async () => {
+  it('shows enabled skills in the slash context menu', async () => {
     const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
-    const activeNeed = buildNeed('need-1', { title: 'Auth flow', planId: 'plan-1' });
-    const otherPlanNeed = buildNeed('need-2', { title: 'Billing flow', planId: 'plan-2' });
     skills = [skill];
-    needs = [activeNeed, otherPlanNeed];
     settingsBySkillId = {
       [skill.id]: { enabled: true, scriptsEnabled: false },
     };
@@ -852,61 +820,7 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
-    expect(document.body.textContent).toContain('Auth flow');
     expect(document.body.textContent).toContain('test-skill');
-    expect(document.body.textContent).not.toContain('Billing flow');
-  });
-
-  it('filters slash context by needs and inserts a need as a single chip', async () => {
-    const skill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
-    const need = buildNeed('need-1', {
-      title: 'Auth flow',
-      description: 'Handle login and signup',
-      tags: ['auth'],
-    });
-    skills = [skill];
-    needs = [need];
-    settingsBySkillId = {
-      [skill.id]: { enabled: true, scriptsEnabled: false },
-    };
-    const editorRef = React.createRef<ComposerEditorHandle>();
-
-    await act(async () => {
-      root.render(
-        <ComposerEditor
-          ref={editorRef}
-          editable
-          placeholder="Message"
-          onTextChange={() => undefined}
-          onSend={() => undefined}
-        />
-      );
-    });
-
-    const menu = await openSlashMenu(editorRef, '/auth');
-    expect(menu).not.toBeNull();
-    expect(document.body.textContent).toContain('Auth flow');
-    expect(document.body.textContent).not.toContain('test-skill');
-
-    const option = document.body.querySelector('[data-slash-context-option="need:Auth flow"]');
-    expect(option).toBeTruthy();
-
-    await act(async () => {
-      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    const needChips = container.querySelectorAll('[data-need-reference-surface="composer"]');
-    expect(needChips).toHaveLength(1);
-    expect(needChips[0]?.textContent).toContain('Auth flow');
-    expect(editorRef.current?.getTextContent().trim()).toBe('[need: Auth flow]');
-    expect(addComposerContextRef).toHaveBeenCalledWith({
-      id: need.id,
-      kind: 'need',
-      title: 'Auth flow',
-      subtitle: 'Handle login and signup',
-      data: need,
-    });
   });
 
   it('searches workspace files and inserts a file as a lazy context chip', async () => {

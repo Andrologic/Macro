@@ -55,7 +55,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
 };
 
 const MARKDOWN_CONTEXT_MENTION_PATTERN =
-  /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
+  /\[(skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
 let blockKeySeed = 0;
 
@@ -261,7 +261,6 @@ const getTextFromChildren = (children: React.ReactNode): string => {
 const normalizeContextKind = (kind: string): ContextRefKind => {
   const normalized = kind.toLowerCase();
   if (
-    normalized === 'need' ||
     normalized === 'file' ||
     normalized === 'source' ||
     normalized === 'plan-node' ||

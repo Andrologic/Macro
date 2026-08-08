@@ -3,7 +3,12 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AsyncPanel } from './ModeRouter';
-import { createModePanelLoader } from './modePanelLoaders';
+import {
+  createModePanelLoader,
+  hasModePanel,
+  modePanelLoaders,
+  type ModePanelConfiguration,
+} from './modePanelLoaders';
 
 const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -103,5 +108,31 @@ describe('ModeRouter AsyncPanel', () => {
     } finally {
       console.error = consoleError;
     }
+  });
+});
+
+describe('mode panel configuration', () => {
+  it('keeps Architect left absent while Chat and Implement retain theirs', () => {
+    expect(hasModePanel('Architect', 'left')).toBe(false);
+    expect(hasModePanel('Architect', 'center')).toBe(true);
+    expect(hasModePanel('Architect', 'right')).toBe(true);
+    expect(hasModePanel('Chat', 'left')).toBe(true);
+    expect(hasModePanel('Implement', 'left')).toBe(true);
+  });
+
+  it('allows a future Architect left panel through one localized configuration change', () => {
+    const futureLeft = createModePanelLoader({
+      id: 'architect:left:future-navigation',
+      label: 'Future navigation',
+      mode: 'Architect',
+      panel: 'left',
+      importComponent: async () => () => null,
+    });
+    const configured: Record<'Chat' | 'Architect' | 'Implement', ModePanelConfiguration> = {
+      ...modePanelLoaders,
+      Architect: { ...modePanelLoaders.Architect, left: futureLeft },
+    };
+
+    expect(configured.Architect.left).toBe(futureLeft);
   });
 });

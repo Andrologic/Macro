@@ -160,19 +160,19 @@ Le frontend est organise autour de :
 
 L'application n'utilise pas un routage classique base sur des pages.
 
-Le coeur de l'interface repose sur un routage par mode qui affecte les panneaux gauche, centre et droit selon le contexte actif.
+Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
-Cette responsabilite est concentree dans le routeur de mode.
+Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise actuellement le centre pour la conversation et la droite pour la stratégie, sans panneau gauche.
 
 ### 5.3 Decoupage des panneaux
 
-L'interface est structuree autour de :
+L'interface est structurée autour de :
 
 - un header
 - un footer
-- un panneau gauche contextuel
+- un panneau gauche contextuel optionnel
 - une zone centrale partagee
-- un panneau droit contextuel
+- un panneau droit contextuel optionnel
 
 Le centre reste principalement occupe par la conversation et la coordination du travail.
 
@@ -237,11 +237,10 @@ Le store porte aussi une partie de la logique d'orchestration entre chat et mode
 - la relation entre tache, branche et worktree
 - la persistance du statut d'execution dans les metadata du plan
 
-### 6.4 Stores specialises
+### 6.4 Stores spécialisés
 
-D'autres stores portent des responsabilites ciblees :
+D'autres stores portent des responsabilités ciblées :
 
-- `useNeedsStore` pour les besoins
 - `useGitStore` pour arbres et commits Git
 - `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modeles IA
@@ -446,7 +445,6 @@ Cette branche contient notamment :
 - `workspace.json`
 - `branches/<target-branch>/plans/index.json`
 - `branches/<target-branch>/plans/<plan-id>/plan.json`
-- `branches/<target-branch>/plans/<plan-id>/needs.json`
 - `branches/<target-branch>/plans/<plan-id>/runtime.json`
 - `branches/<target-branch>/plans/<plan-id>/manifest.json`
 - `branches/<target-branch>/plans/<plan-id>/chat.jsonl`
@@ -465,7 +463,6 @@ Les plans sont stockes dans une structure de type :
 
 - `branches/<target-branch>/plans/index.json`
 - `branches/<target-branch>/plans/<plan-id>/plan.json`
-- `branches/<target-branch>/plans/<plan-id>/needs.json`
 - `branches/<target-branch>/plans/<plan-id>/runtime.json`
 - `branches/<target-branch>/plans/<plan-id>/manifest.json`
 - `branches/<target-branch>/plans/<plan-id>/chat.jsonl`

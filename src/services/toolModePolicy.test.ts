@@ -34,7 +34,6 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("git_status")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.allowedToolIds.includes("terminal_run")).toBe(false);
-    expect(policy.allowedToolIds.includes("need_add")).toBe(false);
     expect(policy.allowedToolIds.includes("plan_create")).toBe(false);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(false);
     expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
@@ -68,14 +67,9 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
     expect(policy.allowedToolIds.includes("skill_read_resource")).toBe(true);
     expect(policy.allowedToolIds.includes("skill_run_script")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_list")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_get")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_update")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_delete")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_get")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_update")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
-    expect(policy.allowedToolIds.includes("need_add")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(true);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
     expect(policy.enforceMacroOnlyWrites).toBe(true);
@@ -84,7 +78,6 @@ describe("toolModePolicy", () => {
   it("always includes the full Architect chat action surface", () => {
     const policy = getToolModePolicy("Architect");
 
-    expect(policy.allowedToolIds.includes("need_delete")).toBe(true);
     expect(policy.allowedToolIds.includes("strategy_delete")).toBe(true);
   });
 

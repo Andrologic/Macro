@@ -92,7 +92,6 @@ describe('macroToolRegistry', () => {
         'read_file',
         'web_search',
         'plan_get',
-        'need_add',
         'strategy_generate',
         'git_status',
         'terminal_run',
@@ -100,7 +99,6 @@ describe('macroToolRegistry', () => {
     ).toEqual([
       'read_file',
       'plan_get',
-      'need_add',
       'strategy_generate',
       'git_status',
       'terminal_run',
