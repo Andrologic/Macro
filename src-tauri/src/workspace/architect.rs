@@ -9,6 +9,7 @@ use super::metadata::{
 };
 use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
+use crate::project_path::parse_wsl_unc_path;
 use chrono::DateTime;
 use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
@@ -569,14 +570,32 @@ async fn file_stamp(path: &Path) -> String {
 async fn resolve_project_scopes(
     workspace_path: &Path,
     metadata_root: &Path,
+    scoped_project_ids_hint: &[String],
 ) -> Result<Vec<ArchitectRuntimeScope>> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     let mut scopes = Vec::new();
     let mut seen_scope_keys = HashSet::new();
+    let normalized_scope_hint = normalize_project_id_hint(scoped_project_ids_hint);
+    let scoped_project_id_set = if normalized_scope_hint.is_empty() {
+        None
+    } else {
+        Some(
+            normalized_scope_hint
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>(),
+        )
+    };
 
+    let workspace_scope_project_id =
+        if normalized_scope_hint.len() == 1 && workspace_path.join(".git").exists() {
+            normalized_scope_hint.first().cloned()
+        } else {
+            None
+        };
     let workspace_scope = ArchitectRuntimeScope {
         scope_key: format!("workspace:{}", workspace_path.to_string_lossy()),
-        project_id: None,
+        project_id: workspace_scope_project_id,
         repo_path: Some(workspace_path.to_path_buf()),
         workspace_path: Some(workspace_path.to_path_buf()),
         metadata_root: metadata_root.to_path_buf(),
@@ -586,14 +605,15 @@ async fn resolve_project_scopes(
     scopes.push(workspace_scope);
 
     let git_state = GitState::new();
-    let mut project_paths = Vec::new();
-    for group in state.project_groups {
-        collect_project_paths(&group.projects, &mut project_paths);
-    }
+    let project_paths =
+        collect_workspace_state_project_paths(&state, scoped_project_id_set.as_ref());
     let resolved_project_scopes =
         try_join_all(project_paths.into_iter().map(|(project_id, project_path)| {
             let git_state = git_state.clone();
             async move {
+                if parse_wsl_unc_path(&project_path).is_some() {
+                    return Ok::<_, BackendError>(None);
+                }
                 let resolved_repo_path = PathBuf::from(project_path);
                 let metadata_root_result = tokio::task::spawn_blocking({
                     let git_state = git_state.clone();
@@ -633,13 +653,47 @@ async fn resolve_project_scopes(
 fn collect_project_paths(
     projects: &[super::metadata::ProjectDto],
     output: &mut Vec<(String, String)>,
+    scoped_project_id_set: Option<&HashSet<String>>,
 ) {
     for project in projects {
+        if scoped_project_id_set
+            .map(|allowed_ids| !allowed_ids.contains(project.id.trim()))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         if project.path.trim().is_empty() {
             continue;
         }
         output.push((project.id.clone(), project.path.clone()));
     }
+}
+
+fn collect_workspace_state_project_paths(
+    state: &super::metadata::WorkspaceState,
+    scoped_project_id_set: Option<&HashSet<String>>,
+) -> Vec<(String, String)> {
+    let mut project_paths = Vec::new();
+    collect_project_paths(
+        &state.standalone_projects,
+        &mut project_paths,
+        scoped_project_id_set,
+    );
+    for group in &state.project_groups {
+        collect_project_paths(&group.projects, &mut project_paths, scoped_project_id_set);
+    }
+    project_paths
+}
+
+fn normalize_project_id_hint(scoped_project_ids_hint: &[String]) -> Vec<String> {
+    let mut normalized = scoped_project_ids_hint
+        .iter()
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
 }
 
 async fn read_index_at_scope(
@@ -662,11 +716,13 @@ async fn build_branch_index(
     workspace_path: &Path,
     metadata_root: &Path,
     branch_name: &str,
+    scoped_project_ids_hint: &[String],
     previous_generation: u64,
 ) -> Result<ArchitectPlanRuntimeBranchIndex> {
     let normalized_branch = normalize_branch_name(branch_name);
     let workspace_state_stamp = file_stamp(&metadata_root.join("workspace.json")).await;
-    let scopes = resolve_project_scopes(workspace_path, metadata_root).await?;
+    let scopes =
+        resolve_project_scopes(workspace_path, metadata_root, scoped_project_ids_hint).await?;
     let index_results = try_join_all(scopes.iter().cloned().map(|scope| {
         let normalized_branch = normalized_branch.clone();
         async move {
@@ -843,9 +899,19 @@ async fn load_branch_index(
     workspace_path: &Path,
     metadata_root: &Path,
     branch_name: &str,
+    scoped_project_ids_hint: &[String],
 ) -> Result<ArchitectPlanRuntimeBranchIndex> {
     let normalized_branch = normalize_branch_name(branch_name);
-    let cache_key = format!("{}::{normalized_branch}", metadata_root.to_string_lossy());
+    let normalized_scope_hint = normalize_project_id_hint(scoped_project_ids_hint);
+    let scope_cache_key = if normalized_scope_hint.is_empty() {
+        "all".to_string()
+    } else {
+        normalized_scope_hint.join(",")
+    };
+    let cache_key = format!(
+        "{}::{scope_cache_key}::{normalized_branch}",
+        metadata_root.to_string_lossy()
+    );
 
     {
         let cache = runtime_cache().read().await;
@@ -869,6 +935,7 @@ async fn load_branch_index(
         workspace_path,
         metadata_root,
         &normalized_branch,
+        &normalized_scope_hint,
         previous_generation,
     )
     .await?;
@@ -1077,7 +1144,13 @@ pub async fn list_plans(
     metadata_root: &Path,
     request: WorkspaceArchitectListPlansRequestDto,
 ) -> Result<WorkspaceArchitectPlanListDto> {
-    let index = load_branch_index(workspace_path, metadata_root, &request.branch_name).await?;
+    let index = load_branch_index(
+        workspace_path,
+        metadata_root,
+        &request.branch_name,
+        &request.scoped_project_ids_hint,
+    )
+    .await?;
     let mut plans = index
         .plan_summaries_by_id
         .values()
@@ -1101,7 +1174,13 @@ pub async fn activate_plan_head(
     request: WorkspaceArchitectActivatePlanHeadRequestDto,
 ) -> Result<Option<WorkspaceArchitectPlanActivationHeadDto>> {
     let normalized_branch = normalize_branch_name(&request.branch_name);
-    let index = load_branch_index(workspace_path, metadata_root, &normalized_branch).await?;
+    let index = load_branch_index(
+        workspace_path,
+        metadata_root,
+        &normalized_branch,
+        &request.scoped_project_ids_hint,
+    )
+    .await?;
     let effective_plan_id = resolve_effective_plan_id(&index, &request.plan_id);
     let hinted_summary = request
         .summary_hint
@@ -1189,7 +1268,7 @@ pub async fn activate_plan_chat(
     request: WorkspaceArchitectActivatePlanChatRequestDto,
 ) -> Result<Option<WorkspaceArchitectPlanTranscriptDto>> {
     let normalized_branch = normalize_branch_name(&request.branch_name);
-    let index = load_branch_index(workspace_path, metadata_root, &normalized_branch).await?;
+    let index = load_branch_index(workspace_path, metadata_root, &normalized_branch, &[]).await?;
     let effective_plan_id = resolve_effective_plan_id(&index, &request.plan_id);
     let Some(locators) = index.plan_locators_by_id.get(&effective_plan_id) else {
         return Ok(None);
@@ -1220,4 +1299,387 @@ pub async fn activate_plan_chat(
         message_count: manifest.conversation.message_count,
         messages,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::metadata::{
+        ProjectDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto, WorkspaceState,
+    };
+    use git2::{Repository, RepositoryInitOptions, Signature};
+    use std::fs as std_fs;
+    use tempfile::TempDir;
+
+    fn project(id: &str, path: &str) -> ProjectDto {
+        ProjectDto {
+            id: id.to_string(),
+            name: id.to_string(),
+            mount_name: String::new(),
+            path: path.to_string(),
+            created_at: "2026-06-01T00:00:00.000Z".to_string(),
+            status: "active".to_string(),
+            git_flow_settings: ProjectGitFlowSettingsDto::default(),
+            user_read_only: false,
+            git_setup_state: "ready".to_string(),
+            is_read_only: false,
+            read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
+            metadata: ProjectMetadataDto {
+                description: String::new(),
+                tags: Vec::new(),
+                team_members: Vec::new(),
+                api_contracts: Vec::new(),
+                dependencies: Vec::new(),
+            },
+        }
+    }
+
+    fn init_repo(path: &Path) -> Repository {
+        std_fs::create_dir_all(path).expect("create repo dir");
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let repo = Repository::init_opts(path, &opts).expect("init repo");
+        std_fs::write(path.join("README.md"), "hello").expect("write readme");
+        let mut index = repo.index().expect("repo index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        {
+            let tree = repo.find_tree(tree_id).expect("find tree");
+            let signature =
+                Signature::now("Macro Test", "macro-test@example.com").expect("git signature");
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "initial commit",
+                &tree,
+                &[],
+            )
+            .expect("initial commit");
+        }
+        repo
+    }
+
+    fn write_json<T: Serialize>(path: &Path, value: &T) {
+        if let Some(parent) = path.parent() {
+            std_fs::create_dir_all(parent).expect("create json parent");
+        }
+        std_fs::write(
+            path,
+            serde_json::to_string_pretty(value).expect("serialize json"),
+        )
+        .expect("write json");
+    }
+
+    fn plan_summary(plan_id: &str, stored_project_id: &str) -> WorkspaceArchitectPlanSummaryDto {
+        WorkspaceArchitectPlanSummaryDto {
+            id: plan_id.to_string(),
+            slug: plan_id.to_string(),
+            title: "Refonte catalogue produit".to_string(),
+            label: Some("Refonte catalogue produit".to_string()),
+            description: "Modern plan stored in the selected standalone project.".to_string(),
+            status: "draft".to_string(),
+            target_branch: "main".to_string(),
+            project_id: Some(stored_project_id.to_string()),
+            project_ids: vec![stored_project_id.to_string()],
+            expected_project_ids: vec![stored_project_id.to_string()],
+            created_at: "2026-06-01T07:00:00.000Z".to_string(),
+            updated_at: "2026-06-01T08:00:00.000Z".to_string(),
+            node_count: 1,
+            predicted_branch_count: Some(1),
+            need_count: Some(1),
+            chat_message_count: Some(1),
+            revision: Some(2),
+            ..WorkspaceArchitectPlanSummaryDto::default()
+        }
+    }
+
+    fn plan_record(plan_id: &str, stored_project_id: &str) -> WorkspaceArchitectPlanRecordDto {
+        WorkspaceArchitectPlanRecordDto {
+            id: plan_id.to_string(),
+            slug: plan_id.to_string(),
+            title: "Refonte catalogue produit".to_string(),
+            label: Some("Refonte catalogue produit".to_string()),
+            description: "Modern plan stored in the selected standalone project.".to_string(),
+            status: "draft".to_string(),
+            target_branch: "main".to_string(),
+            conversation_id: Some("conversation-standalone".to_string()),
+            project_id: Some(stored_project_id.to_string()),
+            project_ids: vec![stored_project_id.to_string()],
+            expected_project_ids: vec![stored_project_id.to_string()],
+            created_at: "2026-06-01T07:00:00.000Z".to_string(),
+            updated_at: "2026-06-01T08:00:00.000Z".to_string(),
+            nodes: vec![serde_json::json!({ "id": "node-1", "title": "Implement" })],
+            predicted_branches: vec![serde_json::json!({ "id": "branch-1" })],
+            revision: Some(2),
+            ..WorkspaceArchitectPlanRecordDto::default()
+        }
+    }
+
+    #[test]
+    fn collect_workspace_state_project_paths_includes_standalone_projects() {
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project("project-solo", "/repos/solo")];
+        state.project_groups = vec![ProjectGroupDto {
+            id: "group-main".to_string(),
+            name: "Main".to_string(),
+            is_open: true,
+            projects: vec![project("project-grouped", "/repos/grouped")],
+        }];
+
+        let paths = collect_workspace_state_project_paths(&state, None);
+
+        assert_eq!(
+            paths,
+            vec![
+                ("project-solo".to_string(), "/repos/solo".to_string()),
+                ("project-grouped".to_string(), "/repos/grouped".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_workspace_state_project_paths_filters_by_scope_hint() {
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![
+            project("project-solo", "/repos/solo"),
+            project("project-other", "/repos/other"),
+        ];
+        state.project_groups = vec![ProjectGroupDto {
+            id: "group-main".to_string(),
+            name: "Main".to_string(),
+            is_open: true,
+            projects: vec![project("project-grouped", "/repos/grouped")],
+        }];
+        let allowed_ids = ["project-solo".to_string()]
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        let paths = collect_workspace_state_project_paths(&state, Some(&allowed_ids));
+
+        assert_eq!(
+            paths,
+            vec![("project-solo".to_string(), "/repos/solo".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_plans_tags_physical_workspace_scope_with_single_project_hint() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let project_path = workspace.path().join("octan_sales");
+        let _repo = init_repo(&project_path);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+
+        let current_project_id = "project-octan-sales-1780653766405";
+        let stale_project_id = "project-lplr-app-1780329499166";
+        let plan_id = "refonte-catalogue-produit";
+        write_json(
+            &architect_plan_index_path(&metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![plan_summary(plan_id, stale_project_id)],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+
+        let listed = list_plans(
+            &project_path,
+            &metadata_root,
+            WorkspaceArchitectListPlansRequestDto {
+                branch_name: "main".to_string(),
+                include_deleted: false,
+                include_archived: false,
+                scoped_project_ids_hint: vec![current_project_id.to_string()],
+            },
+        )
+        .await
+        .expect("list plans from physical workspace scope");
+
+        assert_eq!(listed.plans.len(), 1);
+        assert_eq!(listed.plans[0].id, plan_id);
+        assert_eq!(
+            listed.plans[0].project_ids,
+            vec![stale_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0].available_project_ids,
+            vec![current_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0].missing_project_ids,
+            vec![stale_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0]
+                .replicas
+                .iter()
+                .map(|replica| replica.project_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some(current_project_id)]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_and_activate_plans_from_standalone_project_metadata() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        std_fs::create_dir_all(&metadata_root).expect("create metadata root");
+        let project_path = workspace.path().join("lplr-app");
+        let _repo = init_repo(&project_path);
+        let project_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+
+        let project_id = "project-lplr-app-1780237886690";
+        let stale_project_id = "project-stale-before-standalone-migration";
+        let plan_id = "refonte-catalogue-produit";
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project(
+            project_id,
+            project_path.to_str().expect("project path string"),
+        )];
+        write_json(&metadata_root.join("workspace.json"), &state);
+
+        let summary = plan_summary(plan_id, stale_project_id);
+        write_json(
+            &architect_plan_index_path(&project_metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![summary],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+        let plan_dir = architect_plan_dir(&project_metadata_root, "main", plan_id);
+        write_json(
+            &plan_dir.join("plan.json"),
+            &plan_record(plan_id, stale_project_id),
+        );
+        write_json(
+            &plan_dir.join("manifest.json"),
+            &ArchitectPlanManifestDto {
+                schema_version: 3,
+                plan_id: plan_id.to_string(),
+                target_branch: "main".to_string(),
+                status: "draft".to_string(),
+                expected_project_ids: vec![stale_project_id.to_string()],
+                context_project_ids: Vec::new(),
+                revision: 2,
+                updated_at: "2026-06-01T08:00:00.000Z".to_string(),
+                content_hashes: ArchitectPlanContentHashesDto {
+                    plan: "plan-hash".to_string(),
+                    needs: "needs-hash".to_string(),
+                    chat: "chat-hash".to_string(),
+                },
+                need_count: Some(1),
+                conversation: ArchitectPlanConversationSnapshotDto {
+                    conversation_id: Some("conversation-standalone".to_string()),
+                    title: Some("Refonte catalogue produit".to_string()),
+                    message_count: 1,
+                    last_message_at: Some("2026-06-01T08:00:00.000Z".to_string()),
+                },
+            },
+        );
+        write_json(
+            &plan_dir.join("needs.json"),
+            &vec![serde_json::json!({ "id": "need-1", "title": "Need one" })],
+        );
+        std_fs::write(
+            plan_dir.join("chat.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::to_string(&WorkspaceArchitectChatMessageDto {
+                    id: "message-1".to_string(),
+                    role: "user".to_string(),
+                    content: "Explain the plan".to_string(),
+                    created_at: "2026-06-01T08:00:00.000Z".to_string(),
+                })
+                .expect("serialize chat message")
+            ),
+        )
+        .expect("write chat jsonl");
+
+        let listed = list_plans(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectListPlansRequestDto {
+                branch_name: "main".to_string(),
+                include_deleted: false,
+                include_archived: false,
+                scoped_project_ids_hint: vec![project_id.to_string()],
+            },
+        )
+        .await
+        .expect("list plans");
+
+        assert_eq!(listed.active_plan_id.as_deref(), Some(plan_id));
+        assert_eq!(listed.plans.len(), 1);
+        assert_eq!(listed.plans[0].id, plan_id);
+        assert_eq!(
+            listed.plans[0].project_ids,
+            vec![stale_project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0].available_project_ids,
+            vec![project_id.to_string()]
+        );
+        assert_eq!(
+            listed.plans[0]
+                .replicas
+                .iter()
+                .map(|replica| replica.project_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some(project_id)]
+        );
+
+        let activation = activate_plan_head(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanHeadRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                summary_hint: None,
+                scoped_project_ids_hint: vec![project_id.to_string()],
+            },
+        )
+        .await
+        .expect("activate plan")
+        .expect("activation payload");
+
+        assert_eq!(activation.plan.id, plan_id);
+        assert_eq!(
+            activation.plan.available_project_ids,
+            vec![project_id.to_string()]
+        );
+        assert_eq!(
+            activation.conversation_id.as_deref(),
+            Some("conversation-standalone")
+        );
+        assert_eq!(activation.needs.len(), 1);
+        assert_eq!(
+            activation.chat_transcript_revision.as_deref(),
+            Some("chat-hash")
+        );
+
+        let transcript = activate_plan_chat(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanChatRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+            },
+        )
+        .await
+        .expect("activate chat")
+        .expect("chat transcript");
+
+        assert_eq!(transcript.message_count, 1);
+        assert_eq!(transcript.messages[0].content, "Explain the plan");
+    }
 }

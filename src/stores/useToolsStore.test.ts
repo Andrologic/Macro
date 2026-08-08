@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { mockInternalTools } from '../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../services/tools/builtInTools';
 import type { MCPServer, Tool } from '../types';
 
 const CHAT_TOOLBOX_IDS = [
@@ -37,7 +37,7 @@ let importCounter = 0;
 
 const buildToolSettings = (): Record<string, Tool> =>
   Object.fromEntries(
-    mockInternalTools.map((tool) => [
+    BUILT_IN_TOOLS.map((tool) => [
       tool.id,
       {
         ...tool,
@@ -69,6 +69,18 @@ const loadUseToolsStore = async () => {
       })),
       updateToolSettings: mock(async () => undefined),
       updateMCPServerSettings: mock(async () => undefined),
+      mcpDiscoverTools: mock(async () => ({
+        tools: [
+          {
+            id: 'mcp__github__list_issues',
+            serverId: 'github',
+            name: 'list_issues',
+            description: 'List issues',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      })),
+      mcpCallTool: mock(async () => ({ content: 'ok' })),
     },
   }));
 
@@ -127,5 +139,19 @@ describe('useToolsStore chat toolbox policy', () => {
     expect(useToolsStore.getState().isChatToolEnabled('mark_source_passage')).toBe(true);
     expect(useToolsStore.getState().isChatToolEnabled('read_sources')).toBe(true);
     expect(useToolsStore.getState().isChatToolEnabled('edit_source_passage')).toBe(true);
+  });
+
+  it('discovers and exposes enabled MCP tools by namespaced id', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+
+    await useToolsStore.getState().loadSettings();
+    await useToolsStore.getState().refreshMCPServerTools('github');
+
+    expect(useToolsStore.getState().getEnabledMCPToolIds()).toEqual([
+      'mcp__github__list_issues',
+    ]);
+    await expect(
+      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
+    ).resolves.toBe('ok');
   });
 });

@@ -5,7 +5,6 @@ import { join } from 'node:path';
 const SRC_ROOT = join(process.cwd(), 'src');
 const INCLUDED_DIRECTORIES = new Set(['components', 'stores', 'services']);
 const IGNORED_DIRECTORY_NAMES = new Set([
-  'mock-data',
   'i18n',
   'contracts',
   'providers',
@@ -24,6 +23,10 @@ const SUSPICIOUS_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /\bdeja\b/iu, replacement: 'déjà' },
   { pattern: /\betre\b/iu, replacement: 'être' },
 ];
+const TECHNICAL_LITERAL_ALLOWLIST = new Set([
+  'skip-dom-selection',
+  'skip-selection-focus',
+]);
 
 const isTechnicalCssLiteral = (literal: string): boolean => {
   if (!literal.trim()) {
@@ -99,6 +102,9 @@ describe('french hardcoded copy', () => {
             continue;
           }
           if (isTechnicalCssLiteral(literal)) {
+            continue;
+          }
+          if (TECHNICAL_LITERAL_ALLOWLIST.has(literal)) {
             continue;
           }
 

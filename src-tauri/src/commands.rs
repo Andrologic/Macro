@@ -4,6 +4,10 @@ pub mod ai;
 pub mod fs;
 #[path = "commands/git.rs"]
 pub mod git;
+#[path = "commands/mcp/mod.rs"]
+pub mod mcp;
+#[path = "commands/skills/mod.rs"]
+pub mod skills;
 #[path = "commands/terminal.rs"]
 pub mod terminal;
 #[path = "commands/workspace.rs"]
@@ -13,6 +17,10 @@ pub mod workspace_tools;
 
 pub use workspace_tools::WorkspaceProjectMount;
 
+use crate::core::process::{
+    background_command, is_known_visible_terminal_app_id, visible_terminal_command,
+    ProcessLaunchVisibility,
+};
 use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
@@ -23,6 +31,7 @@ use crate::fs::{
     validate_path as validate_fs_path, validate_path_for_write as validate_fs_path_for_write,
 };
 use crate::git::GitState;
+use crate::project_path::{join_wsl_path, parse_wsl_unc_path, WslProjectPath};
 use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use glob::Pattern;
@@ -32,15 +41,89 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::process::Stdio;
 use tauri::State;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::sync::watch;
+use tokio::time::{timeout, Duration};
 
-pub type DbPool = Arc<Mutex<Option<SqlitePool>>>;
-const DB_INIT_WAIT_RETRIES: usize = 300;
-const DB_INIT_WAIT_DELAY_MS: u64 = 50;
+const DB_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Debug)]
+pub enum DbInitializationState {
+    Initializing,
+    Ready(SqlitePool),
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct DbPool {
+    state: watch::Sender<DbInitializationState>,
+}
+
+impl Default for DbPool {
+    fn default() -> Self {
+        let (state, _) = watch::channel(DbInitializationState::Initializing);
+        Self { state }
+    }
+}
+
+impl DbPool {
+    pub fn set_initializing(&self) {
+        self.state.send_replace(DbInitializationState::Initializing);
+    }
+
+    pub fn set_ready(&self, pool: SqlitePool) {
+        self.state.send_replace(DbInitializationState::Ready(pool));
+    }
+
+    pub fn set_failed(&self, message: impl Into<String>) {
+        self.state
+            .send_replace(DbInitializationState::Failed(message.into()));
+    }
+
+    pub fn current(&self) -> DbInitializationState {
+        self.state.borrow().clone()
+    }
+
+    pub fn ready_pool(&self) -> Option<SqlitePool> {
+        match self.current() {
+            DbInitializationState::Ready(pool) => Some(pool),
+            DbInitializationState::Initializing | DbInitializationState::Failed(_) => None,
+        }
+    }
+
+    async fn wait_until_ready(&self) -> CommandResult<SqlitePool> {
+        let mut receiver = self.state.subscribe();
+        let wait = async {
+            loop {
+                match receiver.borrow().clone() {
+                    DbInitializationState::Ready(pool) => return Ok(pool),
+                    DbInitializationState::Failed(message) => {
+                        return Err(command_error(format!(
+                            "Database initialization failed: {message}"
+                        )))
+                    }
+                    DbInitializationState::Initializing => {}
+                }
+
+                receiver.changed().await.map_err(|_| {
+                    command_error("Database initialization state channel closed unexpectedly.")
+                })?;
+            }
+        };
+
+        timeout(DB_INIT_WAIT_TIMEOUT, wait).await.map_err(|_| {
+            command_error("Database is still initializing. Please retry in a moment.")
+        })?
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbInitializationStatusDto {
+    pub status: String,
+    pub message: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -64,29 +147,48 @@ pub(crate) fn command_error(message: impl Into<String>) -> CommandError {
 }
 
 pub(crate) async fn get_pool(pool: &State<'_, DbPool>) -> CommandResult<SqlitePool> {
-    for attempt in 0..DB_INIT_WAIT_RETRIES {
-        {
-            let pool_guard = pool.lock().await;
-            if let Some(pool) = pool_guard.as_ref() {
-                return Ok(pool.clone());
-            }
-        }
+    pool.wait_until_ready().await
+}
 
-        if attempt == 20 || attempt == 100 || attempt == 200 {
-            tracing::warn!(
-                attempt = attempt + 1,
-                waited_ms = (attempt + 1) as u64 * DB_INIT_WAIT_DELAY_MS,
-                "Database pool is still initializing"
-            );
-        }
+#[tauri::command]
+pub async fn db_get_initialization_status(
+    pool: State<'_, DbPool>,
+) -> CommandResult<DbInitializationStatusDto> {
+    let (status, message) = match pool.current() {
+        DbInitializationState::Initializing => ("initializing", None),
+        DbInitializationState::Ready(_) => ("ready", None),
+        DbInitializationState::Failed(message) => ("failed", Some(message)),
+    };
+    Ok(DbInitializationStatusDto {
+        status: status.to_string(),
+        message,
+    })
+}
 
-        if attempt + 1 < DB_INIT_WAIT_RETRIES {
-            sleep(Duration::from_millis(DB_INIT_WAIT_DELAY_MS)).await;
+#[tauri::command]
+pub async fn db_retry_initialize(
+    app: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+) -> CommandResult<DbInitializationStatusDto> {
+    if matches!(pool.current(), DbInitializationState::Ready(_)) {
+        return db_get_initialization_status(pool).await;
+    }
+
+    pool.set_initializing();
+    match crate::db::init_db(&app).await {
+        Ok(sqlite_pool) => pool.set_ready(sqlite_pool),
+        Err(error) => {
+            let message = error.to_string();
+            pool.set_failed(message.clone());
+            return Err(command_error(format!(
+                "Database initialization failed: {message}"
+            )));
         }
     }
 
-    Err(CommandError {
-        message: "Database not initialized yet. Please retry in a moment.".to_string(),
+    Ok(DbInitializationStatusDto {
+        status: "ready".to_string(),
+        message: None,
     })
 }
 
@@ -163,6 +265,11 @@ async fn resolve_workspace_for_tool_path(
         workspace: &Path,
         git_state: &GitState,
     ) -> CommandResult<PathBuf> {
+        if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
+            return Err(command_error(
+                "Macro metadata is not yet available through agent tools for WSL projects.",
+            ));
+        }
         let workspace_for_task = workspace.to_path_buf();
         let workspace_for_fallback = workspace.to_path_buf();
         let git_state_for_task = git_state.clone();
@@ -215,6 +322,10 @@ fn resolve_requested_workspace(
         return Ok(default_workspace.to_path_buf());
     };
 
+    if parse_wsl_unc_path(requested_workspace).is_some() {
+        return Ok(PathBuf::from(requested_workspace));
+    }
+
     let requested_path = PathBuf::from(requested_workspace);
     let candidate = if requested_path.is_absolute() {
         requested_path
@@ -234,6 +345,48 @@ fn resolve_requested_workspace(
     }
 
     Ok(resolved)
+}
+
+fn linux_path_is_same_or_child(root: &str, candidate: &str) -> bool {
+    let root = root.trim_end_matches('/');
+    candidate == root
+        || candidate
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn resolve_wsl_path_for_workspace(
+    workspace: &Path,
+    path: &str,
+) -> CommandResult<Option<WslProjectPath>> {
+    if let Some(wsl_path) = parse_wsl_unc_path(path) {
+        return Ok(Some(wsl_path));
+    }
+
+    let workspace_string = workspace.to_string_lossy();
+    let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) else {
+        return Ok(None);
+    };
+
+    let resolved =
+        join_wsl_path(&wsl_workspace, path).map_err(|error| command_error(error.to_string()))?;
+    if resolved.distro != wsl_workspace.distro
+        || !linux_path_is_same_or_child(&wsl_workspace.linux_path, &resolved.linux_path)
+    {
+        return Err(command_error(format!(
+            "Path escapes WSL workspace: {}",
+            path
+        )));
+    }
+
+    Ok(Some(resolved))
+}
+
+fn unsupported_wsl_workspace_tool(tool_id: &str) -> CommandError {
+    command_error(format!(
+        "Tool {} is not yet supported for WSL projects.",
+        tool_id
+    ))
 }
 
 fn remap_macro_tool_path(path: &str) -> String {
@@ -519,6 +672,12 @@ pub(crate) fn resolve_validated_tool_path(
     path: &str,
     for_write: bool,
 ) -> CommandResult<PathBuf> {
+    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
+        if let Some(resolved) = resolve_wsl_path_for_workspace(workspace, path)? {
+            return Ok(PathBuf::from(resolved.unc_path));
+        }
+    }
+
     let path_buf = PathBuf::from(path);
     if for_write {
         validate_fs_path_for_write(&path_buf, workspace)
@@ -609,6 +768,132 @@ async fn rollback_pending_file_changes(backups: &[(PathBuf, Option<Vec<u8>>)]) -
     errors
 }
 
+fn change_targets_wsl(change: &PendingFileChange) -> bool {
+    parse_wsl_unc_path(&change.effective_workspace.to_string_lossy()).is_some()
+}
+
+async fn rollback_pending_file_changes_via_fs(
+    backups: &[(PathBuf, String, String, Option<String>)],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (workspace, path, display_path, backup) in backups.iter().rev() {
+        match backup {
+            Some(content) => {
+                if let Err(error) = fs::write_file_internal(
+                    workspace,
+                    path.clone(),
+                    content.clone(),
+                    Some(true),
+                    Some(false),
+                )
+                .await
+                {
+                    errors.push(format!(
+                        "Failed to restore {} during rollback: {}",
+                        display_path, error
+                    ));
+                }
+            }
+            None => match fs::exists_internal(workspace, path.clone()).await {
+                Ok(true) => {
+                    if let Err(error) =
+                        fs::delete_path_internal(workspace, path.clone(), Some(false)).await
+                    {
+                        errors.push(format!(
+                            "Failed to remove created file {} during rollback: {}",
+                            display_path, error
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => errors.push(format!(
+                    "Failed to inspect {} during rollback: {}",
+                    display_path, error
+                )),
+            },
+        }
+    }
+    errors
+}
+
+async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> CommandResult<()> {
+    let mut backups = Vec::with_capacity(changes.len());
+    for change in changes {
+        let backup =
+            if fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before write: {}",
+                        change.display_path, error
+                    ))
+                })?
+            {
+                let current = fs::read_file_internal(
+                    &change.effective_workspace,
+                    change.effective_path.clone(),
+                    Some(false),
+                )
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to prepare backup for {}: {}",
+                        change.display_path, error
+                    ))
+                })?;
+                if current.is_binary {
+                    return Err(command_error(format!(
+                        "Cannot apply a batched patch to binary file {} in WSL.",
+                        change.display_path
+                    )));
+                }
+                Some(current.content)
+            } else {
+                None
+            };
+        backups.push((
+            change.effective_workspace.clone(),
+            change.effective_path.clone(),
+            change.display_path.clone(),
+            backup,
+        ));
+    }
+
+    for (applied_count, change) in changes.iter().enumerate() {
+        let result = if let Some(new_content) = change.new_content.as_ref() {
+            fs::write_file_internal(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                new_content.clone(),
+                Some(true),
+                Some(false),
+            )
+            .await
+            .map(|_| ())
+        } else {
+            fs::delete_path_internal(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                Some(false),
+            )
+            .await
+        };
+
+        if let Err(error) = result {
+            let rollback_errors =
+                rollback_pending_file_changes_via_fs(&backups[..applied_count]).await;
+            let rollback_suffix = if rollback_errors.is_empty() {
+                String::new()
+            } else {
+                format!(" Rollback errors: {}", rollback_errors.join("; "))
+            };
+            return Err(command_error(format!("{}{}", error, rollback_suffix)));
+        }
+    }
+
+    Ok(())
+}
+
 /// Applies a validated batch with best-effort filesystem atomicity.
 ///
 /// Each write uses a temporary file in the destination directory followed by a
@@ -618,6 +903,10 @@ async fn rollback_pending_file_changes(backups: &[(PathBuf, Option<Vec<u8>>)]) -
 pub(crate) async fn commit_pending_file_changes_atomically(
     changes: &[PendingFileChange],
 ) -> CommandResult<()> {
+    if changes.iter().any(change_targets_wsl) {
+        return commit_pending_file_changes_via_fs(changes).await;
+    }
+
     let mut backups = Vec::with_capacity(changes.len());
     for change in changes {
         let backup = match tokio::fs::read(&change.absolute_path).await {
@@ -707,14 +996,15 @@ pub(crate) async fn build_post_write_response(
                 }
             }
         } else {
-            let exists = tokio::fs::try_exists(&change.absolute_path)
-                .await
-                .map_err(|error| {
-                    command_error(format!(
-                        "Failed to validate deleted file {}: {}",
-                        change.display_path, error
-                    ))
-                })?;
+            let exists =
+                fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
+                    .await
+                    .map_err(|error| {
+                        command_error(format!(
+                            "Failed to validate deleted file {}: {}",
+                            change.display_path, error
+                        ))
+                    })?;
             if exists {
                 errors.push(format!(
                     "Deletion validation failed for {}: file still exists.",
@@ -769,7 +1059,7 @@ pub(crate) async fn build_post_write_response(
         .map_err(|error| command_error(error.to_string()))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExternalOpenAction {
     Editor,
     Terminal,
@@ -816,6 +1106,14 @@ struct ExternalLaunchCommand {
     program: String,
     args: Vec<String>,
     current_dir: Option<PathBuf>,
+}
+
+fn external_launch_visibility(action: ExternalOpenAction, app_id: &str) -> ProcessLaunchVisibility {
+    if action == ExternalOpenAction::Terminal && is_known_visible_terminal_app_id(app_id) {
+        ProcessLaunchVisibility::VisibleTerminal
+    } else {
+        ProcessLaunchVisibility::HiddenBackgroundLauncher
+    }
 }
 
 fn external_app_option(
@@ -1740,6 +2038,114 @@ fn windows_binary_launch_command(
     })
 }
 
+#[cfg(target_os = "windows")]
+fn build_wsl_external_open_command(
+    wsl_path: &WslProjectPath,
+    action: ExternalOpenAction,
+    app_id: &str,
+) -> CommandResult<ExternalLaunchCommand> {
+    match action {
+        ExternalOpenAction::Editor => {
+            let binary =
+                match app_id {
+                    "vscode" => "code",
+                    "vscode-insiders" => "code-insiders",
+                    "vscodium" => "codium",
+                    _ => return Err(command_error(
+                        "VS Code with Remote WSL is required to open a WSL project in the editor.",
+                    )),
+                };
+            Ok(ExternalLaunchCommand {
+                program: windows_binary_program(binary)?,
+                args: vec![
+                    "--remote".to_string(),
+                    format!("wsl+{}", wsl_path.distro),
+                    wsl_path.linux_path.clone(),
+                ],
+                current_dir: None,
+            })
+        }
+        ExternalOpenAction::Terminal => match app_id {
+            "windows-terminal" => Ok(ExternalLaunchCommand {
+                program: windows_binary_program("wt")?,
+                args: vec![
+                    "new-tab".to_string(),
+                    "wsl.exe".to_string(),
+                    "-d".to_string(),
+                    wsl_path.distro.clone(),
+                    "--cd".to_string(),
+                    wsl_path.linux_path.clone(),
+                ],
+                current_dir: None,
+            }),
+            "powershell" => Ok(ExternalLaunchCommand {
+                program: "powershell".to_string(),
+                args: vec![
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    format!(
+                        "wsl.exe -d '{}' --cd '{}'",
+                        escape_powershell_literal(&wsl_path.distro),
+                        escape_powershell_literal(&wsl_path.linux_path)
+                    ),
+                ],
+                current_dir: None,
+            }),
+            "pwsh" => Ok(ExternalLaunchCommand {
+                program: windows_binary_program("pwsh")?,
+                args: vec![
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    format!(
+                        "wsl.exe -d '{}' --cd '{}'",
+                        escape_powershell_literal(&wsl_path.distro),
+                        escape_powershell_literal(&wsl_path.linux_path)
+                    ),
+                ],
+                current_dir: None,
+            }),
+            "command-prompt" => Ok(ExternalLaunchCommand {
+                program: "cmd".to_string(),
+                args: vec![
+                    "/K".to_string(),
+                    format!(
+                        r#"wsl.exe -d "{}" --cd "{}""#,
+                        escape_cmd_literal(&wsl_path.distro),
+                        escape_cmd_literal(&wsl_path.linux_path)
+                    ),
+                ],
+                current_dir: None,
+            }),
+            _ => Ok(ExternalLaunchCommand {
+                program: "wsl.exe".to_string(),
+                args: vec![
+                    "-d".to_string(),
+                    wsl_path.distro.clone(),
+                    "--cd".to_string(),
+                    wsl_path.linux_path.clone(),
+                ],
+                current_dir: None,
+            }),
+        },
+        ExternalOpenAction::Files => Ok(ExternalLaunchCommand {
+            program: "explorer".to_string(),
+            args: vec![wsl_path.unc_path.clone()],
+            current_dir: None,
+        }),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_wsl_external_open_command(
+    _wsl_path: &WslProjectPath,
+    _action: ExternalOpenAction,
+    _app_id: &str,
+) -> CommandResult<ExternalLaunchCommand> {
+    Err(command_error(
+        "WSL project opening is only available on Windows.",
+    ))
+}
+
 #[cfg(target_os = "macos")]
 fn mac_binary_or_app_command(
     binary_names: &[&str],
@@ -2219,10 +2625,6 @@ pub async fn open_external_target(
 ) -> CommandResult<()> {
     let action = ExternalOpenAction::parse(&action)
         .ok_or_else(|| command_error(format!("Unsupported open action: {}", action)))?;
-    let resolved_path = PathBuf::from(target_path.trim());
-    let canonical_path = resolved_path
-        .canonicalize()
-        .map_err(|error| command_error(format!("Open target not found: {}", error)))?;
     let app_catalog = build_external_app_catalog();
     let action_apps = match action {
         ExternalOpenAction::Editor => &app_catalog.editor,
@@ -2238,10 +2640,25 @@ pub async fn open_external_target(
         )));
     }
 
-    let launch = build_external_open_command(&canonical_path, app_id.as_str())?;
+    let trimmed_target_path = target_path.trim();
+    let launch = if let Some(wsl_path) = parse_wsl_unc_path(trimmed_target_path) {
+        build_wsl_external_open_command(&wsl_path, action, app_id.as_str())?
+    } else {
+        let resolved_path = PathBuf::from(trimmed_target_path);
+        let canonical_path = resolved_path
+            .canonicalize()
+            .map_err(|error| command_error(format!("Open target not found: {}", error)))?;
+        build_external_open_command(&canonical_path, app_id.as_str())?
+    };
+    let visibility = external_launch_visibility(action, app_id.as_str());
 
     tokio::task::spawn_blocking(move || {
-        let mut command = Command::new(&launch.program);
+        let mut command = match visibility {
+            ProcessLaunchVisibility::HiddenBackgroundLauncher => {
+                background_command(&launch.program)
+            }
+            ProcessLaunchVisibility::VisibleTerminal => visible_terminal_command(&launch.program),
+        };
         command.args(&launch.args);
         command.stdin(Stdio::null());
         command.stdout(Stdio::null());
@@ -2561,13 +2978,15 @@ pub async fn execute_workspace_tool(
 
             let absolute_path =
                 resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), false)?;
-            let metadata = tokio::fs::metadata(&absolute_path).await.map_err(|error| {
-                command_error(format!(
-                    "Failed to inspect {} before delete: {}",
-                    path, error
-                ))
-            })?;
-            if metadata.is_dir() {
+            let metadata = fs::stat_internal(&effective_workspace, effective_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before delete: {}",
+                        path, error
+                    ))
+                })?;
+            if metadata.kind == "directory" {
                 return Ok(format!(
                     "Cannot delete directory with delete tool: {}. Only files are supported.",
                     path
@@ -2584,7 +3003,7 @@ pub async fn execute_workspace_tool(
                 current.content.lines().count()
             };
 
-            tokio::fs::remove_file(&absolute_path)
+            fs::delete_path_internal(&effective_workspace, effective_path.clone(), Some(false))
                 .await
                 .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
 
@@ -2653,7 +3072,7 @@ pub async fn execute_workspace_tool(
                             effective_path.as_str(),
                             true,
                         )?;
-                        if tokio::fs::try_exists(&absolute_path)
+                        if fs::exists_internal(&effective_workspace, effective_path.clone())
                             .await
                             .map_err(|error| {
                                 command_error(format!(
@@ -2939,6 +3358,21 @@ pub async fn execute_workspace_tool(
         }
         "git_status" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "repo_path": repo_path,
+                    "branch": status.branch,
+                    "head_commit": status.head_commit,
+                    "staged_files": status.staged_files,
+                    "unstaged_files": status.unstaged_files,
+                    "untracked_files": status.untracked_files,
+                    "is_clean": status.is_clean
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -2973,6 +3407,17 @@ pub async fn execute_workspace_tool(
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let limit = json_arg_u32(&args, "limit").unwrap_or(50).max(1) as usize;
             let branch = json_arg_string(&args, "branch");
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                let commits = git::build_wsl_git_log(&wsl_repo_path, limit, branch.as_deref())
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "repo_path": repo_path,
+                    "count": commits.len(),
+                    "commits": commits
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3002,6 +3447,18 @@ pub async fn execute_workspace_tool(
         }
         "git_branch_list" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                let branches = git::build_wsl_git_branches(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "repo_path": repo_path,
+                    "local": branches.local,
+                    "remote": branches.remote,
+                    "current": branches.current
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3036,6 +3493,20 @@ pub async fn execute_workspace_tool(
             let context_lines = json_arg_u32(&args, "context_lines");
             let ignore_whitespace = json_arg_bool(&args, "ignore_whitespace").unwrap_or(false);
             let paths = json_arg_string_array(&args, "paths");
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                return git::wsl_git_diff(
+                    &wsl_repo_path,
+                    base.as_deref(),
+                    head.as_deref(),
+                    git::DiffRequestOptions {
+                        context_lines,
+                        ignore_whitespace,
+                        paths,
+                    },
+                )
+                .await
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3070,6 +3541,9 @@ pub async fn execute_workspace_tool(
         "git_read_file_pair" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let path = json_arg_string(&args, "path").unwrap_or_default();
+            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+                return Err(unsupported_wsl_workspace_tool("git_read_file_pair"));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3097,6 +3571,18 @@ pub async fn execute_workspace_tool(
         "git_get_tree" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                let tree = git::build_wsl_git_tree(&wsl_repo_path, branch.as_deref())
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "repo_path": repo_path,
+                    "branch": tree.branch,
+                    "structure": tree.structure,
+                    "modified_files_count": tree.modified_files_count
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3130,6 +3616,22 @@ pub async fn execute_workspace_tool(
             let paths = json_arg_string_array(&args, "paths")
                 .filter(|items| !items.is_empty())
                 .unwrap_or_else(|| vec![".".to_string()]);
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                git::wsl_git_add(&wsl_repo_path, &paths)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "staged_paths": paths,
+                    "staged_count": status.staged_files.len(),
+                    "branch": status.branch
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let paths_for_task = paths.clone();
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
@@ -3166,6 +3668,32 @@ pub async fn execute_workspace_tool(
             let message = json_arg_string(&args, "message")
                 .ok_or_else(|| command_error("Missing message argument for git_commit tool."))?;
             let stage_all = json_arg_bool(&args, "stage_all").unwrap_or(true);
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                let before = git::build_wsl_git_log(&wsl_repo_path, 1, None)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let head_before = before.first().map(|entry| entry.id.clone());
+                let hash = git::wsl_git_commit(&wsl_repo_path, &message, stage_all)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let after = git::build_wsl_git_log(&wsl_repo_path, 1, None)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let head_after = after.first().map(|entry| entry.id.clone());
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "branch": status.branch,
+                    "hash": hash,
+                    "head_before": head_before,
+                    "head_after": head_after,
+                    "head_changed": head_before != head_after
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3221,6 +3749,21 @@ pub async fn execute_workspace_tool(
                 })?;
             let branch_or_commit_for_task = branch_or_commit.clone();
             let create = json_arg_bool(&args, "create").unwrap_or(false);
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                git::wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "branch": status.branch,
+                    "target": branch_or_commit
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3261,6 +3804,20 @@ pub async fn execute_workspace_tool(
             }
             let commit = json_arg_string(&args, "commit");
             let confirm = json_arg_bool(&args, "confirm");
+            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+                git::wsl_git_reset(&wsl_repo_path, &mode, commit, confirm)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "branch": status.branch
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3296,6 +3853,9 @@ pub async fn execute_workspace_tool(
         "git_abort_merge" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let confirm = json_arg_bool(&args, "confirm");
+            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+                return Err(unsupported_wsl_workspace_tool("git_abort_merge"));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3327,6 +3887,9 @@ pub async fn execute_workspace_tool(
         "git_stash" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let message = json_arg_string(&args, "message");
+            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+                return Err(unsupported_wsl_workspace_tool("git_stash"));
+            }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
@@ -3454,6 +4017,9 @@ pub async fn db_create_conversation(
     task_id: Option<String>,
     group_id: Option<String>,
     project_id: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    reasoning_effort: Option<String>,
 ) -> CommandResult<Conversation> {
     let pool = get_pool(&pool).await?;
 
@@ -3465,7 +4031,31 @@ pub async fn db_create_conversation(
             task_id,
             group_id,
             project_id,
+            provider_id,
+            model_id,
+            reasoning_effort,
         },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_update_conversation_ai_selection(
+    pool: State<'_, DbPool>,
+    id: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    reasoning_effort: Option<String>,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::update_conversation_ai_selection(
+        &pool,
+        &id,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        reasoning_effort.as_deref(),
     )
     .await
     .map_err(Into::into)
@@ -3562,7 +4152,9 @@ pub async fn db_toggle_pin_conversation(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbCreateMessageParams {
+    id: Option<String>,
     conversation_id: String,
+    turn_id: Option<String>,
     role: String,
     content: String,
     token_count: Option<i32>,
@@ -3570,6 +4162,8 @@ pub struct DbCreateMessageParams {
     hidden_context: Option<String>,
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
+    context_refs_json: Option<String>,
+    completion_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -3594,7 +4188,9 @@ pub async fn db_create_message(
     repository::create_message(
         &pool,
         CreateMessageInput {
+            id: params.id,
             conversation_id: params.conversation_id,
+            turn_id: params.turn_id,
             role: params.role,
             content: params.content,
             token_count: params.token_count,
@@ -3602,6 +4198,8 @@ pub async fn db_create_message(
             hidden_context: params.hidden_context,
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
+            context_refs_json: params.context_refs_json,
+            completion_reason: params.completion_reason,
         },
     )
     .await
@@ -3625,12 +4223,15 @@ pub async fn db_import_messages(
 #[serde(rename_all = "camelCase")]
 pub struct DbUpdateMessageParams {
     id: String,
+    turn_id: Option<String>,
     content: String,
     token_count: Option<i32>,
     tool_traces_json: Option<String>,
     hidden_context: Option<String>,
     provider_input_items_json: Option<String>,
     provider_turn_state_json: Option<String>,
+    context_refs_json: Option<String>,
+    completion_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -3644,12 +4245,15 @@ pub async fn db_update_message(
         &pool,
         repository::UpdateMessageContentInput {
             id: &params.id,
+            turn_id: params.turn_id,
             content: &params.content,
             token_count: params.token_count,
             tool_traces_json: params.tool_traces_json,
             hidden_context: params.hidden_context,
             provider_input_items_json: params.provider_input_items_json,
             provider_turn_state_json: params.provider_turn_state_json,
+            context_refs_json: params.context_refs_json,
+            completion_reason: params.completion_reason,
         },
     )
     .await
@@ -3665,6 +4269,102 @@ pub async fn db_delete_messages_after(
     let pool = get_pool(&pool).await?;
 
     repository::delete_messages_after(&pool, &conversation_id, &after_message_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_list_conversation_citations(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Vec<ConversationCitation>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::list_conversation_citations(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_conversation_citation_content(
+    pool: State<'_, DbPool>,
+    id: String,
+) -> CommandResult<Option<String>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_conversation_citation_content(&pool, &id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_upsert_conversation_citation(
+    pool: State<'_, DbPool>,
+    input: UpsertConversationCitationInput,
+) -> CommandResult<ConversationCitation> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_conversation_citation(&pool, input)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_citation(
+    pool: State<'_, DbPool>,
+    id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_citation(&pool, &id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_citations(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_citations(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_get_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<Option<ConversationToolboxStateRecord>> {
+    let pool = get_pool(&pool).await?;
+
+    repository::get_conversation_toolbox_state(&pool, &conversation_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_upsert_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    input: UpsertConversationToolboxStateInput,
+) -> CommandResult<ConversationToolboxStateRecord> {
+    let pool = get_pool(&pool).await?;
+
+    repository::upsert_conversation_toolbox_state(&pool, input)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_toolbox_state(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_toolbox_state(&pool, &conversation_id)
         .await
         .map_err(CommandError::from)
 }
@@ -3733,9 +4433,115 @@ pub async fn db_list_provider_configs(
             .map_err(CommandError::from)?;
     }
 
-    repository::list_provider_configs(&pool)
+    let mut configs = repository::list_provider_configs(&pool)
         .await
-        .map_err(CommandError::from)
+        .map_err(CommandError::from)?;
+
+    for config in configs.iter_mut() {
+        reconcile_provider_secret_metadata(&pool, config).await?;
+    }
+
+    Ok(configs)
+}
+
+async fn reconcile_provider_secret_metadata(
+    pool: &SqlitePool,
+    config: &mut ProviderConfig,
+) -> CommandResult<()> {
+    if config.provider_type == "chatgpt" {
+        let has_secret = secrets::get_chatgpt_secret(&config.id)
+            .map_err(|error| CommandError {
+                message: format!(
+                    "Failed to access local ChatGPT session for {}: {}",
+                    config.id, error
+                ),
+            })?
+            .is_some();
+        let linked = matches!(
+            config.auth_status.as_deref(),
+            Some("authenticated" | "refreshing" | "expired")
+        );
+
+        if linked && !has_secret {
+            repository::update_provider_auth_metadata(
+                pool,
+                &config.id,
+                &ProviderAuthMetadata {
+                    auth_status: Some("unauthenticated".to_string()),
+                    auth_source: None,
+                    plan_type: None,
+                    account_label: None,
+                    token_expires_at: None,
+                },
+            )
+            .await
+            .map_err(CommandError::from)?;
+            config.auth_status = Some("unauthenticated".to_string());
+            config.auth_source = None;
+            config.plan_type = None;
+            config.account_label = None;
+            config.token_expires_at = None;
+        }
+        return Ok(());
+    }
+
+    if config.provider_type != "copilot" && !config.is_local && config.has_stored_api_key {
+        let has_key = secrets::get_api_key(&config.id)
+            .map_err(|error| CommandError {
+                message: format!(
+                    "Failed to access local provider API key for {}: {}",
+                    config.id, error
+                ),
+            })?
+            .is_some();
+        if !has_key {
+            repository::set_provider_has_stored_api_key(pool, &config.id, false)
+                .await
+                .map_err(CommandError::from)?;
+            config.has_stored_api_key = false;
+        }
+    }
+
+    Ok(())
+}
+
+async fn apply_provider_api_key_change(
+    pool: &SqlitePool,
+    provider_id: &str,
+    api_key: Option<&str>,
+) -> CommandResult<Option<bool>> {
+    let Some(api_key) = api_key else {
+        return Ok(None);
+    };
+
+    if api_key.trim().is_empty() {
+        secrets::delete_api_key(provider_id).map_err(|error| CommandError {
+            message: format!(
+                "Failed to delete the local provider secret for {}: {}",
+                provider_id, error
+            ),
+        })?;
+        repository::set_provider_has_stored_api_key(pool, provider_id, false)
+            .await
+            .map_err(CommandError::from)?;
+        return Ok(Some(false));
+    }
+
+    if let Err(error) = secrets::set_api_key(provider_id, api_key) {
+        repository::set_provider_has_stored_api_key(pool, provider_id, false)
+            .await
+            .map_err(CommandError::from)?;
+        return Err(CommandError {
+            message: format!(
+                "Failed to store the local provider secret for {}: {}",
+                provider_id, error
+            ),
+        });
+    }
+    repository::set_provider_has_stored_api_key(pool, provider_id, true)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(Some(true))
 }
 
 #[tauri::command]
@@ -3767,7 +4573,10 @@ pub async fn db_reveal_provider_api_key(
     }
 
     let api_key = secrets::get_api_key(&id).map_err(|error| CommandError {
-        message: format!("Failed to access the keychain for {}: {}", id, error),
+        message: format!(
+            "Failed to access the local provider secret for {}: {}",
+            id, error
+        ),
     })?;
 
     repository::set_provider_has_stored_api_key(&pool, &id, api_key.is_some())
@@ -3814,21 +4623,7 @@ pub async fn db_update_provider_config(
     .await
     .map_err(CommandError::from)?;
 
-    if let Some(key) = api_key_for_store {
-        if key.trim().is_empty() {
-            secrets::delete_api_key(&provider_id).ok();
-            repository::set_provider_has_stored_api_key(&pool, &provider_id, false)
-                .await
-                .map_err(CommandError::from)?;
-        } else {
-            secrets::set_api_key(&provider_id, &key).map_err(|e| CommandError {
-                message: e.to_string(),
-            })?;
-            repository::set_provider_has_stored_api_key(&pool, &provider_id, true)
-                .await
-                .map_err(CommandError::from)?;
-        }
-    }
+    apply_provider_api_key_change(&pool, &provider_id, api_key_for_store.as_deref()).await?;
 
     Ok(())
 }
@@ -3844,22 +4639,16 @@ pub async fn db_create_provider_config(
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
 
-    let created = repository::create_provider_config(
-        &pool,
-        &name,
-        &provider_type,
-        &base_url,
-        api_key.as_deref(),
-        is_local,
-    )
-    .await
-    .map_err(CommandError::from)?;
+    let mut created =
+        repository::create_provider_config(&pool, &name, &provider_type, &base_url, None, is_local)
+            .await
+            .map_err(CommandError::from)?;
 
     if let Some(key) = api_key {
-        if !key.trim().is_empty() {
-            secrets::set_api_key(&created.id, &key).map_err(|e| CommandError {
-                message: e.to_string(),
-            })?;
+        if let Some(has_stored_api_key) =
+            apply_provider_api_key_change(&pool, &created.id, Some(&key)).await?
+        {
+            created.has_stored_api_key = has_stored_api_key;
         }
     }
 
@@ -3870,7 +4659,18 @@ pub async fn db_create_provider_config(
 pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
-    secrets::delete_api_key(&id).ok();
+    secrets::delete_api_key(&id).map_err(|error| CommandError {
+        message: format!(
+            "Failed to delete the local provider API key for {}: {}",
+            id, error
+        ),
+    })?;
+    secrets::delete_provider_secret(&id).map_err(|error| CommandError {
+        message: format!(
+            "Failed to delete the local linked-provider session for {}: {}",
+            id, error
+        ),
+    })?;
     repository::delete_provider_config(&pool, &id)
         .await
         .map_err(Into::into)
@@ -3927,6 +4727,18 @@ pub async fn db_upsert_conversation_compaction_state(
     let pool = get_pool(&pool).await?;
 
     repository::upsert_conversation_compaction_state(&pool, input)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_insert_conversation_compaction_event(
+    pool: State<'_, DbPool>,
+    input: InsertConversationCompactionEventInput,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::insert_conversation_compaction_event(&pool, input)
         .await
         .map_err(Into::into)
 }
@@ -4113,21 +4925,246 @@ mod tests {
     #[cfg(target_os = "windows")]
     use super::resolve_binary_path;
     use super::{
-        apply_patch_hunks_to_content, binary_candidates, commit_pending_file_changes_atomically,
-        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, ParsedPatchOperation, PendingFileChange,
+        apply_patch_hunks_to_content, apply_provider_api_key_change, binary_candidates,
+        commit_pending_file_changes_atomically, execute_workspace_tool, external_launch_visibility,
+        parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, DbPool, ExternalOpenAction, ParsedPatchOperation,
+        PendingFileChange,
     };
+    use crate::core::process::ProcessLaunchVisibility;
+    use crate::db::{models::ProviderAuthMetadata, repository};
     use crate::git::GitState;
+    use crate::secrets;
     use serde_json::json;
     #[cfg(target_os = "windows")]
     use std::env;
     use std::fs;
-    #[cfg(target_os = "windows")]
     use std::sync::Mutex;
     use tempfile::TempDir;
 
     #[cfg(target_os = "windows")]
     static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn db_pool_propagates_failure_without_polling() {
+        let pool = DbPool::default();
+        pool.set_failed("migration failed");
+
+        let error = pool.wait_until_ready().await.expect_err("failed state");
+        assert!(error.message.contains("migration failed"));
+    }
+
+    #[tokio::test]
+    async fn db_pool_wakes_waiters_when_initialization_becomes_ready() {
+        let pool = DbPool::default();
+        let ready_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("db pool");
+        let state = pool.clone();
+        let expected_pool = ready_pool.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            state.set_ready(ready_pool);
+        });
+
+        let resolved = pool.wait_until_ready().await.expect("ready state");
+        assert_eq!(resolved.size(), expected_pool.size());
+    }
+
+    async fn test_provider_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("db pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE provider_configs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                has_stored_api_key INTEGER NOT NULL DEFAULT 0,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_local INTEGER NOT NULL DEFAULT 0,
+                auth_status TEXT,
+                auth_source TEXT,
+                plan_type TEXT,
+                account_label TEXT,
+                token_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("provider config schema");
+        pool
+    }
+
+    #[tokio::test]
+    async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let pool = test_provider_pool().await;
+
+        let mut api_provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(api_provider.has_stored_api_key);
+
+        reconcile_provider_secret_metadata(&pool, &mut api_provider)
+            .await
+            .expect("reconcile api key provider");
+
+        assert!(!api_provider.has_stored_api_key);
+        let stored_api_provider = repository::get_provider_config(&pool, &api_provider.id)
+            .await
+            .expect("get provider")
+            .expect("provider exists");
+        assert!(!stored_api_provider.has_stored_api_key);
+
+        let mut chatgpt_provider = repository::create_provider_config(
+            &pool,
+            "ChatGPT",
+            "chatgpt",
+            "https://chatgpt.com/backend-api",
+            None,
+            false,
+        )
+        .await
+        .expect("create ChatGPT provider");
+        repository::update_provider_auth_metadata(
+            &pool,
+            &chatgpt_provider.id,
+            &ProviderAuthMetadata {
+                auth_status: Some("authenticated".to_string()),
+                auth_source: Some("oauth".to_string()),
+                plan_type: Some("plus".to_string()),
+                account_label: Some("user@example.com".to_string()),
+                token_expires_at: Some("2026-05-09T12:00:00Z".to_string()),
+            },
+        )
+        .await
+        .expect("mark ChatGPT authenticated");
+        chatgpt_provider = repository::get_provider_config(&pool, &chatgpt_provider.id)
+            .await
+            .expect("get ChatGPT provider")
+            .expect("ChatGPT provider exists");
+
+        reconcile_provider_secret_metadata(&pool, &mut chatgpt_provider)
+            .await
+            .expect("reconcile ChatGPT provider");
+
+        assert_eq!(
+            chatgpt_provider.auth_status.as_deref(),
+            Some("unauthenticated")
+        );
+        assert!(chatgpt_provider.auth_source.is_none());
+        assert!(chatgpt_provider.plan_type.is_none());
+        assert!(chatgpt_provider.account_label.is_none());
+        assert!(chatgpt_provider.token_expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_api_key_change_updates_secret_store_before_database_flag() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let pool = test_provider_pool().await;
+        let provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(provider.has_stored_api_key);
+
+        let stored = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"))
+            .await
+            .expect("store key");
+
+        assert_eq!(stored, Some(true));
+        assert_eq!(
+            secrets::get_api_key(&provider.id)
+                .expect("get stored key")
+                .as_deref(),
+            Some("test-api-key")
+        );
+        let after_store = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider")
+            .expect("provider exists");
+        assert!(after_store.has_stored_api_key);
+
+        let cleared = apply_provider_api_key_change(&pool, &provider.id, Some(""))
+            .await
+            .expect("clear key");
+
+        assert_eq!(cleared, Some(false));
+        assert!(secrets::get_api_key(&provider.id)
+            .expect("get cleared key")
+            .is_none());
+        let after_clear = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider after clear")
+            .expect("provider exists");
+        assert!(!after_clear.has_stored_api_key);
+    }
+
+    #[tokio::test]
+    async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
+        let _guard = SECRET_STORE_TEST_LOCK
+            .lock()
+            .expect("secret store test lock");
+        let temp_dir = TempDir::new().expect("temp dir");
+        secrets::init(temp_dir.path()).expect("initialize secret store");
+        let secret_file = temp_dir.path().join("provider-secrets.json");
+        std::fs::remove_file(&secret_file).expect("remove initialized store");
+        std::fs::create_dir(&secret_file).expect("replace store file with directory");
+        let pool = test_provider_pool().await;
+        let provider = repository::create_provider_config(
+            &pool,
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            Some("test-api-key"),
+            false,
+        )
+        .await
+        .expect("create provider");
+        assert!(provider.has_stored_api_key);
+
+        let result = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key")).await;
+
+        assert!(result.is_err());
+        let after_failure = repository::get_provider_config(&pool, &provider.id)
+            .await
+            .expect("get provider after failed write")
+            .expect("provider exists");
+        assert!(!after_failure.has_stored_api_key);
+    }
 
     #[test]
     fn binary_candidates_expands_windows_script_extensions() {
@@ -4144,6 +5181,42 @@ mod tests {
 
         #[cfg(not(target_os = "windows"))]
         assert_eq!(binary_candidates("code"), vec!["code".to_string()]);
+    }
+
+    #[test]
+    fn external_launch_visibility_keeps_explicit_terminals_visible() {
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "windows-terminal"),
+            ProcessLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "powershell"),
+            ProcessLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "command-prompt"),
+            ProcessLaunchVisibility::VisibleTerminal
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Terminal, "PowerShell"),
+            ProcessLaunchVisibility::VisibleTerminal
+        );
+    }
+
+    #[test]
+    fn external_launch_visibility_hides_background_launchers() {
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Editor, "vscode"),
+            ProcessLaunchVisibility::HiddenBackgroundLauncher
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Files, "explorer"),
+            ProcessLaunchVisibility::HiddenBackgroundLauncher
+        );
+        assert_eq!(
+            external_launch_visibility(ExternalOpenAction::Editor, "command-prompt"),
+            ProcessLaunchVisibility::HiddenBackgroundLauncher
+        );
     }
 
     #[cfg(target_os = "windows")]

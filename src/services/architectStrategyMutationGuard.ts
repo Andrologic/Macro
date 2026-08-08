@@ -7,6 +7,8 @@ import type {
 import {
   getArchitectPlanEffectiveTargetBranchesByProjectId,
   getArchitectPlan,
+  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
+  isArchitectPlanStrategyMutable,
   updateArchitectPlan,
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
@@ -23,6 +25,8 @@ import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
 } from "./implementTaskDerivation";
+import { normalizePlanNodeTodos } from "./planNodeTodos";
+import { normalizeArtifactContracts } from "./architectPlanArtifactService";
 
 const BRANCH_COLORS = [
   "#3b82f6",
@@ -40,6 +44,8 @@ const STARTED_TASK_STATUSES = new Set<TaskStatus>([
   "InReview",
 ]);
 const NON_REGENERABLE_PLAN_STATUSES = new Set<ArchitectPlanStatus>([
+  "validated",
+  "in_progress",
   "completed",
   "archived",
   "deleted",
@@ -207,6 +213,26 @@ const toFrozenPlanNode = (
   },
 });
 
+const planNodeStatusToTodoStatus = (status: PlanNode['status']) => {
+  if (status === 'completed') return 'done';
+  if (status === 'in-progress') return 'in-progress';
+  return 'pending';
+};
+
+const buildSemanticTodoSnapshot = (node: PlanNode) => {
+  const todos = normalizePlanNodeTodos(node.todos);
+  if (
+    todos.length === 1 &&
+    todos[0]?.id.startsWith('todo-') &&
+    todos[0]?.title === node.title &&
+    (todos[0]?.description || '') === (node.description || '') &&
+    todos[0]?.status === planNodeStatusToTodoStatus(node.status)
+  ) {
+    return [];
+  }
+  return todos;
+};
+
 const buildNodeSemanticSnapshot = (node: PlanNode) => ({
   id: node.id,
   title: node.title.trim(),
@@ -218,6 +244,8 @@ const buildNodeSemanticSnapshot = (node: PlanNode) => ({
   branchSlug: getPlanNodeBranchIntent(node).branchSlug,
   projectIds: [...normalizeNodeProjectIds(node)].sort(),
   dependencies: [...unique(node.dependencies)].sort(),
+  todos: buildSemanticTodoSnapshot(node),
+  artifactContracts: normalizeArtifactContracts(node),
   archivedAt: typeof node.archivedAt === 'string' ? node.archivedAt : null,
   archiveReason: typeof node.archiveReason === 'string' ? node.archiveReason : null,
   mergedAt: typeof node.mergedAt === 'string' ? node.mergedAt : null,
@@ -523,9 +551,12 @@ export const prepareStrategyMutationPreview = (
     .map((node) => frozenMap.get(node.id))
     .filter((node): node is FrozenPlanNode => Boolean(node));
 
-  if (NON_REGENERABLE_PLAN_STATUSES.has(params.plan.status)) {
+  if (
+    NON_REGENERABLE_PLAN_STATUSES.has(params.plan.status) ||
+    !isArchitectPlanStrategyMutable(params.plan.status)
+  ) {
     return buildBlockedPreview(params, frozenNodes, [
-      `Plan ${params.plan.id} is ${params.plan.status} and cannot be regenerated.`,
+      ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
     ]);
   }
 

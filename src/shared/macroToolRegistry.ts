@@ -32,6 +32,9 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read_sources",
   "edit_source_passage",
   "question",
+  "skill_activate",
+  "skill_read_resource",
+  "skill_run_script",
   "read_file",
   "web_fetch",
   "list",
@@ -64,6 +67,11 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "strategy_generate",
   "strategy_get",
   "strategy_update",
+  "task_todo_get",
+  "task_todo_update",
+  "task_artifact_list",
+  "task_artifact_get",
+  "task_artifact_put",
   "plan_create",
   "plan_list",
   "plan_get",
@@ -78,6 +86,49 @@ const objectTool = (
   id,
   description,
   parameters,
+});
+
+const planNodeTodoSchema = (description?: string): JsonSchema => ({
+  type: "array",
+  description:
+    description ||
+    "Task-local implementation checklist. Choose the natural number of todos for the task; do not pad to a fixed count.",
+  items: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["pending", "in-progress", "done"],
+      },
+    },
+    required: ["title"],
+  },
+});
+
+const planNodeArtifactContractSchema = (description?: string): JsonSchema => ({
+  type: "array",
+  description:
+    description ||
+    "Required durable handoff artifacts this node must produce for dependent tasks. Declare only critical handoffs; omit artifactContracts when no durable handoff is needed.",
+  items: {
+    type: "object",
+    properties: {
+      id: {
+        type: "string",
+        description: "Stable artifact contract id, for example audit-findings or api-contract.",
+      },
+      title: { type: "string" },
+      kind: {
+        type: "string",
+        description: "Short artifact category such as audit, migration_map, api_contract, risk_register, note.",
+      },
+      description: { type: "string" },
+    },
+    required: ["id", "title", "kind"],
+  },
 });
 
 const copilotBuiltInOverrideTool = (
@@ -201,6 +252,69 @@ export const MACRO_TOOL_REGISTRY = [
     },
   ),
   objectTool(
+    "skill_activate",
+    "Load the full instructions for an enabled Macro skill. Use this when the user's task matches a listed skill or the user explicitly references a skill with $skill-name.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+      },
+      required: ["skill_id"],
+    },
+  ),
+  objectTool(
+    "skill_read_resource",
+    "Read a text resource bundled with an enabled Macro skill. Only references/ and assets/ paths are allowed.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+        path: {
+          type: "string",
+          description: "Relative path under references/ or assets/.",
+        },
+      },
+      required: ["skill_id", "path"],
+    },
+  ),
+  objectTool(
+    "skill_run_script",
+    "Run a script bundled with an enabled Macro skill. This requires script access enabled for that skill and may require user approval.",
+    {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description: "Exact skill id from the available Macro skills catalog.",
+        },
+        script_path: {
+          type: "string",
+          description: "Relative path under scripts/.",
+        },
+        args: {
+          type: "array",
+          description: "String command-line arguments to pass to the script.",
+          items: { type: "string" },
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Optional timeout in milliseconds, capped by Macro.",
+        },
+        allow_workspace: {
+          type: "boolean",
+          description: "Set true only when the script must run with the current workspace as cwd.",
+        },
+      },
+      required: ["skill_id", "script_path"],
+    },
+  ),
+  objectTool(
     "read_sources",
     "Read saved source passages from the current conversation. Can filter by kind and query.",
     {
@@ -295,7 +409,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "list",
-    "List files and directories under a path in the local workspace. In a global project, the visible root can be virtual and contain only subproject mounts such as api/ or web/.",
+    "List files and directories under a path in the local workspace. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.",
     {
       type: "object",
       properties: {
@@ -307,7 +421,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         recursive: {
           type: "boolean",
@@ -327,7 +441,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "read",
-    "Read a file from the local execution workspace by path. In a virtual global project root, prefer paths like api/src/server.ts or pass project_id.",
+    "Read a file from the local execution workspace by path. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
     {
       type: "object",
       properties: {
@@ -335,7 +449,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         start_line: {
           type: "number",
@@ -348,7 +462,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "write",
-    "Create or overwrite a file in the current execution workspace with full content. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
+    "Create or overwrite a file in the current execution workspace with full content. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -356,7 +470,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         content: { type: "string", description: "Final file content." },
         create_dirs: {
@@ -369,7 +483,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "edit",
-    "Edit a file in the current execution workspace by replacing exact text. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
+    "Edit a file in the current execution workspace by replacing exact text. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -377,7 +491,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         old_text: { type: "string", description: "Exact text to replace." },
         new_text: { type: "string", description: "Replacement text." },
@@ -391,7 +505,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "delete",
-    "Delete a file in the current execution workspace. In a virtual global project root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
+    "Delete a file in the current execution workspace. In a virtual group root, pass project_id or use a mount-prefixed path such as api/src/server.ts. This tool only supports files, not directories.",
     {
       type: "object",
       properties: {
@@ -399,7 +513,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
       },
       required: ["path"],
@@ -414,7 +528,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         patch_text: {
           type: "string",
@@ -427,7 +541,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "glob",
-    "Find files in the current execution workspace matching a glob pattern. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+    "Find files in the current execution workspace matching a glob pattern. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -435,7 +549,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         include_hidden: {
           type: "boolean",
@@ -447,7 +561,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "grep",
-    "Search text in files under the current execution workspace. In a virtual global project root, results are returned as mountName/path such as api/src/server.ts.",
+    "Search text in files under the current execution workspace. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -455,7 +569,7 @@ export const MACRO_TOOL_REGISTRY = [
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         is_regexp: {
           type: "boolean",
@@ -479,14 +593,14 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "git_status",
-    "Get git status for exactly one subproject repository context. There is no git status at the virtual global root.",
+    "Get git status for exactly one project Git repository context. There is no git status at the virtual group root.",
     {
       type: "object",
       properties: {
         project_id: {
           type: "string",
           description:
-            "Optional subproject identifier when you want to force which subproject to use.",
+            "Optional project identifier when you want to force which project to use.",
         },
         repo_path: {
           type: "string",
@@ -576,7 +690,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "git_merge",
-    "Merge a source branch into a target branch for exactly one subproject repository context.",
+    "Merge a source branch into a target branch for exactly one project Git repository context.",
     {
       type: "object",
       properties: {
@@ -614,18 +728,18 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     "terminal_create_session",
-    "Create a terminal session bound to exactly one subproject. project_id is required. There is no terminal at the virtual global root.",
+    "Create a terminal session bound to exactly one project. project_id is required. There is no terminal at the virtual group root.",
     {
       type: "object",
       properties: {
         project_id: {
           type: "string",
-          description: "Required subproject identifier.",
+          description: "Required project identifier.",
         },
         cwd: {
           type: "string",
           description:
-            "Optional directory under the selected subproject or worktree.",
+            "Optional directory under the selected project or worktree.",
         },
       },
       required: ["project_id"],
@@ -645,7 +759,8 @@ export const MACRO_TOOL_REGISTRY = [
         command: { type: "string", description: "Shell command to execute." },
         timeout_ms: {
           type: "number",
-          description: "Optional timeout in milliseconds.",
+          description:
+            "Optional timeout in milliseconds. Defaults to 300000 (5 minutes) and is capped at 1800000 (30 minutes).",
         },
       },
       required: ["session_id", "command"],
@@ -845,7 +960,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "strategy_generate",
-    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each subproject Git workflow profile. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Generate a structured strategy for the active plan based on collected needs. Propose logical slugs (`plan_slug` and a unique per-node `featureSlug`) rather than raw git branch names. Use dependencies for sequential work; concrete branch names are rendered later from each project's Git workflow profile. Add concrete per-node todos for the implementation checklist, and declare artifactContracts only when a task must hand off critical durable knowledge such as audit findings, a migration map, an API contract, or a risk register. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -886,7 +1001,7 @@ export const MACRO_TOOL_REGISTRY = [
               projectId: {
                 type: "string",
                 description:
-                  "Optional editable subproject id for this node. If omitted, the node uses the active plan's editable projectIds.",
+                  "Optional editable project id for this node. If omitted, the node uses the active plan's editable projectIds.",
               },
               project_id: {
                 type: "string",
@@ -897,7 +1012,7 @@ export const MACRO_TOOL_REGISTRY = [
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "Optional editable subproject ids for this node. Must be a subset of the active plan's projectIds; context_project_ids are read-only context and cannot receive executable branches.",
+                  "Optional editable project ids for this node. Must be a subset of the active plan's projectIds; context_project_ids are read-only context and cannot receive executable branches.",
               },
               project_ids: {
                 type: "array",
@@ -935,6 +1050,15 @@ export const MACRO_TOOL_REGISTRY = [
                 items: { type: "string" },
                 description: "Titles of nodes this one depends on.",
               },
+              todos: planNodeTodoSchema(
+                "Concrete implementation checklist for this node. Choose the natural number of todos for the task: small tasks may need 1-2, larger tasks may need more. Do not pad every task to the same count.",
+              ),
+              artifactContracts: planNodeArtifactContractSchema(
+                "Required expected handoff artifacts this node must produce for dependent tasks. Declare only critical handoffs; omit this field when no durable handoff is needed.",
+              ),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
+              ),
             },
             required: ["title", "type"],
           },
@@ -974,7 +1098,7 @@ export const MACRO_TOOL_REGISTRY = [
         git_flow: {
           type: "object",
           description:
-            "Optional GitFlow metadata for typed Release/Hotfix/Bugfix draft plans.",
+            "Optional Git workflow metadata for typed Release/Hotfix/Bugfix draft plans.",
         },
         target_branch: {
           type: "string",
@@ -1024,7 +1148,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "plan_update",
-    "Update safe plan metadata such as display label/title alias or description. Draft plans can also update slug, scope, and GitFlow metadata. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
+    "Update safe plan metadata such as display label/title alias or description. Draft plans can also update slug, scope, and Git workflow metadata. The technical plan id never changes, and the logical slug becomes immutable once the plan is real.",
     {
       type: "object",
       properties: {
@@ -1063,7 +1187,7 @@ export const MACRO_TOOL_REGISTRY = [
         git_flow: {
           type: "object",
           description:
-            "Draft-only GitFlow metadata for typed Release/Hotfix/Bugfix plans, including per-project versions and slugs.",
+            "Draft-only Git workflow metadata for typed Release/Hotfix/Bugfix plans, including per-project versions and slugs.",
         },
         target_branch: { type: "string" },
       },
@@ -1119,8 +1243,158 @@ export const MACRO_TOOL_REGISTRY = [
     },
   ),
   objectTool(
+    "task_todo_get",
+    "Read the todo checklist for the current Implement task or an allowed Architect task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+      },
+      required: [],
+    },
+  ),
+  objectTool(
+    "task_todo_update",
+    "Modify the todo checklist for the current Implement task or an allowed Architect task. Use this to keep task progress explicit before completing the task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        operations: {
+          type: "array",
+          description: "Todo patch operations applied in order.",
+          items: {
+            type: "object",
+            properties: {
+              action: {
+                type: "string",
+                enum: ["add", "update", "remove", "reorder", "set_status"],
+              },
+              todo_id: { type: "string" },
+              title: { type: "string" },
+              description: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["pending", "in-progress", "done"],
+              },
+              after_todo_id: {
+                type: "string",
+                description:
+                  "For reorder, move todo_id after this todo id. Omit or pass an empty string to move to the top.",
+              },
+            },
+            required: ["action"],
+          },
+        },
+      },
+      required: ["operations"],
+    },
+  ),
+  objectTool(
+    "task_artifact_list",
+    "List durable task artifacts visible from the current Implement task. Returns metadata only; use task_artifact_get for full content.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        include_inherited: {
+          type: "boolean",
+          description:
+            "Include artifacts from transitive dependency tasks. Defaults to true.",
+        },
+        include_own: {
+          type: "boolean",
+          description:
+            "Include artifacts produced by this task. Defaults to true.",
+        },
+      },
+      required: [],
+    },
+  ),
+  objectTool(
+    "task_artifact_get",
+    "Read the full content of a durable task artifact that is visible from the current Implement task.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional task id. Defaults to the currently selected Implement task.",
+        },
+        artifact_id: {
+          type: "string",
+          description: "Artifact id from task_artifact_list.",
+        },
+      },
+      required: ["artifact_id"],
+    },
+  ),
+  objectTool(
+    "task_artifact_put",
+    "Create or replace a durable artifact for the current Architect task. Use this for findings, maps, contracts, or decisions that dependent tasks need later.",
+    {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description:
+            "Optional current task id. Writes are rejected for any other task.",
+        },
+        artifact_id: {
+          type: "string",
+          description:
+            "Optional stable artifact id. If omitted, Macro derives one from contract_id or title.",
+        },
+        contract_id: {
+          type: "string",
+          description:
+            "Optional artifact contract id declared on this strategy node.",
+        },
+        supersedes_artifact_id: {
+          type: "string",
+          description:
+            "Optional visible artifact id this artifact replaces. Use this when modifying an inherited artifact; Macro keeps the parent artifact intact.",
+        },
+        kind: {
+          type: "string",
+          description:
+            "Short artifact category such as audit, migration_map, api_contract, risk_register, note.",
+        },
+        title: { type: "string" },
+        summary: {
+          type: "string",
+          description:
+            "Brief summary shown to dependent tasks before they fetch full content.",
+        },
+        content_type: {
+          type: "string",
+          enum: ["markdown", "json", "text"],
+        },
+        content: {
+          type: "string",
+          description:
+            "Full artifact content. V1 supports Markdown, JSON, or plain text.",
+        },
+      },
+      required: ["title", "summary", "content"],
+    },
+  ),
+  objectTool(
     "strategy_update",
-    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, and keep assignedBranch as a legacy fallback only. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
+    "Modify strategy for the active plan. Prefer logical slugs (`plan_slug` and a unique per-node `featureSlug`) when creating or updating nodes; use dependencies for sequential work, keep assignedBranch as a legacy fallback only, keep per-node todos current, and declare artifactContracts only for critical required task handoffs. Do not add artifactContracts to every node; Implement agents can create opportunistic artifacts later. Do not add a finalization node: Macro adds the synthetic plan-finalization task after terminal nodes.",
     {
       type: "object",
       properties: {
@@ -1171,6 +1445,11 @@ export const MACRO_TOOL_REGISTRY = [
                 enum: ["pending", "in-progress", "completed", "blocked"],
               },
               dependencies: { type: "array", items: { type: "string" } },
+              todos: planNodeTodoSchema(),
+              artifactContracts: planNodeArtifactContractSchema(),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
+              ),
             },
             required: ["title", "type"],
           },
@@ -1214,6 +1493,11 @@ export const MACRO_TOOL_REGISTRY = [
                 enum: ["pending", "in-progress", "completed", "blocked"],
               },
               dependencies: { type: "array", items: { type: "string" } },
+              todos: planNodeTodoSchema(),
+              artifactContracts: planNodeArtifactContractSchema(),
+              artifact_contracts: planNodeArtifactContractSchema(
+                "Snake_case alias for artifactContracts.",
+              ),
             },
             required: ["action"],
           },

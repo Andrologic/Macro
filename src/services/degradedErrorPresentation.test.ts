@@ -50,7 +50,7 @@ describe('degradedErrorPresentation', () => {
     expect(presentation.nextStep).toContain('Commit, stash, or discard');
   });
 
-  it('presents GitFlow conflicts as resolvable merge blockers', () => {
+  it('presents Git workflow conflicts as resolvable merge blockers', () => {
     const presentation = presentGitFlowBlockingIssue({
       blockingKind: 'merge_conflict',
       conflictFiles: ['src/main.ts'],
@@ -72,10 +72,39 @@ describe('degradedErrorPresentation', () => {
   });
 
   it('detects generic read-only service errors', () => {
-    const presentation = presentServiceError('Cannot promote project Web: the subproject is read-only.');
+    const presentation = presentServiceError('Cannot promote project Web: the project is read-only.');
 
     expect(presentation.title).toContain('not ready');
     expect(presentation.primaryAction).toBe('open_project_settings');
+  });
+
+  it('presents too many open files as temporary resource pressure', () => {
+    const presentation = presentServiceError('Failed to read workspace state: Too many open files (os error 24)');
+
+    expect(presentation.title).toContain('temporarily overloaded');
+    expect(presentation.severity).toBe('warning');
+    expect(presentation.nextStep).toContain('Wait a moment');
+  });
+
+  it('presents missing plan metadata as a repairable metadata issue', () => {
+    const presentation = presentServiceError({
+      code: 'PLAN_METADATA_MISSING',
+      message: 'Plan not found: plan-1778264869268-ples-0',
+    });
+
+    expect(presentation.title).toContain('metadata');
+    expect(presentation.primaryAction).toBe('repair_metadata');
+    expect(presentation.body).not.toContain('Something needs attention');
+  });
+
+  it('presents workspace state failures without generic attention copy', () => {
+    const presentation = presentServiceError({
+      code: 'WORKSPACE_STATE_UNAVAILABLE',
+      message: 'Failed to read workspace state',
+    });
+
+    expect(presentation.title).toContain('Workspace state');
+    expect(presentation.primaryAction).toBe('retry');
   });
 
   it('presents stable backend validation errors without serde serialization noise', () => {

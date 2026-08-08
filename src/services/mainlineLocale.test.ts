@@ -17,6 +17,7 @@ const OLD_CREATE_DEVELOP_PATTERNS = [
   /feature 作業を簡単にするため/i,
   /feature 작업을 더 쉽게/i,
 ];
+const OLD_ARCHITECT_GIT_LABEL = new RegExp(`${['Architect', 'Git'].join(' ')} (Flow|Workflow)`);
 
 const readLocale = (locale: string): Record<string, unknown> =>
   JSON.parse(
@@ -49,7 +50,7 @@ describe('mainline locale copy', () => {
       expect(String(project.mainlineModeExplanation)).toMatch(/hotfix/i);
       expect(String(project.mainlineModeExplanation)).not.toMatch(/feature-only/i);
       expect(project.developModeExplanation).toContain('{{branchName}}');
-      expect(String(project.developModeExplanation)).toMatch(/Git[- ]Flow/i);
+      expect(String(project.developModeExplanation)).not.toMatch(/Git[- ]Flow/i);
       expect(String(project.createDevelopDescription)).toMatch(/mainline/i);
       expect(project.createDevelopDescription).not.toMatch(
         new RegExp(OLD_CREATE_DEVELOP_PATTERNS.map((pattern) => pattern.source).join('|'), 'i')
@@ -67,7 +68,7 @@ describe('mainline locale copy', () => {
 
       expect(typeof architectGitFlow.title, `${locale}.settings.architectGitFlow.title`).toBe('string');
       expect(typeof architectGitFlow.subtitle, `${locale}.settings.architectGitFlow.subtitle`).toBe('string');
-      expect(architectGitFlow.title).not.toBe('Architect Git Flow');
+      expect(architectGitFlow.title).not.toMatch(OLD_ARCHITECT_GIT_LABEL);
       expect(architectGitFlow.subtitle).not.toMatch(/Git Flow profile/i);
     }
   });

@@ -1,5 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
+import { notify } from "../components/ui/toastService";
 import { PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
@@ -54,6 +55,7 @@ i18n
     lng: DEFAULT_LANGUAGE,
     fallbackLng: DEFAULT_LANGUAGE,
     supportedLngs: SUPPORTED_LANGUAGE_CODES,
+    showSupportNotice: false,
     nonExplicitSupportedLngs: true,
     load: "languageOnly",
     lowerCaseLng: true,
@@ -73,7 +75,7 @@ export const initializeI18n = (): Promise<void> => {
     return initializationPromise;
   }
 
-  initializationPromise = (async () => {
+  const currentInitialization = (async () => {
     const initialLanguage = resolveInitialLanguage();
     await ensureLanguageResources(DEFAULT_LANGUAGE);
 
@@ -85,8 +87,14 @@ export const initializeI18n = (): Promise<void> => {
       syncDocumentLanguage(DEFAULT_LANGUAGE);
     }
   })();
+  initializationPromise = currentInitialization;
+  void currentInitialization.catch(() => {
+    if (initializationPromise === currentInitialization) {
+      initializationPromise = null;
+    }
+  });
 
-  return initializationPromise;
+  return currentInitialization;
 };
 
 i18n.on("languageChanged", (language) => {
@@ -100,7 +108,6 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
 
   try {
     const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-    const { notify } = await import("../components/ui/toastService");
     notify.success(i18n.t("toast.languageChanged", { language: languageName }));
   } catch {
     // Toast not available.

@@ -3,13 +3,29 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import type { MessageImageAttachment } from '../../stores/useChatStore';
-import type { ChatMessage, Need } from '../../types';
+import type {
+  ManualCompactionResult,
+  ManualCompactionSkipReason,
+  MessageImageAttachment,
+} from '../../stores/useChatStore';
+import { useSkillsStore } from '../../stores/useSkillsStore';
+import type {
+  ChatMessage,
+  ContextReference,
+  Need,
+  PersistedContextReference,
+  PlanNode,
+  PredictedBranch,
+  SkillManifest,
+  SkillTurnFeedback,
+  WorkspaceFileReference,
+} from '../../types';
 import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
-import { Icon } from '../ui/Icon';
+import { Icon, type IconName } from '../ui/Icon';
+import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { cn } from '../../utils/cn';
 import { ProviderDropdown } from '../ai/ProviderDropdown';
 import { ModelDropdown } from '../ai/ModelDropdown';
@@ -18,6 +34,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { ScrollSeparator } from './ScrollSeparator';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
+import { ContextReferenceChip } from './ContextReferenceChip';
 import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
@@ -28,8 +45,13 @@ import {
   resolveProjectWorkspaceState,
 } from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
+import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
+import {
+  clearConflictAssistantInternalAgentProfile,
+  getConflictAssistantInternalAgentProfile,
+} from '../../services/conflictAssistantService';
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
@@ -38,12 +60,223 @@ import { ToolApprovalFooter } from './ToolApprovalFooter';
 import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
 import { PlanFormModal } from '../architect/PlanFormModal';
 import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
+import {
+  ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+  dispatchArchitectPlanSelectorRequest,
+  type ArchitectPlanSelectorStateDetail,
+} from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
-import { NeedReferenceChip } from '../architect/NeedReferenceChip';
+import { getPlanNodeTodoState } from '../../services/planNodeTodos';
+import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
+import { TaskArtifactsButton } from '../implement/TaskArtifactsButton';
+import {
+  getDependencyBlockedMessage,
+  TaskBlockedState,
+} from '../implement/TaskBlockedState';
+import {
+  buildChatTranscriptItems,
+  getTranscriptMessageIndexById,
+  isChatTranscriptCompactionProgressPhase,
+  type ChatTranscriptItem,
+  type ChatTranscriptMessageItem,
+} from './transcriptItems';
+import {
+  CompactionBoundaryRow,
+  CompactionProgressRow,
+} from './CompactionTranscriptUi';
+import { ContextWindowIndicator } from './ContextWindowIndicator';
+import { AgentCodeReplayConfirmModal } from './AgentCodeReplayConfirmModal';
+import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
+import { notify } from '../ui/toastService';
+import { toServiceError } from '../../services/contracts/errors';
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
 }
+
+interface ContextControlsVisibilityInput {
+  mode: 'Chat' | 'Architect' | 'Implement';
+  selectedConversationId?: string | null;
+  selectedTaskId?: string | null;
+  activeArchitectPlanId?: string | null;
+}
+
+export const shouldShowContextControls = ({
+  mode,
+  selectedConversationId,
+  selectedTaskId,
+  activeArchitectPlanId,
+}: ContextControlsVisibilityInput): boolean => {
+  if (!selectedConversationId) {
+    return false;
+  }
+
+  if (mode === 'Implement') {
+    return Boolean(selectedTaskId);
+  }
+
+  if (mode === 'Architect') {
+    return Boolean(activeArchitectPlanId);
+  }
+
+  return true;
+};
+
+type ManualCompactionPhase = 'idle' | 'analyzing';
+type ArchitectStrategyProgressAction =
+  | 'identify-needs'
+  | 'clarify-needs'
+  | 'generate-strategy'
+  | 'regenerate-strategy';
+interface ArchitectToolbarButton {
+  icon: IconName;
+  label: string;
+  title: string;
+}
+interface ArchitectButtonAction extends ArchitectToolbarButton {
+  id: ArchitectStrategyProgressAction;
+  fullPrompt: string;
+  displayDescription: string;
+}
+const MANUAL_COMPACTION_RETAINED_USER_TURNS = 2;
+
+type ChatTranslation = ReturnType<typeof useTranslation>['t'];
+
+const normalizeArchitectActionPrompt = (value: string): string =>
+  value.trim().replace(/\s+/g, ' ');
+
+const buildArchitectButtonActions = (t: ChatTranslation): Record<
+  ArchitectStrategyProgressAction,
+  ArchitectButtonAction
+> => ({
+  'identify-needs': {
+    id: 'identify-needs',
+    icon: 'sparkles',
+    label: t('architect.identifyNeeds', 'Identify Needs'),
+    title: t(
+      'architect.identifyNeedsHint',
+      'Ask Architect to inspect the codebase and structure the first needs'
+    ),
+    displayDescription: t(
+      'architect.identifyNeedsHint',
+      'Ask Architect to inspect the codebase and structure the first needs'
+    ),
+    fullPrompt: t(
+      'architect.identifyNeedsPrompt',
+      'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.'
+    ),
+  },
+  'clarify-needs': {
+    id: 'clarify-needs',
+    icon: 'message-circle-question',
+    label: t('architect.clarifyNeeds', 'Clarify Needs'),
+    title: t(
+      'architect.clarifyNeedsHint',
+      'Ask Architect to resolve open questions and validate the needs'
+    ),
+    displayDescription: t(
+      'architect.clarifyNeedsHint',
+      'Ask Architect to resolve open questions and validate the needs'
+    ),
+    fullPrompt: t(
+      'architect.clarifyNeedsPrompt',
+      'Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.'
+    ),
+  },
+  'generate-strategy': {
+    id: 'generate-strategy',
+    icon: 'sparkles',
+    label: t('architect.generateStrategy', 'Generate Strategy'),
+    title: t(
+      'architect.generateStrategyHint',
+      'Generate strategy from current needs'
+    ),
+    displayDescription: t(
+      'architect.generateStrategyHint',
+      'Generate strategy from current needs'
+    ),
+    fullPrompt: `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+  },
+  'regenerate-strategy': {
+    id: 'regenerate-strategy',
+    icon: 'refresh-cw',
+    label: t('architect.regenerateStrategy', 'Regenerate Strategy'),
+    title: t(
+      'architect.regenerateStrategyHint',
+      'Regenerate strategy from current needs'
+    ),
+    displayDescription: t(
+      'architect.regenerateStrategyHint',
+      'Regenerate strategy from current needs'
+    ),
+    fullPrompt: `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+  },
+});
+
+const resolveArchitectButtonActionFromContent = (
+  content: string,
+  t: ChatTranslation,
+): ArchitectButtonAction | null => {
+  const actions = buildArchitectButtonActions(t);
+  const normalizedContent = normalizeArchitectActionPrompt(content);
+  const exactMatch = Object.values(actions).find(
+    (action) => normalizeArchitectActionPrompt(action.fullPrompt) === normalizedContent,
+  );
+  if (exactMatch) return exactMatch;
+
+  if (
+    normalizedContent.startsWith(
+      'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate`',
+    )
+  ) {
+    return actions['generate-strategy'];
+  }
+  if (
+    normalizedContent.startsWith(
+      'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate`',
+    )
+  ) {
+    return actions['regenerate-strategy'];
+  }
+  return null;
+};
+
+const formatManualCompactionTokens = (value: number): string => {
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded >= 1000) return `${Math.round(rounded / 1000).toLocaleString()}k`;
+  return rounded.toLocaleString();
+};
+
+const getManualCompactionSkipDescription = (
+  reason: ManualCompactionSkipReason,
+  result: Extract<ManualCompactionResult, { outcome: 'skipped' }>,
+  t: ReturnType<typeof useTranslation>['t'],
+): string => {
+  switch (reason) {
+    case 'not_enough_history':
+      return t(
+        'chat.manualCompaction.skipNotEnoughHistory',
+        "Macro keeps the last {{count}} user turns; this conversation does not have enough older history to replace yet.",
+        { count: result.retainedTurnCount },
+      );
+    case 'already_current':
+      return t(
+        'chat.manualCompaction.skipAlreadyCurrent',
+        'The existing checkpoint already covers the useful older turns for this context.',
+      );
+    case 'not_beneficial':
+      return t(
+        'chat.manualCompaction.skipNotBeneficial',
+        'The estimated summary would not have reduced the payload sent to the provider.',
+      );
+    case 'below_threshold':
+    default:
+      return t(
+        'chat.manualCompaction.skipBelowThreshold',
+        'Context is still light; creating a summary now would mostly add noise.',
+      );
+  }
+};
 
 const LazyPlanSelector = lazy(async () => {
   const module = await import('../architect/PlanSelector');
@@ -61,6 +294,19 @@ const ComposerFallbackStatus: React.FC = () => (
 );
 
 const EMPTY_RENDER_MESSAGES: ChatMessage[] = [];
+const CHAT_TRANSCRIPT_ITEM_GAP = 24;
+const CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION = 16;
+const CHAT_COMPACTION_ROW_ESTIMATED_SIZE = 40;
+const CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION = CHAT_TRANSCRIPT_ITEM_GAP;
+const EMPTY_SESSION_COMPACTION_EVENTS: {
+  id: string;
+  status: 'running' | 'completed';
+  displayAfterMessageId?: string | null;
+  logicalUpToMessageId?: string | null;
+  kind?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}[] = [];
 
 const getAssistantCompletionNotice = (
   completionReason: ChatMessage['completion_reason'] | undefined,
@@ -124,73 +370,229 @@ const AssistantCompletionNotice: React.FC<{
   );
 };
 
-interface RenderedMessageItem {
+interface RenderedTranscriptItem {
   index: number;
   key: React.Key;
   size: number;
   start: number;
-  item: ChatMessage;
+  item: ChatTranscriptItem;
 }
+
+interface RenderedMessageItem extends Omit<RenderedTranscriptItem, 'item'> {
+  item: ChatTranscriptMessageItem;
+}
+
+type AssistantMessageActivity = 'streaming' | null;
 
 interface ChatMessageRowProps {
   virtualMessage: RenderedMessageItem;
   measureElement: (el: HTMLElement | null) => void;
-  streamingAssistantMessageId: string | null;
+  assistantActivity: AssistantMessageActivity;
   showToolTraces: boolean;
   isEditing: boolean;
-  editingValue: string;
-  editingImages: MessageImageAttachment[];
   messageImages: MessageImageAttachment[];
   isCopied: boolean;
   isHighlighted: boolean;
-  onEditingValueChange: (value: string) => void;
-  onEditingPaste: (event: React.ClipboardEvent<HTMLElement>) => Promise<void>;
-  onRemoveEditingImage: (imageId: string) => void;
   onImageMouseDown: (event: React.MouseEvent<HTMLElement>) => void;
   onOpenImagePreview: (
     event: React.MouseEvent<HTMLElement>,
     image: MessageImageAttachment
   ) => void;
   onEditCancel: () => void;
-  onEditSave: () => void;
   onCopy: (content: string, messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   needsByTitle: Map<string, Need>;
+  skillTurnFeedback?: SkillTurnFeedback | null;
 }
 
-const NEED_MENTION_PATTERN = /\[need:\s*([^\]]+)\]/gi;
+const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source):\s*([^\]]+)\]/gi;
 
 const normalizeNeedMentionTitle = (value: string): string =>
   value.trim().normalize('NFC').toLocaleLowerCase();
+
+interface ComposerEditSession {
+  messageId: string;
+  originalContent: string;
+  savedDraftText: string;
+  savedDraftImages: MessageImageAttachment[];
+  savedDraftContextRefs: ContextReference[];
+}
+
+interface ComposerDraftSnapshot {
+  text: string;
+  contextRefs: ContextReference[];
+}
+
+type PromptHistoryEntry = ComposerDraftSnapshot;
+
+const EMPTY_COMPOSER_DRAFT_SNAPSHOT: ComposerDraftSnapshot = {
+  text: '',
+  contextRefs: [],
+};
+
+const buildSnapshotContextRefData = (
+  ref: PersistedContextReference,
+): ContextReference['data'] => {
+  if (ref.kind === 'skill') {
+    return {
+      id: ref.id,
+      name: ref.title,
+      description: '',
+      rootPath: ref.source?.rootPath ?? ref.skillFilePath ?? ref.id,
+      skillFilePath: ref.skillFilePath ?? null,
+      location: ref.location,
+      source: ref.source ?? {
+        kind: 'global',
+        namespace: 'agents',
+        projectId: null,
+        projectName: null,
+        rootPath: ref.skillFilePath ?? ref.id,
+      },
+      resources: [],
+      scripts: [],
+      contentHash: ref.contentHash,
+      validationErrors: [],
+      isValid: true,
+    } satisfies SkillManifest;
+  }
+
+  if (ref.kind === 'file') {
+    return {
+      id: ref.id,
+      path: ref.path ?? ref.id,
+      relativePath: ref.relativePath ?? ref.title,
+      projectId: ref.projectId ?? null,
+      projectName: ref.projectName ?? null,
+    } satisfies WorkspaceFileReference;
+  }
+
+  if (ref.kind === 'source') {
+    return {
+      id: ref.id,
+      type: 'source_passage',
+      scope: 'source',
+      source: ref.sourceLabel ?? ref.subtitle ?? ref.title,
+      title: ref.title,
+      snippet: ref.snippet,
+      content: ref.snippet,
+      messageId: '',
+      conversationId: '',
+      timestamp: '',
+      url: ref.url,
+    };
+  }
+
+  if (ref.kind === 'need') {
+    return {
+      id: ref.id,
+      title: ref.title,
+      description: '',
+      category: 'other',
+      status: 'identified',
+      priority: 'medium',
+      tags: [],
+      createdAt: '',
+      updatedAt: '',
+    } satisfies Need;
+  }
+
+  if (ref.kind === 'plan-node') {
+    return {
+      id: ref.id,
+      title: ref.title,
+      type: 'task',
+      status: 'pending',
+      dependencies: [],
+    } satisfies PlanNode;
+  }
+
+  return {
+    id: ref.id,
+    name: ref.title,
+    color: '#8b8f98',
+    parentBranch: null,
+    projectId: ref.projectId ?? '',
+    taskIds: [],
+    status: 'pending',
+  } satisfies PredictedBranch;
+};
+
+const cloneContextRefs = (
+  refs: readonly (ContextReference | PersistedContextReference)[] | null | undefined
+): ContextReference[] =>
+  refs
+    ? refs.map((ref) => ({
+        id: ref.id,
+        kind: ref.kind,
+        title: ref.title,
+        subtitle: ref.subtitle,
+        data: 'data' in ref ? ref.data : buildSnapshotContextRefData(ref),
+      }))
+    : [];
+
+const resolveAssistantActivityAnchorId = (
+  messages: ChatMessage[],
+  preferredMessageId: string | null,
+  allowLatestAssistantFallback: boolean,
+): string | null => {
+  if (
+    preferredMessageId &&
+    messages.some(
+      (message) =>
+        message.id === preferredMessageId && message.role === 'assistant',
+    )
+  ) {
+    return preferredMessageId;
+  }
+
+  if (!allowLatestAssistantFallback) {
+    return null;
+  }
+
+  const latestMessage = messages[messages.length - 1];
+  return latestMessage?.role === 'assistant' ? latestMessage.id : null;
+};
 
 const UserMessageContent: React.FC<{
   content: string;
   needsByTitle: Map<string, Need>;
 }> = ({ content, needsByTitle }) => {
   const { t } = useTranslation();
+  const lines = content.split('\n');
 
   return (
-    <>
-      {content.split('\n').map((line, lineIndex) => {
+    <div data-user-message-content="true" className="break-words leading-[1.35]">
+      {lines.map((line, lineIndex) => {
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
         let match: RegExpExecArray | null;
-        const needMentionPattern = new RegExp(NEED_MENTION_PATTERN);
+        const contextMentionPattern = new RegExp(USER_CONTEXT_MENTION_PATTERN);
 
-        while ((match = needMentionPattern.exec(line)) !== null) {
+        while ((match = contextMentionPattern.exec(line)) !== null) {
           if (match.index > lastIndex) {
             parts.push(line.slice(lastIndex, match.index));
           }
 
-          const title = match[1]?.trim() ?? '';
-          const need = needsByTitle.get(normalizeNeedMentionTitle(title));
+          const rawKind = match[1]?.toLocaleLowerCase();
+          const kind = rawKind === 'need'
+            ? 'need'
+            : rawKind === 'file'
+            ? 'file'
+            : rawKind === 'source'
+            ? 'source'
+            : 'skill';
+          const title = match[2]?.trim() ?? '';
+          const need = kind === 'need'
+            ? needsByTitle.get(normalizeNeedMentionTitle(title))
+            : undefined;
           parts.push(
-            <NeedReferenceChip
+            <ContextReferenceChip
               key={`${lineIndex}-${match.index}-${title}`}
+              kind={kind}
               need={need}
               title={title}
-              surface="composer"
+              surface="message"
               priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
             />
           );
@@ -202,45 +604,146 @@ const UserMessageContent: React.FC<{
         }
 
         return (
-          <p key={lineIndex} className="mb-2 last:mb-0 break-words">
+          <React.Fragment key={lineIndex}>
             {parts.length > 0 ? parts : line}
-          </p>
+            {lineIndex < lines.length - 1 && <br />}
+          </React.Fragment>
         );
       })}
-    </>
+    </div>
   );
 };
+
+const SkillTurnFeedbackRow: React.FC<{
+  feedback?: SkillTurnFeedback | null;
+}> = ({ feedback }) => {
+  const { t } = useTranslation();
+  if (!feedback || (feedback.loaded.length === 0 && feedback.warnings.length === 0)) {
+    return null;
+  }
+
+  const loadedLabel =
+    feedback.loaded.length === 1
+      ? t('chat.skillFeedbackLoadedOne', '{{name}} loaded', {
+          name: feedback.loaded[0]?.title ?? t('settings.skills', 'Skills'),
+        })
+      : t('chat.skillFeedbackLoadedMany', '{{count}} skills loaded', {
+          count: feedback.loaded.length,
+        });
+  const primaryWarning = feedback.warnings[0];
+
+  const handleAction = (action: SkillTurnFeedback['warnings'][number]['action']) => {
+    if (action === 'open_settings') {
+      useAppStore.getState().openSettings('skills');
+      return;
+    }
+    if (action === 'refresh') {
+      void useSkillsStore.getState().refreshSkills();
+    }
+  };
+
+  return (
+    <div
+      data-testid="skill-turn-feedback"
+      className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] leading-none text-muted-foreground/80"
+    >
+      {feedback.loaded.length > 0 && (
+        <span
+          className="inline-flex h-5 min-w-0 items-center gap-1 rounded-md border border-border/60 bg-background/35 px-1.5"
+          title={feedback.loaded.map((item) => item.title).join(', ')}
+        >
+          <Icon name="sparkles" size={11} className="shrink-0 text-fuchsia-400" />
+          <span className="truncate">{loadedLabel}</span>
+        </span>
+      )}
+      {primaryWarning && (
+        <span
+          className="inline-flex h-5 min-w-0 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-1.5 text-amber-700 dark:text-amber-300"
+          title={feedback.warnings.map((item) => item.reason || item.title).join('\n')}
+        >
+          <Icon name="triangle-alert" size={11} className="shrink-0" />
+          <span className="truncate">
+            {primaryWarning.reason || t('chat.skillFeedbackBlocked', 'Skill context blocked')}
+          </span>
+          {primaryWarning.action && (
+            <button
+              type="button"
+              onClick={() => handleAction(primaryWarning.action)}
+              className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-current/80 transition-colors hover:bg-background/40 hover:text-current"
+              title={
+                primaryWarning.action === 'refresh'
+                  ? t('common.refresh', 'Refresh')
+                  : t('skills.openSettings', 'Open Settings')
+              }
+              aria-label={
+                primaryWarning.action === 'refresh'
+                  ? t('common.refresh', 'Refresh')
+                  : t('skills.openSettings', 'Open Settings')
+              }
+            >
+              <Icon
+                name={primaryWarning.action === 'refresh' ? 'refresh-cw' : 'settings'}
+                size={10}
+              />
+            </button>
+          )}
+        </span>
+      )}
+    </div>
+  );
+};
+
+const ArchitectActionMessage: React.FC<{ action: ArchitectButtonAction }> = ({ action }) => (
+  <div
+    data-testid="architect-action-message"
+    data-architect-action-id={action.id}
+    className="flex w-full items-center gap-3 py-0.5 text-xs text-muted-foreground"
+  >
+    <span className="h-px min-w-4 flex-1 bg-border/60" aria-hidden="true" />
+    <span className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-full border border-border/70 bg-background px-2.5 py-1.5 shadow-sm">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+        <Icon name={action.icon} size={12} />
+      </span>
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-foreground/90">{action.label}</span>
+        <span className="mx-1.5 text-muted-foreground/45">·</span>
+        <span className="text-muted-foreground">{action.displayDescription}</span>
+      </span>
+    </span>
+    <span className="h-px min-w-4 flex-1 bg-border/60" aria-hidden="true" />
+  </div>
+);
 
 const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   virtualMessage,
   measureElement,
-  streamingAssistantMessageId,
+  assistantActivity,
   showToolTraces,
   isEditing,
-  editingValue,
-  editingImages,
   messageImages,
   isCopied,
   isHighlighted,
-  onEditingValueChange,
-  onEditingPaste,
-  onRemoveEditingImage,
   onImageMouseDown,
   onOpenImagePreview,
   onEditCancel,
-  onEditSave,
   onCopy,
   onEditStart,
   onRegenerate,
   needsByTitle,
+  skillTurnFeedback,
 }) => {
   const { t } = useTranslation();
-  const message = virtualMessage.item;
-  const messageIndex = virtualMessage.index;
-  const visibleImages = isEditing ? editingImages : messageImages;
+  const message = virtualMessage.item.message;
   const questionnaireResponseSummary = message.questionnaire_response_summary;
   const isQuestionnaireResponseMessage = Boolean(questionnaireResponseSummary);
-  const isStreamingMessage = streamingAssistantMessageId === message.id;
+  const architectActionMessage =
+    message.role === 'user'
+      ? resolveArchitectButtonActionFromContent(message.content, t)
+      : null;
+  const isArchitectActionMessage = Boolean(architectActionMessage);
+  const hasAssistantActivity =
+    message.role === 'assistant' &&
+    assistantActivity !== null;
   const hasAssistantCompletionNotice =
     message.role === 'assistant' &&
     Boolean(message.completion_reason && message.completion_reason !== 'completed');
@@ -252,7 +755,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   return (
     <div
       ref={measureElement}
-      data-index={messageIndex}
+      data-index={virtualMessage.index}
       data-scroll-magnet-anchor={message.id}
       id={`chat-message-${message.id}`}
       className={cn(
@@ -265,8 +768,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         className={cn(
           'relative transition-all duration-200',
           message.role === 'user'
-            ? isEditing
-              ? 'ml-auto mr-0 max-w-3xl'
+            ? isArchitectActionMessage
+              ? 'mx-auto max-w-2xl'
               : 'ml-auto mr-0 max-w-lg'
             : 'mr-auto ml-0 max-w-none'
         )}
@@ -275,7 +778,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
-              ? isQuestionnaireResponseMessage
+              ? isQuestionnaireResponseMessage || isArchitectActionMessage
                 ? 'bg-transparent border-0'
                 : 'bg-muted/80 border border-border/50'
               : 'bg-transparent border-0',
@@ -285,60 +788,29 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                 ? hasAssistantCompletionNotice
                   ? 'p-2 pb-10'
                   : 'p-2 pb-6'
+                : isArchitectActionMessage
+                  ? 'p-0'
                 : 'p-2 pb-9'
           )}
         >
           {isEditing ? (
-            <div className="space-y-2">
-              {visibleImages.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {visibleImages.map((image) => (
-                    <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/40">
-                      <button
-                        type="button"
-                        onMouseDown={onImageMouseDown}
-                        onClick={(event) => onOpenImagePreview(event, image)}
-                        className="w-full h-full cursor-zoom-in"
-                        title={t('chat.openImage', 'Open image')}
-                      >
-                        <img src={image.dataUrl} alt={t('chat.attachedImage', 'Attached image')} className="w-full h-full object-cover" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveEditingImage(image.id)}
-                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
-                        title={t('chat.removeImage', 'Remove image')}
-                      >
-                        <Icon name="x" size={11} className="text-muted-foreground" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                value={editingValue}
-                onChange={(event) => onEditingValueChange(event.target.value)}
-                onPasteCapture={(event) => {
-                  void onEditingPaste(event);
-                }}
-                placeholder={t('common.editMessage') || 'Edit your message...'}
-                className="w-full min-h-[120px] max-h-[400px] resize-y bg-background border-2 border-border rounded-lg p-3 text-sm text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all leading-relaxed"
-                autoFocus
-              />
-              <div className="flex items-center gap-2 justify-end">
-                <button
-                  onClick={onEditCancel}
-                  className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  onClick={onEditSave}
-                  className="px-3 py-1.5 rounded-md text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
-                >
-                  {t('chat.saveRegenerate')}
-                </button>
-              </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Icon name="edit" size={12} className="shrink-0 text-muted-foreground/80" />
+              <span className="min-w-0 flex-1 truncate">
+                {t(
+                  'chat.messageEditingInComposer',
+                  'Editing in composer'
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={onEditCancel}
+                className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title={t('common.cancel')}
+                aria-label={t('common.cancel')}
+              >
+                {t('common.cancel')}
+              </button>
             </div>
           ) : (
             <div className="text-sm leading-relaxed text-foreground">
@@ -347,13 +819,15 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   <MarkdownRenderer
                     content={message.content}
                     toolTraces={showToolTraces ? message.tool_traces : undefined}
-                    isStreaming={isStreamingMessage}
+                    isStreaming={assistantActivity === 'streaming'}
                   />
                   <AssistantCompletionNotice
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
                 </>
+              ) : architectActionMessage ? (
+                <ArchitectActionMessage action={architectActionMessage} />
               ) : questionnaireResponseSummary ? (
                 <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (
@@ -361,6 +835,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   content={message.content}
                   needsByTitle={needsByTitle}
                 />
+              )}
+              {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
+                <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -378,7 +855,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                   ))}
                 </div>
               )}
-              {isStreamingMessage && message.role === 'assistant' && (
+              {hasAssistantActivity && (
                 <span
                   data-chat-assistant-activity="true"
                   className="inline-block w-2 h-4 bg-primary/60 animate-pulse ml-1"
@@ -387,7 +864,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'user' && !isEditing && (
+          {message.role === 'user' && !isEditing && !architectActionMessage && (
             <div className="absolute bottom-2 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -458,14 +935,13 @@ const MemoizedChatMessageRow = React.memo(
     prev.virtualMessage.item === next.virtualMessage.item &&
     prev.virtualMessage.start === next.virtualMessage.start &&
     prev.isEditing === next.isEditing &&
-    prev.editingValue === next.editingValue &&
-    prev.editingImages === next.editingImages &&
     prev.messageImages === next.messageImages &&
     prev.isCopied === next.isCopied &&
     prev.isHighlighted === next.isHighlighted &&
-    prev.streamingAssistantMessageId === next.streamingAssistantMessageId &&
+    prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.needsByTitle === next.needsByTitle
+    prev.needsByTitle === next.needsByTitle &&
+    prev.skillTurnFeedback === next.skillTurnFeedback
 );
 
 /**
@@ -530,7 +1006,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
+    getProjectById,
     activeArchitectPlanId,
     activePlanContext,
     planNodes,
@@ -543,7 +1021,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
+    standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
+    getProjectById: state.getProjectById,
     activeArchitectPlanId: state.activeArchitectPlanId,
     activePlanContext: state.activePlanContext,
     planNodes: state.planNodes,
@@ -554,7 +1034,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     conversations,
     messages,
     selectedConversationId,
+    activeContextKey,
     selectedConversationRuntime,
+    conversationCompactionStatusById,
+    sessionCompactionEventsByConversationId,
+    contextDiagnosticsByConversationId,
     messagesByConversationId,
     createConversation,
     ensureConversationForCurrentMode,
@@ -566,6 +1050,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearLastError,
     clearConversationRuntimeError,
     editMessage,
+    getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay,
     getMessageImages,
     setMessageImages,
     architectPlanNamingRecovery,
@@ -573,6 +1059,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName,
     composerContextRefs,
+    skillTurnFeedbackByMessageId,
+    addComposerContextRef,
+    clearComposerContextRefs,
     questionnaireDraftsByConversationId,
     getPendingToolApproval,
     approvePendingToolApprovalOnce,
@@ -584,13 +1073,27 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire,
+    compactConversationNow,
+    refreshConversationContextDiagnostics,
+    peekComposerDraft,
+    acknowledgeComposerDraft,
+    saveComposerDraftForContext = () => undefined,
+    getComposerDraftForContext = () => null,
+    clearComposerDraftForContext = () => undefined,
+    migrateComposerDraftContext = () => undefined,
+    replaceComposerContextRefs = () => undefined,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     messages: state.messages,
     selectedConversationId: state.selectedConversationId,
+    activeContextKey: state.activeContextKey,
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
+    conversationCompactionStatusById: state.conversationCompactionStatusById,
+    sessionCompactionEventsByConversationId:
+      state.sessionCompactionEventsByConversationId,
+    contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
     messagesByConversationId: state.messagesByConversationId ?? {},
     createConversation: state.createConversation,
     ensureConversationForCurrentMode: state.ensureConversationForCurrentMode,
@@ -602,6 +1105,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
     editMessage: state.editMessage,
+    getAgentCodeReplayPreview: state.getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay: state.restoreAgentCodeForReplay,
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     architectPlanNamingRecovery: state.architectPlanNamingRecovery,
@@ -610,6 +1115,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     retryArchitectPlanNamingRecovery: state.retryArchitectPlanNamingRecovery,
     submitArchitectPlanManualName: state.submitArchitectPlanManualName,
     composerContextRefs: state.composerContextRefs,
+    skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
+    addComposerContextRef: state.addComposerContextRef,
+    clearComposerContextRefs: state.clearComposerContextRefs,
     questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
     getPendingToolApproval: state.getPendingToolApproval,
     approvePendingToolApprovalOnce: state.approvePendingToolApprovalOnce,
@@ -622,12 +1130,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireDraftText: state.setActiveQuestionnaireDraftText,
     recordActiveQuestionnaireAnswer: state.recordActiveQuestionnaireAnswer,
     submitActiveQuestionnaire: state.submitActiveQuestionnaire,
+    compactConversationNow: state.compactConversationNow,
+    refreshConversationContextDiagnostics:
+      state.refreshConversationContextDiagnostics,
+    peekComposerDraft: state.peekComposerDraft,
+    acknowledgeComposerDraft: state.acknowledgeComposerDraft,
+    saveComposerDraftForContext: state.saveComposerDraftForContext,
+    getComposerDraftForContext: state.getComposerDraftForContext,
+    clearComposerDraftForContext: state.clearComposerDraftForContext,
+    migrateComposerDraftContext: state.migrateComposerDraftContext,
+    replaceComposerContextRefs: state.replaceComposerContextRefs,
   })));
   const { mark: markPerformance } = usePerformanceMonitor();
 
-  const { selectedProviderId, selectedModelId } = useProviderStore(useShallow((state) => ({
+  const { selectedProviderId, selectedModelId, nativeToolsSupported } = useProviderStore(useShallow((state) => ({
     selectedProviderId: state.selectedProviderId,
     selectedModelId: state.selectedModelId,
+    nativeToolsSupported: state.selectedSupportsNativeToolCalling(),
   })));
   const needs = useNeedsStore((state) => state.needs);
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
@@ -635,21 +1154,58 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     tasks: state.tasks,
     startTask: state.startTask,
   })));
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
+  );
+  const isArchitectPlanSelectionMissing = mode === 'Architect' && !activeArchitectPlanId;
+  const shouldShowContextControlsForActiveContext = shouldShowContextControls({
+    mode,
+    selectedConversationId,
+    selectedTaskId,
+    activeArchitectPlanId,
+  });
 
   const [inputValue, setInputValue] = useState('');
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [composerEditSession, setComposerEditSession] =
+    useState<ComposerEditSession | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
+  const [manualCompactionPhase, setManualCompactionPhase] =
+    useState<ManualCompactionPhase>('idle');
+  const [manualCompactionFeedback, setManualCompactionFeedback] =
+    useState<ManualCompactionResult | null>(null);
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  const contextRefreshInFlightRef = useRef(false);
+  const wasContextStreamingRef = useRef(false);
+  const standaloneTaskBuildResetRef = useRef<string | null>(null);
 
-  const [editingValue, setEditingValue] = useState('');
-  const [editingImages, setEditingImages] = useState<MessageImageAttachment[]>([]);
   const [previewImage, setPreviewImage] = useState<MessageImageAttachment | null>(null);
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null);
-  const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState<ComposerDraftSnapshot>(
+    EMPTY_COMPOSER_DRAFT_SNAPSHOT
+  );
+  const pendingPromptHistoryTextRef = useRef<string | null>(null);
+  const composerDraftContextKey = selectedConversationId
+    ? `conversation:${selectedConversationId}`
+    : activeContextKey
+      ? `context:${activeContextKey}`
+      : `mode:${mode}`;
+  const activeComposerDraftContextKeyRef = useRef<string | null>(null);
+  const latestComposerDraftRef = useRef({
+    text: '',
+    images: [] as MessageImageAttachment[],
+    contextRefs: [] as ContextReference[],
+  });
+  const [isTaskTodoDropdownOpen, setIsTaskTodoDropdownOpen] = useState(false);
+  const [
+    architectPlanSelectorState,
+    setArchitectPlanSelectorState,
+  ] = useState<ArchitectPlanSelectorStateDetail | null>(null);
+  const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
   const currentMessages = useMemo(
     () =>
       selectedConversationId
@@ -658,6 +1214,268 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+
+  useEffect(() => {
+    if (
+      mode !== 'Implement' ||
+      !selectedTask ||
+      selectedTask.task_source !== 'standalone'
+    ) {
+      if (selectedTask?.task_source !== 'standalone') {
+        standaloneTaskBuildResetRef.current = null;
+      }
+      return;
+    }
+
+    if (standaloneTaskBuildResetRef.current === selectedTask.id) {
+      return;
+    }
+
+    standaloneTaskBuildResetRef.current = selectedTask.id;
+    if (agentType !== 'build') {
+      setAgentType('build');
+    }
+  }, [agentType, mode, selectedTask, setAgentType]);
+  const activeCompactionStatus = selectedConversationId
+    ? conversationCompactionStatusById[selectedConversationId]
+    : undefined;
+  const activeSessionCompactionEvents = selectedConversationId
+    ? sessionCompactionEventsByConversationId[selectedConversationId] ??
+      EMPTY_SESSION_COMPACTION_EVENTS
+    : EMPTY_SESSION_COMPACTION_EVENTS;
+  const contextDiagnostics = selectedConversationId
+    ? contextDiagnosticsByConversationId[selectedConversationId]
+    : undefined;
+  const activeCompactionPhase = activeCompactionStatus?.phase ?? null;
+  const isRuntimeCompacting =
+    isChatTranscriptCompactionProgressPhase(activeCompactionPhase);
+  const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
+  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
+  const isBusySending = isContextStreaming || isPreparingSend;
+  const isManualCompacting = manualCompactionPhase !== 'idle';
+  const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
+  const isContextOverflowRecovering =
+    selectedConversationRuntime.phase === 'overflow_recovery';
+  const runtimeAssistantMessageId =
+    selectedConversationRuntime.assistantMessageId ?? null;
+  const activeTranscriptCompactionPhase =
+    isRuntimeCompacting
+      ? activeCompactionPhase
+      : null;
+  const activeTranscriptProgressPhase = activeTranscriptCompactionPhase;
+  const manualCompactionActivityLabel =
+    manualCompactionPhase === 'analyzing' && !isRuntimeCompacting
+      ? t('chat.manualCompaction.analyzing', 'Analyse du contexte...')
+      : undefined;
+  const manualCompactionDisabledReason = useMemo(() => {
+    const userTurnCount = currentMessages.reduce(
+      (count, message) => count + (message.role === 'user' ? 1 : 0),
+      0,
+    );
+
+    if (userTurnCount <= MANUAL_COMPACTION_RETAINED_USER_TURNS) {
+      return t(
+        'chat.manualCompaction.disabledNotEnoughHistory',
+        "Macro garde les {{count}} derniers tours utilisateur; ajoutez plus d'historique avant de compacter.",
+        { count: MANUAL_COMPACTION_RETAINED_USER_TURNS },
+      );
+    }
+
+    const footprint =
+      contextDiagnostics?.footprintAfter ?? contextDiagnostics?.footprintBefore;
+    const pressurePhase =
+      contextDiagnostics?.phase === 'too_large' ||
+      contextDiagnostics?.phase === 'needs_manual_compaction' ||
+      contextDiagnostics?.phase === 'blocked';
+
+    if (
+      contextDiagnostics?.status === 'ready' &&
+      footprint?.threshold === 'none' &&
+      !pressurePhase
+    ) {
+      return t(
+        'chat.manualCompaction.disabledBelowThreshold',
+        'Le contexte est trop léger pour un compactage utile.',
+      );
+    }
+
+    return null;
+  }, [contextDiagnostics, currentMessages, t]);
+  const shouldShowContextIndicator =
+    Boolean(selectedConversationId) &&
+    (shouldShowContextControlsForActiveContext ||
+      Boolean(contextDiagnostics) ||
+      isActiveContextCompacting);
+  const runtimeAssistantActivityAnchorId = resolveAssistantActivityAnchorId(
+    currentMessages,
+    runtimeAssistantMessageId,
+    false,
+  );
+  const streamingAssistantActivityMessageId =
+    !activeTranscriptProgressPhase && (isBusySending || isContextOverflowRecovering)
+      ? runtimeAssistantActivityAnchorId
+      : null;
+  const runContextDiagnosticsRefresh = useCallback(async () => {
+    if (
+      !selectedConversationId ||
+      !shouldShowContextControlsForActiveContext ||
+      contextRefreshInFlightRef.current
+    ) {
+      return;
+    }
+
+    contextRefreshInFlightRef.current = true;
+    try {
+      await refreshConversationContextDiagnostics(selectedConversationId, {
+        mode: isContextStreaming ? 'live_stream' : 'full',
+      });
+    } finally {
+      contextRefreshInFlightRef.current = false;
+    }
+  }, [
+    isContextStreaming,
+    refreshConversationContextDiagnostics,
+    selectedConversationId,
+    shouldShowContextControlsForActiveContext,
+  ]);
+  const transcriptItems = useMemo(
+    () =>
+      buildChatTranscriptItems(currentMessages, {
+        conversationId: selectedConversationId,
+        compactionEvents: activeSessionCompactionEvents,
+      }),
+    [
+      activeSessionCompactionEvents,
+      currentMessages,
+      selectedConversationId,
+    ]
+  );
+
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      !shouldShowContextControlsForActiveContext ||
+      isContextStreaming ||
+      wasContextStreamingRef.current
+    ) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void runContextDiagnosticsRefresh();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    activeCompactionStatus?.updatedAt,
+    activeCompactionStatus?.phase,
+    currentMessages,
+    isContextStreaming,
+    runContextDiagnosticsRefresh,
+    selectedConversationId,
+    selectedConversationRuntime.lastError,
+    selectedConversationRuntime.lastErrorDisplayTarget,
+    selectedModelId,
+    selectedProviderId,
+    shouldShowContextControlsForActiveContext,
+  ]);
+
+  useEffect(() => {
+    wasContextStreamingRef.current = isContextStreaming;
+  }, [isContextStreaming]);
+
+  useEffect(() => {
+    setManualCompactionFeedback(null);
+    setManualCompactionPhase('idle');
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    let cancelled = false;
+
+    // The LazyComposerEditor loads its underlying editor module
+    // asynchronously. composerEditorRef.current may be null on the first
+    // render. We peek (read) the draft without consuming it, then retry
+    // until the editor is ready, and only then acknowledge (consume) it.
+    const tryApplyDraft = (attemptsLeft: number) => {
+      if (cancelled) return;
+      const handle = composerEditorRef.current;
+      const draft = peekComposerDraft(selectedConversationId);
+      if (draft === null) {
+        return;
+      }
+      if (handle) {
+        handle.setText(draft);
+        handle.focus();
+        acknowledgeComposerDraft(selectedConversationId);
+        return;
+      }
+      if (attemptsLeft <= 0) {
+        // Editor never came up. Drop the draft so we don't leak it.
+        acknowledgeComposerDraft(selectedConversationId);
+        return;
+      }
+      window.setTimeout(() => tryApplyDraft(attemptsLeft - 1), 50);
+    };
+
+    tryApplyDraft(10);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConversationId, peekComposerDraft, acknowledgeComposerDraft]);
+
+  const isStreaming = isContextStreaming;
+  const isTranscriptActivityActive =
+    isContextStreaming ||
+    isPreparingSend ||
+    isContextOverflowRecovering ||
+    Boolean(activeTranscriptProgressPhase);
+
+  const handleManualCompaction = useCallback(async () => {
+    if (!selectedConversationId || isManualCompacting || isBusySending) {
+      return;
+    }
+    setManualCompactionPhase('analyzing');
+    setManualCompactionFeedback(null);
+    try {
+      const result = await compactConversationNow(selectedConversationId);
+      setManualCompactionFeedback(result);
+
+      if (result.outcome === 'compacted') {
+        notify.success(t('chat.manualCompaction.successTitle', 'Contexte compacté'), {
+          description: t(
+            'chat.manualCompaction.successDescription',
+            '{{tokens}} tokens économisés. Le prochain message utilisera le checkpoint compacté.',
+            { tokens: formatManualCompactionTokens(result.tokensSaved) },
+          ),
+        });
+        await refreshConversationContextDiagnostics(selectedConversationId, {
+          mode: 'full',
+        });
+      } else {
+        notify.info(t('chat.manualCompaction.skippedTitle', 'Compactage ignoré'), {
+          description: getManualCompactionSkipDescription(result.reason, result, t),
+        });
+      }
+    } catch (error) {
+      console.warn('Manual context compaction failed:', error);
+      notify.error(t('chat.manualCompaction.errorTitle', 'Compactage impossible'), {
+        description: toServiceError(error).message,
+      });
+    } finally {
+      setManualCompactionPhase('idle');
+    }
+  }, [
+    compactConversationNow,
+    isBusySending,
+    isManualCompacting,
+    refreshConversationContextDiagnostics,
+    selectedConversationId,
+    t,
+  ]);
   const needsByMentionTitle = useMemo(() => {
     const indexed = new Map<string, Need>();
     for (const need of needs) {
@@ -709,19 +1527,134 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus === 'hydrating' ||
     restoreStatus === 'idle' ||
     restoreStatus === 'resolving';
-  const isStreaming = selectedConversationRuntime.phase === 'streaming';
-  const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
-  const isBusySending = isStreaming || isPreparingSend;
-  const visibleError = selectedConversationRuntime.lastError ?? lastError;
-  const activeAssistantMessageId =
-    isBusySending ? selectedConversationRuntime.assistantMessageId ?? null : null;
+  const composerRuntimeError =
+    selectedConversationRuntime.lastErrorDisplayTarget === 'composer' ||
+    (selectedConversationRuntime.lastError &&
+      !selectedConversationRuntime.lastErrorDisplayTarget)
+      ? selectedConversationRuntime.lastError
+      : null;
+  const composerError = composerRuntimeError ?? lastError;
 
   const promptHistory = useMemo(() => {
     return currentMessages
       .filter((message) => message.role === 'user')
-      .map((message) => message.content.trim())
-      .filter((content) => content.length > 0);
+      .map<PromptHistoryEntry>((message) => ({
+        text: message.content.trim(),
+        contextRefs: cloneContextRefs(message.context_refs),
+      }))
+      .filter((entry) => entry.text.length > 0);
   }, [currentMessages]);
+
+  const resetPromptHistoryNavigation = useCallback(() => {
+    pendingPromptHistoryTextRef.current = null;
+    setPromptHistoryIndex(null);
+    setDraftBeforeHistory(EMPTY_COMPOSER_DRAFT_SNAPSHOT);
+  }, []);
+
+  const findPromptHistoryIndexByText = useCallback((text: string): number | null => {
+    for (let index = promptHistory.length - 1; index >= 0; index -= 1) {
+      if (promptHistory[index]?.text === text) {
+        return index;
+      }
+    }
+    return null;
+  }, [promptHistory]);
+
+  const getComposerDraftSnapshot = useCallback((text: string): ComposerDraftSnapshot => ({
+    text,
+    contextRefs: cloneContextRefs(composerContextRefs),
+  }), [composerContextRefs]);
+
+  const applyComposerDraftSnapshot = useCallback((snapshot: ComposerDraftSnapshot) => {
+    const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
+    clearComposerContextRefs();
+    if (currentText === snapshot.text) {
+      pendingPromptHistoryTextRef.current = null;
+      setInputValue(snapshot.text);
+      snapshot.contextRefs.forEach((ref) => {
+        addComposerContextRef(ref);
+      });
+      return;
+    }
+    pendingPromptHistoryTextRef.current = snapshot.text;
+    setInputValue(snapshot.text);
+    composerEditorRef.current?.setText(snapshot.text, snapshot.contextRefs);
+    snapshot.contextRefs.forEach((ref) => {
+      addComposerContextRef(ref);
+    });
+  }, [addComposerContextRef, clearComposerContextRefs, inputValue]);
+
+  useEffect(() => {
+    const previousContextKey = activeComposerDraftContextKeyRef.current;
+    if (previousContextKey === composerDraftContextKey) return;
+
+    if (previousContextKey) {
+      const draftToSave = composerEditSession
+        ? {
+            text: composerEditSession.savedDraftText,
+            images: composerEditSession.savedDraftImages,
+            contextRefs: composerEditSession.savedDraftContextRefs,
+          }
+        : latestComposerDraftRef.current;
+      saveComposerDraftForContext(previousContextKey, draftToSave);
+    }
+
+    const savedNextDraft = getComposerDraftForContext(composerDraftContextKey);
+    activeComposerDraftContextKeyRef.current = composerDraftContextKey;
+    if (!previousContextKey && !savedNextDraft) {
+      return;
+    }
+    const nextDraft = savedNextDraft ?? {
+      text: '',
+      images: [],
+      contextRefs: [],
+    };
+    setComposerEditSession(null);
+    setInputValue(nextDraft.text);
+    setComposerImages([...nextDraft.images]);
+    // Conversation toolbox refs hydrate asynchronously after a selection.
+    // Avoid replacing them with an empty draft before that hydration finishes.
+    if (savedNextDraft) {
+      replaceComposerContextRefs(
+        nextDraft.contextRefs,
+        selectedConversationId,
+      );
+    }
+    resetPromptHistoryNavigation();
+
+    let cancelled = false;
+    const applyText = (attemptsLeft: number) => {
+      if (cancelled) return;
+      const editor = composerEditorRef.current;
+      if (editor) {
+        editor.setText(nextDraft.text, nextDraft.contextRefs);
+        return;
+      }
+      if (attemptsLeft > 0) {
+        window.setTimeout(() => applyText(attemptsLeft - 1), 50);
+      }
+    };
+    applyText(10);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    composerDraftContextKey,
+    composerEditSession,
+    getComposerDraftForContext,
+    replaceComposerContextRefs,
+    resetPromptHistoryNavigation,
+    saveComposerDraftForContext,
+    selectedConversationId,
+  ]);
+
+  useEffect(() => {
+    latestComposerDraftRef.current = {
+      text: inputValue,
+      images: [...composerImages],
+      contextRefs: cloneContextRefs(composerContextRefs),
+    };
+  }, [composerContextRefs, composerImages, inputValue]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -732,14 +1665,23 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [isStreaming, markPerformance, streamingMessageContentLength]);
 
   // Get current conversation details
-  const currentConversation = selectedConversationId
+  const currentConversation = !isArchitectPlanSelectionMissing && selectedConversationId
     ? conversations.find((c) => c.id === selectedConversationId)
     : null;
 
-  const selectedTask = useMemo(
-    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
-    [tasks, selectedTaskId]
+  const selectedTaskTodoState = useMemo(
+    () => (selectedTask ? getPlanNodeTodoState(selectedTask) : null),
+    [selectedTask]
   );
+  const selectedTaskTodos =
+    selectedTaskTodoState?.kind === 'stored' ? selectedTaskTodoState.todos : [];
+  const canShowImplementTaskTodoDropdown =
+    mode === 'Implement' &&
+    selectedTask?.task_source === 'architect' &&
+    selectedTaskTodos.length > 0;
+  const isSelectedTaskDependencyBlocked =
+    mode === 'Implement' && Boolean(selectedTask?.is_blocked);
+  const selectedTaskBlockedMessage = getDependencyBlockedMessage(selectedTask, t);
   const implementTaskIdForSend =
     mode === 'Implement'
       ? selectedTask?.id ?? currentConversation?.task_id ?? null
@@ -768,24 +1710,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const projectNameById = useMemo(
     () =>
       new Map(
-        projectGroups.flatMap((group) =>
-          group.projects.map((project) => [project.id, project.name] as const)
-        )
+        [
+          ...standaloneProjects,
+          ...projectGroups.flatMap((group) => group.projects),
+        ].map((project) => [project.id, project.name] as const)
       ),
-    [projectGroups]
+    [projectGroups, standaloneProjects]
+  );
+  const projectRegistry = useMemo(
+    () => ({ standaloneProjects, projectGroups }),
+    [projectGroups, standaloneProjects]
   );
   const repositoryScopedProjectIds = useMemo(
-    () => getRepositoryScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () => getRepositoryScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const isModeProjectWorkspaceMissing =
@@ -829,7 +1777,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
+    isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
+    isSelectedTaskDependencyBlocked ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
 
@@ -838,8 +1788,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     [projectGroups, selectedGroupId]
   );
   const focusedProject = useMemo(
-    () => getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    () =>
+      selectedGroupId
+        ? getFocusedProjectForGroup(projectGroups, selectedGroupId, selectedProjectId)
+        : selectedProjectId
+          ? getProjectById(selectedProjectId) ?? null
+          : null,
+    [getProjectById, projectGroups, selectedGroupId, selectedProjectId]
   );
   const selectedGlobalProjectName = selectedGlobalProject?.name ?? null;
   const focusedProjectName = focusedProject?.name ?? null;
@@ -854,7 +1809,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (mode === 'Architect') {
       return {
         icon: 'compass' as const,
-        title: `${t('header.architect', 'Architect')} - ${selectedGlobalProjectName || t('header.selectProject', 'Select Project')}`,
+        title: `${t('header.architect', 'Architect')} - ${projectScopeLabel || t('header.selectProject', 'Select Project')}`,
         subtitle:
           isModeProjectWorkspaceMissing
             ? null
@@ -889,6 +1844,70 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     t,
   ]);
 
+  useEffect(() => {
+    const handlePlanSelectorState = (event: Event) => {
+      setArchitectPlanSelectorState(
+        (event as CustomEvent<ArchitectPlanSelectorStateDetail>).detail ?? null
+      );
+    };
+    window.addEventListener(
+      ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+      handlePlanSelectorState,
+    );
+    return () => {
+      window.removeEventListener(
+        ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+        handlePlanSelectorState,
+      );
+    };
+  }, []);
+
+  const missingArchitectPlanActionKind =
+    architectPlanSelectorState?.status === 'ready' &&
+    architectPlanSelectorState.planCount === 0 &&
+    architectPlanSelectorState.canCreate
+      ? 'create'
+      : 'select';
+  const isMissingArchitectPlanActionLoading =
+    architectPlanSelectorState?.status === 'loading';
+  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionLoading
+    ? t('architect.planSelector.loadingShort', 'Loading')
+    : missingArchitectPlanActionKind === 'create'
+      ? t('architect.createPlanAction', 'Create a plan')
+      : t('architect.selectPlanAction', 'Select a plan');
+  const handleMissingArchitectPlanAction = useCallback(() => {
+    dispatchArchitectPlanSelectorRequest({ action: 'primary' });
+  }, []);
+
+  useEffect(() => {
+    setIsTaskTodoDropdownOpen(false);
+  }, [selectedTask?.id, canShowImplementTaskTodoDropdown]);
+
+  useEffect(() => {
+    if (!isTaskTodoDropdownOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const root = taskTodoDropdownRef.current;
+      if (root && event.target instanceof Node && !root.contains(event.target)) {
+        setIsTaskTodoDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsTaskTodoDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isTaskTodoDropdownOpen]);
+
   const architectEmptyHint = useMemo(() => {
     if (mode !== 'Architect' || !activePlanContext) {
       return t('chat.typeMessage');
@@ -914,20 +1933,88 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return t('chat.typeMessage');
   }, [activePlanContext, mode, t]);
 
-  const activePlanNeedsCount = useMemo(() => {
-    if (!activeArchitectPlanId) return 0;
-    return needs.filter((need) => need.planId === activeArchitectPlanId).length;
+  const activePlanNeeds = useMemo(() => {
+    if (!activeArchitectPlanId) return [];
+    return needs.filter((need) => need.planId === activeArchitectPlanId);
   }, [activeArchitectPlanId, needs]);
+  const allActivePlanNeedsValidated =
+    activePlanNeeds.length > 0 &&
+    activePlanNeeds.every((need) => need.status === 'validated');
+  const hasUserArchitectMessage = useMemo(
+    () =>
+      mode === 'Architect' &&
+      currentMessages.some(
+        (message) =>
+          message.role === 'user' && message.content.trim().length > 0
+      ),
+    [currentMessages, mode]
+  );
 
   const hasExistingStrategy = useMemo(() => {
     if (!activeArchitectPlanId) return false;
     return planNodes.length > 0 || predictedBranches.length > 0;
   }, [activeArchitectPlanId, planNodes.length, predictedBranches.length]);
+  const isStrategyMutationLocked =
+    mode === 'Architect' &&
+    isArchitectPlanStrategyMutationLocked(activePlanContext?.status);
+  const architectStrategyProgressAction = useMemo<ArchitectStrategyProgressAction | null>(() => {
+    if (mode !== 'Architect') return null;
+    if (!activeArchitectPlanId) return null;
+    if (activePlanNeeds.length === 0) {
+      return hasUserArchitectMessage ? 'identify-needs' : null;
+    }
+    if (!allActivePlanNeedsValidated) {
+      return 'clarify-needs';
+    }
+    return hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy';
+  }, [
+    activeArchitectPlanId,
+    activePlanNeeds.length,
+    allActivePlanNeedsValidated,
+    hasExistingStrategy,
+    hasUserArchitectMessage,
+    mode,
+  ]);
+  const isArchitectStrategyProgressDisabled =
+    isModeProjectWorkspaceMissing ||
+    !activeArchitectPlanId ||
+    isConversationPending ||
+    isBusySending ||
+    isStrategyMutationLocked;
+  const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
+  const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
+    if (!architectStrategyProgressAction) return null;
+    return architectButtonActions[architectStrategyProgressAction];
+  }, [architectButtonActions, architectStrategyProgressAction]);
+  const architectGenerateStrategyButton = useMemo<ArchitectToolbarButton | null>(() => {
+    if (mode !== 'Architect' || !activeArchitectPlanId || activePlanNeeds.length === 0) {
+      return null;
+    }
+    return hasExistingStrategy
+      ? architectButtonActions['regenerate-strategy']
+      : architectButtonActions['generate-strategy'];
+  }, [activeArchitectPlanId, activePlanNeeds.length, architectButtonActions, hasExistingStrategy, mode]);
+  const shouldShowSecondaryGenerateStrategyButton =
+    architectStrategyProgressAction === 'clarify-needs' && Boolean(architectGenerateStrategyButton);
+  const architectStrategyUnavailableTitle = isModeProjectWorkspaceMissing
+    ? workspaceState.kind === 'noProjectAvailable'
+      ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
+      : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+    : !activeArchitectPlanId
+      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
+      : isStrategyMutationLocked
+        ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
+        : null;
+  const isArchitectGenerateStrategyDisabled =
+    isArchitectStrategyProgressDisabled || activePlanNeeds.length === 0;
+  const architectGenerateStrategyTitle =
+    architectStrategyUnavailableTitle ??
+    architectGenerateStrategyButton?.title;
 
-  // Scroll magnetism: auto-scroll during streaming, animated separator
+  // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
-    isStreaming,
-    [currentMessages],
+    isTranscriptActivityActive,
+    [transcriptItems],
   );
   const disableVirtualizerScrollAdjustment = useCallback(() => false, []);
   const {
@@ -935,39 +2022,160 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     totalSize: virtualMessageTotalSize,
     measureElement: measureMessageElement,
     scrollToIndex: scrollToMessageIndex,
-  } = useVirtualMessages(currentMessages, {
+  } = useVirtualMessages(transcriptItems, {
     parentRef: scrollContainerRef,
-    getItemKey: (message) => message.id,
+    getItemKey: (item) => item.key,
     estimateSize: 220,
-    overscan: isStreaming ? 10 : 6,
+    overscan: isTranscriptActivityActive ? 10 : 6,
     dynamicHeight: true,
-    gap: 24,
+    gap: CHAT_TRANSCRIPT_ITEM_GAP,
     shouldAdjustScrollPositionOnItemSizeChange:
       separatorState === 'detached'
         ? disableVirtualizerScrollAdjustment
         : undefined,
   });
   const messageIndexById = useMemo(
-    () => new Map(currentMessages.map((message, index) => [message.id, index])),
-    [currentMessages]
+    () => {
+      const indexed = new Map<string, number>();
+      for (const message of currentMessages) {
+        const transcriptIndex = getTranscriptMessageIndexById(
+          transcriptItems,
+          message.id,
+        );
+        if (transcriptIndex !== null) {
+          indexed.set(message.id, transcriptIndex);
+        }
+      }
+      return indexed;
+    },
+    [currentMessages, transcriptItems]
   );
   const renderedMessageItems = useMemo(
+    () => {
+      const sourceItems =
+        virtualMessageItems.length > 0
+          ? virtualMessageItems
+          : (() => {
+              let start = 0;
+              return transcriptItems.map((item, index) => {
+                const size =
+                  item.kind === 'compaction_boundary'
+                    ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
+                    : item.kind === 'compaction_progress'
+                      ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
+                      : 220;
+                const renderedItem = {
+                  index,
+                  key: item.key,
+                  size,
+                  start,
+                  item,
+                };
+                start += size + CHAT_TRANSCRIPT_ITEM_GAP;
+                return renderedItem;
+              });
+            })();
+
+      return sourceItems.reduce<{
+        items: typeof sourceItems;
+        positionAdjustment: number;
+      }>((state, item) => {
+        const previousItem = transcriptItems[item.index - 1];
+        const isArchitectActionItem =
+          item.item.kind === 'message' &&
+          item.item.message.role === 'user' &&
+          Boolean(resolveArchitectButtonActionFromContent(item.item.message.content, t));
+        const isCompactionItem =
+          item.item.kind === 'compaction_boundary' ||
+          item.item.kind === 'compaction_progress';
+        const assistantGapAdjustment =
+          isCompactionItem &&
+          previousItem?.kind === 'message' &&
+          previousItem.message.role === 'assistant'
+            ? CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION
+            : 0;
+        const architectActionTopGapAdjustment =
+          isArchitectActionItem && previousItem
+            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
+            : 0;
+        const adjustmentBeforeRender =
+          state.positionAdjustment +
+          assistantGapAdjustment +
+          architectActionTopGapAdjustment;
+        const nextItem = transcriptItems[item.index + 1];
+        const compactionFollowingGapAdjustment =
+          isCompactionItem && nextItem ? CHAT_TRANSCRIPT_ITEM_GAP : 0;
+        const architectActionFollowingGapAdjustment =
+          isArchitectActionItem && nextItem
+            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
+            : 0;
+        return {
+          items: [
+            ...state.items,
+            {
+              ...item,
+              start: item.start - adjustmentBeforeRender,
+            },
+          ],
+          positionAdjustment:
+            adjustmentBeforeRender +
+            compactionFollowingGapAdjustment +
+            architectActionFollowingGapAdjustment,
+        };
+      }, { items: [], positionAdjustment: 0 }).items;
+    },
+    [t, transcriptItems, virtualMessageItems]
+  );
+  const compactionGapAdjustment = useMemo(
     () =>
-      virtualMessageItems.length > 0
-        ? virtualMessageItems
-        : currentMessages.map((message, index) => ({
-            index,
-            key: message.id,
-            size: 220,
-            start: index * 244,
-            item: message,
-          })),
-    [currentMessages, virtualMessageItems]
+      transcriptItems.reduce((total, item, index) => {
+        let adjustment = total;
+        const isCompactionItem =
+          item.kind === 'compaction_boundary' || item.kind === 'compaction_progress';
+        const isArchitectActionItem =
+          item.kind === 'message' &&
+          item.message.role === 'user' &&
+          Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
+
+        if (isCompactionItem) {
+          const previousItem = transcriptItems[index - 1];
+          if (
+            previousItem?.kind === 'message' &&
+            previousItem.message.role === 'assistant'
+          ) {
+            adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+          }
+          if (index < transcriptItems.length - 1) {
+            adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
+          }
+        }
+
+        if (
+          isArchitectActionItem &&
+          index > 0
+        ) {
+          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+        }
+        if (
+          isArchitectActionItem &&
+          index < transcriptItems.length - 1
+        ) {
+          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+        }
+        return adjustment;
+      }, 0),
+    [t, transcriptItems]
   );
   const renderedMessageTotalSize =
     virtualMessageItems.length > 0
-      ? virtualMessageTotalSize
-      : Math.max(0, currentMessages.length * 244 - 24);
+      ? Math.max(0, virtualMessageTotalSize - compactionGapAdjustment)
+      : Math.max(
+          0,
+          renderedMessageItems.reduce(
+            (total, item) => Math.max(total, item.start + item.size),
+            0,
+          )
+        );
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
@@ -1005,6 +2213,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (mode === 'Architect' && isWorkspaceMissing) return null;
+    if (isArchitectPlanSelectionMissing) return null;
     if (selectedConversationId) return selectedConversationId;
     const ensured = await ensureConversationForCurrentMode();
     if (ensured) return ensured;
@@ -1016,6 +2225,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversationForCurrentMode,
     mode,
     selectedConversationId,
+    isArchitectPlanSelectionMissing,
     isWorkspaceMissing,
     t,
   ]);
@@ -1064,8 +2274,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: selectedTask.id,
       });
+      clearComposerDraftForContext(composerDraftContextKey);
+      clearComposerDraftForContext(`conversation:${conversationId}`);
       composerEditorRef.current?.clear();
       setInputValue('');
+      resetPromptHistoryNavigation();
       return true;
     } catch (error) {
       if (conversationId) {
@@ -1077,6 +2290,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     ensureConversation,
+    clearComposerDraftForContext,
+    composerDraftContextKey,
     isConversationPending,
     isBusySending,
     mode,
@@ -1087,6 +2302,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskRequiresKickoff,
     sendMessage,
     startTask,
+    resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
   ]);
 
@@ -1112,7 +2328,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   };
 
-  const appendPastedImages = async (files: File[], destination: 'composer' | 'editing') => {
+  const appendPastedImages = async (files: File[]) => {
     const nextImages: MessageImageAttachment[] = [];
 
     for (const file of files) {
@@ -1132,11 +2348,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
 
     if (nextImages.length > 0) {
-      if (destination === 'editing') {
-        setEditingImages((prev) => [...prev, ...nextImages]);
-      } else {
-        setComposerImages((prev) => [...prev, ...nextImages]);
-      }
+      setComposerImages((prev) => [...prev, ...nextImages]);
     }
   };
 
@@ -1163,10 +2375,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const handlePasteFor = async (
-    event: React.ClipboardEvent<HTMLElement>,
-    destination: 'composer' | 'editing'
-  ) => {
+  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
     const directFiles = Array.from(event.clipboardData.items || [])
       .filter((item) => item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
@@ -1176,27 +2385,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (files.length === 0) return;
 
     event.preventDefault();
-    await appendPastedImages(files, destination);
-  };
-
-  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    await handlePasteFor(event, 'composer');
-  };
-
-  const handleEditingPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    await handlePasteFor(event, 'editing');
+    await appendPastedImages(files);
   };
 
   const removeComposerImage = (imageId: string) => {
-    if (visibleError) {
+    if (composerError) {
       clearConversationRuntimeError(selectedConversationId ?? '');
       clearLastError();
     }
     setComposerImages((prev) => prev.filter((image) => image.id !== imageId));
-  };
-
-  const removeEditingImage = (imageId: string) => {
-    setEditingImages((prev) => prev.filter((image) => image.id !== imageId));
   };
 
   const preventImageMouseDown = (event: React.MouseEvent<HTMLElement>) => {
@@ -1213,10 +2410,35 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setPreviewImage(image);
   };
 
+  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
+    setComposerEditSession(null);
+    setComposerImages(session.savedDraftImages);
+    setInputValue(session.savedDraftText);
+    clearComposerContextRefs();
+    composerEditorRef.current?.setText(
+      session.savedDraftText,
+      session.savedDraftContextRefs,
+    );
+    session.savedDraftContextRefs.forEach((ref) => {
+      addComposerContextRef(ref);
+    });
+  }, [addComposerContextRef, clearComposerContextRefs]);
+
   const handleSend = async () => {
     if (isComposerDisabled || activeQuestionnaire) return;
+    if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (composerEditSession) {
+      if (!text || isBusySending) return;
+      await requestReplay({
+        kind: 'edit',
+        messageId: composerEditSession.messageId,
+        content: text,
+        images: [...composerImages],
+      });
+      return;
+    }
     if (isImplementComposerInKickoffMode) {
       if (!text || isBusySending) return;
       try {
@@ -1227,10 +2449,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
+    saveComposerDraftForContext(composerDraftContextKey, {
+      text,
+      images: [...composerImages],
+      contextRefs: cloneContextRefs(composerContextRefs),
+    });
     const conversationId = await ensureConversation();
     if (!conversationId) return;
+    const conversationDraftKey = `conversation:${conversationId}`;
+    migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = text;
     const imagesForMessage = [...composerImages];
+    const internalAgentProfile =
+      getConflictAssistantInternalAgentProfile(conversationId);
 
     try {
       const result = await sendMessage({
@@ -1238,11 +2469,19 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         content,
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
+        ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
       if (result.status === 'sent') {
+        if (internalAgentProfile) {
+          clearConflictAssistantInternalAgentProfile(conversationId);
+        }
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
         composerEditorRef.current?.clear();
+        clearComposerContextRefs();
         setComposerImages([]);
         setInputValue('');
+        resetPromptHistoryNavigation();
       }
     } catch {
       // Keep the draft intact. The visible error feedback comes from the chat store.
@@ -1274,46 +2513,88 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
-  const handleGenerateStrategy = async () => {
+  const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
     if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
-    if (!hasExistingStrategy && activePlanNeedsCount === 0) return;
+    if (isStrategyMutationLocked) return;
+    if (
+      (actionId === 'generate-strategy' || actionId === 'regenerate-strategy') &&
+      activePlanNeeds.length === 0
+    ) {
+      return;
+    }
 
     const conversationId = await ensureConversation();
     if (!conversationId) return;
-    const content = hasExistingStrategy
-      ? `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`
-      : `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`;
 
     try {
-      await sendMessage({ conversationId, content });
+      await sendMessage({
+        conversationId,
+        content: architectButtonActions[actionId].fullPrompt,
+      });
     } catch {
       // The store exposes the visible error state.
     }
   };
 
+  const handleGenerateStrategy = async () => {
+    await sendArchitectButtonAction(
+      hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy',
+    );
+  };
+
+  const handleArchitectStrategyProgressAction = () => {
+    if (!architectStrategyProgressAction) return;
+    void sendArchitectButtonAction(architectStrategyProgressAction);
+  };
+
   const handleEditStart = (message: ChatMessage) => {
+    if (composerEditSession || isBusySending || activePendingToolApproval) {
+      return;
+    }
+
     if (message.questionnaire_response_summary) {
       const opened = startQuestionnaireResponseEdit(message.id);
       if (opened) {
-        setEditingMessageId(null);
-        setEditingValue('');
-        setEditingImages([]);
-        return;
+        setComposerEditSession(null);
       }
+      return;
+    }
+
+    if (activeQuestionnaire) {
+      return;
     }
 
     const content = message.content;
-    const messageId = message.id;
-    setEditingMessageId(messageId);
-    setEditingValue(content);
-    setEditingImages(getMessageImages(messageId));
+    const messageContextRefs = cloneContextRefs(message.context_refs);
+    const draftText = composerEditorRef.current?.getTextContent() ?? inputValue;
+    const session: ComposerEditSession = {
+      messageId: message.id,
+      originalContent: content,
+      savedDraftText: draftText,
+      savedDraftImages: [...composerImages],
+      savedDraftContextRefs: [...composerContextRefs],
+    };
+    setComposerEditSession(session);
+    clearComposerContextRefs();
+    setComposerImages(getMessageImages(message.id));
+    setInputValue(content);
+    setPromptHistoryIndex(null);
+    composerEditorRef.current?.setText(content, messageContextRefs);
+    requestAnimationFrame(() => {
+      composerEditorRef.current?.focus();
+    });
   };
 
   const handleEditCancel = () => {
-    setEditingMessageId(null);
-    setEditingValue('');
-    setEditingImages([]);
+    if (!composerEditSession) return;
+    restoreComposerDraft(composerEditSession);
   };
+
+  const handleEditCommitted = useCallback(() => {
+    const session = composerEditSession;
+    if (!session) return;
+    restoreComposerDraft(session);
+  }, [composerEditSession, restoreComposerDraft]);
 
   const handleQuestionnaireCancel = () => {
     if (!activeQuestionnaire) {
@@ -1322,16 +2603,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     cancelQuestionnaireSession(activeQuestionnaire.conversationId);
   };
 
-  const handleEditSave = async () => {
-    if (!editingMessageId) return;
-    const content = editingValue.trim();
-    if (!content) return;
-    setMessageImages(editingMessageId, editingImages);
-    setEditingMessageId(null);
-    setEditingValue('');
-    setEditingImages([]);
-    await editMessage(editingMessageId, content);
-  };
+  const {
+    pendingReplayConfirmation,
+    isReplayConfirmationSubmitting,
+    requestReplay,
+    cancelReplayConfirmation,
+    confirmReplayConfirmation,
+  } = useAgentCodeReplayConfirmation({
+    getAgentCodeReplayPreview,
+    restoreAgentCodeForReplay,
+    editMessage,
+    setMessageImages,
+    getMessageImages,
+    onEditCommitted: handleEditCommitted,
+  });
 
   const handleCopy = async (content: string, messageId: string) => {
     await navigator.clipboard.writeText(content);
@@ -1340,34 +2625,61 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleRegenerate = async (messageId: string, content: string) => {
-    await editMessage(messageId, content);
+    await requestReplay({
+      kind: 'regenerate',
+      messageId,
+      content,
+    });
   };
 
   const canSend =
+    !isComposerDisabled &&
     !activeQuestionnaire &&
     !isConversationPending &&
     (
-      isImplementComposerInKickoffMode
+      composerEditSession
+        ? Boolean(inputValue.trim())
+        : isImplementComposerInKickoffMode
         ? Boolean(inputValue.trim())
         : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
     );
+  const hasComposerSkillReference = useMemo(
+    () => composerContextRefs.some((ref) => ref.kind === 'skill'),
+    [composerContextRefs]
+  );
+  const hasComposerSkillMention = useMemo(
+    () => /(?:\$[A-Za-z0-9_-]{1,80}\b|\[skill:\s*[^\]]+\])/i.test(inputValue),
+    [inputValue]
+  );
+  const showSkillNativeToolWarning =
+    !nativeToolsSupported && (hasComposerSkillReference || hasComposerSkillMention);
 
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
     if (promptHistory.length === 0) return;
 
     if (direction === 'up') {
-      if (promptHistoryIndex === null) {
-        setDraftBeforeHistory(composerEditorRef.current?.getTextContent() ?? '');
+      const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
+      const effectiveHistoryIndex =
+        promptHistoryIndex ?? findPromptHistoryIndexByText(currentText);
+
+      if (effectiveHistoryIndex === null) {
+        setDraftBeforeHistory(getComposerDraftSnapshot(currentText));
         const lastIndex = promptHistory.length - 1;
         setPromptHistoryIndex(lastIndex);
-        composerEditorRef.current?.setText(promptHistory[lastIndex]);
+        applyComposerDraftSnapshot(promptHistory[lastIndex]);
         return;
       }
 
-      if (promptHistoryIndex > 0) {
-        const nextIndex = promptHistoryIndex - 1;
+      if (promptHistoryIndex === null) {
+        setDraftBeforeHistory(getComposerDraftSnapshot(currentText));
+      }
+
+      if (effectiveHistoryIndex > 0) {
+        const nextIndex = effectiveHistoryIndex - 1;
         setPromptHistoryIndex(nextIndex);
-        composerEditorRef.current?.setText(promptHistory[nextIndex]);
+        applyComposerDraftSnapshot(promptHistory[nextIndex]);
+      } else if (promptHistoryIndex === null) {
+        setPromptHistoryIndex(effectiveHistoryIndex);
       }
       return;
     }
@@ -1377,18 +2689,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (promptHistoryIndex < promptHistory.length - 1) {
       const nextIndex = promptHistoryIndex + 1;
       setPromptHistoryIndex(nextIndex);
-      composerEditorRef.current?.setText(promptHistory[nextIndex]);
+      applyComposerDraftSnapshot(promptHistory[nextIndex]);
       return;
     }
 
     setPromptHistoryIndex(null);
-    composerEditorRef.current?.setText(draftBeforeHistory);
-  }, [draftBeforeHistory, promptHistory, promptHistoryIndex]);
+    applyComposerDraftSnapshot(draftBeforeHistory);
+  }, [
+    applyComposerDraftSnapshot,
+    draftBeforeHistory,
+    findPromptHistoryIndexByText,
+    getComposerDraftSnapshot,
+    inputValue,
+    promptHistory,
+    promptHistoryIndex,
+  ]);
 
   useEffect(() => {
-    setPromptHistoryIndex(null);
-    setDraftBeforeHistory('');
-  }, [selectedConversationId]);
+    resetPromptHistoryNavigation();
+  }, [resetPromptHistoryNavigation, selectedConversationId]);
 
   useEffect(() => {
     const handlePromptHistoryEvent = (event: Event) => {
@@ -1439,16 +2758,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       data-tour-id="chat-surface"
     >
       {/* Main Chat Area */}
-      <div className="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden">
+      <div
+        className="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden"
+        data-chat-conversation-panel
+      >
         {/* Header */}
         <header
           className="h-14 border-b border-border/50 flex items-center justify-between px-4 bg-card/30"
           data-tour-id="mode-context-header"
+          data-chat-conversation-header
         >
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-6 h-6 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-              <Icon name={modeHeader.icon} size={10} className="text-primary" />
-            </div>
+            {canShowImplementTaskTodoDropdown ? (
+              <ImplementTaskTodoDropdown
+                taskTitle={modeHeader.title}
+                todos={selectedTaskTodos}
+                isOpen={isTaskTodoDropdownOpen}
+                onToggle={() => setIsTaskTodoDropdownOpen((current) => !current)}
+                rootRef={taskTodoDropdownRef}
+              />
+            ) : (
+              <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                <Icon name={modeHeader.icon} size={14} className="text-primary" />
+              </div>
+            )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
               {modeHeader.subtitle && (
@@ -1467,6 +2800,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </Suspense>
               </div>
             )}
+            {mode === 'Implement' && <TaskArtifactsButton />}
+            {shouldShowContextIndicator && selectedConversationId && (
+              <ContextWindowIndicator
+                diagnostics={contextDiagnostics}
+                compactionStatus={activeCompactionStatus}
+                isCompacting={isActiveContextCompacting}
+                activityLabel={manualCompactionActivityLabel}
+                canCompactNow={!isBusySending && !isManualCompacting}
+                manualCompactionDisabledReason={manualCompactionDisabledReason}
+                manualCompactionFeedback={manualCompactionFeedback}
+                onRefresh={() => {
+                  void runContextDiagnosticsRefresh();
+                }}
+                onCompactNow={handleManualCompaction}
+              />
+            )}
             {headerActions}
           </div>
         </header>
@@ -1484,7 +2833,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-4">
                 <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
-                  <Icon name="loader" size={24} className="text-muted-foreground animate-spin" />
+                  <SpinnerIcon size={24} className="text-muted-foreground" />
                 </div>
                 <div>
                   <p className="text-muted-foreground text-sm">
@@ -1498,37 +2847,113 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               stateKind={workspaceState.kind}
               onPrimaryAction={() => openProjectModal(null)}
             />
-          ) : selectedConversationId && currentMessages.length > 0 ? (
+          ) : isArchitectPlanSelectionMissing ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center space-y-4">
+                <div className="w-16 h-16 mx-auto rounded-xl bg-card border border-border flex items-center justify-center">
+                  <Icon name="compass" size={24} className="text-muted-foreground" />
+                </div>
+                <p className="text-muted-foreground text-sm">
+                  {t(
+                    'architect.selectPlanToStart',
+                    'Select or create a plan to start architecting.'
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleMissingArchitectPlanAction}
+                  disabled={isMissingArchitectPlanActionLoading}
+                  data-tour-id="architect-empty-plan-action"
+                  className={cn(
+                    'inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors',
+                    isMissingArchitectPlanActionLoading
+                      ? 'border-border bg-muted text-muted-foreground cursor-wait'
+                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                  )}
+                >
+                  <Icon
+                    name={
+                      isMissingArchitectPlanActionLoading
+                        ? 'loader'
+                        : missingArchitectPlanActionKind === 'create'
+                          ? 'plus'
+                          : 'list'
+                    }
+                    size={14}
+                    className={cn(isMissingArchitectPlanActionLoading && 'animate-spin')}
+                  />
+                  {missingArchitectPlanActionLabel}
+                </button>
+              </div>
+            </div>
+          ) : isSelectedTaskDependencyBlocked && selectedTask ? (
+            <TaskBlockedState
+              title={t('implement.taskBlockedTitle', 'Task blocked')}
+              message={selectedTaskBlockedMessage}
+              help={t(
+                'implement.taskBlockedConversationHelp',
+                'Complete the prerequisite tasks before starting implementation here.'
+              )}
+            />
+          ) : selectedConversationId && transcriptItems.length > 0 ? (
             <div className="max-w-4xl mx-auto relative" style={{ height: renderedMessageTotalSize }}>
-              {renderedMessageItems.map((virtualMessage) => {
-                const message = virtualMessage.item;
-                const isEditing = editingMessageId === message.id;
+              {renderedMessageItems.map((virtualItem) => {
+                if (virtualItem.item.kind === 'compaction_boundary') {
+                  const previousItem = transcriptItems[virtualItem.index - 1];
+                  const compactTopSpacing =
+                    previousItem?.kind === 'message' &&
+                    previousItem.message.role === 'assistant';
+                  return (
+                    <CompactionBoundaryRow
+                      key={virtualItem.key}
+                      virtualItem={virtualItem}
+                      measureElement={measureMessageElement}
+                      compactTopSpacing={compactTopSpacing}
+                    />
+                  );
+                }
+                if (virtualItem.item.kind === 'compaction_progress') {
+                  const previousItem = transcriptItems[virtualItem.index - 1];
+                  const compactTopSpacing =
+                    previousItem?.kind === 'message' &&
+                    previousItem.message.role === 'assistant';
+                  return (
+                    <CompactionProgressRow
+                      key={virtualItem.key}
+                      virtualItem={virtualItem}
+                      measureElement={measureMessageElement}
+                      phase={virtualItem.item.phase}
+                      compactTopSpacing={compactTopSpacing}
+                    />
+                  );
+                }
+
+                const virtualMessage = virtualItem as RenderedMessageItem;
+                const message = virtualMessage.item.message;
+                const isEditing = composerEditSession?.messageId === message.id;
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
+                const assistantActivity: AssistantMessageActivity =
+                  message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
 
                 return (
                   <MemoizedChatMessageRow
-                    key={message.id}
+                    key={virtualMessage.key}
                     virtualMessage={virtualMessage}
                     measureElement={measureMessageElement}
-                    streamingAssistantMessageId={activeAssistantMessageId}
+                    assistantActivity={assistantActivity}
                     showToolTraces
                     isEditing={isEditing}
-                    editingValue={editingValue}
-                    editingImages={editingImages}
                     messageImages={messageImages}
                     isCopied={copiedMessageId === message.id}
                     isHighlighted={highlightedMessageId === message.id}
-                    onEditingValueChange={setEditingValue}
-                    onEditingPaste={handleEditingPaste}
-                    onRemoveEditingImage={removeEditingImage}
                     onImageMouseDown={preventImageMouseDown}
                     onOpenImagePreview={openImagePreview}
                     onEditCancel={handleEditCancel}
-                    onEditSave={handleEditSave}
                     onCopy={handleCopy}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     needsByTitle={needsByMentionTitle}
+                    skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
                   />
                 );
               })}
@@ -1620,7 +3045,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           ? 'bg-primary text-primary-foreground'
                           : 'text-muted-foreground hover:text-foreground'
                       )}
-                      title={t('chat.agentTypePlan', 'Plan')}
+                      title={t('chat.agentTypePlanTitle', 'Plan: read-only investigation')}
                     >
                       <Icon name="map" size={12} />
                       {t('chat.agentTypePlan', 'Plan')}
@@ -1634,7 +3059,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           ? 'bg-primary text-primary-foreground'
                           : 'text-muted-foreground hover:text-foreground'
                       )}
-                      title={t('chat.agentTypeBuild', 'Build')}
+                      title={t('chat.agentTypeBuildTitle', 'Build: apply changes')}
                     >
                       <Icon name="code" size={12} />
                       {t('chat.agentTypeBuild', 'Build')}
@@ -1645,51 +3070,65 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ModelDropdown />
                 <ReasoningDropdown />
               </div>
-              {mode === 'Architect' && (
-              <button
-                type="button"
-                onClick={() => void handleGenerateStrategy()}
-                data-tour-id="architect-generate-strategy"
-                disabled={
-                  isModeProjectWorkspaceMissing ||
-                  !activeArchitectPlanId ||
-                  isConversationPending ||
-                  isBusySending ||
-                  (!hasExistingStrategy && activePlanNeedsCount === 0)
-                }
-                className={cn(
-                  'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                  isModeProjectWorkspaceMissing ||
-                  !activeArchitectPlanId ||
-                    isConversationPending ||
-                    isBusySending ||
-                    (!hasExistingStrategy && activePlanNeedsCount === 0)
-                      ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
-                      : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
-                  )}
-                  title={
-                    isModeProjectWorkspaceMissing
-                      ? workspaceState.kind === 'noProjectAvailable'
-                        ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-                        : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-                      : !activeArchitectPlanId
-                      ? t('architect.generateStrategySelectPlan', 'Select an active plan first')
-                      : !hasExistingStrategy && activePlanNeedsCount === 0
-                        ? t('architect.generateStrategyNeedPrompt', 'Add at least one need before generating a strategy')
-                        : hasExistingStrategy
-                          ? t('architect.regenerateStrategyHint', 'Regenerate strategy from current needs')
-                          : t('architect.generateStrategyHint', 'Generate strategy from identified needs')
-                  }
-                >
-                  <Icon name={hasExistingStrategy ? 'refresh-cw' : 'sparkles'} size={12} />
-                  {hasExistingStrategy
-                    ? t('architect.regenerateStrategy', 'Regenerate Strategy')
-                    : t('architect.generateStrategy', 'Generate Strategy')}
-                </button>
+              {mode === 'Architect' &&
+                (architectStrategyProgressButton || shouldShowSecondaryGenerateStrategyButton) && (
+                  <div className="flex items-center gap-2">
+                    {architectStrategyProgressButton ? (
+                      <button
+                        type="button"
+                        onClick={handleArchitectStrategyProgressAction}
+                        data-tour-id={
+                          architectStrategyProgressAction === 'generate-strategy' ||
+                          architectStrategyProgressAction === 'regenerate-strategy'
+                            ? 'architect-generate-strategy'
+                            : 'architect-progress-action'
+                        }
+                        disabled={isArchitectStrategyProgressDisabled}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                          isArchitectStrategyProgressDisabled
+                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                        )}
+                        title={architectStrategyUnavailableTitle ?? architectStrategyProgressButton.title}
+                      >
+                        <Icon name={architectStrategyProgressButton.icon} size={12} />
+                        {architectStrategyProgressButton.label}
+                      </button>
+                    ) : null}
+                    {shouldShowSecondaryGenerateStrategyButton && architectGenerateStrategyButton ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleGenerateStrategy();
+                        }}
+                        data-tour-id="architect-generate-strategy"
+                        disabled={isArchitectGenerateStrategyDisabled}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
+                          isArchitectGenerateStrategyDisabled
+                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
+                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
+                        )}
+                        title={architectGenerateStrategyTitle ?? architectGenerateStrategyButton.title}
+                      >
+                        <Icon name={architectGenerateStrategyButton.icon} size={12} />
+                        {architectGenerateStrategyButton.label}
+                      </button>
+                    ) : null}
+                  </div>
               )}
             </div>
 
-            {selectedTask && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
+            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
+              <TaskBlockedState
+                variant="compact"
+                title={t('implement.taskBlockedTitle', 'Task blocked')}
+                message={selectedTaskBlockedMessage}
+              />
+            )}
+
+            {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1739,9 +3178,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {visibleError && (
+            {composerError && (
               <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-                {visibleError}
+                {composerError}
+              </div>
+            )}
+
+            {showSkillNativeToolWarning && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <Icon name="triangle-alert" size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {t(
+                    'skills.nativeToolRequiredWarning',
+                    'Skills require a native tool-calling model/provider.'
+                  )}
+                </span>
               </div>
             )}
 
@@ -1787,7 +3238,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               />
             ) : (
               <div
-                className="flex items-center gap-2 bg-card/80 border border-border rounded-xl px-2 py-1.5"
+                data-chat-composer-editing={
+                  composerEditSession ? 'true' : undefined
+                }
+                className={cn(
+                  'flex items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors',
+                  composerEditSession
+                    ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                    : 'border-border bg-card/80'
+                )}
                 onPasteCapture={handleComposerPaste}
                 data-tour-id="chat-composer"
               >
@@ -1796,38 +3255,68 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     ref={composerEditorRef}
                     editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                     placeholder={
-                      isConversationPending
+                      composerEditSession
+                        ? t('chat.editMessagePlaceholder', 'Edit message...')
+                      : isConversationPending
                         ? t('chat.loadingConversation', 'Restoring conversation...')
                       : isModeProjectWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
                           ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                      : isArchitectPlanSelectionMissing
+                        ? t(
+                            'architect.selectPlanToStart',
+                            'Select or create a plan to start architecting.'
+                          )
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                        : isImplementComposerInKickoffMode
+                      : isSelectedTaskDependencyBlocked
+                        ? t(
+                            'implement.taskBlockedComposerPlaceholder',
+                            'Task blocked until prerequisites are completed'
+                          )
+                      : isImplementComposerInKickoffMode
                         ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
                         : !selectedProviderId || !selectedModelId
                         ? t('chat.selectProvider')
                         : t('chat.typeMessage')
                     }
                     onTextChange={(text) => {
-                      if (visibleError) {
+                      if (composerError) {
                         clearConversationRuntimeError(selectedConversationId ?? '');
                         clearLastError();
                       }
+                      const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
+                      const isPromptHistoryText = pendingPromptHistoryText === text;
+                      if (pendingPromptHistoryText !== null) {
+                        pendingPromptHistoryTextRef.current = null;
+                      }
                       setInputValue(text);
-                      if (promptHistoryIndex !== null) {
-                        setPromptHistoryIndex(null);
+                      if (!isPromptHistoryText && promptHistoryIndex !== null) {
+                        resetPromptHistoryNavigation();
                       }
                     }}
                     onSend={handleSend}
                     onPromptHistory={
+                      !composerEditSession &&
                       promptHistoryNavigationMode === 'contextual_arrows'
                         ? navigatePromptHistory
                         : undefined
                     }
                   />
                 </Suspense>
+              {composerEditSession && !isStreaming && (
+                <button
+                  type="button"
+                  onClick={handleEditCancel}
+                  data-tour-id="chat-edit-cancel-button"
+                  aria-label={t('common.cancel')}
+                  title={t('common.cancel')}
+                  className="flex h-9 min-w-[2.375rem] items-center justify-center rounded-lg bg-muted px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              )}
               {isStreaming ? (
                 <button
                   onClick={stopStreaming}
@@ -1849,7 +3338,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   )}
                 >
                   {isBusySending ? (
-                    <Icon name="loader" size={14} className="animate-spin" />
+                    <SpinnerIcon size={14} />
                   ) : (
                     <Icon name="arrow-up" size={14} />
                   )}
@@ -1860,6 +3349,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
         </footer>
       </div>
+
+      <AgentCodeReplayConfirmModal
+        pendingReplayConfirmation={pendingReplayConfirmation}
+        isSubmitting={isReplayConfirmationSubmitting}
+        onCancel={cancelReplayConfirmation}
+        onConfirm={() => {
+          void confirmReplayConfirmation();
+        }}
+      />
 
       <ImagePreviewModal
         isOpen={Boolean(previewImage)}

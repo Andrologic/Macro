@@ -3,8 +3,17 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useNeedsStore } from '../../stores/useNeedsStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
-import { getGitFlowBaseBranch, resolveTargetBranch } from '../../services/architectPlanService';
+import {
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  type ArchitectPlanRecord,
+} from '../../services/architectPlanService';
+import {
+  listPlanArtifactOverview,
+  type PlanArtifactOverview,
+} from '../../services/architectPlanArtifactService';
 import { persistArchitectPlanStrategyPreview } from '../../services/architectPlanRuntimeService';
 import { validatePlanAndProvisionBranches } from '../../services/architectGitFlowService';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -29,6 +38,9 @@ import {
   type TaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
 import {
+  resolvePlanNodeTodoPresentation,
+} from '../../services/planNodeTodos';
+import {
   buildPlanFinalizationTaskId,
   buildPlanFinalizationTaskTitle,
   derivePlanFinalizationDependencyState,
@@ -38,11 +50,13 @@ import {
 import { notify } from '../ui/toastService';
 import { Icon } from '../ui/Icon';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
+import { TodoStatusIcon } from '../tasks/TodoStatusIcon';
 import { Skeleton } from '../shared/Skeleton';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
+import { ArtifactDiffModal } from '../modals/ArtifactDiffModal';
 import { cn } from '../../utils/cn';
 import { useElementSize } from '../../hooks/useElementSize';
-import type { PlanNode, PlanNodeStatus, PredictedBranch, ProjectGroup, TaskStatus } from '../../types';
+import type { PlanNode, PlanNodeStatus, PredictedBranch, Project, ProjectGroup, TaskStatus } from '../../types';
 import {
   isCanonicalArchitectPlan,
   isDefaultNewPlanFamilyLabel,
@@ -125,6 +139,15 @@ interface BranchTaskView extends PlanNode {
   rank?: number;
 }
 
+interface BranchTodoView {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  title: string;
+  description?: string;
+  status: 'pending' | 'in-progress' | 'done';
+}
+
 const IDLE_ARCHITECT_PLAN_SWITCH = {
   requestId: 0,
   targetPlanId: null,
@@ -143,6 +166,7 @@ interface BranchCardView {
   progressDone: number;
   progressTotal: number;
   tasks: BranchTaskView[];
+  todos: BranchTodoView[];
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
@@ -158,6 +182,119 @@ const branchCardStatusTone: Record<BranchCardStatus, string> = {
   active: 'bg-amber-500/10 text-amber-500',
   merged: 'bg-emerald-500/10 text-emerald-500',
   mixed: 'bg-muted text-muted-foreground',
+};
+
+const EMPTY_STANDALONE_PROJECTS: Project[] = [];
+
+type EdgeFlowTone = 'normal' | 'active' | 'waiting' | 'complete' | 'blocked' | 'pending';
+
+interface EdgeFlowPresentation {
+  tone: EdgeFlowTone;
+  duration: string;
+  opacity: number;
+  width: number;
+  shouldAnimate: boolean;
+}
+
+const BLOCKED_EDGE_TASK_STATUSES = new Set<TaskStatus>(['Blocked', 'Failed']);
+const ACTIVE_EDGE_TASK_STATUSES = new Set<TaskStatus>(['InProgress', 'InReview']);
+const WAITING_EDGE_TASK_STATUSES = new Set<TaskStatus>(['AwaitingResponse']);
+const BLOCKED_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'blocked',
+  'failed',
+  'merge_blocked',
+  'merge_failed',
+]);
+const ACTIVE_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'running',
+  'in_review',
+  'merging',
+  'merge_partial',
+]);
+const WAITING_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
+  'awaiting_response',
+]);
+
+const resolveEdgeFlowPresentation = (
+  _sourceNode: Pick<PlanNode, 'id' | 'status'>,
+  _targetNode: Pick<PlanNode, 'id' | 'status'>,
+  sourceTaskStatus: TaskStatus,
+  targetTaskStatus: TaskStatus,
+  sourceState: TaskStatusIndicatorState,
+  targetState: TaskStatusIndicatorState,
+): EdgeFlowPresentation => {
+  if (
+    BLOCKED_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    BLOCKED_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    BLOCKED_EDGE_INDICATOR_STATES.has(sourceState) ||
+    BLOCKED_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'blocked',
+      duration: '0s',
+      opacity: 0.18,
+      width: 36,
+      shouldAnimate: false,
+    };
+  }
+
+  if (
+    WAITING_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    WAITING_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    WAITING_EDGE_INDICATOR_STATES.has(sourceState) ||
+    WAITING_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'waiting',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (
+    ACTIVE_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    ACTIVE_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
+    ACTIVE_EDGE_INDICATOR_STATES.has(sourceState) ||
+    ACTIVE_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'active',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (sourceTaskStatus === 'Completed' && targetTaskStatus === 'Completed') {
+    return {
+      tone: 'complete',
+      duration: '3.1s',
+      opacity: 0.22,
+      width: 38,
+      shouldAnimate: false,
+    };
+  }
+
+  if (sourceTaskStatus === 'Pending' && targetTaskStatus === 'Pending') {
+    return {
+      tone: 'pending',
+      duration: '2.8s',
+      opacity: 0.3,
+      width: 40,
+      shouldAnimate: true,
+    };
+  }
+
+  return {
+    tone: 'normal',
+    duration: '2.35s',
+    opacity: 0.42,
+    width: 44,
+    shouldAnimate: true,
+  };
 };
 
 type GroupedBranchCardSource = PredictedBranch & {
@@ -373,9 +510,6 @@ const buildBranchCards = (params: {
       );
       const cardStatus: BranchCardStatus =
         branchStatuses.length === 1 ? branchStatuses[0] : 'mixed';
-      const progressDone = allTasks.filter(
-        (task) => task.status === 'completed',
-      ).length;
       const filteredTasks = allTasks
         .filter((task) => {
           if (
@@ -399,10 +533,21 @@ const buildBranchCards = (params: {
           }
           return a.title.localeCompare(b.title);
         });
+      const todos = filteredTasks.flatMap<BranchTodoView>((task) =>
+        resolvePlanNodeTodoPresentation(task).todos.map((todo) => ({
+          ...todo,
+          id: `${task.id}:${todo.id}`,
+          taskId: task.id,
+          taskTitle: task.title,
+        }))
+      );
+      const progress = resolvePlanNodeTodoPresentation(todos).progress;
+      const singleTask = allTasks.length === 1 ? allTasks[0] : null;
 
       return {
         id: `branch-card::${branchKey}`,
         name:
+          singleTask?.title ||
           branches[0]?.logicalLabel ||
           getBranchCardLabel(branches[0] || { name: branchKey }),
         color:
@@ -410,9 +555,10 @@ const buildBranchCards = (params: {
             ? mixedBranchCardColor
             : branches[0]?.color || mixedBranchCardColor,
         status: cardStatus,
-        progressDone,
-        progressTotal: allTasks.length,
+        progressDone: progress.done,
+        progressTotal: progress.total,
         tasks: filteredTasks,
+        todos,
       };
     })
     .filter(
@@ -420,12 +566,21 @@ const buildBranchCards = (params: {
     );
 };
 
+const getArtifactContractItems = (
+  node: Pick<PlanNode, 'artifactContracts'> | null | undefined,
+) =>
+  (node?.artifactContracts || []).filter(
+    (contract) => contract.title.trim().length > 0,
+  );
+
 // Base component - wrapped with React.memo below for performance
 const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const { t } = useTranslation();
   const {
     selectedGroupId,
     selectedProjectId,
+    selectedTaskId,
+    standaloneProjects,
     projectGroups,
     planNodes,
     predictedBranches,
@@ -441,6 +596,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     useShallow((state) => ({
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
+      selectedTaskId: state.selectedTaskId,
+      standaloneProjects: state.standaloneProjects ?? EMPTY_STANDALONE_PROJECTS,
       projectGroups: state.projectGroups,
       planNodes: state.planNodes,
       predictedBranches: state.predictedBranches,
@@ -455,31 +612,70 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         state.architectPlanSwitch ?? IDLE_ARCHITECT_PLAN_SWITCH,
     }))
   );
-  const { conversations, conversationRuntimeById } = useChatStore(
+  const {
+    conversations,
+    selectedConversationId,
+    conversationRuntimeById,
+    conversationCompactionStatusById,
+  } = useChatStore(
     useShallow((state) => ({
       conversations: state.conversations,
+      selectedConversationId: state.selectedConversationId,
       conversationRuntimeById: state.conversationRuntimeById,
+      conversationCompactionStatusById: state.conversationCompactionStatusById,
     }))
   );
   const tasks = useTaskStore((state) => state.tasks);
+  const needs = useNeedsStore((state) => state.needs);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
+  const graphFlowIdPrefix = React.useId().replace(/:/g, '');
   const [viewMode, setViewMode] = useState<'graph' | 'branches'>('graph');
   const [branchSearch, setBranchSearch] = useState('');
   const [branchStatusFilter, setBranchStatusFilter] = useState<'all' | PlanNodeStatus>('all');
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
+  );
+  const projectRegistry = useMemo(
+    () => ({ standaloneProjects, projectGroups }),
+    [projectGroups, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
+  const activePlanNeeds = useMemo(() => {
+    if (!activePlanContext?.id) return [];
+    return needs.filter((need) => need.planId === activePlanContext.id);
+  }, [activePlanContext?.id, needs]);
+  const emptyStrategyDescription = useMemo(() => {
+    if (activePlanNeeds.length === 0) {
+      return t(
+        'architect.noStrategyNeedsMissingDescription',
+        'Identify and validate needs before generating the strategy.'
+      );
+    }
+    if (activePlanNeeds.some((need) => need.status !== 'validated')) {
+      return t(
+        'architect.noStrategyNeedsUnvalidatedDescription',
+        'Clarify needs if useful, or generate the strategy now.'
+      );
+    }
+    return t(
+      'architect.noStrategyReadyDescription',
+      'The needs are ready. Generate the strategy when you want Macro to create the task graph.'
+    );
+  }, [activePlanNeeds, t]);
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
+  const [isPlanArtifactsOpen, setIsPlanArtifactsOpen] = useState(false);
+  const [selectedPlanArtifactId, setSelectedPlanArtifactId] = useState<string | null>(null);
+  const [planArtifactOverview, setPlanArtifactOverview] = useState<PlanArtifactOverview | null>(null);
   const [isModalPanning, setIsModalPanning] = useState(false);
   const [hasInitializedModalView, setHasInitializedModalView] = useState(false);
   const [modalTransform, setModalTransform] = useState<GraphTransform>({ x: 0, y: 0, scale: 1 });
@@ -511,9 +707,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     () =>
       resolveRunningTaskIds({
         conversations,
+        tasks,
+        selectedConversationId,
+        selectedTaskId,
         conversationRuntimeById,
+        conversationCompactionStatusById,
       }),
-    [conversationRuntimeById, conversations]
+    [
+      conversationCompactionStatusById,
+      conversationRuntimeById,
+      conversations,
+      selectedConversationId,
+      selectedTaskId,
+      tasks,
+    ]
   );
   const taskStatusById = useMemo(
     () => new Map(tasks.map((task) => [task.id, task.status])),
@@ -558,6 +765,112 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
     return getGitFlowBaseBranch();
   }, [activePlanTargetBranch]);
+
+  const activePlanArtifactRecord = useMemo<ArchitectPlanRecord | null>(() => {
+    if (!activePlanContext) {
+      return null;
+    }
+
+    const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
+    const nodeProjectIds = planNodes.flatMap((node) => normalizeNodeProjectIds(node));
+    const branchProjectIds = predictedBranches
+      .map((branch) => branch.projectId)
+      .filter((projectId): projectId is string => typeof projectId === 'string' && projectId.trim().length > 0);
+    const projectIds = Array.from(new Set([
+      ...(scopedProjectIds.length > 0 ? scopedProjectIds : []),
+      ...nodeProjectIds,
+      ...branchProjectIds,
+    ]));
+
+    return {
+      id: activePlanContext.id,
+      slug: activePlanContext.slug?.trim() || activePlanContext.title?.trim() || activePlanContext.id,
+      title: activePlanContext.title || activePlanContext.id,
+      label: activePlanContext.label,
+      description: activePlanContext.description || '',
+      status: activePlanContext.status as ArchitectPlanRecord['status'],
+      targetBranch,
+      targetBranchesByProjectId: activePlanContext.targetBranchesByProjectId,
+      projectIds,
+      createdAt: '',
+      updatedAt: '',
+      nodes: planNodes,
+      predictedBranches,
+    };
+  }, [
+    activePlanContext,
+    planNodes,
+    predictedBranches,
+    projectRegistry,
+    selectedGroupId,
+    selectedProjectId,
+    targetBranch,
+  ]);
+
+  useEffect(() => {
+    let disposed = false;
+    setIsPlanArtifactsOpen(false);
+    setSelectedPlanArtifactId(null);
+    setPlanArtifactOverview(null);
+
+    if (!activePlanArtifactRecord) {
+      return () => {
+        disposed = true;
+      };
+    }
+
+    void listPlanArtifactOverview({
+      branchName: targetBranch,
+      plan: activePlanArtifactRecord,
+    })
+      .then((overview) => {
+        if (!disposed) {
+          setPlanArtifactOverview(overview);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setPlanArtifactOverview(null);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [activePlanArtifactRecord, targetBranch]);
+
+  const producedPlanArtifactCount = planArtifactOverview?.entries.length ?? 0;
+  const hasPlanArtifactPlaceholders = (planArtifactOverview?.expected.length ?? 0) > 0;
+  const canOpenPlanArtifacts = Boolean(
+    activePlanArtifactRecord &&
+      planArtifactOverview &&
+      (producedPlanArtifactCount > 0 || hasPlanArtifactPlaceholders)
+  );
+  const openPlanArtifacts = useCallback(() => {
+    if (!planArtifactOverview || !activePlanArtifactRecord) {
+      return;
+    }
+    setSelectedPlanArtifactId(planArtifactOverview.entries[0]?.artifact.id ?? null);
+    setIsPlanArtifactsOpen(true);
+  }, [activePlanArtifactRecord, planArtifactOverview]);
+
+  const planArtifactsButton = canOpenPlanArtifacts ? (
+    <button
+      type="button"
+      onClick={openPlanArtifacts}
+      className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background/40 px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title={t('architect.openArtifacts', 'Open artifacts')}
+      aria-label={t('architect.openArtifacts', 'Open artifacts')}
+    >
+      <Icon name="file-text" size={14} className="text-primary" />
+      <span>{t('architect.artifacts', 'Artifacts')}</span>
+      {producedPlanArtifactCount > 0 && (
+        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+          {producedPlanArtifactCount}
+        </span>
+      )}
+    </button>
+  ) : null;
 
   const getFrozenReasonLabel = useCallback(
     (reason: FrozenPlanNode['reason']): string => {
@@ -609,6 +922,46 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const hideFrozenBadgeTooltip = useCallback(() => {
     setHoveredFrozenBadge(null);
   }, []);
+
+  const renderArtifactContractsSection = useCallback(
+    (
+      node: Pick<PlanNode, 'artifactContracts'> | null | undefined,
+      options: { withTopBorder?: boolean } = {},
+    ) => {
+      const contracts = getArtifactContractItems(node);
+      if (contracts.length === 0) {
+        return null;
+      }
+
+      return (
+        <div
+          className={cn(
+            'space-y-1.5',
+            options.withTopBorder && 'mt-3 border-t border-border/50 pt-2'
+          )}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('architect.expectedArtifacts', 'Expected artifacts')}
+          </div>
+          <ul className="space-y-1">
+            {contracts.map((contract) => (
+              <li
+                key={contract.id}
+                className="grid grid-cols-[4px_minmax(0,1fr)] gap-x-1.5 text-[11px] leading-relaxed text-foreground"
+              >
+                <span
+                  aria-hidden="true"
+                  className="mt-[0.6em] h-1 w-1 rounded-full bg-muted-foreground/70"
+                />
+                <span>{contract.title}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    },
+    [t]
+  );
 
   useEffect(() => {
     if (viewMode !== 'branches' && hoveredFrozenBadge) {
@@ -703,7 +1056,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       setActivePlanContext({ ...activePlanContext, status: 'validated' });
       await useTaskStore.getState().refreshFromPlan();
 
-      const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+      const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
       const activationCandidateTask = getPlanActivationCandidateTask(
         useTaskStore.getState().tasks,
         plan.id,
@@ -739,7 +1092,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       return { nodes: [], edges: [], width: 0, height: 0, branches: [], laneHeaders: [], colWidth: 140, effectiveLeftPadding: 0 };
     }
 
-    const scopedProjectIds = getScopedProjectIds(projectGroups, selectedGroupId, selectedProjectId);
+    const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
     const scopedNodes =
       scopedProjectIds.length > 0
         ? planNodes.filter((node: PlanNode) =>
@@ -916,7 +1269,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       colWidth: COL_WIDTH,
       effectiveLeftPadding
     };
-  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectGroups, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
+  }, [activePlanContext, activePlanSlug, containerWidth, planNodes, projectRegistry, selectedGroupId, selectedProjectId, showResolvingSkeleton]);
+
+  const graphNodeById = useMemo(
+    () => new Map(layoutData.nodes.map((node) => [node.id, node])),
+    [layoutData.nodes]
+  );
 
   const getNodeTaskStatus = useCallback(
     (nodeId: string, nodeStatus: PlanNodeStatus): TaskStatus =>
@@ -1236,30 +1594,108 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       height={layoutData.height}
       className="block select-none"
     >
+      <defs>
+        <linearGradient id={`${graphFlowIdPrefix}-flow-sheen`} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="rgb(125 211 252)" stopOpacity="0" />
+          <stop offset="34%" stopColor="rgb(125 211 252)" stopOpacity="0.1" />
+          <stop offset="52%" stopColor="rgb(255 255 255)" stopOpacity="0.48" />
+          <stop offset="72%" stopColor="rgb(var(--primary))" stopOpacity="0.16" />
+          <stop offset="100%" stopColor="rgb(var(--primary))" stopOpacity="0" />
+        </linearGradient>
+        <filter id={`${graphFlowIdPrefix}-flow-blur`} x="-260%" y="-260%" width="620%" height="620%">
+          <feGaussianBlur stdDeviation="1.2" result="blur" />
+          <feColorMatrix
+            in="blur"
+            type="matrix"
+            values="0 0 0 0 0.45 0 0 0 0 0.78 0 0 0 0 1 0 0 0 0.28 0"
+            result="glow"
+          />
+          <feMerge>
+            <feMergeNode in="glow" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
       {layoutData.edges.map((edge) => {
         const dy = edge.y2 - edge.y1;
         const controlY1 = edge.y1 + dy * 0.5;
         const controlY2 = edge.y2 - dy * 0.5;
 
-        const isRelated = hoveredNodeData && (
-          edge.source === hoveredNodeId || edge.target === hoveredNodeId
-        );
+        const relationKind =
+          hoveredNodeData && edge.target === hoveredNodeId
+            ? 'required'
+            : hoveredNodeData && edge.source === hoveredNodeId
+              ? 'unlocked'
+              : null;
+        const isRelated = relationKind !== null;
 
+        const pathD = `M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`;
+        const motionPathId = `${graphFlowIdPrefix}-flow-path-${edge.source.replace(/[^a-zA-Z0-9_-]/g, '-')}-${edge.target.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
         const strokeColor = isRelated ? 'stroke-primary' : 'stroke-border';
         const opacity = isRelated || !hoveredNodeId ? 0.6 : 0.2;
         const width = isRelated ? 2 : 1.5;
+        const flowHeight = 3.6;
+        const sourceNode = graphNodeById.get(edge.source);
+        const targetNode = graphNodeById.get(edge.target);
+        const flowPresentation =
+          sourceNode && targetNode
+            ? resolveEdgeFlowPresentation(
+                sourceNode,
+                targetNode,
+                getNodeTaskStatus(sourceNode.id, sourceNode.status),
+                getNodeTaskStatus(targetNode.id, targetNode.status),
+                getNodeIndicatorState(sourceNode),
+                getNodeIndicatorState(targetNode),
+              )
+            : null;
+        const flowStyle = flowPresentation
+          ? ({
+              '--strategy-graph-flow-peak-opacity': String(flowPresentation.opacity),
+            } as React.CSSProperties)
+          : undefined;
 
         return (
-          <path
-            key={`${edge.source}-${edge.target}`}
-            data-graph-edge-source={edge.source}
-            data-graph-edge-target={edge.target}
-            d={`M ${edge.x1} ${edge.y1} C ${edge.x1} ${controlY1}, ${edge.x2} ${controlY2}, ${edge.x2} ${edge.y2}`}
-            fill="none"
-            className={cn('transition-all duration-300', strokeColor)}
-            strokeWidth={width}
-            strokeOpacity={opacity}
-          />
+          <g key={`${edge.source}-${edge.target}`}>
+            <path
+              data-graph-edge-source={edge.source}
+              data-graph-edge-target={edge.target}
+              data-graph-edge-relation={relationKind ?? undefined}
+              data-graph-edge-flow-tone={isRelated ? flowPresentation?.tone : undefined}
+              data-graph-edge-flow-animated={
+                isRelated && flowPresentation ? String(flowPresentation.shouldAnimate) : undefined
+              }
+              id={motionPathId}
+              d={pathD}
+              fill="none"
+              className={cn('transition-all duration-300', strokeColor)}
+              strokeWidth={width}
+              strokeOpacity={opacity}
+            />
+            {isRelated && flowPresentation && (
+              <g
+                className={cn(
+                  'strategy-graph-flow-pulse',
+                  !flowPresentation.shouldAnimate && 'strategy-graph-flow-pulse--static'
+                )}
+                style={flowStyle}
+              >
+                <rect
+                  x={-flowPresentation.width / 2}
+                  y={-flowHeight / 2}
+                  width={flowPresentation.width}
+                  height={flowHeight}
+                  rx={flowHeight / 2}
+                  fill={`url(#${graphFlowIdPrefix}-flow-sheen)`}
+                  filter={`url(#${graphFlowIdPrefix}-flow-blur)`}
+                />
+                {flowPresentation.shouldAnimate && (
+                  <animateMotion dur={flowPresentation.duration} repeatCount="indefinite" rotate="auto">
+                    <mpath href={`#${motionPathId}`} />
+                  </animateMotion>
+                )}
+              </g>
+            )}
+          </g>
         );
       })}
 
@@ -1331,6 +1767,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     </svg>
   );
 
+  const planArtifactsModal =
+    isPlanArtifactsOpen && planArtifactOverview && activePlanArtifactRecord ? (
+      <ArtifactDiffModal
+        branchName={targetBranch}
+        plan={activePlanArtifactRecord}
+        task={null}
+        entries={planArtifactOverview.entries}
+        expectedItems={planArtifactOverview.expected}
+        artifactId={selectedPlanArtifactId ?? planArtifactOverview.entries[0]?.artifact.id ?? null}
+        context="readOnly"
+        onSelectArtifact={setSelectedPlanArtifactId}
+        onClose={() => setIsPlanArtifactsOpen(false)}
+      />
+    ) : null;
+
   if (isWorkspaceMissing) {
     return (
       <aside
@@ -1368,35 +1819,40 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     );
   }
 
-  // If no mock data at all, show empty state (should only happen if filter removes everything and we don't want to show empty graph)
+  // If no strategy data is available, show an empty state.
   // But we have a check inside layoutData.nodes.length === 0 returning empty objects
   // We need to handle that here
   if (layoutData.nodes.length === 0) {
     return (
-      <aside
-        className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
-        data-tour-id="architect-strategy-panel"
-      >
-        <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
-          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="strategy" size={16} className="text-primary" />
-            {t('architect.strategy', 'Strategy')}
-          </h1>
-        </div>
-        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
-          <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
-          <h3 className="text-sm font-semibold text-foreground mb-1">
-            {t('architect.noStrategyTitle', 'No strategy generated yet')}
-          </h3>
-          <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
-            {t('architect.noStrategyDescription', 'Discuss needs in Architect chat, then use Generate Strategy to create this graph.')}
-          </p>
-        </div>
-      </aside>
+      <>
+        <aside
+          className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
+          data-tour-id="architect-strategy-panel"
+        >
+          <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
+            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Icon name="strategy" size={16} className="text-primary" />
+              {t('architect.strategy', 'Strategy')}
+            </h1>
+            {planArtifactsButton}
+          </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
+            <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
+            <h3 className="text-sm font-semibold text-foreground mb-1">
+              {t('architect.noStrategyTitle', 'No strategy generated yet')}
+            </h3>
+            <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
+              {emptyStrategyDescription}
+            </p>
+          </div>
+        </aside>
+        {planArtifactsModal}
+      </>
     );
   }
 
   return (
+    <>
     <aside
       className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
       data-tour-id="architect-strategy-panel"
@@ -1407,18 +1863,21 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           <Icon name="strategy" size={16} className="text-primary" />
           {t('architect.strategy', 'Strategy')}
         </h1>
-        {viewMode === 'graph' && (
-          <button
-            type="button"
-            onClick={openGraphModal}
-            data-tour-id="architect-graph-expand"
-            className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-            title={t('architect.openGraphExplorer', 'Open graph explorer')}
-            aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
-          >
-            <Icon name="expand" size={14} />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {planArtifactsButton}
+          {viewMode === 'graph' && (
+            <button
+              type="button"
+              onClick={openGraphModal}
+              data-tour-id="architect-graph-expand"
+              className="w-8 h-8 flex items-center justify-center rounded-md border border-border bg-background/40 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              title={t('architect.openGraphExplorer', 'Open graph explorer')}
+              aria-label={t('architect.openGraphExplorer', 'Open graph explorer')}
+            >
+              <Icon name="expand" size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* View Toggle */}
@@ -1488,7 +1947,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
             {hoveredNodeData && hoveredNodeRect && !isModalPanning && (
               <div
-                className="fixed z-[110] p-4 rounded-xl border border-border bg-popover/95 shadow-xl backdrop-blur-sm w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+                className="fixed z-[110] p-4 rounded-xl border border-border bg-popover/95 shadow-xl w-72 pointer-events-none animate-in fade-in zoom-in-95 duration-150"
                 style={{
                   top: Math.min(hoveredNodeRect.top + 10, window.innerHeight - 150),
                   ...(hoveredNodeRect.left > window.innerWidth / 2
@@ -1531,6 +1990,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                   {hoveredNodeData.description}
                 </p>
 
+                {renderArtifactContractsSection(hoveredNodeData, { withTopBorder: true })}
+
                 <div className="space-y-2 pt-2 border-t border-border/50">
                   <div className="flex items-center text-[10px] text-muted-foreground">
                     <Icon name="git-branch" size={10} className="mr-2 opacity-70" />
@@ -1556,7 +2017,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               </div>
             )}
 
-            <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 backdrop-blur-sm border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
+            <div className="absolute bottom-4 left-4 p-2 rounded-lg bg-background/50 border border-border/50 text-[10px] text-muted-foreground pointer-events-none">
               <div className="flex items-center gap-2 mb-1">
                 <Icon name="arrow-down-right" size={10} />
                 <span>{t('architect.dependencyFlow', 'Dependency Flow')}</span>
@@ -1569,17 +2030,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           </>
         ) : (
           <div className="h-full overflow-y-auto p-4 space-y-3">
-            <div className="rounded-lg border border-border bg-card p-2.5 flex items-center gap-2">
+            <div className="rounded-lg border border-border bg-card p-2.5 flex min-w-0 items-center gap-2">
               <input
                 value={branchSearch}
                 onChange={(event) => setBranchSearch(event.target.value)}
                 placeholder={t('architect.branchSearch', 'Search tasks...')}
-                className="flex-1 h-8 px-2.5 rounded-md border border-border bg-background text-xs"
+                className="min-w-0 flex-1 h-8 px-2.5 rounded-md border border-border bg-background text-xs"
               />
               <select
                 value={branchStatusFilter}
                 onChange={(event) => setBranchStatusFilter(event.target.value as 'all' | PlanNodeStatus)}
-                className="h-8 px-2 rounded-md border border-border bg-background text-xs"
+                className="h-8 w-fit max-w-[45%] shrink-0 rounded-md border border-border bg-background py-0 pl-2.5 pr-8 text-xs truncate"
               >
                 <option value="all">{t('architect.filterStatusAll', 'All statuses')}</option>
                 <option value="pending">{t('architect.nodeStatus.pending', 'Pending')}</option>
@@ -1593,6 +2054,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               const progressPercent = branch.progressTotal > 0
                 ? Math.round((branch.progressDone / branch.progressTotal) * 100)
                 : 0;
+              const visibleBranchTasks = branch.tasks.filter(
+                (task) =>
+                  branch.todos.some((todo) => todo.taskId === task.id) ||
+                  getArtifactContractItems(task).length > 0
+              );
 
               return (
                 <div
@@ -1625,80 +2091,105 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
                       </span>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full bg-primary" style={{ width: `${progressPercent}%` }} />
-                      </div>
-                      <div className="text-[10px] text-muted-foreground">
-                        {t('architect.progress', 'Progress')}: {branch.progressDone}/{branch.progressTotal}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
-                    {branch.tasks.map((task, taskIndex) => {
-                      const visualStatus = getNodeIndicatorState(task);
-                      const visualTone = getNodeStatusTone(task);
-                      const frozenTask = frozenNodeById.get(task.id) || null;
-                      return (
-                        <div key={task.id} className="px-3 py-2" data-branch-task={task.id}>
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 flex items-center gap-2">
-                              <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
-                                {taskIndex + 1}.
-                              </span>
-                              <span className="text-xs text-foreground truncate">{task.title}</span>
-                              {frozenTask && (
-                                <span
-                                  className={cn(
-                                    'inline-flex shrink-0 cursor-help items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                                    lockedBadgeTone
-                                  )}
-                                  tabIndex={0}
-                                  onMouseEnter={(event) =>
-                                    showFrozenBadgeTooltip(
-                                      frozenTask.reason,
-                                      event.currentTarget
-                                    )
-                                  }
-                                  onMouseLeave={hideFrozenBadgeTooltip}
-                                  onFocus={(event) =>
-                                    showFrozenBadgeTooltip(
-                                      frozenTask.reason,
-                                      event.currentTarget
-                                    )
-                                  }
-                                  onBlur={hideFrozenBadgeTooltip}
-                                  aria-label={`${t('architect.frozenNodeLocked', 'Locked')}. ${getFrozenReasonTooltipDescription(frozenTask.reason)}`}
-                                  data-frozen-lock-badge={task.id}
-                                >
-                                  {t('architect.frozenNodeLocked', 'Locked')}
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="shrink-0 flex items-center gap-2">
-                              {task.estimatedTime && (
-                                <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
-                              )}
-                              <div className={cn(
-                                'w-4 h-4 rounded-full flex items-center justify-center',
-                                visualTone.bgColor,
-                                visualTone.color
-                              )}>
-                                <TaskStatusIndicator
-                                  state={visualStatus}
-                                  layout="compact"
-                                  size={9}
-                                  dotSize={5}
-                                />
-                              </div>
-                            </div>
-                          </div>
+                    {branch.progressTotal > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full bg-primary" style={{ width: `${progressPercent}%` }} />
                         </div>
-                      );
-                    })}
+                        <div className="text-[10px] text-muted-foreground">
+                          {t('architect.progress', 'Progress')}: {branch.progressDone}/{branch.progressTotal}
+                        </div>
+                      </div>
+                    )}
                   </div>
+
+                  {visibleBranchTasks.length > 0 && (
+                    <div className="bg-muted/10 border-t border-border/50 divide-y divide-border/50">
+                      {visibleBranchTasks.map((task) => {
+                        const taskTodos = branch.todos.filter((todo) => todo.taskId === task.id);
+                        const frozenTask = frozenNodeById.get(task.id) || null;
+                        const artifactContracts = getArtifactContractItems(task);
+                        return (
+                          <div
+                            key={task.id}
+                            className="py-2"
+                            data-branch-task={task.id}
+                          >
+                            {branch.tasks.length > 1 && (
+                              <div className="px-3 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground truncate">
+                                {task.title}
+                              </div>
+                            )}
+                            {taskTodos.length > 0 && (
+                              <div>
+                                <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  {t('architect.taskTodos', 'TODO attaché')}
+                                </div>
+                                <div className="divide-y divide-border/40">
+                                  {taskTodos.map((todo, todoIndex) => (
+                                    <div key={todo.id} className="px-3 py-2" data-branch-todo={todo.id}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="min-w-0 flex items-center gap-2">
+                                          <span className="text-[11px] text-muted-foreground w-5 text-right shrink-0">
+                                            {todoIndex + 1}.
+                                          </span>
+                                          <div className="min-w-0">
+                                            <div className="text-xs text-foreground truncate">{todo.title}</div>
+                                            {branch.tasks.length > 1 && (
+                                              <div className="text-[10px] text-muted-foreground truncate">{todo.taskTitle}</div>
+                                            )}
+                                          </div>
+                                          {frozenTask && (
+                                            <span
+                                              className={cn(
+                                                'inline-flex shrink-0 cursor-help items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                                lockedBadgeTone
+                                              )}
+                                              tabIndex={0}
+                                              onMouseEnter={(event) =>
+                                                showFrozenBadgeTooltip(
+                                                  frozenTask.reason,
+                                                  event.currentTarget
+                                                )
+                                              }
+                                              onMouseLeave={hideFrozenBadgeTooltip}
+                                              onFocus={(event) =>
+                                                showFrozenBadgeTooltip(
+                                                  frozenTask.reason,
+                                                  event.currentTarget
+                                                )
+                                              }
+                                              onBlur={hideFrozenBadgeTooltip}
+                                              aria-label={`${t('architect.frozenNodeLocked', 'Locked')}. ${getFrozenReasonTooltipDescription(frozenTask.reason)}`}
+                                              data-frozen-lock-badge={task.id}
+                                            >
+                                              {t('architect.frozenNodeLocked', 'Locked')}
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        <div className="shrink-0 flex items-center gap-2">
+                                          {task.estimatedTime && (
+                                            <div className="text-right text-[10px] text-muted-foreground">{task.estimatedTime}</div>
+                                          )}
+                                          <TodoStatusIcon status={todo.status} />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {artifactContracts.length > 0 && (
+                              <div className={cn('px-3', taskTodos.length > 0 && 'pt-2')}>
+                                {renderArtifactContractsSection(task)}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1714,7 +2205,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
       {hoveredFrozenBadge && viewMode === 'branches' && (
         <div
-          className="fixed z-[115] w-72 rounded-xl border border-border bg-popover/95 p-3 shadow-xl backdrop-blur-sm pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+          className="fixed z-[115] w-72 rounded-xl border border-border bg-popover/95 p-3 shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-150"
           style={{
             top: Math.min(
               hoveredFrozenBadge.rect.bottom + 10,
@@ -1752,7 +2243,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
       {isGraphModalOpen && (
         <div
-          className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200"
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-background/80 animate-in fade-in duration-200"
           onClick={handleModalBackdropClick}
         >
           <div
@@ -2059,6 +2550,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         )}
       </div>
     </aside>
+    {planArtifactsModal}
+    </>
   );
 };
 

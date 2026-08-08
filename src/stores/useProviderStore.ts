@@ -1,14 +1,37 @@
 import { create } from 'zustand';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { ProviderConfig, AIProvider, AIModel, ProviderSettings, ReasoningEffort } from '../types';
+import {
+  ProviderConfig,
+  AIProvider,
+  AIModel,
+  ProviderSettings,
+  ReasoningEffort,
+} from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
-  fetchModelsFromProvider,
   probeModelsEndpoint,
   probeProviderReachability,
 } from '../services/providerApi';
+import {
+  buildCatalogModelContextLimitOverlay,
+  buildProviderModelContextLimitOverlay,
+  enrichModelWithCatalogContextLimits,
+  inferProviderContextWindowTokens,
+  inferProviderInputLimitTokens,
+  inferProviderOutputLimitTokens,
+  mergeProviderModelContextLimitOverlays,
+} from '../services/providerModelContextLimits';
+import { refreshModelContextCatalog } from '../services/modelContextCatalog';
 import { findProviderConfig, loadAIConfigFile } from '../services/aiConfig';
 import { getReasoningCapabilityForModel, getValidReasoningEffort } from '../services/reasoningCatalog';
+import {
+  isLinkedProviderType,
+  providerHasAuthSession,
+  providerHasUsableCredentials,
+} from '../services/providerCredentials';
+import { devLogger } from '../utils/devLogger';
+
+export { isLinkedProviderType, providerHasAuthSession };
 
 const {
   isTauriAvailable: ipcIsTauriAvailable,
@@ -39,35 +62,40 @@ const computeIsFreeModel = (model: AIModel): boolean => {
   return isFreePricing(model.pricing);
 };
 
-const inferContextWindowTokens = (
-  model: Pick<
-    Awaited<ReturnType<typeof fetchModelsFromProvider>>['models'][number],
-    'id' | 'context_window' | 'context_window_tokens' | 'max_input_tokens'
-  >,
-): number | null => {
-  const candidates = [
-    model.context_window_tokens,
-    model.context_window,
-    model.max_input_tokens,
-  ];
-  for (const value of candidates) {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      return Math.trunc(value);
-    }
-  }
-  return null;
-};
-
 const sortModelsByName = (models: AIModel[]): AIModel[] =>
   [...models].sort((left, right) =>
     (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' })
   );
 
-const LINKED_PROVIDER_TYPES = new Set(['chatgpt', 'copilot']);
-const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
+type ProviderModelRefreshReason =
+  | 'boot'
+  | 'provider_selection'
+  | 'model_selection'
+  | 'pre_send'
+  | 'manual';
 
-export const isLinkedProviderType = (providerType?: string | null): boolean =>
-  !!providerType && LINKED_PROVIDER_TYPES.has(providerType);
+const MODEL_REFRESH_SELECTION_COOLDOWN_MS = 5 * 60 * 1000;
+const MODEL_CONTEXT_METADATA_STALE_MS = 5 * 60 * 1000;
+const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
+const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
+let providerConfigMutationVersion = 0;
+const providerSettingsRequestVersionById = new Map<string, number>();
+
+const startProviderSettingsRequest = (providerId: string): number => {
+  const nextVersion = (providerSettingsRequestVersionById.get(providerId) ?? 0) + 1;
+  providerSettingsRequestVersionById.set(providerId, nextVersion);
+  return nextVersion;
+};
+
+const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
+const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
+  'Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.';
+
+const requireProviderConfigurationIpc = (): void => {
+  if (!ipcIsTauriAvailable()) {
+    throw new Error(PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC);
+  }
+};
 
 const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
   !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
@@ -105,12 +133,72 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
     isEnabled: model.is_enabled,
     isManual: model.is_manual,
     contextWindowTokens: model.context_window_tokens ?? undefined,
+    inputLimitTokens: model.input_limit_tokens ?? undefined,
+    outputLimitTokens: model.output_limit_tokens ?? undefined,
+    contextWindowSource:
+      (model.context_window_source as AIModel['contextWindowSource'] | null) ??
+      (model.context_window_tokens
+        ? model.is_manual
+          ? 'user_override'
+          : 'model_metadata'
+        : undefined),
+    contextLimitsUpdatedAt: model.context_limits_updated_at ?? undefined,
     first_seen_at: model.first_seen_at,
     last_seen_at: model.last_seen_at,
     db_id: model.id,
     nativeToolCalling: supportsNativeToolCallingForProviderType(providerType),
   };
   return { ...normalized, isFree: computeIsFreeModel(normalized) };
+};
+
+const enrichModelsWithCatalogContextLimits = (
+  models: AIModel[],
+  params: {
+    providerType?: string | null;
+    providerId?: string | null;
+    baseUrl?: string | null;
+  }
+): AIModel[] =>
+  models.map((model) =>
+    enrichModelWithCatalogContextLimits(model, params),
+  );
+
+const toDbProviderModelInput = (model: AIModel): tauriIpc.DbProviderModelInput => ({
+  model_id: model.id,
+  name: model.name || model.id,
+  description: model.description ?? null,
+  owned_by: model.owned_by ?? null,
+  pricing_prompt: model.pricing?.prompt ?? null,
+  pricing_completion: model.pricing?.completion ?? null,
+  pricing_request: model.pricing?.request ?? null,
+  reasoning_efforts: model.reasoningEfforts ?? null,
+  default_reasoning_effort: model.defaultReasoningEffort ?? null,
+  context_window_tokens: model.contextWindowTokens ?? null,
+  input_limit_tokens: model.inputLimitTokens ?? null,
+  output_limit_tokens: model.outputLimitTokens ?? null,
+  context_window_source: model.contextWindowSource ?? null,
+  context_limits_updated_at: model.contextLimitsUpdatedAt ?? null,
+});
+
+const modelContextFieldsChanged = (left: AIModel, right: AIModel): boolean =>
+  left.contextWindowTokens !== right.contextWindowTokens ||
+  left.inputLimitTokens !== right.inputLimitTokens ||
+  left.outputLimitTokens !== right.outputLimitTokens ||
+  left.contextWindowSource !== right.contextWindowSource ||
+  left.contextLimitsUpdatedAt !== right.contextLimitsUpdatedAt;
+
+const modelContextMetadataIsStale = (model: AIModel): boolean => {
+  if (!model.contextLimitsUpdatedAt) return true;
+  const updatedAt = Date.parse(model.contextLimitsUpdatedAt);
+  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > MODEL_CONTEXT_METADATA_STALE_MS;
+};
+
+const shouldRefreshModelContextMetadata = (model: AIModel | undefined): boolean => {
+  if (!model) return true;
+  if (model.contextWindowSource === 'user_override') return false;
+  if (!model.contextWindowTokens || !model.contextWindowSource) return true;
+  if (model.contextWindowSource === 'macro_fallback') return true;
+  return model.contextWindowSource === 'provider_metadata' && modelContextMetadataIsStale(model);
 };
 
 const getFirstEnabledModelId = (models: AIModel[]): string | null => {
@@ -154,31 +242,12 @@ const resolveSelectedReasoningEffort = (params: {
   );
 };
 
-export const providerHasAuthSession = (
-  provider: Pick<ProviderConfig, 'providerType' | 'authStatus'>
-): boolean => {
-  if (provider.providerType === 'chatgpt') {
-    return ['authenticated', 'refreshing', 'expired'].includes(provider.authStatus ?? '');
-  }
-
-  if (provider.providerType === 'copilot') {
-    return provider.authStatus === 'connected';
-  }
-
-  return false;
-};
-
 export const providerHasCredentials = (
   provider: Pick<
     ProviderConfig,
     'isEnabled' | 'isLocal' | 'apiKey' | 'hasStoredApiKey' | 'providerType' | 'authStatus'
   >
-): boolean => {
-  const hasApiKey =
-    !isLinkedProviderType(provider.providerType) &&
-    (provider.hasStoredApiKey || !!provider.apiKey?.trim());
-  return provider.isEnabled && (provider.isLocal || hasApiKey || providerHasAuthSession(provider));
-};
+): boolean => providerHasUsableCredentials(provider);
 
 const mergeLocalProviderConfig = async (
   providerConfigs: ProviderConfig[]
@@ -260,6 +329,34 @@ const toProviderStatus = (
   }
 
   return connectionStatus === 'online' ? 'online' : 'offline';
+};
+
+const toAIProvider = (
+  config: ProviderConfig,
+  connectionStatus: 'online' | 'offline' | 'checking' | undefined = undefined
+): AIProvider =>
+  applyNativeToolCallingToProvider(
+    {
+      id: config.id,
+      name: config.name,
+      status: toProviderStatus(config, connectionStatus),
+      baseUrl: config.baseUrl,
+      isLocal: config.isLocal,
+      isEnabled: config.isEnabled,
+    },
+    config.providerType
+  );
+
+const normalizeCreatedProviderConfig = (
+  config: tauriIpc.DbProviderConfig,
+  apiKey?: string
+): ProviderConfig => {
+  const trimmedApiKey = apiKey?.trim();
+  return applyNativeToolCallingToProviderConfig({
+    ...normalizeDbProviderConfig(config),
+    apiKey: trimmedApiKey ? apiKey : undefined,
+    apiKeyLoaded: !!trimmedApiKey,
+  });
 };
 
 export type ProviderReachabilityStatus =
@@ -507,6 +604,42 @@ const getCopilotAuthError = (
   return undefined;
 };
 
+const applyCopilotStatusPatch = (
+  state: ProviderStore,
+  providerId: string,
+  status: tauriIpc.CopilotStatusDto
+): Partial<ProviderStore> => {
+  const success = isCopilotConnected(status);
+  const message = getCopilotStatusMessage(status);
+  const authError = getCopilotAuthError(status);
+
+  return {
+    copilotStatusByProvider: {
+      ...state.copilotStatusByProvider,
+      [providerId]: status,
+    },
+    ...withReachabilityRecord(state, providerId, {
+      status: success ? 'reachable' : 'unreachable',
+      lastVerifiedBy: 'linked_auth',
+      lastError: success ? undefined : message,
+    }),
+    authErrorsByProvider: {
+      ...state.authErrorsByProvider,
+      [providerId]: authError,
+    },
+    providerConfigs: state.providerConfigs.map((provider) =>
+      provider.id === providerId
+        ? applyNativeToolCallingToProviderConfig({
+            ...provider,
+            authStatus: status.auth_status as ProviderConfig['authStatus'],
+            authSource: status.auth_source ?? undefined,
+            accountLabel: status.account_label ?? undefined,
+          })
+        : provider
+    ),
+  };
+};
+
 interface ProviderStore {
   // State
   providerConfigs: ProviderConfig[];
@@ -534,6 +667,16 @@ interface ProviderStore {
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   loadProviderModels: (providerId: string) => Promise<AIModel[]>;
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
+  refreshModelsForProviderIfNeeded: (
+    providerId: string,
+    reason: ProviderModelRefreshReason
+  ) => Promise<AIModel[]>;
+  ensureSelectedModelContextMetadata: (
+    providerId: string,
+    modelId: string,
+    reason: ProviderModelRefreshReason
+  ) => Promise<AIModel[]>;
+  refreshLoadedModelContextCatalog: (providerId?: string) => Promise<void>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
   addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
@@ -542,6 +685,20 @@ interface ProviderStore {
     currentModelId: string,
     nextModelId: string,
     name: string
+  ) => Promise<void>;
+  recordProviderModelContextOverflowLimit: (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number,
+  ) => Promise<void>;
+  resetProviderModelContextOverflowLimit: (
+    providerId: string,
+    modelId: string,
+  ) => Promise<void>;
+  setProviderModelContextWindowOverride: (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number | null,
   ) => Promise<void>;
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
@@ -659,11 +816,144 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     return state.getAvailableReasoningEfforts(state.selectedProviderId, state.selectedModelId).length > 0;
   },
 
+  refreshModelsForProviderIfNeeded: async (providerId, reason) => {
+    const provider = get().providerConfigs.find((candidate) => candidate.id === providerId);
+    if (!provider || !providerHasCredentials(provider)) {
+      devLogger.debug('[providers] skipped model refresh: unavailable provider', {
+        providerId,
+        reason,
+      });
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    const inFlight = modelRefreshInFlightByProviderId.get(providerId);
+    if (inFlight) {
+      devLogger.debug('[providers] reusing in-flight model refresh', {
+        providerId,
+        reason,
+      });
+      return inFlight;
+    }
+
+    const now = Date.now();
+    const lastStartedAt = lastModelRefreshStartedAtByProviderId.get(providerId) ?? 0;
+    if (
+      reason !== 'manual' &&
+      lastStartedAt > 0 &&
+      now - lastStartedAt < MODEL_REFRESH_SELECTION_COOLDOWN_MS
+    ) {
+      devLogger.debug('[providers] skipped model refresh: cooldown', {
+        providerId,
+        reason,
+        remainingMs: MODEL_REFRESH_SELECTION_COOLDOWN_MS - (now - lastStartedAt),
+      });
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    lastModelRefreshStartedAtByProviderId.set(providerId, now);
+    devLogger.debug('[providers] refreshing models', { providerId, reason });
+    const refreshPromise = get()
+      .scanModelsForProvider(providerId)
+      .catch((error) => {
+        devLogger.warn('[providers] model refresh failed', {
+          providerId,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return get().modelsByProvider[providerId] || [];
+      })
+      .finally(() => {
+        modelRefreshInFlightByProviderId.delete(providerId);
+      });
+
+    modelRefreshInFlightByProviderId.set(providerId, refreshPromise);
+    return refreshPromise;
+  },
+
+  ensureSelectedModelContextMetadata: async (providerId, modelId, reason) => {
+    const provider = get().providerConfigs.find((candidate) => candidate.id === providerId);
+    const model = (get().modelsByProvider[providerId] || []).find(
+      (candidate) => candidate.id === modelId,
+    );
+
+    if (!provider || !providerHasCredentials(provider)) {
+      return get().modelsByProvider[providerId] || [];
+    }
+    if (!shouldRefreshModelContextMetadata(model)) {
+      return get().modelsByProvider[providerId] || [];
+    }
+
+    return get().refreshModelsForProviderIfNeeded(providerId, reason);
+  },
+
+  refreshLoadedModelContextCatalog: async (providerId?: string) => {
+    await refreshModelContextCatalog();
+
+    const state = get();
+    const providerIds = providerId
+      ? [providerId]
+      : Object.keys(state.modelsByProvider);
+    const nextModelsByProvider = { ...state.modelsByProvider };
+    const changedModelsByProvider: Record<string, AIModel[]> = {};
+
+    for (const currentProviderId of providerIds) {
+      const models = state.modelsByProvider[currentProviderId] || [];
+      if (models.length === 0) continue;
+
+      const providerConfig = state.providerConfigs.find(
+        (provider) => provider.id === currentProviderId,
+      );
+      const enriched = models.map((model) =>
+        enrichModelWithCatalogContextLimits(
+          model,
+          {
+            providerType: providerConfig?.providerType,
+            providerId: currentProviderId,
+            baseUrl: providerConfig?.baseUrl,
+          },
+          { refreshCatalogSource: true },
+        ),
+      );
+      const changed = enriched.filter((model, index) =>
+        modelContextFieldsChanged(models[index] ?? model, model),
+      );
+      if (changed.length === 0) continue;
+
+      nextModelsByProvider[currentProviderId] = sortModelsByName(enriched);
+      changedModelsByProvider[currentProviderId] = changed;
+    }
+
+    if (Object.keys(changedModelsByProvider).length === 0) {
+      return;
+    }
+
+    set({ modelsByProvider: nextModelsByProvider });
+
+    if (!tauriIpc.isTauriAvailable()) {
+      return;
+    }
+
+    await Promise.all(
+      Object.entries(changedModelsByProvider).map(
+        async ([currentProviderId, changedModels]) => {
+          const reliableCatalogModels = changedModels.filter(
+            (model) => model.contextWindowSource === 'models_dev',
+          );
+          if (reliableCatalogModels.length === 0) return;
+          await tauriIpc.upsertProviderModels({
+            providerId: currentProviderId,
+            models: reliableCatalogModels.map(toDbProviderModelInput),
+          });
+        },
+      ),
+    );
+  },
+
   initialize: async () => {
     const { loadProviderConfigs, loadProviderModels, testConnection } = get();
     await loadProviderConfigs();
 
-    const { providerConfigs } = get();
+    const { providerConfigs, selectedProviderId } = get();
 
     const connectivityChecks: Array<Promise<unknown>> = [];
 
@@ -675,20 +965,29 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         continue;
       }
 
+      if (provider.id === selectedProviderId) {
+        connectivityChecks.push(get().refreshModelsForProviderIfNeeded(provider.id, 'boot'));
+        continue;
+      }
+
       if (provider.providerType === 'copilot') {
         connectivityChecks.push(testConnection(provider.id));
         continue;
       }
 
-      // Avoid keychain reads on boot for API-key and ChatGPT providers.
+      // Avoid secret reveals on boot for API-key and ChatGPT providers.
       if (!provider.isLocal) {
         continue;
       }
 
-      connectivityChecks.push(models.length === 0 ? get().scanModelsForProvider(provider.id) : testConnection(provider.id));
+      connectivityChecks.push(
+        models.length === 0
+          ? get().refreshModelsForProviderIfNeeded(provider.id, 'boot')
+          : testConnection(provider.id)
+      );
     }
 
-    void Promise.allSettled(connectivityChecks);
+    await Promise.allSettled(connectivityChecks);
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
@@ -732,15 +1031,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderConfigs: async () => {
+    const hydrationVersion = providerConfigMutationVersion;
     set({ isLoading: true, lastError: null });
     
     try {
       if (ipcIsTauriAvailable()) {
         const currentProviderConfigs = get().providerConfigs;
         const configs = await ipcListProviderConfigs();
+        if (hydrationVersion !== providerConfigMutationVersion) {
+          set({ isLoading: false });
+          return;
+        }
         const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
+        const mergedProviderConfigs = await mergeLocalProviderConfig(normalizedConfigs);
+        if (hydrationVersion !== providerConfigMutationVersion) {
+          set({ isLoading: false });
+          return;
+        }
         const providerConfigs = mergeRuntimeProviderConfigState(
-          await mergeLocalProviderConfig(normalizedConfigs),
+          mergedProviderConfigs,
           currentProviderConfigs
         );
         const currentSelectedProviderId = get().selectedProviderId;
@@ -767,18 +1076,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               : null,
         });
         
-        const providers: AIProvider[] = providerConfigs.map((c) =>
-          applyNativeToolCallingToProvider(
-            {
-              id: c.id,
-              name: c.name,
-              status: toProviderStatus(c, get().connectionStatus[c.id]),
-              baseUrl: c.baseUrl,
-              isLocal: c.isLocal,
-              isEnabled: c.isEnabled,
-            },
-            c.providerType
-          )
+        const providers: AIProvider[] = providerConfigs.map((config) =>
+          toAIProvider(config, get().connectionStatus[config.id])
         );
 
         set({
@@ -794,70 +1093,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           get().loadProviderSettings(provider.id);
         }
       } else {
-        // Fallback mock providers for development without Tauri
-        const mockConfigs = [
-          { id: 'openai', name: 'OpenAI', providerType: 'openai', baseUrl: 'https://api.openai.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'chatgpt', name: 'ChatGPT', providerType: 'chatgpt', baseUrl: 'https://chatgpt.com/backend-api', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'unauthenticated' },
-          { id: 'copilot', name: 'GitHub Copilot', providerType: 'copilot', baseUrl: 'copilot://cli', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false, authStatus: 'login_required' },
-          { id: 'zai', name: 'z.ai', providerType: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'anthropic', name: 'Anthropic', providerType: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'openrouter', name: 'OpenRouter', providerType: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: false },
-          { id: 'ollama', name: 'Ollama', providerType: 'ollama', baseUrl: 'http://localhost:11434/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
-          { id: 'lmstudio', name: 'LM Studio', providerType: 'lmstudio', baseUrl: 'http://localhost:1234/v1', hasStoredApiKey: false, apiKeyLoaded: false, isEnabled: true, isLocal: true },
-        ] satisfies ProviderConfig[];
-        const providerConfigs = await mergeLocalProviderConfig(
-          mockConfigs.map(applyNativeToolCallingToProviderConfig)
-        );
-        const currentSelectedProviderId = get().selectedProviderId;
-        const currentSelectedModelId = get().selectedModelId;
-        const currentSelectedProvider = providerConfigs.find(
-          (provider) => provider.id === currentSelectedProviderId
-        );
-        const nextSelectedProviderId =
-          currentSelectedProvider && providerHasCredentials(currentSelectedProvider)
-            ? currentSelectedProvider.id
-            : null;
-        const nextSelectedModelId =
-          nextSelectedProviderId === currentSelectedProviderId
-            ? currentSelectedModelId
-            : null;
-        const nextSelectedReasoningEffort = resolveSelectedReasoningEffort({
-          providerId: nextSelectedProviderId,
-          modelId: nextSelectedModelId,
-          modelsByProvider: get().modelsByProvider,
-          unsupported: get().reasoningUnsupportedModelKeys,
-          requested:
-            nextSelectedProviderId === currentSelectedProviderId
-              ? get().selectedReasoningEffort
-              : null,
-        });
-        
-        const providers: AIProvider[] = providerConfigs.map((c) =>
-          applyNativeToolCallingToProvider(
-            {
-              id: c.id,
-              name: c.name,
-              status: toProviderStatus(c, get().connectionStatus[c.id]),
-              baseUrl: c.baseUrl,
-              isLocal: c.isLocal,
-              isEnabled: c.isEnabled,
-            },
-            c.providerType
-          )
-        );
-
         set({
-          providerConfigs,
-          providers,
+          providerConfigs: [],
+          providers: [],
           isLoading: false,
-          selectedProviderId: nextSelectedProviderId,
-          selectedModelId: nextSelectedModelId,
-          selectedReasoningEffort: nextSelectedReasoningEffort,
+          selectedProviderId: null,
+          selectedModelId: null,
+          selectedReasoningEffort: null,
         });
-
-        for (const provider of providerConfigs) {
-          get().loadProviderSettings(provider.id);
-        }
+        throw new Error(PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load providers';
@@ -872,12 +1116,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   loadProviderModels: async (providerId: string) => {
     const { modelsByProvider, providerConfigs } = get();
-    const providerType = providerConfigs.find((provider) => provider.id === providerId)?.providerType;
+    const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
+    const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
+        void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
-        const normalized = models.map((model) => normalizeDbModel(model, providerType));
+        const normalized = enrichModelsWithCatalogContextLimits(
+          models.map((model) => normalizeDbModel(model, providerType)),
+          {
+            providerType,
+            providerId,
+            baseUrl: providerConfig?.baseUrl,
+          },
+        );
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -900,6 +1153,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -959,10 +1213,37 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
 
       try {
+        void refreshModelContextCatalog();
         const updated = tauriIpc.isTauriAvailable()
           ? await tauriIpc.aiSyncProviderModels(providerId)
           : [];
-        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        let normalized = enrichModelsWithCatalogContextLimits(
+          updated.map((model) => normalizeDbModel(model, config.providerType)),
+          {
+            providerType: config.providerType,
+            providerId,
+            baseUrl: config.baseUrl,
+          },
+        );
+        if (tauriIpc.isTauriAvailable()) {
+          const hasCatalogEnrichment = normalized.some(
+            (model) => model.contextWindowSource === 'models_dev',
+          );
+          if (hasCatalogEnrichment) {
+            const persisted = await tauriIpc.upsertProviderModels({
+              providerId,
+              models: normalized.map(toDbProviderModelInput),
+            });
+            normalized = enrichModelsWithCatalogContextLimits(
+              persisted.map((model) => normalizeDbModel(model, config.providerType)),
+              {
+                providerType: config.providerType,
+                providerId,
+                baseUrl: config.baseUrl,
+              },
+            );
+          }
+        }
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -989,6 +1270,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1050,6 +1332,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         baseUrl: config.baseUrl,
         apiKey,
         providerId: config.providerType,
+        providerType: config.providerType,
       });
 
       if (!result.success) {
@@ -1068,14 +1351,52 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
 
       if (tauriIpc.isTauriAvailable()) {
+        void refreshModelContextCatalog();
         const updated = await tauriIpc.upsertProviderModels({
           providerId,
           models: result.models.map((model) => {
+            const existingModel = (modelsByProvider[providerId] || []).find(
+              (candidate) => candidate.id === model.id,
+            );
             const reasoningCapability = getReasoningCapabilityForModel({
               providerType: config.providerType,
               modelId: model.id,
               supportedParameters: model.supported_parameters,
+              supportedReasoningEfforts: model.supported_reasoning_efforts,
+              defaultReasoningEffort: model.default_reasoning_effort,
             });
+            const providerContextWindowTokens = inferProviderContextWindowTokens(model);
+            const providerInputLimitTokens = inferProviderInputLimitTokens(model);
+            const providerOutputLimitTokens = inferProviderOutputLimitTokens(model);
+            const catalogOverlay = providerContextWindowTokens
+              ? {}
+              : buildCatalogModelContextLimitOverlay({
+                  providerType: config.providerType,
+                  providerId,
+                  baseUrl: config.baseUrl,
+                  modelId: model.id,
+                });
+            const contextWindowTokens =
+              providerContextWindowTokens ??
+              catalogOverlay.contextWindowTokens ??
+              null;
+            const contextWindowSource = providerContextWindowTokens
+              ? 'provider_metadata'
+              : catalogOverlay.contextWindowSource ?? null;
+            const contextLimitsUpdatedAt =
+              contextWindowSource === 'provider_metadata'
+                ? new Date().toISOString()
+                : catalogOverlay.contextLimitsUpdatedAt ?? null;
+            const userOverrideContext =
+              existingModel?.contextWindowSource === 'user_override' &&
+              existingModel.contextWindowTokens
+                ? {
+                    contextWindowTokens: existingModel.contextWindowTokens,
+                    contextWindowSource: 'user_override' as const,
+                    contextLimitsUpdatedAt:
+                      existingModel.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
+                  }
+                : null;
 
             return {
               model_id: model.id,
@@ -1087,12 +1408,31 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               pricing_request: model.pricing?.request ?? null,
               reasoning_efforts: reasoningCapability.reasoningEfforts,
               default_reasoning_effort: reasoningCapability.defaultReasoningEffort,
-              context_window_tokens: inferContextWindowTokens(model),
+              context_window_tokens:
+                userOverrideContext?.contextWindowTokens ?? contextWindowTokens,
+              input_limit_tokens:
+                providerInputLimitTokens ?? catalogOverlay.inputLimitTokens ?? null,
+              output_limit_tokens:
+                providerOutputLimitTokens ?? catalogOverlay.outputLimitTokens ?? null,
+              context_window_source:
+                userOverrideContext?.contextWindowSource ?? contextWindowSource,
+              context_limits_updated_at:
+                userOverrideContext?.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
             };
           }),
         });
 
-        const normalized = updated.map((model) => normalizeDbModel(model, config.providerType));
+        const normalized = enrichModelsWithCatalogContextLimits(
+          mergeProviderModelContextLimitOverlays(
+            updated.map((model) => normalizeDbModel(model, config.providerType)),
+            result.models,
+          ),
+          {
+            providerType: config.providerType,
+            providerId,
+            baseUrl: config.baseUrl,
+          },
+        );
         const currentSelectedModelId = get().selectedModelId;
         const candidateSelectedModelId =
           currentSelectedModelId == null
@@ -1119,6 +1459,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
+        void get().refreshLoadedModelContextCatalog(providerId);
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1141,12 +1482,27 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return normalized;
       }
 
+      void refreshModelContextCatalog();
       const models: AIModel[] = result.models.map((m) => {
+        const existingModel = (modelsByProvider[providerId] || []).find(
+          (candidate) => candidate.id === m.id,
+        );
         const reasoningCapability = getReasoningCapabilityForModel({
           providerType: config.providerType,
           modelId: m.id,
           supportedParameters: m.supported_parameters,
+          supportedReasoningEfforts: m.supported_reasoning_efforts,
+          defaultReasoningEffort: m.default_reasoning_effort,
         });
+        const providerOverlay = buildProviderModelContextLimitOverlay(m);
+        const catalogOverlay = providerOverlay.contextWindowTokens
+          ? {}
+          : buildCatalogModelContextLimitOverlay({
+              providerType: config.providerType,
+              providerId,
+              baseUrl: config.baseUrl,
+              modelId: m.id,
+            });
         const normalized = {
           id: m.id,
           name: m.name || m.id,
@@ -1162,6 +1518,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
           isEnabled: true,
           nativeToolCalling: supportsNativeToolCallingForProviderType(config.providerType),
+          ...catalogOverlay,
+          ...providerOverlay,
+          ...(existingModel?.contextWindowSource === 'user_override' &&
+          existingModel.contextWindowTokens
+            ? {
+                contextWindowTokens: existingModel.contextWindowTokens,
+                contextWindowSource: existingModel.contextWindowSource,
+                contextLimitsUpdatedAt: existingModel.contextLimitsUpdatedAt,
+              }
+            : {}),
         } satisfies AIModel;
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
@@ -1174,6 +1540,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }),
         isLoadingModels: false,
       }));
+      void get().refreshLoadedModelContextCatalog(providerId);
 
       return models;
     } catch (error) {
@@ -1425,6 +1792,205 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
+  recordProviderModelContextOverflowLimit: async (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number,
+  ) => {
+    if (!Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return;
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel) return;
+    const observedLimit = Math.trunc(contextWindowTokens);
+    if (currentModel.contextWindowSource === 'user_override') {
+      return;
+    }
+    if (
+      currentModel.contextWindowTokens &&
+      observedLimit >= currentModel.contextWindowTokens
+    ) {
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const nextModel: AIModel = {
+      ...currentModel,
+      contextWindowTokens: observedLimit,
+      contextWindowSource: 'provider_overflow_error',
+      contextLimitsUpdatedAt: updatedAt,
+    };
+    const providerType = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    )?.providerType;
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
+  },
+
+  resetProviderModelContextOverflowLimit: async (
+    providerId: string,
+    modelId: string,
+  ) => {
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel || currentModel.contextWindowSource !== 'provider_overflow_error') {
+      return;
+    }
+
+    const providerConfig = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    );
+    const {
+      contextWindowTokens: _contextWindowTokens,
+      contextWindowSource: _contextWindowSource,
+      contextLimitsUpdatedAt: _contextLimitsUpdatedAt,
+      ...modelWithoutLearnedLimit
+    } = currentModel;
+    const catalogOverlay = buildCatalogModelContextLimitOverlay({
+      providerType: providerConfig?.providerType,
+      providerId,
+      baseUrl: providerConfig?.baseUrl,
+      modelId,
+    });
+    const nextModel: AIModel = {
+      ...modelWithoutLearnedLimit,
+      ...catalogOverlay,
+    };
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerConfig?.providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
+  },
+
+  setProviderModelContextWindowOverride: async (
+    providerId: string,
+    modelId: string,
+    contextWindowTokens: number | null,
+  ) => {
+    const currentModels = get().modelsByProvider[providerId] || [];
+    const currentModel = currentModels.find((model) => model.id === modelId);
+    if (!currentModel) return;
+
+    const providerConfig = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    );
+    const normalizedTokens =
+      typeof contextWindowTokens === 'number' &&
+      Number.isFinite(contextWindowTokens) &&
+      contextWindowTokens > 0
+        ? Math.trunc(contextWindowTokens)
+        : null;
+    if (contextWindowTokens !== null && !normalizedTokens) {
+      throw new Error('Context window must be a positive token count.');
+    }
+
+    const {
+      contextWindowTokens: _overrideContextWindowTokens,
+      contextWindowSource: _overrideContextWindowSource,
+      contextLimitsUpdatedAt: _overrideContextLimitsUpdatedAt,
+      ...baseModel
+    } = currentModel;
+    const nextModel: AIModel = normalizedTokens
+      ? {
+          ...currentModel,
+          contextWindowTokens: normalizedTokens,
+          contextWindowSource: 'user_override',
+          contextLimitsUpdatedAt: new Date().toISOString(),
+        }
+      : enrichModelWithCatalogContextLimits(baseModel, {
+          providerType: providerConfig?.providerType,
+          providerId,
+          baseUrl: providerConfig?.baseUrl,
+        });
+
+    if (tauriIpc.isTauriAvailable()) {
+      await tauriIpc.upsertProviderModels({
+        providerId,
+        models: [toDbProviderModelInput(nextModel)],
+      });
+    }
+
+    set((state) => {
+      const providerType = state.providerConfigs.find(
+        (provider) => provider.id === providerId,
+      )?.providerType;
+      const models = state.modelsByProvider[providerId] || [];
+      const normalized = sortModelsByName(
+        models.map((model) =>
+          model.id === modelId
+            ? {
+                ...nextModel,
+                nativeToolCalling:
+                  supportsNativeToolCallingForProviderType(providerType),
+                isFree: computeIsFreeModel(nextModel),
+              }
+            : model,
+        ),
+      );
+      return {
+        modelsByProvider: {
+          ...state.modelsByProvider,
+          [providerId]: normalized,
+        },
+      };
+    });
+
+    if (!normalizedTokens && providerConfig && providerHasCredentials(providerConfig)) {
+      void get().refreshModelsForProviderIfNeeded(providerId, 'manual');
+    }
+  },
+
   deleteManualModel: async (providerId: string, modelId: string) => {
     if (tauriIpc.isTauriAvailable()) {
       const updated = await tauriIpc.deleteManualModel({ providerId, modelId });
@@ -1502,6 +2068,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderSettings: async (providerId: string) => {
+    const requestVersion = startProviderSettingsRequest(providerId);
     if (ipcIsTauriAvailable()) {
       try {
         const settings = await ipcGetProviderSettings(providerId);
@@ -1510,6 +2077,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           filterFreeModels: settings.filter_free_models,
           copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
         };
+        if (
+          providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+          !get().providerConfigs.some((provider) => provider.id === providerId)
+        ) {
+          return get().providerSettingsById[providerId] ?? null;
+        }
         set((state) => ({
           providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
         }));
@@ -1526,6 +2099,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       filterFreeModels: false,
       copilotSendTimeoutMs: null,
     };
+    if (
+      providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+      !get().providerConfigs.some((provider) => provider.id === providerId)
+    ) {
+      return get().providerSettingsById[providerId] ?? null;
+    }
     set((state) => ({
       providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
     }));
@@ -1533,6 +2112,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   updateProviderSettings: async (providerId: string, updates: Partial<ProviderSettings>) => {
+    const requestVersion = startProviderSettingsRequest(providerId);
     const current = get().providerSettingsById[providerId] ?? {
       providerId,
       filterFreeModels: false,
@@ -1540,21 +2120,31 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     };
     const next: ProviderSettings = { ...current, ...updates, providerId };
 
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.updateProviderSettings({
-        providerId,
-        ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
-          ? { filterFreeModels: next.filterFreeModels }
-          : {}),
-        ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
-          ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
-          : {}),
-      });
-    }
+    try {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.updateProviderSettings({
+          providerId,
+          ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
+            ? { filterFreeModels: next.filterFreeModels }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
+            ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
+            : {}),
+        });
+      }
 
-    set((state) => ({
-      providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
-    }));
+      if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
+        return;
+      }
+
+      set((state) => ({
+        providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update provider settings';
+      set({ lastError: message });
+      throw error;
+    }
   },
 
   commitRestoredSelection: async (selection, options) => {
@@ -1623,6 +2213,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId: resolvedModelId,
       selectedReasoningEffort,
     });
+    void get().refreshModelsForProviderIfNeeded(providerId, 'boot');
 
     return {
       providerId,
@@ -1642,9 +2233,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedReasoningEffort: providerId === selectedProviderId ? get().selectedReasoningEffort : null,
     });
 
-    if ((get().modelsByProvider[providerId] || []).length === 0) {
-      loadProviderModels(providerId);
-    }
+    void (async () => {
+      if ((get().modelsByProvider[providerId] || []).length === 0) {
+        await loadProviderModels(providerId);
+      }
+      await get().refreshModelsForProviderIfNeeded(providerId, 'provider_selection');
+    })();
   },
 
   selectModel: (modelId: string) => {
@@ -1659,6 +2253,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         requested: state.selectedReasoningEffort,
       }),
     });
+    if (state.selectedProviderId) {
+      void get().ensureSelectedModelContextMetadata(
+        state.selectedProviderId,
+        modelId,
+        'model_selection',
+      );
+    }
   },
 
   selectReasoningEffort: (effort: ReasoningEffort | null) => {
@@ -1725,6 +2326,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
     try {
+      requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
+
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
       const providerType = updates.providerType ?? currentConfig?.providerType;
       const currentApiKey = currentConfig?.apiKey?.trim() ?? '';
@@ -1746,17 +2350,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }
         : updates;
 
-      if (ipcIsTauriAvailable()) {
-        await ipcUpdateProviderConfig({
-          id,
-          name: persistedUpdates.name,
-          providerType: persistedUpdates.providerType,
-          baseUrl: persistedUpdates.baseUrl,
-          apiKey: persistedUpdates.apiKey,
-          isLocal: persistedUpdates.isLocal,
-          isEnabled: persistedUpdates.isEnabled,
-        });
-      }
+      await ipcUpdateProviderConfig({
+        id,
+        name: persistedUpdates.name,
+        providerType: persistedUpdates.providerType,
+        baseUrl: persistedUpdates.baseUrl,
+        apiKey: persistedUpdates.apiKey,
+        isLocal: persistedUpdates.isLocal,
+        isEnabled: persistedUpdates.isEnabled,
+      });
 
       // Update local state
       set((state) => ({
@@ -1802,73 +2404,27 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
     try {
-      if (ipcIsTauriAvailable()) {
-        const created = await ipcCreateProviderConfig({
-          name: config.name,
-          providerType: config.providerType,
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-          isLocal: config.isLocal,
-        });
+      requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
 
-        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
-          id: created.id,
-          name: created.name,
-          providerType: created.provider_type,
-          baseUrl: created.base_url,
-          apiKey: config.apiKey?.trim() ? config.apiKey : undefined,
-          hasStoredApiKey: created.has_stored_api_key,
-          apiKeyLoaded: !!config.apiKey?.trim(),
-          isEnabled: created.is_enabled,
-          isLocal: created.is_local,
-        });
+      const created = await ipcCreateProviderConfig({
+        name: config.name,
+        providerType: config.providerType,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        isLocal: config.isLocal,
+      });
 
-        const newProvider: AIProvider = applyNativeToolCallingToProvider(
-          {
-            id: created.id,
-            name: created.name,
-            status: 'offline',
-            baseUrl: created.base_url,
-            isLocal: created.is_local,
-            isEnabled: created.is_enabled,
-          },
-          created.provider_type
-        );
+      const newConfig = normalizeCreatedProviderConfig(created, config.apiKey);
+      const newProvider = toAIProvider(newConfig);
 
-        set((state) => ({
-          providerConfigs: [...state.providerConfigs, newConfig],
-          providers: [...state.providers, newProvider],
-          providerReachabilityById: { ...state.providerReachabilityById, [created.id]: undefined },
-        }));
+      set((state) => ({
+        providerConfigs: [...state.providerConfigs, newConfig],
+        providers: [...state.providers, newProvider],
+        providerReachabilityById: { ...state.providerReachabilityById, [created.id]: undefined },
+      }));
 
-        await get().loadProviderSettings(created.id);
-      } else {
-        // Mock creation for development
-        const id = `provider_${Date.now()}`;
-        const newConfig: ProviderConfig = applyNativeToolCallingToProviderConfig({
-          id,
-          ...config,
-          hasStoredApiKey: !!config.apiKey?.trim(),
-          apiKeyLoaded: !!config.apiKey?.trim(),
-        });
-        const newProvider: AIProvider = applyNativeToolCallingToProvider(
-          {
-            id,
-            name: config.name,
-            status: 'offline',
-            baseUrl: config.baseUrl,
-            isLocal: config.isLocal,
-            isEnabled: config.isEnabled,
-          },
-          config.providerType
-        );
-
-        set((state) => ({
-          providerConfigs: [...state.providerConfigs, newConfig],
-          providers: [...state.providers, newProvider],
-          providerReachabilityById: { ...state.providerReachabilityById, [id]: undefined },
-        }));
-      }
+      await get().loadProviderSettings(created.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create provider';
       set({ lastError: message });
@@ -1878,22 +2434,66 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   deleteProviderConfig: async (id: string) => {
     try {
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.deleteProviderConfig(id);
-      }
+      requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
+      startProviderSettingsRequest(id);
 
-      set((state) => ({
-        providerConfigs: state.providerConfigs.filter((c) => c.id !== id),
-        providers: state.providers.filter((p) => p.id !== id),
-        modelsByProvider: Object.fromEntries(
-          Object.entries(state.modelsByProvider).filter(([key]) => key !== id)
-        ),
-        providerSettingsById: Object.fromEntries(
-          Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
-        ),
-        providerReachabilityById: omitRuntimeStateKey(state.providerReachabilityById, id),
-        connectionStatus: omitRuntimeStateKey(state.connectionStatus, id),
-      }));
+      await tauriIpc.deleteProviderConfig(id);
+
+      set((state) => {
+        const providerConfigs = state.providerConfigs.filter((provider) => provider.id !== id);
+        const selectedProviderWasDeleted = state.selectedProviderId === id;
+        const fallbackProvider = selectedProviderWasDeleted
+          ? providerConfigs.find(
+              (provider) => provider.isEnabled && providerHasCredentials(provider)
+            ) ?? null
+          : null;
+        const nextSelectedProviderId = selectedProviderWasDeleted
+          ? fallbackProvider?.id ?? null
+          : state.selectedProviderId;
+        const nextModels = nextSelectedProviderId
+          ? state.modelsByProvider[nextSelectedProviderId] ?? []
+          : [];
+        const selectedModelStillAvailable =
+          nextSelectedProviderId === state.selectedProviderId &&
+          state.selectedModelId !== null &&
+          nextModels.some(
+            (model) => model.id === state.selectedModelId && model.isEnabled !== false
+          );
+        const nextSelectedModelId = selectedModelStillAvailable
+          ? state.selectedModelId
+          : getFirstEnabledModelId(nextModels);
+
+        return {
+          providerConfigs,
+          providers: state.providers.filter((provider) => provider.id !== id),
+          modelsByProvider: Object.fromEntries(
+            Object.entries(state.modelsByProvider).filter(([key]) => key !== id)
+          ),
+          providerSettingsById: Object.fromEntries(
+            Object.entries(state.providerSettingsById).filter(([key]) => key !== id)
+          ),
+          providerReachabilityById: omitRuntimeStateKey(state.providerReachabilityById, id),
+          connectionStatus: omitRuntimeStateKey(state.connectionStatus, id),
+          authErrorsByProvider: omitRuntimeStateKey(state.authErrorsByProvider, id),
+          authRequestIdsByProvider: omitRuntimeStateKey(state.authRequestIdsByProvider, id),
+          copilotStatusByProvider: omitRuntimeStateKey(state.copilotStatusByProvider, id),
+          copilotDownloadStateByProvider: omitRuntimeStateKey(
+            state.copilotDownloadStateByProvider,
+            id
+          ),
+          copilotAuthStateByProvider: omitRuntimeStateKey(state.copilotAuthStateByProvider, id),
+          selectedProviderId: nextSelectedProviderId,
+          selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort: resolveSelectedReasoningEffort({
+            providerId: nextSelectedProviderId,
+            modelId: nextSelectedModelId,
+            modelsByProvider: state.modelsByProvider,
+            unsupported: state.reasoningUnsupportedModelKeys,
+            requested: selectedModelStillAvailable ? state.selectedReasoningEffort : null,
+          }),
+        };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete provider';
       set({ lastError: message });
@@ -2062,8 +2662,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       });
     };
 
+    let completedStatus: tauriIpc.CopilotStatusDto | null = null;
+
     try {
-      await new Promise<void>((resolve, reject) => {
+      completedStatus = await new Promise<tauriIpc.CopilotStatusDto | null>((resolve, reject) => {
         let settled = false;
         let unlisteners: UnlistenFn[] = [];
 
@@ -2099,7 +2701,20 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                 'ai:copilot-download-complete',
                 (event) => {
                   if (event.payload.request_id !== requestId) return;
-                  finish(() => resolve(), unlisteners);
+                  const status = event.payload.status ?? null;
+                  if (status) {
+                    set((state) => ({
+                      ...applyCopilotStatusPatch(state, providerId, status),
+                      copilotDownloadStateByProvider: {
+                        ...state.copilotDownloadStateByProvider,
+                        [providerId]:
+                          state.copilotDownloadStateByProvider[providerId]?.requestId === requestId
+                            ? undefined
+                            : state.copilotDownloadStateByProvider[providerId],
+                      },
+                    }));
+                  }
+                  finish(() => resolve(status), unlisteners);
                 }
               ),
               listen<tauriIpc.CopilotDownloadErrorEvent>('ai:copilot-download-error', (event) => {
@@ -2149,7 +2764,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
     }
 
-    const result = await get().testConnection(providerId);
+    const result = completedStatus
+      ? {
+          success: isCopilotConnected(completedStatus),
+        }
+      : await get().testConnection(providerId);
     if (result.success) {
       await get().loadProviderModels(providerId);
       await get().scanModelsForProvider(providerId);
@@ -2406,32 +3025,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           const status = await tauriIpc.aiGetCopilotStatus(providerId);
           const success = isCopilotConnected(status);
           const message = getCopilotStatusMessage(status);
-          const authError = getCopilotAuthError(status);
 
           set((state) => ({
-            copilotStatusByProvider: {
-              ...state.copilotStatusByProvider,
-              [providerId]: status,
-            },
-            ...withReachabilityRecord(state, providerId, {
-              status: success ? 'reachable' : 'unreachable',
-              lastVerifiedBy: 'linked_auth',
-              lastError: success ? undefined : message,
-            }),
-            authErrorsByProvider: {
-              ...state.authErrorsByProvider,
-              [providerId]: authError,
-            },
-            providerConfigs: state.providerConfigs.map((provider) =>
-              provider.id === providerId
-                ? applyNativeToolCallingToProviderConfig({
-                    ...provider,
-                    authStatus: status.auth_status as ProviderConfig['authStatus'],
-                    authSource: status.auth_source ?? undefined,
-                    accountLabel: status.account_label ?? undefined,
-                  })
-                : provider
-            ),
+            ...applyCopilotStatusPatch(state, providerId, status),
           }));
 
           return {
@@ -2501,6 +3097,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       baseUrl: config.baseUrl,
       apiKey,
       providerId: config.providerType,
+      providerType: config.providerType,
       preferredModelId: probeModels.preferredModelId,
       modelIds: probeModels.modelIds,
       timeout: 5000,

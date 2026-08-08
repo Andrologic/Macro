@@ -6,38 +6,34 @@ import {
 } from './implementMultiRepoSummary';
 
 describe('buildReviewTaskSummary', () => {
-  it('summarizes mixed repository review states and keeps focus on the next actionable repository', () => {
-    const reviewSummary = buildReviewTaskSummary(
-      [
-        {
-          id: 'repo-a',
-          projectId: 'web',
-          repoPath: '/repos/web',
-          branchName: 'feature/shared-task',
-          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
-          commitState: 'committed',
-        },
-        {
-          id: 'repo-b',
-          projectId: 'api',
-          repoPath: '/repos/api',
-          branchName: 'feature/shared-task',
-          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
-          commitState: 'idle',
-        },
-        {
-          id: 'repo-c',
-          projectId: 'worker',
-          repoPath: '/repos/worker',
-          branchName: 'feature/shared-task',
-          stats: { pendingVisibleFileCount: 3, validatedStagedFileCount: 0 },
-          commitState: 'idle',
-        },
-      ],
-      'repo-a'
-    );
+  it('summarizes mixed repository review states and marks the next actionable repository', () => {
+    const reviewSummary = buildReviewTaskSummary([
+      {
+        id: 'repo-a',
+        projectId: 'web',
+        repoPath: '/repos/web',
+        branchName: 'feature/shared-task',
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 0 },
+        commitState: 'committed',
+      },
+      {
+        id: 'repo-b',
+        projectId: 'api',
+        repoPath: '/repos/api',
+        branchName: 'feature/shared-task',
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
+        commitState: 'idle',
+      },
+      {
+        id: 'repo-c',
+        projectId: 'worker',
+        repoPath: '/repos/worker',
+        branchName: 'feature/shared-task',
+        stats: { pendingVisibleFileCount: 3, validatedStagedFileCount: 0 },
+        commitState: 'idle',
+      },
+    ]);
 
-    expect(reviewSummary.currentRepositoryId).toBe('repo-b');
     expect(reviewSummary.nextRepositoryId).toBe('repo-b');
     expect(reviewSummary.nextAction).toBe('commit_repository');
     expect(reviewSummary.stateCounts).toEqual({
@@ -74,30 +70,26 @@ describe('buildReviewTaskSummary', () => {
     expect(reviewSummary.nextAction).toBe('complete_without_code_changes');
   });
 
-  it('prioritizes validation when the current repository has both staged and unstaged work', () => {
-    const reviewSummary = buildReviewTaskSummary(
-      [
-        {
-          id: 'repo-a',
-          projectId: 'web',
-          repoPath: '/repos/web',
-          branchName: 'feature/mixed',
-          stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 1 },
-          commitState: 'idle',
-        },
-        {
-          id: 'repo-b',
-          projectId: 'api',
-          repoPath: '/repos/api',
-          branchName: 'feature/mixed',
-          stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
-          commitState: 'idle',
-        },
-      ],
-      'repo-a'
-    );
+  it('prioritizes validation when the next repository has both staged and unstaged work', () => {
+    const reviewSummary = buildReviewTaskSummary([
+      {
+        id: 'repo-a',
+        projectId: 'web',
+        repoPath: '/repos/web',
+        branchName: 'feature/mixed',
+        stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 1 },
+        commitState: 'idle',
+      },
+      {
+        id: 'repo-b',
+        projectId: 'api',
+        repoPath: '/repos/api',
+        branchName: 'feature/mixed',
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 2 },
+        commitState: 'idle',
+      },
+    ]);
 
-    expect(reviewSummary.currentRepositoryId).toBe('repo-a');
     expect(reviewSummary.nextRepositoryId).toBe('repo-a');
     expect(reviewSummary.actionCounts).toEqual({
       pending_validation: 1,

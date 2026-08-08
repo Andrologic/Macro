@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { cn } from '../../../utils/cn';
 import type { ComposerEditorHandle } from './ComposerEditor';
+import type { MentionSurface } from './MentionNode';
 
 interface LazyComposerEditorProps {
   editable: boolean;
@@ -17,6 +18,9 @@ interface LazyComposerEditorProps {
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
   className?: string;
+  initialText?: string;
+  surface?: MentionSurface;
+  syncContextRefs?: boolean;
 }
 
 type ComposerEditorComponent = ForwardRefExoticComponent<
@@ -36,11 +40,23 @@ const syncComposerText = (
 };
 
 export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerEditorProps>(
-  ({ editable, placeholder, onTextChange, onSend, onPromptHistory, className }, ref) => {
+  ({
+    editable,
+    placeholder,
+    onTextChange,
+    onSend,
+    onPromptHistory,
+    className,
+    initialText = '',
+    surface = 'composer',
+    syncContextRefs = true,
+  }, ref) => {
     const [LoadedEditor, setLoadedEditor] = useState<ComposerEditorComponent | null>(null);
+    const [loadFailed, setLoadFailed] = useState(false);
     const loadedEditorRef = useRef<ComposerEditorHandle>(null);
     const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
-    const fallbackTextRef = useRef('');
+    const fallbackTextRef = useRef(initialText);
+    const lastInitialTextRef = useRef(initialText);
 
     useEffect(() => {
       let isMounted = true;
@@ -50,6 +66,15 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           return;
         }
         setLoadedEditor(() => module.ComposerEditor as ComposerEditorComponent);
+      }).catch((error: unknown) => {
+        if (!isMounted) {
+          return;
+        }
+        setLoadFailed(true);
+        console.error(
+          '[LazyComposerEditor] Failed to load the rich composer; keeping the textarea fallback.',
+          error,
+        );
       });
 
       return () => {
@@ -72,10 +97,29 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
       };
     }, [LoadedEditor]);
 
+    useEffect(() => {
+      if (initialText === lastInitialTextRef.current) {
+        return;
+      }
+
+      lastInitialTextRef.current = initialText;
+      fallbackTextRef.current = initialText;
+
+      if (loadedEditorRef.current) {
+        loadedEditorRef.current.setText(initialText);
+        return;
+      }
+
+      if (fallbackTextareaRef.current) {
+        fallbackTextareaRef.current.value = initialText;
+      }
+
+      onTextChange(initialText);
+    }, [initialText, onTextChange]);
+
     useImperativeHandle(ref, () => ({
       clear: () => {
         fallbackTextRef.current = '';
-        onTextChange('');
 
         if (loadedEditorRef.current) {
           loadedEditorRef.current.clear();
@@ -85,10 +129,10 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = '';
         }
+        onTextChange('');
       },
       setText: (text: string) => {
         fallbackTextRef.current = text;
-        onTextChange(text);
 
         if (loadedEditorRef.current) {
           loadedEditorRef.current.setText(text);
@@ -98,6 +142,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         if (fallbackTextareaRef.current) {
           fallbackTextareaRef.current.value = text;
         }
+        onTextChange(text);
       },
       getTextContent: () => {
         if (loadedEditorRef.current) {
@@ -116,7 +161,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
       },
     }), [onTextChange]);
 
-    if (LoadedEditor) {
+    if (LoadedEditor && !loadFailed) {
       return (
         <LoadedEditor
           ref={loadedEditorRef}
@@ -126,6 +171,8 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           onSend={onSend}
           onPromptHistory={onPromptHistory}
           className={className}
+          surface={surface}
+          syncContextRefs={syncContextRefs}
         />
       );
     }
@@ -170,7 +217,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           }}
           className={cn(
             'flex-1 min-w-[100px] w-full resize-none bg-transparent border-0 outline-none text-sm text-foreground',
-            'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-1 leading-5',
+            'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-[6.5px] leading-[1.35]',
             !editable && 'opacity-50 cursor-not-allowed',
             className
           )}

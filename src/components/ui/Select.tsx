@@ -14,6 +14,8 @@ export function Select({
   className = '',
   ...props
 }: SelectProps) {
+  const generatedId = React.useId();
+  const selectId = props.id ?? `select-${generatedId}`;
   const baseClassName = `
     bg-background border border-border rounded-lg px-3 py-2 
     text-sm text-foreground focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20
@@ -27,11 +29,12 @@ export function Select({
   return (
     <div className={widthClassName}>
       {label && (
-        <label className="block text-sm text-muted-foreground mb-2">
+        <label htmlFor={selectId} className="block text-sm text-muted-foreground mb-2">
           {label}
         </label>
       )}
       <select
+        id={selectId}
         className={`${baseClassName} ${widthClassName} ${className}`.trim()}
         {...props}
       >

@@ -25,7 +25,13 @@ import { devLogger } from '../../utils/devLogger';
 import { notify } from '../ui/toastService';
 import {
   buildProjectSetupPrompts,
+  getProjectSetupDevelopExplanation,
   getProjectSetupAction,
+  getProjectSetupMainlineExplanation,
+  getProjectSetupPromptCancelLabel,
+  getProjectSetupPromptConfirmLabel,
+  getProjectSetupPromptDescription,
+  getProjectSetupPromptTitle,
   hasProjectSetupRisks,
   type ProjectSetupPromptDetails,
 } from './projectGitSetup';
@@ -83,7 +89,6 @@ export const ProjectGitFlowModal: React.FC = () => {
   const project = projectId ? getProjectById(projectId) : null;
   const [settings, setSettings] = useState<ProjectGitFlowSettings>(() => getDefaultProjectGitFlowSettings());
   const [isSaving, setIsSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [isAccessSaving, setIsAccessSaving] = useState(false);
   const [accessPreview, setAccessPreview] = useState<ProjectAccessChangePreview | null>(null);
   const [projectSetupFlow, setProjectSetupFlow] = useState<ProjectSetupFlowState | null>(null);
@@ -94,7 +99,6 @@ export const ProjectGitFlowModal: React.FC = () => {
     }
     setSettings(resolveProjectGitFlowSettings(project.gitFlowSettings));
     setIsSaving(false);
-    setSaveSuccess(false);
     setIsAccessSaving(false);
     setAccessPreview(null);
     setProjectSetupFlow(null);
@@ -121,31 +125,31 @@ export const ProjectGitFlowModal: React.FC = () => {
     if (reason === 'dirty_worktree') {
       return t(
         'projects.accessBlockDirtyWorktree',
-        'This subproject still has a dirty worktree. Clean it up before switching to read-only.'
+        'This project still has a dirty worktree. Clean it up before switching to read-only.'
       );
     }
     if (reason === 'live_terminal') {
       return t(
         'projects.accessBlockLiveTerminal',
-        'A live terminal session is still attached to this subproject. Close it before switching to read-only.'
+        'A live terminal session is still attached to this project. Close it before switching to read-only.'
       );
     }
     if (reason === 'last_actionable_plan') {
       return t(
         'projects.accessBlockLastActionablePlan',
-        'This subproject is the last editable repository in an active plan.'
+        'This project is the last editable project in an active plan.'
       );
     }
     if (reason === 'last_actionable_feature') {
       return t(
         'projects.accessBlockLastActionableFeature',
-        'This subproject is the last editable repository in a manual feature.'
+        'This project is the last editable project in a manual feature.'
       );
     }
     if (reason === 'last_actionable_task') {
       return t(
         'projects.accessBlockLastActionableTask',
-        'This subproject is the last editable repository in an active task.'
+        'This project is the last editable project in an active task.'
       );
     }
     return t('common.error', 'An error occurred');
@@ -210,22 +214,22 @@ export const ProjectGitFlowModal: React.FC = () => {
     ? t('projects.accessReadOnly', 'Read-only')
     : t('projects.accessEditable', 'Editable');
   const accessReason = project.readOnlyReason === 'manual'
-    ? t('projects.accessManualReadOnly', 'This subproject is manually forced to read-only.')
+    ? t('projects.accessManualReadOnly', 'This project is manually forced to read-only.')
     : project.readOnlyReason === 'missing_git'
-      ? t('projects.accessMissingGit', 'Git is not initialized yet. This subproject stays read-only until Git is initialized.')
+      ? t('projects.accessMissingGit', 'Git is not initialized yet. This project stays read-only until Git is initialized.')
       : project.readOnlyReason === 'missing_initial_commit'
         ? t(
             'projects.accessMissingInitialCommit',
-            'This repository has no initial commit yet. Create one to make the subproject editable.'
+            'This Git repository has no initial commit yet. Create one to make the project editable.'
           )
         : project.readOnlyReason === 'manual_and_missing_git'
           ? t(
               'projects.accessManualAndMissingGit',
-              'This subproject is manually read-only and Git is not initialized yet.'
+              'This project is manually read-only and Git is not initialized yet.'
             )
           : t(
               'projects.accessEditableHelp',
-              'Editable subprojects can create worktrees, branches, terminal sessions, and implementation tasks.'
+              'Editable projects can create worktrees, branches, terminal sessions, and implementation tasks.'
             );
 
   const handleClose = () => {
@@ -456,16 +460,14 @@ export const ProjectGitFlowModal: React.FC = () => {
       return;
     }
     setIsSaving(true);
-    setSaveSuccess(false);
     try {
       await updateProjectGitFlow(projectId, resolveProjectGitFlowSettings(settings));
-      setSaveSuccess(true);
       notify.success(
-        t('projects.gitFlowSaved', 'GitFlow settings updated for {{projectName}}.', {
+        t('projects.gitFlowSaved', 'Git workflow settings updated for {{projectName}}.', {
           projectName: project.name,
         })
       );
-      window.setTimeout(() => setSaveSuccess(false), 2500);
+      closeProjectGitFlowModal();
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
       notify.error(message);
@@ -491,9 +493,41 @@ export const ProjectGitFlowModal: React.FC = () => {
     </div>
   );
 
+  const renderCompletionMergePolicySelect = () => (
+    <div className="space-y-2 md:col-span-2">
+      <label className="text-sm font-medium text-foreground">
+        {t('projects.gitFlowCompletionMergePolicy', 'Task completion merge policy')}
+      </label>
+      <select
+        value={settings.completionMergePolicy}
+        onChange={(event) =>
+          setSettings((prev) => ({
+            ...prev,
+            completionMergePolicy:
+              event.target.value === 'fast_forward' ? 'fast_forward' : 'merge_commit',
+          }))
+        }
+        className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+      >
+        <option value="merge_commit">
+          {t('projects.gitFlowCompletionMergePolicyMergeCommit', 'Merge commit')}
+        </option>
+        <option value="fast_forward">
+          {t('projects.gitFlowCompletionMergePolicyFastForward', 'Fast-forward when possible')}
+        </option>
+      </select>
+      <p className="text-xs text-muted-foreground">
+        {t(
+          'projects.gitFlowCompletionMergePolicyHelp',
+          'Merge commit keeps completed tasks visible in history. Fast-forward advances directly when Git can do so cleanly.'
+        )}
+      </p>
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={handleClose} />
+      <div className="absolute inset-0 bg-black/50" onClick={handleClose} />
 
       <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
@@ -504,7 +538,7 @@ export const ProjectGitFlowModal: React.FC = () => {
             <p className="mt-1 text-xs text-muted-foreground">
               {t(
                 'projects.projectSettingsSubtitle',
-                'Manage access mode and override the branch naming used by this subproject.'
+                'Manage access mode and override the branch naming used by this project.'
               )}{' '}
               <span className="text-foreground">{project.name}</span>
             </p>
@@ -608,6 +642,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               'baseBranch',
               'main'
             )}
+            {renderCompletionMergePolicySelect()}
             {renderInput(
               t('projects.gitFlowPlanTemplate', 'Plan branch template'),
               settings.planBranchTemplate,
@@ -679,7 +714,6 @@ export const ProjectGitFlowModal: React.FC = () => {
               type="button"
               onClick={() => {
                 setSettings(appDefaults);
-                setSaveSuccess(false);
               }}
               className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
@@ -700,20 +734,16 @@ export const ProjectGitFlowModal: React.FC = () => {
                 disabled={isSaving || validationErrors.length > 0}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-medium transition-colors',
-                  saveSuccess
-                    ? 'bg-emerald-500/20 text-emerald-500'
-                    : 'bg-primary text-primary-foreground hover:bg-primary/90',
+                  'bg-primary text-primary-foreground hover:bg-primary/90',
                   (isSaving || validationErrors.length > 0) && 'cursor-not-allowed opacity-50'
                 )}
               >
                 <Icon
-                  name={isSaving ? 'loader' : saveSuccess ? 'check' : 'download'}
+                  name={isSaving ? 'loader' : 'check'}
                   size={12}
                   className={isSaving ? 'animate-spin' : ''}
                 />
-                {saveSuccess
-                  ? t('common.saved', 'Saved')
-                  : t('common.save', 'Save')}
+                {isSaving ? t('common.saving', 'Saving...') : t('common.validate', 'Validate')}
               </button>
             </div>
           </div>
@@ -726,7 +756,7 @@ export const ProjectGitFlowModal: React.FC = () => {
           title={t('projects.readOnlyImpactTitle', 'Switch to read-only?')}
           description={t(
             'projects.readOnlyImpactDescription',
-            'Macro will remove this subproject from editable plan and task targets, but keep it available for context and read access.'
+            'Macro will remove this project from editable plan and task targets, but keep it available for context and read access.'
           )}
           confirmLabel={t('projects.makeReadOnly', 'Make read-only')}
           cancelLabel={t('common.cancel', 'Cancel')}
@@ -776,47 +806,10 @@ export const ProjectGitFlowModal: React.FC = () => {
       {projectSetupPrompt && (
         <ConfirmPromptModal
           isOpen
-          title={
-            projectSetupPrompt.kind === 'init_git'
-              ? t('project.initGitTitle', 'Initialize Git?')
-              : projectSetupPrompt.kind === 'initial_commit'
-                ? t('project.initialCommitTitle', 'Create the initial commit?')
-                : t('project.createDevelopTitle', 'Create develop?')
-          }
-          description={
-            projectSetupPrompt.kind === 'init_git'
-              ? t(
-                  'project.initGitDescription',
-                  'This folder is not a Git repository yet. Initialize Git now to enable worktrees and editable workflows. If you skip this step, the subproject will stay read-only.'
-                )
-              : projectSetupPrompt.kind === 'initial_commit'
-                ? t(
-                    'project.initialCommitDescription',
-                    'This repository has no initial commit yet. Create it now to enable branches, worktrees, and editable workflows. If you skip this step, the subproject will stay read-only.'
-                  )
-                : t(
-                    'project.createDevelopDescription',
-                    'This repository can work in mainline mode: Macro will use {{mainBranch}} as both the main branch and the development target. Create develop only if this project intentionally uses a separate integration branch.',
-                    {
-                      mainBranch: projectSetupPrompt.mainBranch || 'main',
-                      branchName: projectSetupPrompt.mainBranch || 'main',
-                    }
-                  )
-          }
-          confirmLabel={
-            projectSetupPrompt.kind === 'create_develop'
-              ? t('project.createDevelopConfirm', 'Create develop')
-              : projectSetupPrompt.kind === 'initial_commit'
-                ? t('project.createInitialCommitConfirm', 'Create initial commit')
-                : t('project.initGitConfirm', 'Initialize Git')
-          }
-          cancelLabel={
-            projectSetupPrompt.kind === 'create_develop'
-              ? t('project.createDevelopDecline', 'Keep {{branchName}} only', {
-                  branchName: projectSetupPrompt.mainBranch || 'main',
-                })
-              : t('project.keepReadOnly', 'Keep read-only')
-          }
+          title={getProjectSetupPromptTitle(t, projectSetupPrompt)}
+          description={getProjectSetupPromptDescription(t, projectSetupPrompt, 'project_settings')}
+          confirmLabel={getProjectSetupPromptConfirmLabel(t, projectSetupPrompt)}
+          cancelLabel={getProjectSetupPromptCancelLabel(t, projectSetupPrompt)}
           isSubmitting={isAccessSaving}
           onCancel={() => {
             void handleDeclineProjectSetupPrompt();
@@ -833,22 +826,14 @@ export const ProjectGitFlowModal: React.FC = () => {
                     {t('projects.gitWorkflowMainlineBadge', 'Mainline')}
                   </span>
                   {' - '}
-                  {t(
-                    'project.mainlineModeExplanation',
-                    'Keep {{branchName}} as the development target. Feature work merges back into {{branchName}}, and urgent fixes can use hotfix plans.',
-                    { branchName: projectSetupPrompt.mainBranch || 'main' }
-                  )}
+                  {getProjectSetupMainlineExplanation(t, projectSetupPrompt)}
                 </div>
                 <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-muted-foreground">
                   <span className="font-semibold text-foreground">
                     {t('project.developModeLabel', 'Separate develop')}
                   </span>
                   {' - '}
-                  {t(
-                    'project.developModeExplanation',
-                    'Create develop from {{branchName}} for repositories that still use a classic Git Flow integration branch.',
-                    { branchName: projectSetupPrompt.mainBranch || 'main' }
-                  )}
+                  {getProjectSetupDevelopExplanation(t, projectSetupPrompt)}
                 </div>
               </div>
             )}

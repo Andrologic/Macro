@@ -20,7 +20,9 @@ import type {
   ArchitectPlanKind,
 } from "./architectPlanKinds";
 import {
+  ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
   hasPersistedArchitectStrategy,
+  isArchitectPlanStrategyMutable,
   isArchitectPlanReplicaDivergenceError,
 } from "./architectPlanService";
 import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
@@ -51,6 +53,12 @@ import {
   normalizeNodeProjectIds,
   normalizeStrategyDependencies,
 } from "./implementTaskDerivation";
+import {
+  clonePlanNodeTodos,
+  normalizePlanNodeTodos,
+  normalizeRequiredPlanNodeTodos,
+} from "./planNodeTodos";
+import { normalizeArtifactContracts } from "./architectPlanArtifactService";
 import type {
   ApplyStrategyMutationPreviewParams,
   PrepareStrategyMutationPreviewParams,
@@ -123,6 +131,8 @@ type NormalizedArchitectStrategyNodeInput = {
   status: PlanNodeStatus;
   dependencies: string[];
   projectIds: string[];
+  todos: PlanNode["todos"];
+  artifactContracts: PlanNode["artifactContracts"];
 };
 
 interface ArchitectToolAppState {
@@ -133,6 +143,7 @@ interface ArchitectToolAppState {
   } | null;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => Project | undefined;
   activateArchitectPlan: (
@@ -307,6 +318,8 @@ const cloneArchitectStrategyWorkingNode = (node: PlanNode): PlanNode => {
   return {
     ...node,
     dependencies: [...node.dependencies],
+    todos: clonePlanNodeTodos(node.todos),
+    artifactContracts: normalizeArtifactContracts(node),
     projectId: projectIds[0],
     projectIds,
   };
@@ -324,6 +337,8 @@ const serializeArchitectStrategyNodeForResolution = (
     | "branchType"
     | "branchSlug"
     | "dependencies"
+    | "todos"
+    | "artifactContracts"
     | "projectId"
     | "projectIds"
   >,
@@ -339,6 +354,8 @@ const serializeArchitectStrategyNodeForResolution = (
     branchType: node.branchType,
     branchSlug: node.branchSlug,
     dependencies: [...node.dependencies],
+    todos: clonePlanNodeTodos(node.todos),
+    artifactContracts: normalizeArtifactContracts(node),
     ...(projectIds.length > 0
       ? {
           projectId: projectIds[0],
@@ -417,6 +434,19 @@ const normalizeArchitectStrategyNodeInput = (
   if (!ARCHITECT_STRATEGY_NODE_STATUSES.has(rawStatus as PlanNodeStatus)) {
     throw new Error(`Invalid node status for "${title}": ${rawStatus}.`);
   }
+  const todos = normalizeRequiredPlanNodeTodos(node.todos, {
+    id: typeof node.id === "string" ? node.id.trim() : undefined,
+    title,
+    description,
+    status: rawStatus as PlanNodeStatus,
+  });
+  const artifactContracts = normalizeArtifactContracts({
+    artifactContracts: Array.isArray(node.artifactContracts)
+      ? (node.artifactContracts as PlanNode["artifactContracts"])
+      : Array.isArray(node.artifact_contracts)
+        ? (node.artifact_contracts as PlanNode["artifactContracts"])
+        : undefined,
+  });
 
   const branchIntent = getPlanNodeBranchIntent({
     branchType: branchTypeRaw,
@@ -436,6 +466,8 @@ const normalizeArchitectStrategyNodeInput = (
     status: rawStatus as PlanNodeStatus,
     dependencies: Array.from(new Set(dependencies)),
     projectIds: Array.from(new Set(projectIds)),
+    todos,
+    artifactContracts,
   };
 };
 
@@ -531,18 +563,18 @@ const validateStrategyNodeProjectIds = (params: {
 
     if (contextProjectIdSet.has(projectId)) {
       throw new Error(
-        `Strategy node "${params.nodeTitle}" targets context-only subproject "${projectId}". Context subprojects stay in contextProjectIds and cannot receive executable strategy branches.`,
+        `Strategy node "${params.nodeTitle}" targets context-only project "${projectId}". Context projects stay in contextProjectIds and cannot receive executable strategy branches.`,
       );
     }
 
     if (params.globalProjectIds.size > 0 && params.globalProjectIds.has(projectId)) {
       throw new Error(
-        `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", but that subproject is not in the editable scope of this plan. Add it to projectIds before generating the strategy.`,
+        `Strategy node "${params.nodeTitle}" targets project "${projectId}", but that project is not in the editable scope of this plan. Add it to projectIds before generating the strategy.`,
       );
     }
 
     throw new Error(
-      `Strategy node "${params.nodeTitle}" targets subproject "${projectId}", which is outside this plan's global project scope.`,
+      `Strategy node "${params.nodeTitle}" targets project "${projectId}", which is outside this plan's group scope.`,
     );
   });
 };
@@ -755,6 +787,7 @@ const hydratePlanContext = async (params: {
     ) ||
     fallbackGroupProjectId ||
     latestAppStore.selectedProjectId ||
+    latestAppStore.standaloneProjects?.[0]?.id ||
     latestAppStore.projectGroups.flatMap((group) => group.projects)[0]?.id ||
     null;
 
@@ -800,7 +833,10 @@ const resolveStrategyForPlan = async (params: {
 
   const appState = getAppState();
   const selectedProjectIds = getScopedActionableProjectIds(
-    appState.projectGroups,
+    {
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    },
     appState.selectedGroupId,
     appState.selectedProjectId,
   );
@@ -816,7 +852,7 @@ const resolveStrategyForPlan = async (params: {
 
   if (defaultProjectIds.length === 0) {
     throw new Error(
-      "Cannot generate a strategy because the active plan has no editable subproject scope.",
+      "Cannot generate a strategy because the active plan has no editable project scope.",
     );
   }
 
@@ -870,6 +906,8 @@ const resolveStrategyForPlan = async (params: {
       projectId: resolvedProjectIds[0] || undefined,
       projectIds: resolvedProjectIds,
       dependencies: [...node.dependencies],
+      todos: clonePlanNodeTodos(node.todos),
+      artifactContracts: normalizeArtifactContracts(node),
     };
   });
 
@@ -1397,7 +1435,10 @@ export const handleArchitectToolCall = async (
           .map((projectId) => projectId.trim())
           .filter(Boolean)
       : getScopedActionableProjectIds(
-          appState.projectGroups,
+          {
+            standaloneProjects: appState.standaloneProjects ?? [],
+            projectGroups: appState.projectGroups,
+          },
           appState.selectedGroupId,
           appState.selectedProjectId,
         );
@@ -1562,14 +1603,14 @@ export const handleArchitectToolCall = async (
       existingPlan.status !== "draft" &&
       (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
     ) {
-      return "plan_update can change plan scope or GitFlow metadata only while the plan is a draft.";
+      return "plan_update can change plan scope or Git workflow metadata only while the plan is a draft.";
     }
 
     if (
       hasPersistedArchitectStrategy(existingPlan) &&
       (projectIds !== undefined || contextProjectIds !== undefined || gitFlowPlan !== undefined)
     ) {
-      return "plan_update cannot change plan scope or GitFlow metadata after strategy has been created.";
+      return "plan_update cannot change plan scope or Git workflow metadata after strategy has been created.";
     }
 
     if (
@@ -1671,6 +1712,9 @@ export const handleArchitectToolCall = async (
     if (!activePlan || activePlan.status === "deleted") {
       return `Active plan ${activePlanId} is unavailable.`;
     }
+    if (!isArchitectPlanStrategyMutable(activePlan.status)) {
+      return ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE;
+    }
 
     const strategy = await resolveStrategyForPlan({
       activePlan,
@@ -1770,6 +1814,9 @@ export const handleArchitectToolCall = async (
     );
     if (!activePlan || activePlan.status === "deleted") {
       return `Active plan ${activePlanId} is unavailable.`;
+    }
+    if (!isArchitectPlanStrategyMutable(activePlan.status)) {
+      return ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE;
     }
     const requestedPlanSlug =
       typeof args.plan_slug === "string"
@@ -1872,6 +1919,27 @@ export const handleArchitectToolCall = async (
                 .map((dep) => dep.trim())
                 .filter(Boolean)
             : target.dependencies;
+          const nextTodos =
+            Array.isArray(operation.todos)
+              ? normalizeRequiredPlanNodeTodos(operation.todos, {
+                  id: target.id,
+                  title: nextTitle || target.title,
+                  description: nextDescription,
+                  status: nextStatusRaw as PlanNodeStatus,
+                }, {
+                  existingTodos: normalizePlanNodeTodos(target.todos),
+                })
+              : clonePlanNodeTodos(target.todos);
+          const nextArtifactContracts =
+            Array.isArray(operation.artifactContracts) || Array.isArray(operation.artifact_contracts)
+              ? normalizeArtifactContracts({
+                  artifactContracts: (
+                    Array.isArray(operation.artifactContracts)
+                      ? operation.artifactContracts
+                      : operation.artifact_contracts
+                  ) as PlanNode["artifactContracts"],
+                })
+              : normalizeArtifactContracts(target);
           const nextProjectIds = normalizeArchitectStrategyOperationProjectIds(
             operation,
             target,
@@ -1905,6 +1973,8 @@ export const handleArchitectToolCall = async (
             branchType: nextBranchIntent.branchType,
             branchSlug: nextBranchIntent.branchSlug,
             dependencies: Array.from(new Set(nextDependencies)),
+            todos: nextTodos,
+            artifactContracts: nextArtifactContracts,
             projectId: nextProjectIds[0],
             projectIds: nextProjectIds,
           };
@@ -1929,6 +1999,8 @@ export const handleArchitectToolCall = async (
             branchType: normalized.branchType,
             branchSlug: normalized.branchSlug,
             dependencies: normalized.dependencies,
+            todos: clonePlanNodeTodos(normalized.todos),
+            artifactContracts: normalizeArtifactContracts(normalized),
             projectId: normalizedProjectIds[0],
             projectIds: normalizedProjectIds,
           });
@@ -2004,16 +2076,19 @@ export const handleArchitectToolCall = async (
       return "Cannot delete strategy without an active plan. Create or select a plan first.";
     }
 
-    if (args.confirm !== true) {
-      return "strategy_delete requires confirm=true to proceed.";
-    }
-
     const activePlan = await planService.getArchitectPlan(
       targetBranch,
       activePlanId,
     );
     if (!activePlan || activePlan.status === "deleted") {
       return `Active plan ${activePlanId} is unavailable.`;
+    }
+    if (!isArchitectPlanStrategyMutable(activePlan.status)) {
+      return ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE;
+    }
+
+    if (args.confirm !== true) {
+      return "strategy_delete requires confirm=true to proceed.";
     }
 
     await planService.updateArchitectPlan({

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { cn } from '../../utils/cn';
 import { Button } from './Button';
 import { Input } from './Input';
@@ -37,12 +37,28 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   onConfirm,
 }) => {
   const [value, setValue] = useState(initialValue);
+  const titleId = useId();
+  const descriptionId = useId();
 
   useEffect(() => {
     if (isOpen) {
       setValue(initialValue);
     }
   }, [isOpen, initialValue]);
+
+  useEffect(() => {
+    if (!isOpen || isSubmitting) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isSubmitting, onCancel]);
 
   if (!isOpen) return null;
 
@@ -52,7 +68,8 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/50"
+        aria-hidden="true"
         onClick={() => {
           if (!isSubmitting) {
             onCancel();
@@ -60,11 +77,18 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
         }}
       />
 
-      <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+      <div
+        className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
+      >
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          <h3 id={titleId} className="text-sm font-semibold text-foreground">{title}</h3>
           {description && (
-            <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+            <p id={descriptionId} className="mt-2 text-sm text-muted-foreground">{description}</p>
           )}
 
           {children && (
@@ -82,9 +106,6 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
                   if (event.key === 'Enter' && !confirmDisabled) {
                     onConfirm(value.trim());
                   }
-                  if (event.key === 'Escape' && !isSubmitting) {
-                    onCancel();
-                  }
                 }}
               />
             </div>
@@ -92,13 +113,14 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
         </div>
 
         <div className={cn('flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3')}>
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
           {showConfirmButton && (
             <Button
               variant={confirmVariant === 'error' ? 'error' : 'primary'}
               size="sm"
+              type="button"
               onClick={() => onConfirm(showInput ? value.trim() : undefined)}
               disabled={confirmDisabled}
             >

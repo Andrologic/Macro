@@ -3,6 +3,7 @@ import {
   buildMergeWorkflowRepositoryBlockingState,
   collectMergeWorkflowDirtyFiles,
   isMergeWorkflowFileConflictRepository,
+  resolveMergeWorkflowExecutionAction,
   resolveMergeWorkflowStrategy,
 } from './mergeWorkflow';
 
@@ -69,6 +70,49 @@ describe('mergeWorkflow strategy resolution', () => {
     expect(strategy.mergeStrategy).toBe('fast_forward_available');
     expect(strategy.recommendedAction).toBe('fast_forward');
     expect(strategy.availableActions).toContain('merge_commit');
+  });
+
+  it('uses merge commits by default when fast-forward is available', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['fast_forward', 'merge_commit'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      })
+    ).toBe('merge_commit');
+  });
+
+  it('uses fast-forward when the completion policy requests it', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['fast_forward', 'merge_commit'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      }, {
+        completionMergePolicy: 'fast_forward',
+      })
+    ).toBe('fast_forward');
+  });
+
+  it('does not auto-rebase for fast-forward policy fallbacks', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['rebase_then_continue', 'merge_commit', 'assistant'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      }, {
+        completionMergePolicy: 'fast_forward',
+      })
+    ).toBe('merge_commit');
   });
 
   it('classifies clean local divergent branches as rebaseable when the check passes', () => {

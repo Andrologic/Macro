@@ -5,7 +5,7 @@ import { PanelResizer } from '../layout/PanelResizer';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
-import { useTerminalStore } from '../../stores/useTerminalStore';
+import { isVisibleTerminalTab, useTerminalStore } from '../../stores/useTerminalStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { getTerminalScopeKey, resolveSelectedTaskTerminalScope } from '../../services/manualTerminalTargets';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
@@ -32,6 +32,7 @@ export const ImplementCenter: React.FC = () => {
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const tasks = useTaskStore((state) => state.tasks);
 
@@ -46,22 +47,24 @@ export const ImplementCenter: React.FC = () => {
   const terminalScope = React.useMemo(
     () =>
       resolveSelectedTaskTerminalScope({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
         selectedTask,
         lastManualProjectIdByTaskId,
       }),
-    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask]
+    [lastManualProjectIdByTaskId, projectGroups, selectedGroupId, selectedProjectId, selectedTask, standaloneProjects]
   );
   const workspaceState = React.useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const hasAnyTabForSelectedTask = React.useMemo(
@@ -71,25 +74,31 @@ export const ImplementCenter: React.FC = () => {
         : false,
     [tabOrder, tabs, terminalScope]
   );
+  const visibleTerminalTabs = React.useMemo(
+    () =>
+      terminalScope
+        ? tabOrder
+            .map((tabId) => tabs[tabId])
+            .filter(
+              (tab): tab is NonNullable<typeof tab> =>
+                Boolean(tab) &&
+                tab.taskId === terminalScope.taskId &&
+                tab.projectId === terminalScope.projectId &&
+                isVisibleTerminalTab(tab)
+            )
+        : [],
+    [tabOrder, tabs, terminalScope]
+  );
   const hiddenTerminalTabCount = React.useMemo(() => {
     if (!terminalScope) {
       return 0;
     }
 
-    const visibleTabs = tabOrder
-      .map((tabId) => tabs[tabId])
-      .filter(
-        (tab): tab is NonNullable<typeof tab> =>
-          Boolean(tab) &&
-          tab.taskId === terminalScope.taskId &&
-          tab.projectId === terminalScope.projectId
-      );
-
-    if (visibleTabs.length === 0) {
+    if (visibleTerminalTabs.length === 0) {
       return 0;
     }
 
-    const visibleTabIds = new Set(visibleTabs.map((tab) => tab.id));
+    const visibleTabIds = new Set(visibleTerminalTabs.map((tab) => tab.id));
     const scopedActiveTabId = activeTabIdByScope[getTerminalScopeKey(
       terminalScope.taskId,
       terminalScope.projectId
@@ -98,13 +107,13 @@ export const ImplementCenter: React.FC = () => {
       (scopedActiveTabId && visibleTabIds.has(scopedActiveTabId) ? scopedActiveTabId : null) ||
       (activeTabId && visibleTabIds.has(activeTabId) ? activeTabId : null);
 
-    return visibleTabs.filter((tab) => {
+    return visibleTerminalTabs.filter((tab) => {
       if (panelOpen) {
         return tab.id !== resolvedActiveTabId && tab.hasUnreadOutput;
       }
       return tab.hasUnreadOutput || tab.status === 'running';
     }).length;
-  }, [activeTabId, activeTabIdByScope, panelOpen, tabOrder, tabs, terminalScope]);
+  }, [activeTabId, activeTabIdByScope, panelOpen, terminalScope, visibleTerminalTabs]);
   const terminalButtonTitle = manualDraftPendingInitialization
     ? t(
         'terminal.manualDraftUnavailable',
@@ -160,6 +169,29 @@ export const ImplementCenter: React.FC = () => {
     terminalScope,
   ]);
 
+  const hiddenTerminalIndicatorLabel =
+    hiddenTerminalTabCount > 9 ? '9+' : hiddenTerminalTabCount.toString();
+
+  React.useEffect(() => {
+    if (panelOpen && tabOrder.length === 0) {
+      setPanelOpen(false);
+    }
+  }, [panelOpen, setPanelOpen, tabOrder.length]);
+
+  React.useEffect(() => {
+    const showingInitialMultiProjectPrompt =
+      terminalScope && !hasAnyTabForSelectedTask && terminalScope.projects.length > 1;
+
+    if (
+      panelOpen &&
+      terminalScope &&
+      visibleTerminalTabs.length === 0 &&
+      !showingInitialMultiProjectPrompt
+    ) {
+      setPanelOpen(false);
+    }
+  }, [hasAnyTabForSelectedTask, panelOpen, setPanelOpen, terminalScope, visibleTerminalTabs.length]);
+
   const terminalButton = (
     <button
       type="button"
@@ -176,13 +208,17 @@ export const ImplementCenter: React.FC = () => {
             : 'border-border bg-card/40 text-muted-foreground hover:bg-accent hover:text-foreground'
       )}
     >
-      <Icon name="terminal" size={12} />
+      <span className="relative inline-flex h-4 w-4 items-center justify-center">
+        <Icon name="terminal" size={12} />
+        {hiddenTerminalTabCount > 0 && (
+          <span
+            className="absolute -right-2 -top-1 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-background bg-primary px-1 text-[8px] font-semibold leading-none text-primary-foreground ring-1 ring-primary/20"
+          >
+            {hiddenTerminalIndicatorLabel}
+          </span>
+        )}
+      </span>
       {t('terminal.title', 'Terminal')}
-      {hiddenTerminalTabCount > 0 && (
-        <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
-          {hiddenTerminalTabCount}
-        </span>
-      )}
     </button>
   );
 

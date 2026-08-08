@@ -75,13 +75,30 @@ export const assignMountNamesToProjectGroups = (groups: ProjectGroup[]): Project
 
 export const buildProjectMounts = (params: {
   projectGroups: ProjectGroup[];
+  standaloneProjects?: Project[];
   groupId?: string | null;
   projectIds?: string[] | null;
   workspacePathsByProjectId?: Record<string, string>;
 }): ProjectMount[] => {
   const scopedProjectIds = new Set(params.projectIds || []);
 
-  return params.projectGroups
+  const standaloneMounts =
+    params.groupId
+      ? []
+      : (params.standaloneProjects ?? [])
+          .filter((project) => scopedProjectIds.size === 0 || scopedProjectIds.has(project.id))
+          .map((project) => ({
+            projectId: project.id,
+            groupId: null,
+            mountName: project.mountName,
+            displayName: project.name,
+            workspacePath: params.workspacePathsByProjectId?.[project.id] || project.path || null,
+            isReadOnly: Boolean(project.isReadOnly),
+          }));
+
+  return [
+    ...standaloneMounts,
+    ...params.projectGroups
     .filter((group) => !params.groupId || group.id === params.groupId)
     .flatMap((group) =>
       group.projects
@@ -94,5 +111,6 @@ export const buildProjectMounts = (params: {
           workspacePath: params.workspacePathsByProjectId?.[project.id] || project.path || null,
           isReadOnly: Boolean(project.isReadOnly),
         }))
-    );
+    ),
+  ];
 };

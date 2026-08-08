@@ -1,5 +1,6 @@
 import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
 import type { MergeWorkflowSummary } from './mergeWorkflowPersistence';
+import type { TaskStatus } from '../types';
 
 export interface TaskMergeWorkflowPresentationState {
   phase: MergeWorkflowRuntimeState['phase'];
@@ -16,10 +17,15 @@ type Translate = (
 ) => string;
 
 export const resolveTaskMergeWorkflowPresentationState = (
-  runtime?: Pick<MergeWorkflowRuntimeState, 'phase' | 'repositories'> | null,
-  summary?: MergeWorkflowSummary | null
+  runtime?: Pick<MergeWorkflowRuntimeState, 'phase' | 'repositories' | 'taskStatus'> | null,
+  summary?: MergeWorkflowSummary | null,
+  currentTaskStatus?: TaskStatus | null
 ): TaskMergeWorkflowPresentationState | null => {
   if (runtime) {
+    if (currentTaskStatus && runtime.taskStatus !== currentTaskStatus) {
+      return null;
+    }
+
     const mergedRepositoryCount = runtime.repositories.filter(
       (repository) => repository.progressState === 'merged'
     ).length;
@@ -42,6 +48,9 @@ export const resolveTaskMergeWorkflowPresentationState = (
   }
 
   if (!summary) {
+    return null;
+  }
+  if (currentTaskStatus && summary.taskStatus !== currentTaskStatus) {
     return null;
   }
 

@@ -32,7 +32,38 @@ describe('copilot bridge tool registration', () => {
     expect(__testables.normalizeCopilotSendTimeoutMs(undefined)).toBe(1_800_000);
     expect(__testables.normalizeCopilotSendTimeoutMs(null)).toBe(1_800_000);
     expect(__testables.normalizeCopilotSendTimeoutMs(30_000)).toBe(1_800_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(60_000)).toBe(60_000);
     expect(__testables.normalizeCopilotSendTimeoutMs(1_800_500.8)).toBe(1_800_500);
+  });
+
+  it('serializes compacted system checkpoints outside the visible transcript', async () => {
+    const { __testables } = await loadBridge();
+
+    const serialized = __testables.serializeConversationPrompt([
+      {
+        role: 'system',
+        content: 'You are Macro.',
+      },
+      {
+        role: 'system',
+        content: '[COMPACTED CONVERSATION STATE]\nOlder Copilot turns summarized.',
+      },
+      {
+        role: 'user',
+        content: 'Continue from the retained turn.',
+      },
+      {
+        role: 'assistant',
+        content: 'Retained assistant answer.',
+      },
+    ]);
+
+    expect(serialized.system).toContain('You are Macro.');
+    expect(serialized.system).toContain('[COMPACTED CONVERSATION STATE]');
+    expect(serialized.prompt).toContain('[USER]\nContinue from the retained turn.');
+    expect(serialized.prompt).toContain('[ASSISTANT]\nRetained assistant answer.');
+    expect(serialized.prompt).not.toContain('[COMPACTED CONVERSATION STATE]');
+    expect(serialized.prompt).not.toContain('Older Copilot turns summarized.');
   });
 
   it('passes Copilot built-in override metadata for web_fetch', async () => {

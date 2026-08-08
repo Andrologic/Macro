@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
-import { mockInternalTools } from '../../mock-data/tools';
+import { BUILT_IN_TOOLS } from '../../services/tools/builtInTools';
 import { normalizeArchitectToolId } from '../../services/architectToolNames';
 import { Icon, type IconName } from '../ui/Icon';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/Accordion';
@@ -24,6 +24,9 @@ interface ToolRenderTrace {
   toolName: string;
   detail?: string;
   status: ToolTrace['status'];
+  executionMode?: ToolTrace['execution_mode'];
+  batchId?: string;
+  order?: number;
 }
 
 type RenderBlock =
@@ -37,7 +40,7 @@ const PlainMarkdownFallback: React.FC<{ content: string }> = ({ content }) => (
 );
 
 const TOOL_TRACE_ICON_BY_NAME = new Map<string, IconName>(
-  mockInternalTools.flatMap((tool) => {
+  BUILT_IN_TOOLS.flatMap((tool) => {
     const normalizedId = normalizeArchitectToolId(tool.id);
     return normalizedId === tool.id
       ? [[tool.id, tool.icon]]
@@ -159,23 +162,68 @@ const ToolTraceRow: React.FC<{ toolName: string; detail?: string; status: ToolTr
   );
 };
 
-const RunningToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
+const isActiveToolTraceStatus = (status: ToolTrace['status']): boolean =>
+  status === 'running' || status === 'pending_approval';
+
+const getToolTraceGroupExecutionMode = (
+  tools: ToolRenderTrace[]
+): ToolTrace['execution_mode'] | undefined => {
+  if (tools.some((tool) => tool.executionMode === 'parallel')) {
+    return 'parallel';
+  }
+
+  const activeBatchCounts = new Map<string, number>();
+  for (const tool of tools) {
+    if (!tool.batchId || !isActiveToolTraceStatus(tool.status)) continue;
+    activeBatchCounts.set(tool.batchId, (activeBatchCounts.get(tool.batchId) ?? 0) + 1);
+  }
+  if (Array.from(activeBatchCounts.values()).some((count) => count > 1)) {
+    return 'parallel';
+  }
+
+  if (tools.some((tool) => tool.executionMode === 'sequential')) {
+    return 'sequential';
+  }
+
+  return undefined;
+};
+
+const ActiveToolTraceGroup: React.FC<{ tools: ToolRenderTrace[] }> = ({ tools }) => {
   const { t } = useTranslation();
+  const allActive = tools.every((tool) => isActiveToolTraceStatus(tool.status));
+  const executionMode = getToolTraceGroupExecutionMode(tools);
+  const executionModeLabel =
+    executionMode === 'parallel'
+      ? t('chat.toolExecutionParallel', 'Parallel')
+      : executionMode === 'sequential'
+        ? t('chat.toolExecutionSequential', 'Sequential')
+        : null;
 
   return (
     <div
-      data-testid="tool-traces-running"
-      data-group-status="running"
+      data-testid={allActive ? 'tool-traces-running' : 'tool-traces-activity'}
+      data-group-status={allActive ? 'running' : 'mixed'}
       data-testid-group="tool-trace-group"
       className="mt-3 mb-3 rounded-lg border border-border bg-card/40 px-3 py-2"
     >
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex items-center gap-2 min-w-0">
         <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
           <Icon name="tool" size={11} className="text-primary" />
         </span>
-        <span className="text-xs font-medium text-foreground">
-          {t('chat.runningTools', 'Running tools')}
+        <span className="text-xs font-medium text-foreground truncate">
+          {allActive
+            ? t('chat.runningTools', 'Running tools')
+            : t('chat.toolActivity', 'Tool activity')}
         </span>
+        {executionModeLabel && (
+          <span
+            data-testid="tool-traces-execution-mode"
+            data-execution-mode={executionMode}
+            className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+          >
+            {executionModeLabel}
+          </span>
+        )}
       </div>
       <div data-testid="tool-traces-list" className="space-y-2">
         {tools.map((tool, index) => (
@@ -451,11 +499,19 @@ const buildStructuredToolGroups = (
         toolName: trace.tool_name,
         detail: trace.detail,
         status: trace.status,
+        executionMode: trace.execution_mode,
+        batchId: trace.batch_id,
+        order: trace.order,
       });
       toolIndex += 1;
     }
 
     if (groupTools.length > 0) {
+      groupTools.sort((a, b) => {
+        const aOrder = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+        const bOrder = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+        return aOrder - bOrder;
+      });
       blocks.push({ type: 'tool_group', tools: groupTools });
     }
   }
@@ -515,11 +571,9 @@ const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({
         }
 
         if (block.type === 'tool_group') {
-          const anyRunningTool = block.tools.some(
-            (tool) => tool.status === 'running' || tool.status === 'pending_approval'
-          );
-          return anyRunningTool ? (
-            <RunningToolTraceGroup key={`tools-${index}`} tools={block.tools} />
+          const anyActiveTool = block.tools.some((tool) => isActiveToolTraceStatus(tool.status));
+          return anyActiveTool ? (
+            <ActiveToolTraceGroup key={`tools-${index}`} tools={block.tools} />
           ) : (
             <CompletedToolTraceGroup key={`tools-${index}`} tools={block.tools} />
           );

@@ -6,6 +6,10 @@ import {
   type NotificationTemplateSnapshot,
 } from '../components/ui/notifications';
 import type { NotificationCategory } from '../services/notificationChannels';
+import {
+  getTooManyOpenFilesNotificationKey,
+  isTooManyOpenFilesMessage,
+} from '../services/resourcePressureBackoff';
 
 export type NotificationLevel = 'info' | 'warning' | 'error';
 export type NotificationCenterToastId = string | number;
@@ -198,13 +202,72 @@ export const sanitizeNotificationCenterItems = (value: unknown): NotificationCen
     return [];
   }
 
-  return value
+  const normalizedItems = value
     .flatMap((entry): NotificationCenterItem[] => {
       const item = toNotificationCenterItem(entry);
       return item ? [item] : [];
     })
+    .map(normalizeLegacyNotificationCenterItem);
+
+  return coalesceNotificationCenterItems(normalizedItems)
     .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
     .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
+};
+
+const normalizeLegacyNotificationCenterItem = (
+  item: NotificationCenterItem
+): NotificationCenterItem => {
+  if (
+    item.id !== getTooManyOpenFilesNotificationKey() &&
+    (isTooManyOpenFilesMessage(item.title) || isTooManyOpenFilesMessage(item.description))
+  ) {
+    return {
+      ...item,
+      id: getTooManyOpenFilesNotificationKey(),
+      title: 'Macro is temporarily overloaded',
+      description:
+        item.description ||
+        'The system has too many files open, so Macro paused automatic repository refreshes before retrying.',
+      level: item.level === 'error' ? 'warning' : item.level,
+    };
+  }
+
+  if (
+    item.id !== 'architect-plan-metadata:missing' &&
+    (item.title === 'Something needs attention' || item.id.startsWith('implement-task-error:Plan not found'))
+  ) {
+    const description = item.description || '';
+    if (description.toLowerCase().includes('plan not found')) {
+      return {
+        ...item,
+        id: 'architect-plan-metadata:missing',
+        title: 'Plan metadata is incomplete',
+        level: item.level === 'error' ? 'warning' : item.level,
+      };
+    }
+  }
+
+  return item;
+};
+
+const coalesceNotificationCenterItems = (
+  items: NotificationCenterItem[]
+): NotificationCenterItem[] => {
+  const byId = new Map<string, NotificationCenterItem>();
+
+  for (const item of items) {
+    const existing = byId.get(item.id);
+    if (!existing) {
+      byId.set(item.id, item);
+      continue;
+    }
+
+    const itemTime = new Date(item.createdAt).getTime();
+    const existingTime = new Date(existing.createdAt).getTime();
+    byId.set(item.id, itemTime >= existingTime ? item : existing);
+  }
+
+  return Array.from(byId.values());
 };
 
 export const readNotificationCenterItemsFromStorage = (): NotificationCenterItem[] => {

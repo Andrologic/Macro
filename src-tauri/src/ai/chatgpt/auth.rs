@@ -78,8 +78,19 @@ pub async fn start_browser_auth(
             );
         }
 
+        let task_id = tokio::task::try_id();
         let mut tasks = state_for_task.auth_tasks.lock().await;
-        tasks.remove(&request_id_for_task);
+        if task_id
+            .map(|task_id| {
+                tasks
+                    .get(&request_id_for_task)
+                    .map(|task| task.handle.id() == task_id)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            tasks.remove(&request_id_for_task);
+        }
     });
 
     let mut tasks = ai_state.auth_tasks.lock().await;
@@ -448,29 +459,7 @@ async fn handle_browser_callback(
         has_code, state_valid, "received ChatGPT browser callback"
     );
 
-    let result = match query.error {
-        Some(error) => Err(AuthFlowError::new(
-            "callback_denied",
-            query
-                .error_description
-                .unwrap_or_else(|| format!("Authentication was denied: {}", error)),
-        )),
-        None => {
-            if query.state.as_deref() != Some(state.expected_state.as_str()) {
-                Err(AuthFlowError::new(
-                    "callback_invalid",
-                    "The ChatGPT login callback returned an invalid state token.",
-                ))
-            } else if let Some(code) = query.code.filter(|value| !value.trim().is_empty()) {
-                Ok(code)
-            } else {
-                Err(AuthFlowError::new(
-                    "callback_invalid",
-                    "The ChatGPT login callback did not include an authorization code.",
-                ))
-            }
-        }
-    };
+    let result = validate_browser_callback(&query, &state.expected_state);
 
     match &result {
         Ok(_) => info!("ChatGPT browser callback accepted"),
@@ -492,6 +481,39 @@ async fn handle_browser_callback(
         Ok(_) => Html(build_auth_success_html(language)),
         Err(error) => Html(build_auth_failure_html(language, &error.message)),
     }
+}
+
+pub(super) fn validate_browser_callback(
+    query: &BrowserAuthCallbackQuery,
+    expected_state: &str,
+) -> Result<String, AuthFlowError> {
+    if query.state.as_deref() != Some(expected_state) {
+        return Err(AuthFlowError::new(
+            "callback_invalid",
+            "The ChatGPT login callback returned an invalid state token.",
+        ));
+    }
+
+    if let Some(error) = query.error.as_deref() {
+        return Err(AuthFlowError::new(
+            "callback_denied",
+            query
+                .error_description
+                .clone()
+                .unwrap_or_else(|| format!("Authentication was denied: {}", error)),
+        ));
+    }
+
+    query
+        .code
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AuthFlowError::new(
+                "callback_invalid",
+                "The ChatGPT login callback did not include an authorization code.",
+            )
+        })
 }
 
 async fn handle_browser_cancel(

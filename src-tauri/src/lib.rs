@@ -5,7 +5,7 @@ pub mod core;
 mod db;
 mod dev_overrides;
 #[cfg(target_os = "macos")]
-mod macos_dynamic_app_icon;
+mod macos_traffic_lights;
 #[cfg(target_os = "macos")]
 mod macos_window_menu;
 mod secrets;
@@ -15,26 +15,24 @@ mod fs;
 pub mod git;
 
 mod ai;
-mod index;
+pub mod project_path;
 mod tool_host;
 pub mod workspace;
 
 use ai::AiState;
 use app_quit_state::AppQuitState;
 use commands::DbPool;
-use core::{init_logging, init_process_environment, load_config};
+use core::{finalize_desktop_workspace_path, init_logging, init_process_environment, load_config};
 use fs::watcher::init_watcher;
 use git::GitState;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
@@ -53,46 +51,24 @@ struct WindowPositionPayload {
     y: i32,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MacosAppIconThemeSpec {
-    background_color: String,
-    logo_start_color: String,
-    logo_end_color: String,
+const FRONTEND_LOG_MESSAGE_LIMIT: usize = 8_000;
+const FRONTEND_LOG_SCOPE_LIMIT: usize = 120;
+
+fn truncate_for_frontend_log(value: &str, max_chars: usize) -> String {
+    let mut truncated: String = value.chars().take(max_chars).collect();
+    if value.chars().count() > max_chars {
+        truncated.push_str("...");
+    }
+    truncated
 }
 
-#[cfg(target_os = "macos")]
-unsafe fn inset_traffic_lights(window: &NSWindow, x: f64, y: f64) {
-    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
-        return;
-    };
-    let Some(miniaturize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
-        return;
-    };
-    let zoom = window.standardWindowButton(NSWindowButton::ZoomButton);
-
-    let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
-        return;
-    };
-
-    let close_rect = NSView::frame(&close);
-    let title_bar_frame_height = close_rect.size.height + y;
-    let mut title_bar_rect = NSView::frame(&title_bar_container_view);
-    title_bar_rect.size.height = title_bar_frame_height;
-    title_bar_rect.origin.y = window.frame().size.height - title_bar_frame_height;
-    title_bar_container_view.setFrame(title_bar_rect);
-
-    let space_between = NSView::frame(&miniaturize).origin.x - close_rect.origin.x;
-
-    let mut window_buttons = vec![close, miniaturize];
-    if let Some(zoom) = zoom {
-        window_buttons.push(zoom);
-    }
-
-    for (index, button) in window_buttons.into_iter().enumerate() {
-        let mut rect = NSView::frame(&button);
-        rect.origin.x = x + (index as f64 * space_between);
-        button.setFrameOrigin(rect.origin);
+fn normalize_frontend_log_level(level: &str) -> &'static str {
+    match level.trim().to_ascii_lowercase().as_str() {
+        "debug" => "debug",
+        "info" => "info",
+        "warn" | "warning" => "warn",
+        "error" => "error",
+        _ => "warn",
     }
 }
 
@@ -115,6 +91,38 @@ async fn show_main_window(window: tauri::WebviewWindow) {
             "Failed to show main window"
         );
     }
+}
+
+#[tauri::command]
+async fn frontend_log(level: String, scope: String, message: String) -> Result<(), String> {
+    let normalized_level = normalize_frontend_log_level(&level);
+    let normalized_scope = truncate_for_frontend_log(scope.trim(), FRONTEND_LOG_SCOPE_LIMIT);
+    let normalized_message = truncate_for_frontend_log(message.trim(), FRONTEND_LOG_MESSAGE_LIMIT);
+
+    match normalized_level {
+        "debug" => tracing::debug!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        "info" => tracing::info!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        "error" => tracing::error!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+        _ => tracing::warn!(
+            scope = %normalized_scope,
+            "{}",
+            normalized_message
+        ),
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -207,56 +215,12 @@ async fn window_set_traffic_light_position(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-
-        window
-            .with_webview(move |webview| {
-                let result = unsafe {
-                    let ns_window: &NSWindow = &*webview.ns_window().cast();
-                    inset_traffic_lights(ns_window, x, y);
-                    Ok::<(), String>(())
-                };
-                let _ = sender.send(result);
-            })
-            .map_err(|error| error.to_string())?;
-
-        receiver.await.map_err(|error| error.to_string())?
+        macos_traffic_lights::set_traffic_light_position(window, x, y).await
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (window, x, y);
-        Ok(())
-    }
-}
-
-#[tauri::command]
-async fn set_macos_app_icon_theme(
-    window: tauri::WebviewWindow,
-    spec: MacosAppIconThemeSpec,
-) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-
-        window
-            .run_on_main_thread(move || {
-                let result = macos_dynamic_app_icon::set_application_icon_for_theme(&spec);
-                let _ = sender.send(result);
-            })
-            .map_err(|error| error.to_string())?;
-
-        receiver.await.map_err(|error| error.to_string())?
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let MacosAppIconThemeSpec {
-            background_color,
-            logo_start_color,
-            logo_end_color,
-        } = spec;
-        let _ = (window, background_color, logo_start_color, logo_end_color);
         Ok(())
     }
 }
@@ -272,7 +236,7 @@ pub fn run() {
     let config = load_config().expect("Failed to load configuration");
 
     tracing::info!("Starting Macro application");
-    tracing::info!("Workspace path: {:?}", config.workspace_path);
+    tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -281,9 +245,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppQuitState::default())
-        .manage(Arc::new(Mutex::new(None)) as DbPool)
+        .manage(DbPool::default())
         .manage(AiState::default())
         .manage(GitState::new())
+        .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -302,6 +267,7 @@ pub fn run() {
                     window.set_decorations(true)?;
                     window.set_title_bar_style(TitleBarStyle::Overlay)?;
                     window.set_background_color(Some(Color::from((9, 9, 11, 255))))?;
+                    macos_traffic_lights::install_fullscreen_recovery(&window)?;
                 }
 
                 let app_handle = app.handle().clone();
@@ -314,13 +280,41 @@ pub fn run() {
                 }
             }
 
+            let mut config = config;
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
+            let app_data_dir = app_handle.path().app_data_dir()?;
+            secrets::init(&app_data_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize provider secret storage: {}",
+                    error
+                ))
+            })?;
+            finalize_desktop_workspace_path(&mut config, &app_data_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to resolve desktop workspace path: {}",
+                    error
+                ))
+            })?;
 
             // Store workspace paths in app state
             // - WorkspaceMetadataRoot: stable root used for workspace metadata CRUD
             // - WorkspaceRoot: runtime root used by file tools/debug execution context
             let workspace_path = config.workspace_path.clone();
+            if config.workspace_path_source.is_default() && !cfg!(debug_assertions) {
+                std::fs::create_dir_all(&workspace_path).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to create default workspace directory {}: {}",
+                        workspace_path.display(),
+                        error
+                    ))
+                })?;
+            }
+            tracing::info!(
+                "Resolved workspace path: {:?} ({:?})",
+                workspace_path,
+                config.workspace_path_source
+            );
             let workspace_metadata_root =
                 WorkspaceMetadataRoot(Arc::new(RwLock::new(workspace_path.clone())));
             let workspace_runtime_root: WorkspaceRoot =
@@ -346,12 +340,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
                     Ok(pool) => {
-                        let mut pool_guard = pool_state.lock().await;
-                        *pool_guard = Some(pool.clone());
-                        drop(pool_guard);
+                        pool_state.set_ready(pool);
                         tracing::info!("Database initialized successfully");
                     }
                     Err(e) => {
+                        pool_state.set_failed(e.to_string());
                         tracing::error!("Failed to initialize database: {}", e);
                     }
                 }
@@ -361,6 +354,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // Database commands
+            commands::db_get_initialization_status,
+            commands::db_retry_initialize,
+            frontend_log,
             show_main_window,
             window_close,
             window_minimize,
@@ -375,7 +371,6 @@ pub fn run() {
             window_scale_factor,
             window_set_zoom,
             window_set_traffic_light_position,
-            set_macos_app_icon_theme,
             commands::db_list_conversations,
             commands::db_get_chat_snapshot,
             commands::db_get_chat_bootstrap_snapshot,
@@ -384,6 +379,7 @@ pub fn run() {
             commands::db_rename_conversation,
             commands::db_update_conversation_details,
             commands::db_update_conversation_scope,
+            commands::db_update_conversation_ai_selection,
             commands::db_delete_conversation_by_id,
             commands::db_delete_conversations_by_ids,
             commands::db_toggle_pin_conversation,
@@ -392,6 +388,14 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_list_conversation_citations,
+            commands::db_get_conversation_citation_content,
+            commands::db_upsert_conversation_citation,
+            commands::db_delete_conversation_citation,
+            commands::db_delete_conversation_citations,
+            commands::db_get_conversation_toolbox_state,
+            commands::db_upsert_conversation_toolbox_state,
+            commands::db_delete_conversation_toolbox_state,
             commands::db_get_architect_plan_conversation_sync,
             commands::db_get_architect_plan_conversation_sync_for_plan,
             commands::db_upsert_architect_plan_conversation_sync,
@@ -426,17 +430,23 @@ pub fn run() {
             commands::workspace::workspace_get_metadata,
             commands::workspace::workspace_get_project_registry_diagnostics,
             commands::workspace::workspace_recover_missing_metadata,
+            commands::workspace::workspace_discover_recoverable_projects,
+            commands::workspace::workspace_reconcile_project_registry_from_hints,
             commands::workspace::workspace_get_active_root,
             commands::workspace::workspace_architect_list_plans,
             commands::workspace::workspace_architect_activate_plan_head,
             commands::workspace::workspace_architect_activate_plan_chat,
             commands::workspace::workspace_architect_invalidate,
             commands::workspace::workspace_preview_project_git_setup,
+            commands::workspace::workspace_cancel_project_operation,
             commands::workspace::workspace_set_active_root,
             commands::workspace::workspace_create_project,
             commands::workspace::workspace_create_project_with_git_setup,
+            commands::workspace::workspace_create_new_project_repo,
             commands::workspace::workspace_import_git_repo,
             commands::workspace::workspace_rename_project_group,
+            commands::workspace::workspace_create_project_group,
+            commands::workspace::workspace_move_project_to_group,
             commands::workspace::workspace_rename_project,
             commands::workspace::workspace_update_project_git_flow,
             commands::workspace::workspace_update_project_git_flow_with_setup,
@@ -462,10 +472,22 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::mcp::mcp_discover_tools,
+            commands::mcp::mcp_call_tool,
+            commands::mcp::mcp_store_env_secret,
+            commands::mcp::mcp_delete_env_secret,
+            commands::skills::skills_list,
+            commands::skills::skills_get,
+            commands::skills::skills_install_from_local_path,
+            commands::skills::skills_create_template,
+            commands::skills::skills_open_location,
+            commands::skills::skills_read_resource,
+            commands::skills::skills_run_script,
             commands::list_external_apps,
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,
             commands::terminal::terminal_create_tab,
+            commands::terminal::terminal_start_command_tab,
             commands::terminal::terminal_reconnect_tab,
             commands::terminal::terminal_read_tab,
             commands::terminal::terminal_update_tab_metadata,
@@ -483,6 +505,7 @@ pub fn run() {
             commands::fs::fs_read_file,
             commands::fs::fs_write_file,
             commands::fs::fs_list_dir,
+            commands::fs::fs_search_files,
             commands::fs::fs_stat,
             commands::fs::fs_exists,
             commands::fs::fs_delete,
@@ -519,10 +542,14 @@ pub fn run() {
             commands::git::git_accept_conflict_side,
             commands::git::git_complete_merge,
             commands::git::git_get_tree,
+            commands::git::git_branch_worktree_inspect,
+            commands::git::git_branch_worktree_create,
+            commands::git::git_branch_worktree_remove,
             commands::git::git_worktree_inspect,
             commands::git::git_worktree_create,
             commands::git::git_worktree_remove,
             commands::git::git_push,
+            commands::git::git_remote_add_origin,
             commands::git::git_pull,
             commands::git::macro_branch_ensure,
             commands::git::macro_branch_status,
@@ -533,6 +560,7 @@ pub fn run() {
             commands::db_upsert_provider_models,
             commands::db_get_conversation_compaction_state,
             commands::db_upsert_conversation_compaction_state,
+            commands::db_insert_conversation_compaction_event,
             commands::db_delete_conversation_compaction_state,
             commands::db_set_provider_model_enabled,
             commands::db_set_all_provider_models_enabled,
@@ -566,4 +594,41 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod frontend_log_tests {
+    use super::{
+        normalize_frontend_log_level, truncate_for_frontend_log, FRONTEND_LOG_MESSAGE_LIMIT,
+    };
+
+    #[test]
+    fn frontend_log_normalizes_known_and_unknown_levels() {
+        assert_eq!(normalize_frontend_log_level("debug"), "debug");
+        assert_eq!(normalize_frontend_log_level("INFO"), "info");
+        assert_eq!(normalize_frontend_log_level("warning"), "warn");
+        assert_eq!(normalize_frontend_log_level("error"), "error");
+        assert_eq!(normalize_frontend_log_level("verbose"), "warn");
+    }
+
+    #[test]
+    fn frontend_log_truncates_long_messages() {
+        let message = "x".repeat(FRONTEND_LOG_MESSAGE_LIMIT + 10);
+        let truncated = truncate_for_frontend_log(&message, FRONTEND_LOG_MESSAGE_LIMIT);
+
+        assert_eq!(truncated.chars().count(), FRONTEND_LOG_MESSAGE_LIMIT + 3);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn project_registry_sibling_reconcile_command_is_not_registered() {
+        let source = include_str!("lib.rs");
+        let removed_command = concat!(
+            "workspace_",
+            "reconcile_project_registry_from_",
+            "known_parent_dirs"
+        );
+
+        assert!(!source.contains(removed_command));
+    }
 }

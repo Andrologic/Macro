@@ -2,8 +2,10 @@
 
 import type { SupportedLanguage } from '../i18n/languages';
 import type { IconName } from '../components/ui/Icon';
+import type { Citation } from '../stores/useCitationsStore';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
+export type ProjectPathKind = 'windows' | 'wsl';
 export type PlanStatus = 'Draft' | 'Validated' | 'InProgress' | 'Completed' | 'Cancelled';
 export type TaskStatus =
   | 'Pending'
@@ -27,7 +29,10 @@ export type AgentType = 'build' | 'plan';
 // Plan Node types for dependency graph
 export type PlanNodeStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
+export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
+export type PlanTaskArtifactContentType = 'markdown' | 'json' | 'text';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
+export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
   | 'not_git'
   | 'unborn'
@@ -51,6 +56,7 @@ export type ProjectAccessBlockingReason =
 export interface ProjectGitFlowSettings {
   baseBranch: string;
   mainBranch: string;
+  completionMergePolicy?: CompletionMergePolicy;
   planBranchTemplate: string;
   featureBranchTemplate: string;
   standaloneFeatureBranchTemplate: string;
@@ -113,6 +119,8 @@ export interface PlanNode {
   type: PlanNodeType;
   status: PlanNodeStatus;
   dependencies: string[];
+  todos?: PlanNodeTodo[];
+  artifactContracts?: PlanNodeArtifactContract[];
   assignedBranch?: string;
   branchType?: Exclude<GitFlowBranchType, 'plan'>;
   branchSlug?: string;
@@ -122,6 +130,45 @@ export interface PlanNode {
   archivedAt?: string | null;
   archiveReason?: string | null;
   mergedAt?: string | null;
+}
+
+export interface PlanNodeTodo {
+  id: string;
+  title: string;
+  description?: string;
+  status: PlanNodeTodoStatus;
+}
+
+export interface PlanNodeArtifactContract {
+  id: string;
+  title: string;
+  kind: string;
+  description?: string;
+  required: boolean;
+}
+
+export interface PlanTaskArtifact {
+  id: string;
+  planId: string;
+  taskId: string;
+  kind: string;
+  title: string;
+  summary: string;
+  contentType: PlanTaskArtifactContentType;
+  path: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  contractId?: string;
+  supersedes?: string;
+}
+
+export interface PlanTaskArtifactReview {
+  artifactId: string;
+  taskId: string;
+  validatedAt: string;
+  validatedBy: string;
 }
 
 export interface PlanEdge {
@@ -155,6 +202,8 @@ export interface TaskExecutionTarget {
   planBranchName?: string;
   predictedBranchId?: string | null;
 }
+
+export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 
 export interface PredictedCommit {
   id: string;
@@ -199,15 +248,45 @@ export interface Need {
   updatedAt: string;
 }
 
-// Context references for chat composer (tag needs, nodes, branches)
-export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch';
+export interface WorkspaceFileReference {
+  id: string;
+  path: string;
+  relativePath: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  language?: string | null;
+  sizeBytes?: number | null;
+  modified?: string | null;
+  isFocused?: boolean;
+}
+
+// Context references for chat composer (tag needs, nodes, branches, skills, files, sources)
+export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: Need | PlanNode | PredictedBranch;
+  data: Need | PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
+}
+
+export interface PersistedContextReference {
+  id: string;
+  kind: ContextRefKind;
+  title: string;
+  subtitle?: string;
+  skillFilePath?: string | null;
+  contentHash?: string;
+  location?: SkillLocation;
+  source?: SkillSource;
+  path?: string;
+  relativePath?: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  snippet?: string;
+  sourceLabel?: string;
+  url?: string;
 }
 
 // Activity indicator for projects
@@ -223,6 +302,7 @@ export type ToolStatus = 'enabled' | 'disabled' | 'error' | 'loading';
 export type ToolCategory = 'git' | 'filesystem' | 'web' | 'database' | 'terminal' | 'ai' | 'productivity' | 'external';
 export type MCPServerStatus = 'online' | 'offline' | 'degraded' | 'unconfigured';
 export type MCPServerCategory = 'database' | 'productivity' | 'communication' | 'development' | 'ai' | 'other';
+export type MCPTransportType = 'stdio' | 'sse' | 'streamable_http';
 export type ToolRiskLevel = 'strict' | 'balanced' | 'yolo';
 export type ToolSecurityActionGroup = 'observe' | 'change' | 'escape';
 export type ToolSecurityDecision = 'allow' | 'ask' | 'deny';
@@ -251,6 +331,31 @@ export interface ToolSettings {
 }
 
 // MCP Server interfaces
+export interface MCPStdioTransportConfig {
+  type: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface MCPHttpTransportConfig {
+  type: 'sse' | 'streamable_http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type MCPTransportConfig = MCPStdioTransportConfig | MCPHttpTransportConfig;
+
+export interface MCPTool {
+  id: string;
+  serverId: string;
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  enabled?: boolean;
+  discoveredAt?: string;
+}
+
 export interface MCPServer {
   id: string;
   name: string;
@@ -259,11 +364,160 @@ export interface MCPServer {
   description: string;
   icon: IconName;
   website?: string;
-  config?: Record<string, unknown>;
+  transport?: MCPTransportConfig;
+  tools?: MCPTool[];
+  lastError?: string | null;
+  discoveredAt?: string | null;
+  config?: Record<string, unknown> & { enabled?: boolean };
 }
 
 export interface MCPServerSettings {
   servers: Record<string, MCPServer>;
+}
+
+export type SkillSourceKind = 'global' | 'project';
+export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude';
+export type SkillLocationKind = 'local' | 'remote' | 'bundled';
+export type SkillDiagnosticSeverity = 'error' | 'warning' | 'info';
+
+export interface SkillProjectRoot {
+  projectId: string;
+  projectName: string;
+  path: string;
+}
+
+export interface SkillSource {
+  kind: SkillSourceKind;
+  namespace?: SkillSourceNamespace;
+  projectId?: string | null;
+  projectName?: string | null;
+  rootPath: string;
+  skillRootPath?: string;
+}
+
+export type SkillResourceKind = 'reference' | 'asset' | 'script';
+
+export interface SkillResource {
+  path: string;
+  kind: SkillResourceKind;
+  sizeBytes: number;
+}
+
+export interface SkillLocation {
+  kind: SkillLocationKind;
+  uri: string;
+}
+
+export interface SkillDiagnostic {
+  severity: SkillDiagnosticSeverity;
+  code: string;
+  message: string;
+}
+
+export interface SkillManifest {
+  id: string;
+  name: string;
+  description: string;
+  license?: string | null;
+  compatibility?: string | null;
+  allowedTools?: string | null;
+  metadata?: Record<string, string>;
+  rootPath?: string | null;
+  skillFilePath?: string | null;
+  location?: SkillLocation;
+  source: SkillSource;
+  resources: SkillResource[];
+  scripts: SkillResource[];
+  diagnostics?: SkillDiagnostic[];
+  specCompliant?: boolean;
+  shadowedBySkillId?: string | null;
+  contentHash?: string;
+  validationErrors: string[];
+  isValid: boolean;
+}
+
+export interface SkillSettings {
+  enabled: boolean;
+  scriptsEnabled: boolean;
+}
+
+export interface SkillPermissionSnapshotEntry {
+  skillId: string;
+  enabled: boolean;
+  scriptsEnabled: boolean;
+  hasScripts: boolean;
+}
+
+export interface SkillPermissionSnapshot {
+  conversationId: string;
+  turnId: string;
+  capturedAt: string;
+  skills: Record<string, SkillPermissionSnapshotEntry>;
+}
+
+export interface SkillActivation {
+  skillId: string;
+  activatedAt: string;
+  body: string;
+  contentHash?: string;
+  locationUri?: string;
+  skillFilePath?: string | null;
+}
+
+export type SkillTurnFeedbackStatus = 'loaded' | 'blocked' | 'ignored';
+
+export type SkillTurnFeedbackAction = 'open_settings' | 'refresh';
+
+export interface SkillTurnFeedbackItem {
+  skillId?: string;
+  title: string;
+  status: SkillTurnFeedbackStatus;
+  reason?: string;
+  action?: SkillTurnFeedbackAction;
+}
+
+export interface SkillTurnFeedback {
+  messageId: string;
+  loaded: SkillTurnFeedbackItem[];
+  warnings: SkillTurnFeedbackItem[];
+}
+
+export interface SkillScriptRunRequest {
+  skillId: string;
+  scriptPath: string;
+  args?: string[];
+  timeoutMs?: number | null;
+  allowWorkspace?: boolean;
+}
+
+export interface SkillScriptRunResult {
+  skillId: string;
+  scriptPath: string;
+  stdout: string;
+  stderr: string;
+  exitCode?: number | null;
+  timedOut: boolean;
+  truncated: boolean;
+}
+
+export interface SkillTemplateCreateResult {
+  skill: SkillManifest;
+  folderPath: string;
+  skillFilePath: string;
+}
+
+export interface SkillTemplateCreateRequest {
+  name: string;
+  description: string;
+  destinationKind: 'global' | 'project';
+  projectId?: string | null;
+  projectRoots?: SkillProjectRoot[];
+}
+
+export interface SkillLocationOpenRequest {
+  skillId: string;
+  target: 'skillFile' | 'folder';
+  projectRoots?: SkillProjectRoot[];
 }
 
 export interface ProjectDependency {
@@ -285,6 +539,9 @@ export interface Project {
   name: string;
   mountName: string;
   path: string;
+  pathKind?: ProjectPathKind;
+  wslDistro?: string | null;
+  wslLinuxPath?: string | null;
   created_at: string;
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;
@@ -300,6 +557,11 @@ export interface ProjectGroup {
   name: string;
   isOpen: boolean;
   projects: Project[];
+}
+
+export interface ProjectRegistry {
+  standaloneProjects: Project[];
+  projectGroups: ProjectGroup[];
 }
 
 export interface GlobalProject {
@@ -346,6 +608,18 @@ export interface Task {
   archive_reason?: string | null;
   merged_at?: string | null;
   needs_revalidation?: boolean;
+  task_source?: ImplementTaskSource;
+  assigned_branch?: string;
+  branch_name?: string;
+  branch_id?: string | null;
+  branch_task_index?: number;
+  blocked_by_task_ids?: string[];
+  blocked_by?: string[];
+  is_blocked?: boolean;
+  is_ready?: boolean;
+  sequence_index?: number;
+  execution_targets?: TaskExecutionTarget[];
+  todos?: PlanNodeTodo[];
 }
 
 export interface GitNode {
@@ -387,12 +661,19 @@ export type ToolTraceStatus =
   | 'denied'
   | 'done';
 
+export type ToolTraceExecutionMode = 'sequential' | 'parallel';
+
 export interface ToolTrace {
   tool_call_id: string;
   tool_name: string;
   detail?: string;
   status: ToolTraceStatus;
   visible_offset?: number;
+  execution_mode?: ToolTraceExecutionMode;
+  batch_id?: string;
+  order?: number;
+  started_at_ms?: number;
+  completed_at_ms?: number;
 }
 
 export interface PendingToolApproval {
@@ -405,7 +686,70 @@ export interface PendingToolApproval {
   isDestructive?: boolean;
   summary: string;
   detail?: string;
+  args?: Record<string, unknown>;
   rememberKey: string;
+}
+
+export interface AgentCodeCheckpointFileSnapshot {
+  exists: boolean;
+  content: string | null;
+  isBinary?: boolean;
+  size?: number;
+  encoding?: string | null;
+  language?: string | null;
+}
+
+export type AgentCodeCheckpointFileStatus = 'created' | 'modified' | 'deleted';
+
+export interface AgentCodeCheckpointFile {
+  path: string;
+  realPath: string;
+  projectId?: string | null;
+  mountName?: string | null;
+  workspacePath?: string | null;
+  workspaceScope?: string | null;
+  allowOutsideWorkspace?: boolean;
+  status: AgentCodeCheckpointFileStatus;
+  before: AgentCodeCheckpointFileSnapshot;
+  after: AgentCodeCheckpointFileSnapshot;
+}
+
+export interface AgentCodeCheckpoint {
+  id: string;
+  conversationId: string;
+  turnId?: string | null;
+  assistantMessageId: string;
+  toolCallId: string;
+  toolName: string;
+  sequence: number;
+  createdAt: string;
+  files: AgentCodeCheckpointFile[];
+}
+
+export type AgentCodeReplayFileAction = 'modify' | 'delete' | 'restore';
+
+export interface AgentCodeReplayPreviewFile {
+  path: string;
+  realPath: string;
+  action: AgentCodeReplayFileAction;
+  status: AgentCodeCheckpointFileStatus;
+  projectId?: string | null;
+  mountName?: string | null;
+  workspacePath?: string | null;
+  workspaceScope?: string | null;
+  allowOutsideWorkspace?: boolean;
+  target: AgentCodeCheckpointFileSnapshot;
+  expectedCurrent?: AgentCodeCheckpointFileSnapshot;
+  current?: AgentCodeCheckpointFileSnapshot;
+  hasExternalChanges?: boolean;
+}
+
+export interface AgentCodeReplayPreview {
+  conversationId: string;
+  messageId: string;
+  targetCheckpointId: string | null;
+  affectedFiles: AgentCodeReplayPreviewFile[];
+  hasExternalChanges?: boolean;
 }
 
 export interface ConversationApprovalGrant {
@@ -425,23 +769,105 @@ export type ContextFootprintReason =
   | 'total_context_ratio'
   | 'hidden_context_ratio'
   | 'tool_turn_count'
-  | 'post_compaction_overflow';
+  | 'post_compaction_overflow'
+  | 'hard_stop_ratio'
+  | 'model_window_shrank'
+  | 'manual_compaction_required';
+
+export type ModelContextLimitSource =
+  | 'model_metadata'
+  | 'provider_metadata'
+  | 'user_override'
+  | 'models_dev'
+  | 'provider_overflow_error'
+  | 'macro_fallback';
+
+export type ModelContextLimitConfidence =
+  | 'verified'
+  | 'configured'
+  | 'catalog'
+  | 'learned'
+  | 'fallback';
 
 export interface ContextFootprint {
   totalEstimatedTokens: number;
+  serializedPayloadTokens?: number;
   messageTokens: number;
+  visibleMessageTokens?: number;
+  providerInputTokens?: number;
   hiddenContextTokens: number;
   systemTokens: number;
   toolSchemaTokens: number;
   imagePlaceholderTokens: number;
   citationTokens: number;
+  summaryTokens?: number;
+  latestUserContextTokens?: number;
   modelContextWindowTokens: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextLimitSource?: ModelContextLimitSource;
+  isContextLimitAuthoritative?: boolean;
+  contextLimitConfidence?: ModelContextLimitConfidence;
+  contextLimitWarning?: string;
+  previousModelContextWindowTokens?: number;
+  modelContextWindowShrank?: boolean;
+  marginTokens?: number;
+  reservedTokens: number;
+  outputReserveTokens?: number;
+  usableContextTokens: number;
   threshold: ContextFootprintThreshold;
   reason: ContextFootprintReason;
   totalContextRatio: number;
+  usableContextRatio: number;
   hiddenContextRatio: number;
+  hardStopRatio: number;
+  isHardStop: boolean;
   toolTurnCount: number;
 }
+
+export interface ContextCompactionDecisionAudit {
+  providerId?: string | null;
+  providerType?: string | null;
+  modelId?: string | null;
+  trigger?: ContextCompactionKind | ContextCompactionTrigger | null;
+  result?: string | null;
+  reason?: ContextFootprintReason | string | null;
+  modelContextWindowTokens?: number | null;
+  inputLimitTokens?: number | null;
+  outputLimitTokens?: number | null;
+  outputReserveTokens?: number | null;
+  reservedTokens?: number | null;
+  usableContextTokens?: number | null;
+  totalEstimatedTokens?: number | null;
+  usableContextRatio?: number | null;
+  totalContextRatio?: number | null;
+  threshold?: ContextFootprintThreshold | null;
+  contextLimitSource?: ModelContextLimitSource | null;
+  isContextLimitAuthoritative?: boolean | null;
+  contextLimitConfidence?: ModelContextLimitConfidence | null;
+  contextLimitWarning?: string | null;
+  autoCompactionEnabled?: boolean | null;
+  formula?: string | null;
+}
+
+export type ContextCompactionKind =
+  | 'background'
+  | 'blocking'
+  | 'model_switch'
+  | 'overflow_recovery'
+  | 'safety_prestream'
+  | 'stream_overflow'
+  | 'manual';
+
+export type ContextCompactionTrigger =
+  | 'manual'
+  | 'model_switch'
+  | 'safety_prestream'
+  | 'stream_overflow';
+
+export type CompactionPass = 'normal' | 'forced' | 'ultra';
+export type CompactionSummarySource = 'model' | 'fallback';
+export type CompactionCheckpointHealth = 'ok' | 'degraded' | 'fallback';
 
 export type ToolContextDigestKind =
   | 'file_read'
@@ -457,6 +883,7 @@ export interface ToolContextDigestEntry {
   evidence_excerpt: string;
   source_message_id: string;
   hash: string;
+  timestamp?: string;
 }
 
 export interface ConversationCompactionState {
@@ -472,6 +899,24 @@ export interface ConversationCompactionState {
   version: number;
   createdAt: string;
   updatedAt: string;
+  prunedToolContextMessageIds?: string[];
+  reservedTokens?: number;
+  outputReserveTokens?: number;
+  footprintBefore?: ContextFootprint;
+  footprintAfter?: ContextFootprint;
+  degradedReason?: ContextFootprintReason | null;
+  compactionKind?: ContextCompactionKind;
+  compactionPass?: CompactionPass;
+  summaryFormatVersion?: number;
+  summarySource?: CompactionSummarySource;
+  policyVersion?: number;
+  fingerprintInputsJson?: string;
+  sourceHashesJson?: string;
+  modelContextWindowTokens?: number;
+  providerId?: string | null;
+  modelId?: string | null;
+  checkpointHealth?: CompactionCheckpointHealth;
+  lastTrigger?: ContextCompactionTrigger;
 }
 
 export interface ChatGptProviderTurnState {
@@ -536,19 +981,24 @@ export interface ConversationQuestionnaireState {
 export type ConversationExecutionPhase =
   | 'idle'
   | 'preparing'
+  | 'overflow_recovery'
   | 'streaming'
   | 'error';
 
 export interface ConversationRuntimeState {
   phase: ConversationExecutionPhase;
   sessionId: string | null;
+  turnId?: string | null;
   assistantMessageId?: string | null;
   abortController?: AbortController | null;
   lastError?: string | null;
+  lastErrorOrigin?: 'macro' | 'provider' | null;
+  lastErrorDisplayTarget?: 'composer' | 'transcript' | null;
 }
 
 export interface ChatMessage {
   id: string;
+  turn_id?: string | null;
   task_id: string;
   conversation_id: string;
   role: MessageRole;
@@ -563,7 +1013,20 @@ export interface ChatMessage {
   hidden_context?: string;
   provider_input_items?: unknown[];
   provider_turn_state?: ProviderTurnState;
+  context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
+}
+
+export interface ProviderReplayEnvelope {
+  provider: string;
+  protocol: string;
+  conversationId: string;
+  messageId: string;
+  turnId?: string | null;
+  modelId?: string | null;
+  items: unknown[];
+  validity?: 'valid' | 'invalid' | 'compacted';
+  createdAt: string;
 }
 
 export interface Conversation {
@@ -574,6 +1037,9 @@ export interface Conversation {
   task_id: string | null;
   group_id?: string | null;
   project_id: string | null;
+  provider_id?: string | null;
+  model_id?: string | null;
+  reasoning_effort?: ReasoningEffort | null;
   last_message: string;
   message_count: number;
   updated_at: string;
@@ -631,6 +1097,10 @@ export interface AIModel {
   isManual?: boolean;
   nativeToolCalling?: boolean;
   contextWindowTokens?: number;
+  inputLimitTokens?: number;
+  outputLimitTokens?: number;
+  contextWindowSource?: ModelContextLimitSource;
+  contextLimitsUpdatedAt?: string;
   first_seen_at?: string;
   last_seen_at?: string;
   db_id?: string;
@@ -681,32 +1151,4 @@ export interface GitCommit {
   graph_depth?: number;
   is_branch_point?: boolean;
   task_id?: string;
-}
-
-export interface UserPreferences {
-  theme: ThemeMode;
-  language: Language;
-  notifications: boolean;
-  emailUpdates: boolean;
-}
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  avatar?: string;
-  preferences: UserPreferences;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Session {
-  user: User;
-  token: string;
-  expires_at: string;
-}
-
-export interface AuthCredentials {
-  email: string;
-  password: string;
 }

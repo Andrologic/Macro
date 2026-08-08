@@ -111,7 +111,6 @@ const resolveRepositoryAction = (
   if (isAutoStashableDirtyMergeRepository(repository)) return 'stash_dirty';
   if (isCompletableMergeRepository(repository)) return 'complete_merge';
   if (isAbortableMergeInProgressRepository(repository)) return 'abort_merge';
-  if (isFastForwardMergeRepository(repository)) return 'fast_forward';
   if (isRebaseMergeRepository(repository)) return 'rebase_then_continue';
   return null;
 };
@@ -122,8 +121,6 @@ const resolveSimpleBlockerAction = (
   if (repositories.some(isMergeWorkflowStagedResolutionRepository)) return 'commit_staged_resolution';
   if (repositories.some(isAutoStashableDirtyMergeRepository)) return 'stash_dirty';
   if (repositories.some(isAbortableMergeInProgressRepository)) return 'abort_merge';
-  if (repositories.some(isFastForwardMergeRepository)) return 'fast_forward';
-  if (repositories.some(isRebaseMergeRepository)) return 'rebase_then_continue';
   return null;
 };
 
@@ -272,23 +269,6 @@ const getRepositoryIncident = (
       affectedFiles: conflictFiles,
       primaryLabel: t('implement.resolveBlocker', 'Resolve'),
       primaryAction: 'abort_merge',
-      primaryVariant: 'primary',
-    };
-  }
-
-  if (isFastForwardMergeRepository(repository)) {
-    return {
-      kind: 'strategy',
-      statusLabel: t('implement.fastForwardResolutionTitle', 'Fast-forward available'),
-      title: t('implement.fastForwardAvailableInline', 'Fast-forward is available for this repository.'),
-      description: t(
-        'implement.fastForwardCardDescription',
-        'Macro can advance the target branch without creating a merge commit.'
-      ),
-      tone: 'info',
-      affectedFiles: [],
-      primaryLabel: t('implement.chooseMergeStrategy', 'Choose merge strategy'),
-      primaryAction: 'fast_forward',
       primaryVariant: 'primary',
     };
   }
@@ -889,16 +869,13 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   const mergeButtonLabel = isPlanFinalizationTask
     ? t('implement.mergePlan', 'Merge plan')
     : t('implement.mergeTask', 'Merge task');
-  const readyPrimaryButtonLabel =
-    simpleBlockerResolutionAction === 'fast_forward' ||
-    simpleBlockerResolutionAction === 'rebase_then_continue'
-      ? t('implement.chooseMergeStrategy', 'Choose merge strategy')
-      : mergeButtonLabel;
+  const readyPrimaryButtonLabel = mergeButtonLabel;
   const attentionCount = runtime?.blockedRepositories.length ?? 0;
   const resolutionReadyCount = repositories.filter(isCompletableMergeRepository).length;
   const strategyReadyCount = repositories.filter(
     (repository) =>
-      isFastForwardMergeRepository(repository) || isRebaseMergeRepository(repository)
+      isRebaseMergeRepository(repository) &&
+      !(repository.availableActions ?? []).includes('merge_commit')
   ).length;
   const footerMessage = (() => {
     if (isLoading) {

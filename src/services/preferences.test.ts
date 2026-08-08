@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 
 let isolatedImportCounter = 0;
 
@@ -27,14 +28,11 @@ const loadPreferencesModule = async () => {
 
 const setTauriAvailability = (enabled: boolean) => {
   if (enabled) {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {},
-    });
+    installTauriRuntimeMock();
     return;
   }
 
-  Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+  removeTauriRuntimeMock();
 };
 
 describe('preferences legacy cleanup', () => {
@@ -77,14 +75,14 @@ describe('preferences legacy cleanup', () => {
     expect(localStorage.getItem('macro_architectToolAutonomyProfile')).toBeNull();
   });
 
-  it('falls back to the default chat max turns when the stored value is invalid', async () => {
+  it('falls back to unlimited chat turns when the stored value is invalid', async () => {
     localStorage.setItem('macro_chatMaxTurns', JSON.stringify(99));
 
     const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
 
     const value = await loadPreference(PREF_KEYS.CHAT_MAX_TURNS);
 
-    expect(value).toBe(50);
+    expect(value).toBeNull();
   });
 
   it('preserves null chat max turns as the disabled limit preference', async () => {
@@ -104,6 +102,42 @@ describe('preferences legacy cleanup', () => {
 
     expect(prompt).toContain('When the user asks for an action plan');
     expect(prompt).toContain('Prefer 3-5 short sections or bullets');
-    expect(prompt).toContain('16. Do not create a "Finalize plan" strategy node yourself');
+    expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
+  });
+
+  it('notifies same-window subscribers once for an immediate preference save', async () => {
+    const { PREF_KEYS, savePreference, subscribePreference } = await loadPreferencesModule();
+    const listener = mock((_value: unknown) => undefined);
+    const unsubscribe = subscribePreference(PREF_KEYS.METADATA_MODEL_CONFIG, listener);
+
+    await savePreference(PREF_KEYS.METADATA_MODEL_CONFIG, { mode: 'conversation' });
+
+    unsubscribe();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({ mode: 'conversation' }, PREF_KEYS.METADATA_MODEL_CONFIG);
+  });
+
+  it('does not emit a second same-window notification when a debounced save flushes to the store', async () => {
+    const {
+      PREF_KEYS,
+      savePreferenceDebounced,
+      subscribePreference,
+    } = await loadPreferencesModule();
+    const listener = mock((_value: unknown) => undefined);
+    const unsubscribe = subscribePreference(PREF_KEYS.METADATA_MODEL_CONFIG, listener);
+
+    savePreferenceDebounced(
+      PREF_KEYS.METADATA_MODEL_CONFIG,
+      { mode: 'conversation' },
+      1
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    unsubscribe();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(storeSetMock).toHaveBeenCalledWith(
+      PREF_KEYS.METADATA_MODEL_CONFIG,
+      { mode: 'conversation' }
+    );
   });
 });

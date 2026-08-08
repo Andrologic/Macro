@@ -135,6 +135,8 @@ const buildRepository = (
   id: 'repo-1',
   projectId: 'project-1',
   repoPath: '/repos/project',
+  repositoryRootPath: '/repos/project',
+  integrationWorktreePath: null,
   sourceBranchName: 'feature/task',
   targetBranchName: 'develop',
   progressState: 'blocked',

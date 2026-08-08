@@ -2,7 +2,7 @@
  * Preferences Service
  *
  * Handles persistent storage of user preferences using Tauri Store plugin
- * with localStorage fallback for non-Tauri environments (mock mode).
+ * with localStorage fallback for non-Tauri environments.
  */
 
 import { load, Store } from "@tauri-apps/plugin-store";
@@ -10,7 +10,7 @@ import type { AppMode, ToolRiskLevel } from "../types";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
-  CHAT_MAX_TURNS_DEFAULT,
+  CHAT_MAX_TURNS_DISABLED,
   isValidChatMaxTurnsPreference,
 } from './chatTurnLimits';
 import {
@@ -57,11 +57,17 @@ export const PREF_KEYS = {
   PROMPT_TASK_REVIEWER: "promptTaskReviewer",
   PROMPT_REPO_AUDITOR: "promptRepoAuditor",
   CHAT_MAX_TURNS: "chatMaxTurns",
+  COMPACTION_AUTO: "compaction.auto",
+  COMPACTION_PRUNE: "compaction.prune",
+  COMPACTION_RESERVED_TOKENS: "compaction.reservedTokens",
+  COMPACTION_MANUAL_VISIBLE: "compaction.manualVisible",
   TOOL_RISK_LEVEL: "toolRiskLevel",
   IMPLEMENT_DIFF_PRESENTATION_MODE: "implementDiffPresentationMode",
+  IN_APP_NOTIFICATIONS_ENABLED: "inAppNotificationsEnabled",
   NOTIFICATION_CHANNEL_MODES: "notificationChannelModes",
   ARCHITECT_GIT_BASE_BRANCH: "architectGitBaseBranch",
   ARCHITECT_GIT_MAIN_BRANCH: "architectGitMainBranch",
+  ARCHITECT_COMPLETION_MERGE_POLICY: "architectCompletionMergePolicy",
   ARCHITECT_PLAN_BRANCH_TEMPLATE: "architectPlanBranchTemplate",
   ARCHITECT_FEATURE_BRANCH_TEMPLATE: "architectFeatureBranchTemplate",
   ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE: "architectStandaloneFeatureBranchTemplate",
@@ -70,6 +76,7 @@ export const PREF_KEYS = {
   ARCHITECT_BUGFIX_BRANCH_TEMPLATE: "architectBugfixBranchTemplate",
   ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
+  METADATA_MISSING_UPSTREAM_POLICY: "metadataMissingUpstreamPolicy",
   TERMINAL_PANEL_HEIGHT: "terminalPanelHeight",
   TERMINAL_ACTIVE_TAB_ID: "terminalActiveTabId",
   TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: "terminalLastManualProjectByTask",
@@ -84,17 +91,47 @@ export const PREF_KEYS = {
   PROJECT_OPEN_TERMINAL_COMMAND: "projectOpenTerminalCommand",
   PROJECT_OPEN_FILES_COMMAND: "projectOpenFilesCommand",
   ONBOARDING_STATE: "onboardingState",
+  METADATA_MODEL_CONFIG: "metadataModelConfig",
   SMART_COMMIT_MODEL_CONFIG: "smartCommitModelConfig",
   SMART_COMMIT_PROMPT: "smartCommitPrompt",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
+export type MetadataMissingUpstreamPolicy = "ask" | "ignore";
+export type PreferenceChangeListener<T = unknown> = (value: T, key: PrefKey) => void;
+
+const preferenceListeners = new Map<PrefKey, Set<PreferenceChangeListener>>();
+
+const emitPreferenceChange = <T>(key: PrefKey, value: T) => {
+  const listeners = preferenceListeners.get(key);
+  if (!listeners) return;
+
+  for (const listener of listeners) {
+    listener(value, key);
+  }
+};
+
+export function subscribePreference<T>(
+  key: PrefKey,
+  listener: PreferenceChangeListener<T>
+): () => void {
+  const listeners = preferenceListeners.get(key) ?? new Set<PreferenceChangeListener>();
+  listeners.add(listener as PreferenceChangeListener);
+  preferenceListeners.set(key, listeners);
+
+  return () => {
+    listeners.delete(listener as PreferenceChangeListener);
+    if (listeners.size === 0) {
+      preferenceListeners.delete(key);
+    }
+  };
+}
 
 const DEFAULT_MODE_PROMPTS = {
   [PREF_KEYS.PROMPT_ARCHITECT]:
-    "You are the Architect AI. Your job is to analyze the user's project, capture requirements on the active plan, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. All `need_*` tools operate on the active plan only. Use `need_add` to capture requirements, `need_list` only to identify available needs by compact id/title/priority, `need_get` to inspect full details for one need or before a targeted modification, and `need_update` to refine needs instead of only describing requirements in plain text. Do not use `need_list` as a source of complete need details.\n3. Respect the current Macro tool security level. Some tools may require approval or be unavailable. Additive actions such as `need_add` and draft `plan_create` are non-destructive; modifications, replacements, and destructive Architect actions such as `need_update`, `plan_update`, `strategy_generate`, `strategy_update`, `need_delete`, and `strategy_delete` may require approval.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` before modifying and `strategy_update` to patch or replace strategy.\n6. The Architect chat surface includes `plan_create`, `plan_list`, `plan_get`, and `plan_update`; plan deletion, restoration, and active-plan switching stay UI-only.\n7. Never call `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. If a plan must be selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_create` may only create a draft plan. `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each subproject defines a development target branch plus a main branch. When both are the same branch, Macro is in mainline mode: create feature or hotfix plans only, and do not propose release or bugfix plans. Feature plans integrate on a rendered plan branch; hotfix plans integrate on a rendered hotfix branch and return directly to the mainline target. Planned work branches are rendered per subproject from the logical plan slug plus each node's task-specific `featureSlug` and merge into that plan integration branch. Independent implementation features use a dedicated standalone feature template that is also resolved per subproject. In strategy payloads, prefer `plan_slug` and a unique per-node `featureSlug`; concrete branch names are derived later from each subproject's settings.\n11. Each executable strategy node gets its own work branch. Express sequential work with `dependencies`, never by reusing the same `featureSlug`; duplicate pending slugs are normalized into unique task slugs.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_create.label`, `plan_update.label`, or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.\n15. When the user asks for an action plan, implementation plan, strategy outline, or next-step plan, keep it concise and decision-oriented. Prefer 3-5 short sections or bullets, avoid exhaustive inventories and long nested lists, and include only the details needed to choose or execute the next step. If the user asks for more depth, expand afterward.",
+    "You are the Architect AI. Your job is to analyze the user's project, capture requirements on the active plan, and produce structured strategies stored in the `@macro` branch metadata.\n\nIMPORTANT RULES:\n1. Each plan is isolated: one plan has its own conversation, needs, and strategy.\n2. All `need_*` tools operate on the active plan only. Use `need_add` to capture requirements, `need_list` only to identify available needs by compact id/title/priority, `need_get` to inspect full details for one need or before a targeted modification, and `need_update` to refine needs instead of only describing requirements in plain text. Do not use `need_list` as a source of complete need details.\n3. Respect the current Macro tool security level. Some tools may require approval or be unavailable. Additive actions such as `need_add` and draft `plan_create` are non-destructive; modifications, replacements, and destructive Architect actions such as `need_update`, `plan_update`, `strategy_generate`, `strategy_update`, `need_delete`, and `strategy_delete` may require approval.\n4. Do not call `strategy_generate` automatically. First discuss and refine needs with the user. Call `strategy_generate` only after an explicit user request to generate or regenerate strategy.\n5. Use `strategy_get` to inspect strategies. `strategy_generate`, `strategy_update`, and `strategy_delete` are only allowed while the active plan is still draft; once a plan is validated, in progress, or completed, its strategy is temporarily immutable.\n6. The Architect chat surface includes `plan_create`, `plan_list`, `plan_get`, and `plan_update`; plan deletion, restoration, and active-plan switching stay UI-only.\n7. Never call `plan_delete`, `plan_restore`, or `plan_set_active` in Architect chat. If a plan must be selected, archived, deleted, or restored, ask the user to do it from the plan selector.\n8. `plan_create` may only create a draft plan. `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. It must never change plan status or activate a plan.\n9. New plans have an immutable technical id plus a logical plan slug. The slug can stay mutable while the plan is still a draft with no started work, then it becomes locked.\n10. Git workflow is strict: each project defines a development target branch plus a main branch. When both are the same branch, Macro is in mainline mode: create feature or hotfix plans only, and do not propose release or bugfix plans. Feature plans integrate on a rendered plan branch; hotfix plans integrate on a rendered hotfix branch and return directly to the mainline target. Planned work branches are rendered per project from the logical plan slug plus each node's task-specific `featureSlug` and merge into that plan integration branch. Independent implementation features use a dedicated standalone feature template that is also resolved per project. In strategy payloads, prefer `plan_slug` and a unique per-node `featureSlug`; concrete branch names are derived later from each project's settings.\n11. Each executable strategy node gets its own work branch. Express sequential work with `dependencies`, never by reusing the same `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Declare artifactContracts only for critical durable handoffs that dependent tasks truly need, such as audit findings, migration maps, API contracts, and risk registers. Do not add artifactContracts to every node and never declare optional artifacts in the strategy; Implement agents may still create opportunistic artifacts later.\n12. Never ask the user for a plan title before manual creation. If the user wants a friendlier description on an existing plan, store it as an optional label via `plan_create.label`, `plan_update.label`, or the legacy `title` alias.\n13. If a strategy tool reports frozen-node conflicts and requests a repair retry, immediately call the same strategy tool once with a corrected full strategy that preserves the frozen nodes exactly. If the tool stages a preview or blocks, stop retrying and explain that the user must review the preview.\n14. After using an Architect tool, always produce a short natural-language recap of what changed, what you learned, and the next useful step. Do not stop at tool calls only.\n15. When the user asks for an action plan, implementation plan, strategy outline, or next-step plan, keep it concise and decision-oriented. Prefer 3-5 short sections or bullets, avoid exhaustive inventories and long nested lists, and include only the details needed to choose or execute the next step. If the user asks for more depth, expand afterward.",
   [PREF_KEYS.PROMPT_IMPLEMENT]:
-    "You are the Implementer. Follow the tasks to implement the specific feature. When you propose an implementation plan, keep it concise and execution-oriented: focus on the next concrete steps, key risks, and verification, not an exhaustive essay.",
+    "You are the Implementer. Follow the tasks to implement the specific feature. Use task_todo_get to inspect the current task checklist and task_todo_update to keep each todo status accurate; task completion is blocked while task todos remain pending or in-progress. Use task_artifact_list/task_artifact_get for inherited handoff context, and call task_artifact_put when a finding, map, contract, decision, or risk record should be reused by dependent tasks. When modifying an inherited artifact, create a new current-task artifact with supersedes_artifact_id instead of overwriting the parent. When you propose an implementation plan, keep it concise and execution-oriented: focus on the next concrete steps, key risks, and verification, not an exhaustive essay.",
   [PREF_KEYS.PROMPT_CHAT]:
     "You are a helpful AI assistant. When asked for a plan, keep it concise and easy to scan unless the user explicitly asks for a detailed version.",
 } as const;
@@ -144,7 +181,7 @@ export type PromptBackedInternalAgentProfile =
 const PROMPT_DEFAULTS = {
   ...DEFAULT_MODE_PROMPTS,
   [PREF_KEYS.PROMPT_ARCHITECT]:
-    `${DEFAULT_MODE_PROMPTS[PREF_KEYS.PROMPT_ARCHITECT]}\n16. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.`,
+    `${DEFAULT_MODE_PROMPTS[PREF_KEYS.PROMPT_ARCHITECT]}\n16. Each executable strategy node must include concrete todos for its implementation checklist. Todos are task-local, use pending, in-progress, or done, and should describe the ordered work the Implement agent must perform on that task branch. Choose the natural number of todos for each task; small tasks may need 1-2, larger tasks may need more, and you must not pad every task to the same count.\n17. Do not create a "Finalize plan" strategy node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.`,
   ...DEFAULT_INTERNAL_PROFILE_PROMPTS,
 } as const satisfies Record<PromptPreferenceKey, string>;
 
@@ -236,13 +273,19 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.PROMPT_PLAN_EXPLORER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_PLAN_EXPLORER],
   [PREF_KEYS.PROMPT_TASK_REVIEWER]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_TASK_REVIEWER],
   [PREF_KEYS.PROMPT_REPO_AUDITOR]: PROMPT_DEFAULTS[PREF_KEYS.PROMPT_REPO_AUDITOR],
-  [PREF_KEYS.CHAT_MAX_TURNS]: CHAT_MAX_TURNS_DEFAULT,
+  [PREF_KEYS.CHAT_MAX_TURNS]: CHAT_MAX_TURNS_DISABLED,
+  [PREF_KEYS.COMPACTION_AUTO]: true,
+  [PREF_KEYS.COMPACTION_PRUNE]: true,
+  [PREF_KEYS.COMPACTION_RESERVED_TOKENS]: null,
+  [PREF_KEYS.COMPACTION_MANUAL_VISIBLE]: false,
   [PREF_KEYS.TOOL_RISK_LEVEL]:
     DEFAULT_TOOL_RISK_LEVEL satisfies ToolRiskLevel,
   [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: "focused",
+  [PREF_KEYS.IN_APP_NOTIFICATIONS_ENABLED]: true,
   [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: DEFAULT_NOTIFICATION_CHANNEL_MODES,
   [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
   [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+  [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: 'merge_commit',
   [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'plan/{planSlug}',
   [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'feature/{planSlug}/{featureSlug}',
   [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: 'feature/{featureSlug}',
@@ -251,6 +294,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: 'bugfix/{bugfixSlug}',
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
+  [PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY]: "ask",
   [PREF_KEYS.TERMINAL_PANEL_HEIGHT]: 280,
   [PREF_KEYS.TERMINAL_ACTIVE_TAB_ID]: null,
   [PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK]: {},
@@ -270,6 +314,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
     dismissedAt: null,
     lastStepId: null,
   },
+  [PREF_KEYS.METADATA_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
 };
@@ -282,6 +327,13 @@ const LEGACY_IMPLEMENT_EXECUTION_MODE_KEY = "implementExecutionMode";
 const LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY =
   "architectToolAutonomyProfile";
 
+const cancelDebouncedSave = (key: PrefKey): void => {
+  const timer = debouncedSaveTimers.get(key);
+  if (!timer) return;
+  clearTimeout(timer);
+  debouncedSaveTimers.delete(key);
+};
+
 const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
   typeof value === "string" &&
   (TOOL_RISK_LEVELS as readonly string[]).includes(value);
@@ -292,6 +344,25 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.CHAT_MAX_TURNS) {
     return isValidChatMaxTurnsPreference(value);
+  }
+  if (key === PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY) {
+    return value === "merge_commit" || value === "fast_forward";
+  }
+  if (key === PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY) {
+    return value === "ask" || value === "ignore";
+  }
+  if (
+    key === PREF_KEYS.COMPACTION_AUTO ||
+    key === PREF_KEYS.COMPACTION_PRUNE ||
+    key === PREF_KEYS.COMPACTION_MANUAL_VISIBLE
+  ) {
+    return typeof value === "boolean";
+  }
+  if (key === PREF_KEYS.COMPACTION_RESERVED_TOKENS) {
+    return (
+      value === null ||
+      (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    );
   }
   return true;
 };
@@ -390,9 +461,15 @@ const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
  * Save a preference value
  */
 export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
+  cancelDebouncedSave(key);
   // Always mirror to localStorage synchronously for crash/close resilience
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+  emitPreferenceChange(key, value);
 
+  await persistPreferenceToStore(key, value);
+}
+
+const persistPreferenceToStore = async <T>(key: PrefKey, value: T): Promise<void> => {
   try {
     const store = await getStore();
     if (store) {
@@ -402,7 +479,7 @@ export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   } catch (error) {
     console.error(`Failed to save preference ${key}:`, error);
   }
-}
+};
 
 export function savePreferenceDebounced<T>(
   key: PrefKey,
@@ -410,15 +487,13 @@ export function savePreferenceDebounced<T>(
   delayMs: number = 180
 ): void {
   localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+  emitPreferenceChange(key, value);
 
-  const existingTimer = debouncedSaveTimers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
+  cancelDebouncedSave(key);
 
   const timer = setTimeout(() => {
     debouncedSaveTimers.delete(key);
-    void savePreference(key, value);
+    void persistPreferenceToStore(key, value);
   }, delayMs);
 
   debouncedSaveTimers.set(key, timer);
@@ -442,6 +517,14 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
 
     const store = await getStore();
     if (store) {
+      const latestLocalValue = localStorage.getItem(localStorageKey);
+      if (latestLocalValue !== null) {
+        const parsedLatestValue = JSON.parse(latestLocalValue) as T;
+        if (isValidPreferenceValue(key, parsedLatestValue)) {
+          return parsedLatestValue;
+        }
+      }
+
       const value = await store.get<T>(key);
       if (
         value !== null &&
@@ -487,6 +570,11 @@ export async function loadPersistedPreference<T>(
 
     const store = await getStore();
     if (store) {
+      const latestLocalValue = localStorage.getItem(localStorageKey);
+      if (latestLocalValue !== null) {
+        return JSON.parse(latestLocalValue) as T;
+      }
+
       const value = await store.get<T>(key);
       return value !== null && value !== undefined ? value : undefined;
     }
@@ -532,16 +620,23 @@ export async function savePreferences(
  * Clear all preferences (reset to defaults)
  */
 export async function clearPreferences(): Promise<void> {
+  debouncedSaveTimers.forEach((timer) => clearTimeout(timer));
+  debouncedSaveTimers.clear();
+
+  const persistedKeys = new Set([
+    ...Object.values(PREF_KEYS),
+    LEGACY_IMPLEMENT_EXECUTION_MODE_KEY,
+    LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY,
+  ]);
+  persistedKeys.forEach((key) => {
+    localStorage.removeItem(`macro_${key}`);
+  });
+
   try {
     const store = await getStore();
     if (store) {
       await store.clear();
       await store.save();
-    } else {
-      // Clear localStorage fallback
-      Object.keys(PREF_KEYS).forEach((key) => {
-        localStorage.removeItem(`macro_${key}`);
-      });
     }
   } catch (error) {
     console.error("Failed to clear preferences:", error);

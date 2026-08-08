@@ -49,6 +49,20 @@ export interface MergeViewEditorHandle {
 
 const CODEMIRROR_UNCHANGED_LINES_PHRASE = '$ unchanged lines';
 const EMPTY_VALIDATED_LINE_NUMBERS: number[] = [];
+const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
+
+const isFileDiffDebugEnabled = (): boolean =>
+  Boolean(import.meta.env?.DEV) &&
+  typeof window !== 'undefined' &&
+  window.localStorage.getItem(DEBUG_FILE_DIFF_STORAGE_KEY) === '1';
+
+const debugDiffMergeViewLog = (event: string, details?: Record<string, unknown>): void => {
+  if (!isFileDiffDebugEnabled()) {
+    return;
+  }
+
+  console.debug(`[DiffMergeView] ${event}`, details ?? {});
+};
 
 const hasRevertRelevantLayoutChange = (
   update: Pick<Parameters<Parameters<typeof EditorView.updateListener.of>[0]>[0], 'docChanged' | 'heightChanged' | 'viewportChanged' | 'geometryChanged'>
@@ -325,6 +339,12 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
 
     mergeView.dom.classList.add('macro-diff-merge-root');
     mergeViewRef.current = mergeView;
+    debugDiffMergeViewLog('mount', {
+      language: resolvedLanguage,
+      editable,
+      originalLength: originalRef.current.length,
+      modifiedLength: modifiedRef.current.length,
+    });
 
     const handle: MergeViewEditorHandle = {
       a: mergeView.a,
@@ -467,6 +487,9 @@ export const DiffMergeView = forwardRef<MergeViewEditorHandle, DiffMergeViewProp
       onEditorReadyRef.current?.(null);
       mergeView.destroy();
       mergeViewRef.current = null;
+      debugDiffMergeViewLog('unmount', {
+        language: resolvedLanguage,
+      });
     };
   }, [
     editable,

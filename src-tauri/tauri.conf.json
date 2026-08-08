@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run build:ai-runtime && bun run dev",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "bunx tauri icon public/logo.svg --output src-tauri/icons && bun run build:ai-runtime && bun run build",
+    "beforeBuildCommand": "bun run build:ai-runtime && bun run build",
     "frontendDist": "../dist"
   },
   "bundle": {
@@ -15,10 +15,10 @@
     "externalBin": [
       "binaries/macro-ai-runtime"
     ],
-    "resources": [
-      "resources/copilot-runtime-manifest.json",
-      "resources/licenses/github-copilot-cli-LICENSE.md"
-    ],
+    "resources": {
+      "resources/copilot-runtime-manifest.json": "copilot-runtime-manifest.json",
+      "resources/licenses/github-copilot-cli-LICENSE.md": "licenses/github-copilot-cli-LICENSE.md"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -34,7 +34,7 @@
         "width": 1200,
         "height": 800,
         "decorations": false,
-        "transparent": true,
+        "transparent": false,
         "visible": false
       }
     ],

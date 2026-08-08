@@ -6,6 +6,7 @@ import {
   getTerminalScopeKey,
   resolvePreferredManualProjectId,
   resolveSelectedTaskTerminalScope,
+  resolveTerminalProjectForRequestedId,
   type LastManualProjectIdByTaskId,
   type TerminalTaskScope,
 } from '../services/manualTerminalTargets';
@@ -26,6 +27,7 @@ const DB_READY_DELAY_MS = 200;
 export interface TerminalTab {
   id: string;
   kind: 'manual' | 'task';
+  purpose: 'manual' | 'task_command' | 'worktree_setup';
   taskId: string | null;
   projectId: string;
   projectName: string;
@@ -39,6 +41,7 @@ export interface TerminalTab {
   lastExitCode: number | null;
   hasLiveSession: boolean;
   isRestored: boolean;
+  outputSequence: number;
   hasUnreadOutput: boolean;
   createdAt: string;
   updatedAt: string;
@@ -115,6 +118,23 @@ interface TerminalStore extends TerminalVisibilityState {
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
   }) => Promise<TerminalTab>;
+  startTaskCommandTab: (params: {
+    taskId: string;
+    projectId: string;
+    cwd: string;
+    title: string;
+    command: string;
+    reveal: boolean;
+    promptContext?: tauriIpc.TerminalPromptContextInput | null;
+  }) => Promise<TerminalTab>;
+  startWorktreeSetupCommandTab: (params: {
+    taskId: string;
+    projectId: string;
+    cwd: string;
+    title: string;
+    command: string;
+    promptContext?: tauriIpc.TerminalPromptContextInput | null;
+  }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
   executeCommand: (params: {
@@ -137,26 +157,52 @@ const clampPanelHeight = (height: number): number =>
 const mapTabDto = (
   dto: tauriIpc.TerminalTabDto,
   existing?: TerminalTab | null
-): TerminalTab => ({
-  id: dto.id,
-  kind: dto.kind === 'task' ? 'task' : 'manual',
-  taskId: dto.task_id ?? null,
-  projectId: dto.project_id,
-  projectName: dto.project_name,
-  mountName: dto.mount_name,
-  workspacePath: dto.workspace_path,
-  cwd: dto.cwd,
-  title: dto.title,
-  status: dto.status,
-  snapshot: dto.snapshot,
-  lastCommand: dto.last_command ?? null,
-  lastExitCode: dto.last_exit_code ?? null,
-  hasLiveSession: dto.has_live_session,
-  isRestored: dto.is_restored,
-  hasUnreadOutput: existing?.hasUnreadOutput ?? false,
-  createdAt: dto.created_at,
-  updatedAt: dto.updated_at,
-});
+): TerminalTab => {
+  const outputSequence = dto.output_sequence ?? 0;
+  const existingSequence = existing?.outputSequence ?? 0;
+  const keepExistingSnapshot = Boolean(existing) && outputSequence < existingSequence;
+
+  return {
+    id: dto.id,
+    kind: dto.kind === 'manual' ? 'manual' : 'task',
+    purpose:
+      dto.kind === 'worktree_setup'
+        ? 'worktree_setup'
+        : dto.kind === 'task'
+          ? 'task_command'
+          : 'manual',
+    taskId: dto.task_id ?? null,
+    projectId: dto.project_id,
+    projectName: dto.project_name,
+    mountName: dto.mount_name,
+    workspacePath: dto.workspace_path,
+    cwd: dto.cwd,
+    title: dto.title,
+    status: dto.status,
+    snapshot: keepExistingSnapshot ? existing!.snapshot : dto.snapshot,
+    lastCommand: dto.last_command ?? null,
+    lastExitCode: dto.last_exit_code ?? null,
+    hasLiveSession: dto.has_live_session,
+    isRestored: dto.is_restored,
+    outputSequence: Math.max(outputSequence, existingSequence),
+    hasUnreadOutput: existing?.hasUnreadOutput ?? false,
+    createdAt: dto.created_at,
+    updatedAt: keepExistingSnapshot ? existing!.updatedAt : dto.updated_at,
+  };
+};
+
+const isFailedTerminalStatus = (status: string): boolean =>
+  status === 'failed' || status === 'error';
+
+const hasFailedTerminalExitCode = (exitCode: number | null): boolean =>
+  typeof exitCode === 'number' && exitCode !== 0;
+
+export const isVisibleTerminalTab = (
+  tab: Pick<TerminalTab, 'purpose' | 'status' | 'lastExitCode'>
+): boolean =>
+  tab.purpose !== 'worktree_setup' ||
+  isFailedTerminalStatus(tab.status) ||
+  hasFailedTerminalExitCode(tab.lastExitCode);
 
 const syncTabOrder = (
   currentOrder: string[],
@@ -194,6 +240,9 @@ const persistActiveTabId = (tabId: string | null) => {
 const persistPanelHeight = (height: number) => {
   void savePreference(PREF_KEYS.TERMINAL_PANEL_HEIGHT, height);
 };
+
+const isLiveTaskCommandTabStatus = (status: string): boolean =>
+  status === 'running' || status === 'interrupting';
 
 const normalizeLastManualProjectIdByTaskId = (value: unknown): LastManualProjectIdByTaskId => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -233,21 +282,28 @@ const getManualTerminalUnavailableMessage = (): string => {
   return 'Select a task before opening a terminal.';
 };
 
-const assertProjectSupportsTerminal = (projectId: string): Project => {
+const resolveSupportedTerminalProject = (projectId: string): { projectId: string; project: Project } => {
   const appState = useAppStore.getState();
-  const project =
-    (typeof appState.getProjectById === 'function' ? appState.getProjectById(projectId) : null) ||
-    appState.projectGroups
-      .flatMap((group) => group.projects)
-      .find((candidate) => candidate.id === projectId) ||
-    null;
-  if (!project) {
+  const resolvedProject = resolveTerminalProjectForRequestedId({
+    requestedProjectId: projectId,
+    standaloneProjects: appState.standaloneProjects,
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+    selectedTask: getCurrentSelectedTask(),
+    lastManualProjectIdByTaskId: null,
+  });
+  if (!resolvedProject) {
     throw new Error(`Unknown project id: ${projectId}`);
   }
-  if (project.isReadOnly) {
-    throw new Error(`Subproject "${project.name}" is read-only. Terminal sessions are unavailable.`);
+  if (resolvedProject.project.isReadOnly) {
+    throw new Error(`Project "${resolvedProject.project.name}" is read-only. Terminal sessions are unavailable.`);
   }
-  return project;
+  return resolvedProject;
+};
+
+const assertProjectSupportsTerminal = (projectId: string): Project => {
+  return resolveSupportedTerminalProject(projectId).project;
 };
 
 const resolvePromptTaskLabel = (
@@ -307,7 +363,8 @@ const normalizeSessionCwd = (value: string | null | undefined): string | null =>
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const isAbsoluteSessionCwd = (value: string): boolean => /^(?:[a-zA-Z]:[\\/]|\/)/.test(value);
+const isAbsoluteSessionCwd = (value: string): boolean =>
+  /^(?:[a-zA-Z]:[\\/]|\/|\\\\wsl(?:\.localhost|\$)\\)/i.test(value);
 
 const joinSessionCwd = (basePath: string, relativePath: string): string => {
   const normalizedBase = basePath.replace(/[\\/]+$/, '');
@@ -330,7 +387,10 @@ const resolveSessionBaseCwd = (projectId: string, fallbackProjectPath: string): 
   const chatState = useChatStore.getState();
   const executionContext = resolveProjectExecutionContext({
     mode: appState.mode,
-    projects: appState.projectGroups.flatMap((group) => group.projects),
+    projects: [
+      ...(appState.standaloneProjects ?? []),
+      ...appState.projectGroups.flatMap((group) => group.projects),
+    ],
     projectGroups: appState.projectGroups,
     tasks: taskState.tasks,
     conversations: chatState.conversations,
@@ -407,6 +467,7 @@ const resolveCurrentTerminalScope = (
   const appState = useAppStore.getState();
 
   return resolveSelectedTaskTerminalScope({
+    standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
     selectedGroupId: appState.selectedGroupId,
     selectedProjectId: appState.selectedProjectId,
@@ -425,6 +486,7 @@ const resolveManualTerminalContext = (params?: {
   const chatState = useChatStore.getState();
   const selectedTask = getCurrentSelectedTask();
   const scope = resolveSelectedTaskTerminalScope({
+    standaloneProjects: appState.standaloneProjects,
     projectGroups: appState.projectGroups,
     selectedGroupId: params?.groupId?.trim() || appState.selectedGroupId,
     selectedProjectId: params?.projectId?.trim() || appState.selectedProjectId,
@@ -440,7 +502,10 @@ const resolveManualTerminalContext = (params?: {
     params?.projectId && scope.scopedProjectIds.includes(params.projectId)
       ? params.projectId
       : scope.preferredProjectId;
-  const allProjects = appState.projectGroups.flatMap((group) => group.projects);
+  const allProjects = [
+    ...(appState.standaloneProjects ?? []),
+    ...appState.projectGroups.flatMap((group) => group.projects),
+  ];
   const targetProject = allProjects.find((project) => project.id === targetProjectId) ?? null;
   if (!targetProject) {
     return null;
@@ -503,7 +568,9 @@ const getTabsForTaskFromState = (
   taskId: string | null
 ): TerminalTab[] =>
   taskId
-    ? getOrderedTabs(state.tabs, state.tabOrder).filter((tab) => tab.taskId === taskId)
+    ? getOrderedTabs(state.tabs, state.tabOrder).filter(
+        (tab) => tab.taskId === taskId && isVisibleTerminalTab(tab)
+      )
     : [];
 
 const getVisibleTabsForScopeFromState = (
@@ -515,7 +582,7 @@ const getVisibleTabsForScopeFromState = (
   }
 
   return getTabsForTaskFromState(state, scope.taskId).filter(
-    (tab) => tab.projectId === scope.projectId
+    (tab) => tab.projectId === scope.projectId && isVisibleTerminalTab(tab)
   );
 };
 
@@ -762,6 +829,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           if (!existing) {
             return;
           }
+          if ((payload.sequence ?? 0) < existing.outputSequence) {
+            return;
+          }
 
           if (!changed) {
             tabs = { ...tabs };
@@ -771,6 +841,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           tabs[existing.id] = {
             ...existing,
             snapshot: payload.snapshot,
+            outputSequence: Math.max(payload.sequence ?? 0, existing.outputSequence),
             updatedAt: payload.updated_at,
             hasUnreadOutput: state.panelOpen && activeVisibleTabId === existing.id ? false : true,
           };
@@ -797,7 +868,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     };
 
     const queueOutputEvent = (payload: tauriIpc.TerminalOutputEvent) => {
-      pendingOutputEvents[payload.tab_id] = payload;
+      const existing = pendingOutputEvents[payload.tab_id];
+      if (!existing || (payload.sequence ?? 0) >= (existing.sequence ?? 0)) {
+        pendingOutputEvents[payload.tab_id] = payload;
+      }
 
       if (outputFlushTimer !== null) {
         return;
@@ -821,8 +895,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         const existing = get().tabs[event.payload.id];
         const nextTab = mapTabDto(event.payload, existing);
         upsertTab(nextTab, {});
+        if (nextTab.kind === 'task' && !isLiveTaskCommandTabStatus(nextTab.status)) {
+          useTaskStore.getState().handleTaskCommandTerminalClosed(nextTab.id);
+        }
       }),
       listen<{ tab_id: string }>('terminal:closed', (event) => {
+        useTaskStore.getState().handleTaskCommandTerminalClosed(event.payload.tab_id);
         removeTabLocally(event.payload.tab_id);
       }),
     ]);
@@ -877,12 +955,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     createSession: async ({ projectId, cwd }) => {
-      const project = assertProjectSupportsTerminal(projectId);
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
       const session = await tauriIpc.terminalCreateSession({
-        projectId,
+        projectId: resolvedProject.projectId,
         cwd: resolveSessionCreationCwd({
-          projectId,
-          projectPath: project.path,
+          projectId: resolvedProject.projectId,
+          projectPath: resolvedProject.project.path,
           cwd: cwd ?? null,
         }),
       });
@@ -1199,9 +1277,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
 
     ensureTaskTab: async ({ taskId, projectId, cwd, title, reveal, promptContext }) => {
       await get().initialize();
-      assertProjectSupportsTerminal(projectId);
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
       const existing = Object.values(get().tabs).find(
-        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === projectId
+        (tab) => tab.kind === 'task' && tab.taskId === taskId && tab.projectId === resolvedProjectId
       );
       const dto = existing
         ? existing.hasLiveSession
@@ -1209,7 +1288,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           : await tauriIpc.terminalReconnectTab(existing.id)
         : await tauriIpc.terminalCreateTab({
             kind: 'task',
-            projectId,
+            projectId: resolvedProjectId,
             cwd,
             title,
             taskId,
@@ -1221,16 +1300,58 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+      await get().initialize();
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
+      const dto = await tauriIpc.terminalStartCommandTab({
+        kind: 'task',
+        projectId: resolvedProjectId,
+        cwd,
+        title,
+        taskId,
+        promptContext: promptContext ?? null,
+        command,
+      });
+      const tab = mapTabDto(dto);
+      upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
+      return tab;
+    },
+
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+      await get().initialize();
+      const resolvedProject = resolveSupportedTerminalProject(projectId);
+      const resolvedProjectId = resolvedProject.projectId;
+      const dto = await tauriIpc.terminalStartCommandTab({
+        kind: 'worktree_setup',
+        projectId: resolvedProjectId,
+        cwd,
+        title,
+        taskId,
+        promptContext: promptContext ?? null,
+        command,
+      });
+      const tab = mapTabDto(dto);
+      upsertTab(tab, {});
+      return tab;
+    },
+
     syncTerminalDisplayMetadata: async (params) => {
       await get().initialize();
 
       const appState = useAppStore.getState();
       const taskState = useTaskStore.getState();
       const chatState = useChatStore.getState();
-      const allProjects = appState.projectGroups.flatMap((group) => group.projects);
+      const allProjects = [
+        ...(appState.standaloneProjects ?? []),
+        ...appState.projectGroups.flatMap((group) => group.projects),
+      ];
       const orderedTabs = getOrderedTabs(get().tabs, get().tabOrder);
       const tabsToSync = orderedTabs.filter((tab) => {
         if (!tab.taskId) {
+          return false;
+        }
+        if (tab.purpose === 'worktree_setup') {
           return false;
         }
 
@@ -1332,7 +1453,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     closeTab: async (tabId) => {
+      const existingTab = get().tabs[tabId] ?? null;
       await tauriIpc.terminalCloseTab(tabId);
+      if (existingTab?.kind === 'task') {
+        useTaskStore.getState().handleTaskCommandTerminalClosed(tabId);
+      }
       removeTabLocally(tabId);
     },
   };

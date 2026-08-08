@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { StreamCompletionResult } from './streamingChat';
+import type { ChatMessage } from '../types';
+import { buildCompactedMessagesForRequest } from './contextCompaction';
+import type {
+  LiveStreamContextSnapshot,
+  StreamCompletionResult,
+  StreamingFollowUpCompactionRequest,
+} from './streamingChat';
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
@@ -17,6 +23,7 @@ const loadStreamingChat = async (
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
   const actualHttp = await import('@tauri-apps/plugin-http');
+  const actualArchitectChat = await import('./architectChat');
   mock.module('@tauri-apps/api/core', () => ({
     ...actualCore,
     invoke: invokeImpl,
@@ -119,12 +126,13 @@ const loadStreamingChat = async (
   mock.module('./tauriIpc', () => tauriIpcMock);
   mock.module('../services/tauriIpc', () => tauriIpcMock);
   mock.module('./architectChat', () => ({
+    ...actualArchitectChat,
     ARCHITECT_POST_TOOL_RESPONSE_INSTRUCTION:
       'After using an Architect tool, always answer in natural language with a concise recap.',
     ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT:
       'After using tools, provide a concise recap to the user.',
     ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX:
-      'Keep every strategy node inside the active plan subproject scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.',
+      'Keep every strategy node inside the active plan project scope: omit project_ids to use the plan projectIds, and never include unrelated Macro projects. After the tool call, answer in natural language with what changed, a short summary of the strategy, and the next useful step.',
   }));
 
   streamingChatImportCounter += 1;
@@ -185,6 +193,26 @@ describe('streamingChat Architect tool contracts', () => {
   });
 });
 
+describe('streamingChat SSE parsing', () => {
+  it('joins multiline data fields and preserves the SSE field rules', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(
+      __testables.extractSseData('event: message\r\ndata: first\r\ndata: second'),
+    ).toBe('first\nsecond');
+  });
+
+  it('flushes an unterminated final event across chunk boundaries', async () => {
+    const { __testables } = await loadStreamingChat();
+    const parser = __testables.createSseEventParser();
+
+    expect(parser.push('data: {"choices":[')).toEqual([]);
+    expect(parser.push(']}\r')).toEqual([]);
+    expect(parser.push('\ndata: tail')).toEqual([]);
+    expect(parser.flush()).toEqual(['data: {"choices":[]}\ndata: tail']);
+  });
+});
+
 describe('streamingChat tool rendering helpers', () => {
   beforeEach(() => {
     mock.restore();
@@ -215,6 +243,22 @@ describe('streamingChat tool rendering helpers', () => {
     expect(block).toContain('tool="read"');
     expect(block).toContain('detail="src/app.ts"');
     expect(block).toContain('const ok = true;');
+  });
+
+  it('collects internal skill tools when they are allowed', async () => {
+    const { __testables } = await loadStreamingChat();
+    const tools = __testables.collectAllowedTools({
+      allowedTools: new Set(['skill_activate', 'skill_read_resource', 'skill_run_script']),
+      enableWebSearch: false,
+      enableWebFetch: false,
+      skillToolIds: ['global:agents:docs:aaa111'],
+      runnableSkillToolIds: ['global:agents:docs:aaa111'],
+    });
+
+    const serializedTools = JSON.stringify(tools);
+    expect(serializedTools).toContain('skill_activate');
+    expect(serializedTools).toContain('skill_read_resource');
+    expect(serializedTools).toContain('skill_run_script');
   });
 
   it('retries once when a required native tool was not used', async () => {
@@ -449,23 +493,221 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('publishes live context snapshots for tokens, tool traces, hidden context, and provider context', async () => {
+    const { __testables } = await loadStreamingChat();
+    const snapshots: LiveStreamContextSnapshot[] = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => {
+        snapshots.push(snapshot);
+      },
+    });
+
+    accumulator.appendProviderDelta('Response');
+    expect(snapshots.at(-1)).toEqual(
+      expect.objectContaining({
+        version: 1,
+        visibleContent: 'Response',
+        visibleContentLength: 'Response'.length,
+      }),
+    );
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    expect(snapshots.at(-1)?.toolTraces).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call_1',
+        tool_name: 'read',
+        status: 'running',
+      }),
+    ]);
+
+    accumulator.addHiddenToolContext('call_1', 'read', 'README.md', 'FILE: README.md\nsecret');
+    expect(snapshots.at(-1)?.hiddenContext).toContain('FILE: README.md');
+
+    const providerInputItems = [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Response' }],
+      },
+    ];
+    const providerTurnState = {
+      provider: 'chatgpt' as const,
+      response_id: 'resp_1',
+      output_items: providerInputItems,
+    };
+    accumulator.setProviderContext({ providerInputItems, providerTurnState });
+
+    expect(snapshots.at(-1)).toEqual(
+      expect.objectContaining({
+        version: 4,
+        providerInputItems,
+        providerTurnState,
+      }),
+    );
+    expect(snapshots.map((snapshot) => snapshot.version)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('counts native live-only tool output in snapshots without persisting duplicate hidden context', async () => {
+    const { __testables } = await loadStreamingChat();
+    const snapshots: LiveStreamContextSnapshot[] = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+      onLiveContextUpdate: (snapshot: LiveStreamContextSnapshot) => {
+        snapshots.push(snapshot);
+      },
+    });
+
+    accumulator.addLiveOnlyHiddenToolContext('call_native', 'read', 'src/App.tsx', 'A'.repeat(500));
+
+    expect(snapshots.at(-1)?.hiddenContext).toContain('call_native');
+    expect(snapshots.at(-1)?.hiddenContext).toContain('src/App.tsx');
+    expect(accumulator.getFinalHiddenContext()).toBeUndefined();
+    expect(accumulator.buildResult().hiddenContext).toBeUndefined();
+  });
+
+  it('marks individual sequential tools done before the next tool starts', async () => {
+    const { __testables } = await loadStreamingChat();
+    const updates: Array<Array<{ tool_call_id: string; status: string }>> = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: (toolTraces: Array<{ tool_call_id: string; status: string }>) => {
+        updates.push(toolTraces);
+      },
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md', {
+      execution_mode: 'sequential',
+      batch_id: 'batch_1',
+      order: 0,
+    });
+    accumulator.completeToolTrace('call_1');
+    accumulator.beginToolTrace('call_2', 'grep', 'src', {
+      execution_mode: 'sequential',
+      batch_id: 'batch_1',
+      order: 1,
+    });
+
+    expect(
+      updates.at(-1)?.map((trace) => ({
+        tool_call_id: trace.tool_call_id,
+        status: trace.status,
+      }))
+    ).toEqual([
+      { tool_call_id: 'call_1', status: 'done' },
+      { tool_call_id: 'call_2', status: 'running' },
+    ]);
+  });
+
+  it('does not mark running tools done when provider text continues streaming', async () => {
+    const { __testables } = await loadStreamingChat();
+    const updates: Array<Array<{ tool_call_id: string; status: string }>> = [];
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: (toolTraces: Array<{ tool_call_id: string; status: string }>) => {
+        updates.push(toolTraces);
+      },
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    accumulator.appendProviderDelta('Assistant text after tool request.');
+
+    expect(
+      updates.at(-1)?.map((trace) => ({
+        tool_call_id: trace.tool_call_id,
+        status: trace.status,
+      }))
+    ).toEqual([{ tool_call_id: 'call_1', status: 'running' }]);
+  });
+
+  it('does not let stale provider traces downgrade local done traces to running', async () => {
+    const { __testables } = await loadStreamingChat();
+    const accumulator = __testables.createStreamAccumulator({
+      onToken: () => undefined,
+      onToolTracesUpdate: () => undefined,
+    });
+
+    accumulator.beginToolTrace('call_1', 'read', 'README.md');
+    accumulator.completeToolTrace('call_1');
+    accumulator.upsertToolTraceFromProvider({
+      tool_call_id: 'call_1',
+      tool_name: 'read',
+      detail: 'README.md',
+      status: 'running',
+    });
+
+    expect(accumulator.buildResult().toolTraces).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call_1',
+        status: 'done',
+      }),
+    ]);
+  });
+
   it('maps reasoning request parameters by provider type', async () => {
     const { __testables } = await loadStreamingChat();
 
     const openAiBody: Record<string, unknown> = {};
-    __testables.applyReasoningToChatCompletionsRequest(openAiBody, 'openai', 'medium');
+    __testables.applyReasoningToChatCompletionsRequest(
+      openAiBody,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'gpt-5',
+      }),
+      'medium'
+    );
     expect(openAiBody.reasoning_effort).toBe('medium');
 
     const openRouterBody: Record<string, unknown> = {};
-    __testables.applyReasoningToChatCompletionsRequest(openRouterBody, 'openrouter', 'high');
+    __testables.applyReasoningToChatCompletionsRequest(
+      openRouterBody,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openrouter',
+        modelId: 'openai/gpt-5',
+      }),
+      'high'
+    );
     expect(openRouterBody.reasoning).toEqual({ effort: 'high' });
     expect(openRouterBody.include_reasoning).toBe(true);
+  });
+
+  it('uses Kimi preserved-thinking parameters without OpenAI reasoning_effort', async () => {
+    const { __testables } = await loadStreamingChat();
+    const kimiBody: Record<string, unknown> = {};
+    const kimiProfile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+    });
+
+    __testables.applyReasoningToChatCompletionsRequest(
+      kimiBody,
+      kimiProfile,
+      'high'
+    );
+
+    expect(kimiBody.thinking).toEqual({ type: 'enabled', keep: 'all' });
+    expect(kimiBody.reasoning_effort).toBeUndefined();
+    expect(kimiBody.reasoning).toBeUndefined();
+    expect(__testables.shouldRequestProviderReasoning(kimiProfile, null)).toBe(true);
+
+    __testables.applyReasoningToChatCompletionsRequest(kimiBody, kimiProfile, 'high', {
+      enabled: false,
+    });
+    expect(kimiBody.thinking).toBeUndefined();
+    expect(__testables.shouldRequestProviderReasoning(kimiProfile, 'high', {
+      enabled: false,
+    })).toBe(false);
   });
 
   it('detects unsupported reasoning parameter errors', async () => {
     const { __testables } = await loadStreamingChat();
     expect(__testables.isReasoningUnsupportedError('Unknown parameter: reasoning_effort')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
+    expect(__testables.isReasoningUnsupportedError('Unknown parameter: thinking')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
   });
 
@@ -504,7 +746,6 @@ describe('streamingChat tool rendering helpers', () => {
       expect.objectContaining({
         role: 'assistant',
         content: 'Final answer',
-        reasoning_content: 'native thoughts',
         reasoning_details: reasoningDetails,
         tool_calls: [
           expect.objectContaining({
@@ -514,6 +755,7 @@ describe('streamingChat tool rendering helpers', () => {
         ],
       })
     );
+    expect(messages[0]?.reasoning_content).toBeUndefined();
     expect(messages[1]).toEqual({
       role: 'tool',
       content: 'Tool execution aborted',
@@ -623,6 +865,94 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('converts orphan tool messages into assistant context before provider send', async () => {
+    const { __testables } = await loadStreamingChat();
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        { role: 'assistant', content: 'Compacted historical tool result.' },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          tool_call_id: 'call_read',
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'deepseek-v4-flash',
+      })
+    );
+
+    expect(messages).toEqual([
+      { role: 'assistant', content: 'Compacted historical tool result.' },
+      {
+        role: 'assistant',
+        content: expect.stringContaining('Historical tool result preserved as context'),
+      },
+      { role: 'user', content: 'Continue.' },
+    ]);
+    expect(messages.some((message: Record<string, unknown>) => message.role === 'tool')).toBe(false);
+  });
+
+  it('keeps valid parallel tool responses and converts only orphan tool results', async () => {
+    const { __testables } = await loadStreamingChat();
+    const messages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call_read',
+              type: 'function' as const,
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+            },
+            {
+              id: 'call_glob',
+              type: 'function' as const,
+              function: { name: 'glob', arguments: '{"pattern":"*.ts"}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md',
+          tool_call_id: 'call_read',
+        },
+        {
+          role: 'tool',
+          content: 'orphan terminal output',
+          tool_call_id: 'call_terminal',
+        },
+        {
+          role: 'tool',
+          content: 'MATCHES: src/index.ts',
+          tool_call_id: 'call_glob',
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'gpt-4.1',
+      })
+    );
+
+    expect(messages).toEqual([
+      expect.objectContaining({ role: 'assistant' }),
+      { role: 'tool', content: 'FILE: README.md', tool_call_id: 'call_read' },
+      {
+        role: 'tool',
+        content: 'MATCHES: src/index.ts',
+        tool_call_id: 'call_glob',
+      },
+      {
+        role: 'assistant',
+        content: expect.stringContaining('orphan terminal output'),
+      },
+    ]);
+  });
+
   it('injects a hidden noop tool only for LiteLLM proxy payload compatibility', async () => {
     const { __testables } = await loadStreamingChat();
     const toolHistoryMessages = [
@@ -677,6 +1007,512 @@ describe('streamingChat tool rendering helpers', () => {
     expect(defaultBody.tools).toBeUndefined();
   });
 
+  it('includes enabled MCP tools in provider tool definitions', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    const tools = __testables.collectAllowedTools({
+      allowedTools: new Set(['mcp__github__list_issues']),
+      enableWebSearch: false,
+      enableWebFetch: false,
+      mcpTools: [
+        {
+          id: 'mcp__github__list_issues',
+          serverId: 'github',
+          name: 'list_issues',
+          description: 'List GitHub issues',
+          inputSchema: {
+            type: 'object',
+            properties: { state: { type: 'string' } },
+          },
+        },
+      ],
+    }) as Array<{ function?: { name?: string; parameters?: unknown } }>;
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.function?.name).toBe('mcp__github__list_issues');
+    expect(tools[0]?.function?.parameters).toEqual({
+      type: 'object',
+      properties: { state: { type: 'string' } },
+    });
+  });
+
+  it('serializes Kimi reasoning_content and tool names for OpenCode Go Kimi only', async () => {
+    const { __testables } = await loadStreamingChat();
+    const assistantItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: '<think>Need context.</think>',
+      apiContent: '',
+      reasoningContent: 'Need context.',
+      reasoningDetails: [],
+      toolCalls: [
+        {
+          id: 'call_read',
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"README.md"}' },
+        },
+      ],
+    });
+    const toolItem = __testables.buildToolChatCompletionProviderItem(
+      'call_read',
+      'FILE: README.md\n\n# Macro',
+      'read'
+    );
+
+    const kimiMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: assistantItem ? [assistantItem] : undefined,
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          provider_input_items: [toolItem],
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'kimi-k2.6',
+      })
+    );
+
+    expect(kimiMessages[0]).toEqual(
+      expect.objectContaining({
+        role: 'assistant',
+        content: '',
+        reasoning_content: 'Need context.',
+      })
+    );
+    expect(kimiMessages[1]).toEqual({
+      role: 'tool',
+      content: 'FILE: README.md\n\n# Macro',
+      tool_call_id: 'call_read',
+      name: 'read',
+    });
+
+    const glmMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: assistantItem ? [assistantItem] : undefined,
+        },
+        {
+          role: 'tool',
+          content: 'FILE: README.md\n\n# Macro',
+          provider_input_items: [toolItem],
+        },
+      ],
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        providerId: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        modelId: 'glm-5',
+      })
+    );
+
+    expect(glmMessages[0]?.reasoning_content).toBeUndefined();
+    expect(glmMessages[1]).not.toHaveProperty('name');
+  });
+
+  it('compacts provider_input_items before final Chat Completions serialization', async () => {
+    const { __testables } = await loadStreamingChat();
+    const hugeReasoning = `Need context.\n${'provider trace payload\n'.repeat(1200)}`;
+    const assistantProviderItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: 'I inspected the runtime trace.',
+      apiContent: 'I inspected the runtime trace.',
+      reasoningContent: hugeReasoning,
+      reasoningDetails: [{ trace: hugeReasoning }],
+      toolCalls: [
+        {
+          id: 'call_read',
+          type: 'function' as const,
+          function: { name: 'read', arguments: '{"path":"src/runtime.ts"}' },
+        },
+      ],
+    });
+    const orderedMessages: ChatMessage[] = [
+      {
+        id: 'u1',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Inspect the runtime.',
+        timestamp: '2026-04-05T00:00:00.000Z',
+      },
+      {
+        id: 'a1',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'assistant',
+        content: 'Older answer.',
+        timestamp: '2026-04-05T00:00:01.000Z',
+      },
+      {
+        id: 'u2',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Inspect the latest trace.',
+        timestamp: '2026-04-05T00:00:02.000Z',
+      },
+      {
+        id: 'a2',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'assistant',
+        content: 'I inspected the runtime trace.',
+        timestamp: '2026-04-05T00:00:03.000Z',
+      },
+      {
+        id: 'u3',
+        task_id: 'task-1',
+        conversation_id: 'conv-1',
+        role: 'user',
+        content: 'Now answer.',
+        timestamp: '2026-04-05T00:00:04.000Z',
+      },
+    ];
+    const preparedMessages = orderedMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      ...(message.id === 'a2' && assistantProviderItem
+        ? { provider_input_items: [assistantProviderItem] }
+        : {}),
+    }));
+    const profile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'opencode-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+    });
+    const rawPayload = __testables.buildChatCompletionMessages(
+      preparedMessages,
+      profile,
+    );
+
+    const compacted = await buildCompactedMessagesForRequest({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 8000,
+      mode: 'overflow_recovery',
+      forceCompaction: true,
+      forcePrune: true,
+      generateSummary: async () => 'Current objective: answer from the runtime trace.',
+    });
+    const compactedPayload = __testables.buildChatCompletionMessages(
+      compacted.messages,
+      profile,
+    );
+
+    expect(JSON.stringify(rawPayload)).toContain('provider trace payload');
+    expect(JSON.stringify(compactedPayload)).not.toContain('provider trace payload');
+    expect(JSON.stringify(compactedPayload).length).toBeLessThan(
+      JSON.stringify(rawPayload).length,
+    );
+  });
+
+  it('replays DeepSeek reasoning_content only when the history has tool calls', async () => {
+    const { __testables } = await loadStreamingChat();
+    const providerItem = __testables.buildAssistantChatCompletionProviderItem({
+      visibleContent: '<think>Need context.</think>',
+      apiContent: '',
+      reasoningContent: 'Need context.',
+      reasoningDetails: [],
+      toolCalls: [],
+    });
+    const capabilities = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+    });
+
+    const plainMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: providerItem ? [providerItem] : undefined,
+        },
+      ],
+      capabilities
+    );
+    expect(plainMessages[0]?.reasoning_content).toBeUndefined();
+
+    const toolMessages = __testables.buildChatCompletionMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          provider_input_items: providerItem ? [providerItem] : undefined,
+        },
+        { role: 'tool', content: 'FILE: README.md', tool_call_id: 'call_read' },
+      ],
+      capabilities
+    );
+    expect(toolMessages[0]?.reasoning_content).toBe('Need context.');
+  });
+
+  it('sends OpenCode Go Kimi preserved-thinking payloads across tool calls', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }): Promise<unknown> => {
+      requestCount += 1;
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestCount === 1) {
+        expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+        expect(body.reasoning_effort).toBeUndefined();
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"reasoning_content":"Need file context.","tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      const assistantMessage = (body.messages as Array<Record<string, unknown>>).find(
+        (message) => message.role === 'assistant'
+      );
+      const toolMessage = (body.messages as Array<Record<string, unknown>>).find(
+        (message) => message.role === 'tool'
+      );
+      expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+      expect(body.reasoning_effort).toBeUndefined();
+      expect(assistantMessage).toEqual(
+        expect.objectContaining({
+          content: '',
+          reasoning_content: 'Need file context.',
+        })
+      );
+      expect(toolMessage).toEqual(
+        expect.objectContaining({
+          tool_call_id: 'call_read',
+          name: 'read',
+        })
+      );
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const invokeImpl = mock(async () => {
+      throw new Error('Kimi preserved-thinking profiles must use the generic HTTP path.');
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock, {
+      forceTauriAvailable: true,
+      invokeImpl,
+    });
+
+    await streamChat({
+      providerId: 'opencode-go',
+      providerType: 'openai',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+      reasoningEffort: 'high',
+      messages: [{ role: 'user', content: 'Inspect README.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => 'FILE: README.md\n\n# Macro',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(invokeImpl).not.toHaveBeenCalled();
+    expect(requestBodies).toHaveLength(2);
+  });
+
+  it('allows compaction before generic provider follow-up requests after tool results', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];
+    let requestCount = 0;
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestCount += 1;
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestCount === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}]}}]}\n\n'
+                )
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      expect(JSON.stringify(body.messages)).toContain('[COMPACTED CONVERSATION STATE]');
+      expect(JSON.stringify(body.messages)).not.toContain('FILE: README.md');
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onBeforeFollowUpRequest = mock(
+      async (request: StreamingFollowUpCompactionRequest) => {
+        expect(request.reason).toBe('tool_results');
+        expect(request.toolResultCount).toBe(1);
+        expect(JSON.stringify(request.messages)).toContain('FILE: README.md');
+        return {
+          messages: [
+            {
+              role: 'system' as const,
+              content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+            },
+            {
+              role: 'user' as const,
+              content: 'Continue.',
+            },
+          ],
+        };
+      },
+    );
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Inspect README.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => 'FILE: README.md\n\n' + 'A'.repeat(6000),
+      onBeforeFollowUpRequest,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onBeforeFollowUpRequest).toHaveBeenCalledTimes(1);
+    expect(requestBodies[1]?.messages).toEqual([
+      {
+        role: 'system',
+        content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+      },
+      {
+        role: 'user',
+        content: 'Continue.',
+      },
+    ]);
+  });
+
+  it('retries Kimi-compatible providers without thinking when the gateway rejects it', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }): Promise<unknown> => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+
+      if (requestBodies.length === 1) {
+        expect(body.thinking).toEqual({ type: 'enabled', keep: 'all' });
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: {
+                message: 'Unknown parameter: thinking',
+              },
+            }),
+          json: async () => ({}),
+        };
+      }
+
+      expect(body.thinking).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'opencode-go',
+      providerType: 'openai',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      modelId: 'kimi-k2.6',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies).toHaveLength(2);
+  });
+
   it('classifies context overflow as non-retryable', async () => {
     const { __testables } = await loadStreamingChat();
     const statusError = __testables.classifyProviderError('Request failed: 413', 413);
@@ -691,6 +1527,40 @@ describe('streamingChat tool rendering helpers', () => {
     expect(codeError.retryable).toBe(false);
     expect(__testables.isContextOverflowError('model_context_window_exceeded', 400)).toBe(true);
     expect(__testables.isContextOverflowError('400 (no body)', 400)).toBe(true);
+    expect(
+      __testables.isContextOverflowError(
+        'input token count 120000 exceeds the maximum of 64000',
+        400,
+      ),
+    ).toBe(true);
+    expect(
+      __testables.isContextOverflowError('input is too long for requested model', 400),
+    ).toBe(true);
+  });
+
+  it('preserves provider error details for UI presentation', async () => {
+    const { __testables } = await loadStreamingChat();
+    const error = __testables.classifyProviderError(
+      'Quota exceeded rate_limit_exceeded rate_limit',
+      429,
+      12000,
+      {
+        providerMessage: 'Quota exceeded',
+        providerCode: 'rate_limit_exceeded',
+        providerType: 'rate_limit',
+        providerRawBodyExcerpt: '{"error":{"message":"Quota exceeded"}}',
+      }
+    );
+
+    expect(error.name).toBe('ProviderRuntimeError');
+    expect(error.providerError).toBe(true);
+    expect(error.kind).toBe('rate_limited');
+    expect(error.status).toBe(429);
+    expect(error.retryAfterMs).toBe(12000);
+    expect(error.providerMessage).toBe('Quota exceeded');
+    expect(error.providerCode).toBe('rate_limit_exceeded');
+    expect(error.providerType).toBe('rate_limit');
+    expect(error.providerRawBodyExcerpt).toContain('Quota exceeded');
   });
 
   it('detects repeated identical tool calls before entering another tool loop', async () => {
@@ -1016,7 +1886,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(finalResult?.visibleContent).not.toContain('[Macro]');
   });
 
-  it('does not force a final no-tool turn when max turns is disabled', async () => {
+  it('does not force a final no-tool turn when max turns is omitted by default', async () => {
     const encoder = new TextEncoder();
     const requestBodies: Array<Record<string, unknown>> = [];
     let requestCount = 0;
@@ -1069,7 +1939,6 @@ describe('streamingChat tool rendering helpers', () => {
       modelId: 'gpt-4.1',
       messages: [{ role: 'user', content: 'Inspect files.' }],
       allowedToolIds: ['read'],
-      maxTurns: null,
       enableWebSearch: false,
       enableWebFetch: false,
       onToken: () => undefined,

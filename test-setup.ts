@@ -6,6 +6,7 @@ const windowInstance = new Window({
   width: 1280,
   height: 720,
 });
+windowInstance.document.write('<!doctype html><html><head></head><body></body></html>');
 
 const assignGlobal = (key: string, value: unknown) => {
   Object.defineProperty(globalThis, key, {
@@ -92,6 +93,20 @@ const installDomGlobals = () => {
     disconnect() {}
   }
 
+  for (const [key, value] of [
+    ['Error', Error],
+    ['RangeError', RangeError],
+    ['ReferenceError', ReferenceError],
+    ['SyntaxError', SyntaxError],
+    ['TypeError', TypeError],
+  ] as const) {
+    Object.defineProperty(windowInstance, key, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  }
+
   assignGlobal('window', windowInstance);
   assignGlobal('document', windowInstance.document);
   assignGlobal('navigator', windowInstance.navigator);
@@ -108,6 +123,14 @@ const installDomGlobals = () => {
   assignGlobal('HTMLCanvasElement', windowInstance.HTMLCanvasElement);
   assignGlobal('SVGElement', windowInstance.SVGElement);
   assignGlobal('Node', windowInstance.Node);
+  assignGlobal('EventTarget', windowInstance.EventTarget);
+  assignGlobal('Event', windowInstance.Event);
+  assignGlobal('CustomEvent', windowInstance.CustomEvent);
+  assignGlobal('FocusEvent', windowInstance.FocusEvent);
+  assignGlobal('InputEvent', windowInstance.InputEvent);
+  assignGlobal('MouseEvent', windowInstance.MouseEvent);
+  assignGlobal('KeyboardEvent', windowInstance.KeyboardEvent);
+  assignGlobal('PointerEvent', windowInstance.PointerEvent);
   assignGlobal('MutationObserver', windowInstance.MutationObserver);
   assignGlobal('Blob', windowInstance.Blob);
   assignGlobal('File', windowInstance.File);

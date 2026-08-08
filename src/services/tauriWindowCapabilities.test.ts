@@ -30,4 +30,25 @@ describe('Tauri window close permissions', () => {
 
     expect(permissionIds).toContain('core:window:allow-destroy');
   });
+
+  it('leaves macOS traffic-light fullscreen recovery to the native layer', () => {
+    const tauriWindowSource = readRepoFile('src', 'services', 'tauriWindow.ts');
+    const macosTrafficLightsSource = readRepoFile(
+      'src-tauri',
+      'src',
+      'macos_traffic_lights.rs'
+    );
+
+    expect(tauriWindowSource).not.toContain('windowIsFullscreen');
+    expect(tauriWindowSource).not.toContain('.isFullscreen()');
+    expect(macosTrafficLightsSource).toContain('NSWindowWillExitFullScreenNotification');
+    expect(macosTrafficLightsSource).toContain('NSWindowDidExitFullScreenNotification');
+
+    const capability = JSON.parse(
+      readRepoFile('src-tauri', 'capabilities', 'default.json')
+    ) as CapabilityFile;
+    const permissionIds = capability.permissions.map(permissionIdentifier);
+
+    expect(permissionIds).not.toContain('core:window:allow-is-fullscreen');
+  });
 });

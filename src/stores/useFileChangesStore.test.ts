@@ -202,6 +202,35 @@ const buildGitStatus = (repoPath: string) => {
 };
 
 const gitStatusMock = mock(async (repoPath: string) => buildGitStatus(repoPath));
+const gitWorktreeInspectMock = mock(async (
+  params: { repoPath: string; taskId: string; branchName?: string | null }
+) => {
+  if (params.taskId === worktreeKeyA) {
+    return {
+      taskId: params.taskId,
+      worktreePath: worktreeAPath,
+      branchName: params.branchName ?? 'feature/task-a',
+      status: 'ready' as const,
+      isDirty: false,
+    };
+  }
+  if (params.taskId === worktreeKeyB) {
+    return {
+      taskId: params.taskId,
+      worktreePath: worktreeBPath,
+      branchName: params.branchName ?? 'feature/task-b',
+      status: 'ready' as const,
+      isDirty: false,
+    };
+  }
+  return {
+    taskId: params.taskId,
+    worktreePath: '',
+    branchName: params.branchName ?? null,
+    status: 'absent' as const,
+    isDirty: null,
+  };
+});
 
 const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?: string[] }) => {
   const path = paths?.[0] || '';
@@ -414,13 +443,24 @@ const tasksById = {
   },
 };
 
+type TestTask = Omit<(typeof tasksById)[keyof typeof tasksById], 'status'> & {
+  status: typeof taskStatuses[string];
+};
+
 const setTaskStatusMock = mock(async (taskId: string, status: string) => {
   if (taskId in taskStatuses) {
     taskStatuses[taskId] = status as typeof taskStatuses[string];
   }
 });
 
-const taskStoreState = {
+const taskStoreState: {
+  activeRepositoryPath: string | null;
+  activeBranchName: string | null;
+  branchWorktrees: Record<string, string>;
+  getTaskById: (taskId: string) => TestTask | undefined;
+  setTaskStatus: typeof setTaskStatusMock;
+  completeTask: () => Promise<void>;
+} = {
   activeRepositoryPath: worktreeAPath,
   activeBranchName: 'feature/task-a',
   branchWorktrees: {
@@ -494,8 +534,14 @@ describe('useFileChangesStore', () => {
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
     appStoreState.selectedTaskId = 'task-1';
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+    taskStoreState.branchWorktrees[worktreeKeyA] = worktreeAPath;
+    taskStoreState.branchWorktrees[worktreeKeyB] = worktreeBPath;
 
     gitStatusMock.mockClear();
+    gitWorktreeInspectMock.mockClear();
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitMergeCheckMock.mockImplementation(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
@@ -517,6 +563,7 @@ describe('useFileChangesStore', () => {
       tauri: {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
@@ -528,7 +575,20 @@ describe('useFileChangesStore', () => {
       getGitFlowBaseBranch: () => 'develop',
       getAppState: () => appStoreState,
       getTaskState: () => taskStoreState,
-      setTaskState: () => undefined,
+      setTaskState: (partial) => {
+        if (partial.branchWorktrees) {
+          Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+            delete taskStoreState.branchWorktrees[key];
+          });
+          Object.assign(taskStoreState.branchWorktrees, partial.branchWorktrees);
+        }
+        if ('activeRepositoryPath' in partial) {
+          taskStoreState.activeRepositoryPath = partial.activeRepositoryPath ?? null;
+        }
+        if ('activeBranchName' in partial) {
+          taskStoreState.activeBranchName = partial.activeBranchName ?? null;
+        }
+      },
       generateCommitMessages: generateCommitMessagesMock,
     });
 
@@ -552,7 +612,46 @@ describe('useFileChangesStore', () => {
     ).toEqual([1, 1]);
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('validate_repository');
-    expect(reviewSummary.currentRepositoryId).toBe(repositoryIdA);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+  });
+
+  it('rehydrates prepared task worktree mappings before loading changes', async () => {
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const { repositories, currentTaskLoadState } = useFileChangesStore.getState();
+    expect(currentTaskLoadState).toBe('ready');
+    expect(repositories).toHaveLength(2);
+    expect(taskStoreState.branchWorktrees).toEqual({
+      [worktreeKeyA]: worktreeAPath,
+      [worktreeKeyB]: worktreeBPath,
+    });
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
+    expect(gitStatusMock).toHaveBeenCalledWith(worktreeAPath);
+    expect(gitStatusMock).toHaveBeenCalledWith(worktreeBPath);
+  });
+
+  it('normalizes legacy branch-name worktree mappings before loading changes', async () => {
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+    taskStoreState.branchWorktrees['feature/task-a'] = worktreeAPath;
+    taskStoreState.branchWorktrees['feature/task-b'] = worktreeBPath;
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().currentTaskLoadState).toBe('ready');
+    expect(taskStoreState.branchWorktrees).toMatchObject({
+      'feature/task-a': worktreeAPath,
+      'feature/task-b': worktreeBPath,
+      [worktreeKeyA]: worktreeAPath,
+      [worktreeKeyB]: worktreeBPath,
+    });
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
   });
 
   it('falls back to legacy Git review loading only when the Rust command is unsupported', async () => {
@@ -563,6 +662,7 @@ describe('useFileChangesStore', () => {
       tauri: {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
@@ -593,6 +693,7 @@ describe('useFileChangesStore', () => {
       tauri: {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
@@ -624,20 +725,20 @@ describe('useFileChangesStore', () => {
     expect(repository?.planBranchName).toBe('release/project-a');
   });
 
-  it('narrows loaded repositories to the selected subproject scope', async () => {
+  it('narrows loaded repositories to the selected project scope', async () => {
     appStoreState.selectedProjectId = 'project-b';
 
     await useFileChangesStore.getState().loadCurrentChanges();
 
-    const { repositories, reviewSummary, selectedRepositoryId } = useFileChangesStore.getState();
+    const { repositories, reviewSummary } = useFileChangesStore.getState();
     expect(repositories).toHaveLength(1);
     expect(repositories[0]?.projectId).toBe('project-b');
     expect(reviewSummary.repositoryCount).toBe(1);
-    expect(selectedRepositoryId).toBe(repositoryIdB);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdB);
     expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
   });
 
-  it('marks the task as out of scope when the selected global project has no matching repositories', async () => {
+  it('marks the task as out of scope when the selected group has no matching repositories', async () => {
     appStoreState.selectedGroupId = 'group-2';
 
     await useFileChangesStore.getState().loadCurrentChanges();
@@ -651,12 +752,12 @@ describe('useFileChangesStore', () => {
     expect(gitStatusMock).not.toHaveBeenCalled();
   });
 
-  it('recomputes the scoped repository selection when the focused subproject changes on the same task', async () => {
+  it('recomputes the scoped repository list when the focused project changes on the same task', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 
     await store.loadCurrentChanges();
-    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdA);
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdA);
 
     appStoreState.selectedProjectId = 'project-b';
     await store.loadCurrentChanges();
@@ -665,8 +766,7 @@ describe('useFileChangesStore', () => {
     expect(nextState.currentTaskId).toBe('task-1');
     expect(nextState.repositories).toHaveLength(1);
     expect(nextState.repositories[0]?.projectId).toBe('project-b');
-    expect(nextState.selectedRepositoryId).toBe(repositoryIdB);
-    expect(nextState.reviewSummary.currentRepositoryId).toBe(repositoryIdB);
+    expect(nextState.reviewSummary.nextRepositoryId).toBe(repositoryIdB);
   });
 
   it('reads repository changes from the task worktrees and reloads external edits', async () => {
@@ -754,6 +854,113 @@ describe('useFileChangesStore', () => {
 
     releaseStatuses();
     await silentRefresh;
+  });
+
+  it('preserves an open diff modal session during silent refreshes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    await store.loadCurrentChanges({ silent: true });
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(true);
+    expect(nextState.selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(nextState.diffModalSession?.rightDraftContent).toContain('const value = 42;');
+    expect(nextState.diffModalSession?.isDirty).toBe(true);
+  });
+
+  it('preserves a diff modal opened while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(true);
+    expect(nextState.selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(nextState.diffModalSession?.rightDraftContent).toContain('const value = 42;');
+    expect(nextState.diffModalSession?.isDirty).toBe(true);
+  });
+
+  it('closes a diff modal when its file disappears during a silent refresh', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    delete currentFiles[worktreeAPath]['src/main.ts'];
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+  });
+
+  it('does not reopen a diff modal closed while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.closeDiffModal();
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
   });
 
   it('clears stale diff state when switching to another task', async () => {
@@ -889,6 +1096,33 @@ describe('useFileChangesStore', () => {
     expect(updatedRepository?.changes.every((change) => change.hasValidatedStage)).toBe(true);
   });
 
+  it('does not infer a repository scope when staging all changes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageAllChanges();
+
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(1);
+
+    await store.stageAllChanges(repositoryIdA);
+
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+    });
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(0);
+  });
+
+  it('keeps repository stats explicit while overall stats remain global', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    expect(store.getStats().pendingVisibleFileCount).toBe(0);
+    expect(store.getStats(repositoryIdA).pendingVisibleFileCount).toBe(1);
+    expect(store.getOverallStats().pendingVisibleFileCount).toBe(2);
+  });
+
   it('keeps staged-only files visible without marking them pending', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
@@ -985,8 +1219,7 @@ describe('useFileChangesStore', () => {
     const nextState = useFileChangesStore.getState();
     expect(nextState.currentTaskId).toBe('task-3');
     expect(nextState.currentTaskLoadState).toBe('invalid_mapping');
-    expect(nextState.currentTaskLoadMessage).toBe('Make your first changes to this task to see them here.');
-    expect(nextState.currentTaskLoadMessage?.toLowerCase()).not.toContain('worktree');
+    expect(nextState.currentTaskLoadMessage).toContain('Macro could not find the prepared task worktree');
     expect(nextState.repositories).toHaveLength(0);
     expect(gitStatusMock).not.toHaveBeenCalled();
   });
@@ -1054,9 +1287,8 @@ describe('useFileChangesStore', () => {
     expect(firstCommit.taskCompleted).toBe(false);
     expect(firstCommit.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
-    expect(useFileChangesStore.getState().selectedRepositoryId).toBe(repositoryIdB);
     expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
-    expect(useFileChangesStore.getState().reviewSummary.currentRepositoryId).toBe(repositoryIdB);
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdB);
 
     const secondCommit = await store.commitStagedChanges(
       repositoryIdB,
@@ -1336,7 +1568,7 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().lastError).toBeNull();
   });
 
-  it('does not change the task status when only the focused subproject is resolved', async () => {
+  it('does not change the task status when only the focused project is resolved', async () => {
     appStoreState.selectedProjectId = 'project-a';
     const store = useFileChangesStore.getState();
 

@@ -9,6 +9,7 @@ import { AppearanceView } from './views/AppearanceView';
 import { ProvidersSettings } from './views/ai/ProvidersSettings';
 import { ModelsSettings } from './views/ai/ModelsSettings';
 import { ToolsView } from './views/ToolsView';
+import { SkillsView } from './views/SkillsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
@@ -41,13 +42,14 @@ export const SettingsModal: React.FC = () => {
     { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
+    { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
-    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Architect Git Workflow' },
+    { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Git workflow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in p-3 md:p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in p-3 md:p-6">
       {/* Modal Container */}
       <div className="flex h-[min(90vh,calc(100vh-1.5rem))] w-full max-w-[1200px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ring-1 ring-white/5 md:h-[min(85vh,calc(100vh-3rem))] md:flex-row">
 
@@ -91,7 +93,7 @@ export const SettingsModal: React.FC = () => {
 
         {/* Content Area */}
         <div className="flex-1 flex flex-col bg-background/50 min-h-0">
-          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30 backdrop-blur-sm">
+          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
             <div>
               <h3 className="text-lg font-semibold text-foreground">
                 {tabs.find(t => t.id === activeSettingsTab)?.label}
@@ -116,6 +118,7 @@ export const SettingsModal: React.FC = () => {
               {activeSettingsTab === 'providers' && <ProvidersSettings />}
               {activeSettingsTab === 'models' && <ModelsSettings />}
               {activeSettingsTab === 'tools' && <ToolsView />}
+              {activeSettingsTab === 'skills' && <SkillsView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}
               {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
               {activeSettingsTab === 'shortcuts' && <ShortcutsView />}

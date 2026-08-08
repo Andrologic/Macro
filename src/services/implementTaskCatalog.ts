@@ -11,6 +11,10 @@ import {
   type ArchitectPlanStatus,
 } from './architectPlanService';
 import {
+  getArchitectPlanKind,
+  type ArchitectPlanKind,
+} from './architectPlanKinds';
+import {
   buildPlanFinalizationTaskId,
   buildPlanFinalizationTaskTitle,
   derivePlanFinalizationDependencyState,
@@ -34,6 +38,7 @@ export interface ImplementTaskPlanSummary {
   slug: string;
   title: string;
   label?: string;
+  planKind?: ArchitectPlanKind;
   status: ArchitectPlanStatus;
   storageBranch: string;
   targetBranch: string;
@@ -169,6 +174,7 @@ const buildPlanFinalizationTask = (
     needs_revalidation: false,
     sequence_index: sequenceIndex,
     execution_targets: buildPlanFinalizationExecutionTargets(plan),
+    todos: [],
     task_source: 'plan_finalization',
     plan_title: plan.title,
     plan_status: plan.status,
@@ -268,6 +274,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       needs_revalidation: false,
       sequence_index: typeof raw.sequence_index === 'number' ? raw.sequence_index : index,
       execution_targets: executionTargets,
+      todos: [],
       draft: isDraft,
       standalone_kind: raw.standalone_kind === 'manual_feature' ? 'manual_feature' : 'legacy',
       base_branch: typeof raw.base_branch === 'string' ? raw.base_branch : null,
@@ -476,6 +483,7 @@ export const buildImplementTaskCatalog = (params: {
         slug: plan.slug,
         title: plan.title,
         label: plan.label,
+        planKind: getArchitectPlanKind(plan),
         status: plan.status,
         storageBranch: plan.targetBranch,
         targetBranch: getUniqueTargetBranch(getArchitectPlanTargetBranchesByProjectId(plan), plan.targetBranch) || '',

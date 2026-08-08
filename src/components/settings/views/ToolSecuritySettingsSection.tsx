@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
@@ -22,6 +22,7 @@ export const ToolSecuritySettingsSection: React.FC<
   const { t } = useTranslation();
   const [toolRiskLevel, setToolRiskLevel] =
     useState<ToolRiskLevel>(DEFAULT_TOOL_RISK_LEVEL);
+  const riskTouchedRef = useRef(false);
   const [isYoloConfirmOpen, setIsYoloConfirmOpen] = useState(false);
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export const ToolSecuritySettingsSection: React.FC<
 
     void loadPreference<ToolRiskLevel>(PREF_KEYS.TOOL_RISK_LEVEL).then(
       (riskLevel) => {
-        if (!cancelled) {
+        if (!cancelled && !riskTouchedRef.current) {
           setToolRiskLevel(riskLevel);
         }
       }
@@ -46,6 +47,7 @@ export const ToolSecuritySettingsSection: React.FC<
       return;
     }
 
+    riskTouchedRef.current = true;
     setToolRiskLevel(level);
     void savePreference(PREF_KEYS.TOOL_RISK_LEVEL, level);
   };
@@ -210,6 +212,7 @@ export const ToolSecuritySettingsSection: React.FC<
         cancelLabel={t('common.cancel', 'Cancel')}
         onCancel={() => setIsYoloConfirmOpen(false)}
         onConfirm={() => {
+          riskTouchedRef.current = true;
           setIsYoloConfirmOpen(false);
           setToolRiskLevel('yolo');
           void savePreference(PREF_KEYS.TOOL_RISK_LEVEL, 'yolo');

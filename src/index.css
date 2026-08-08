@@ -118,6 +118,60 @@
     @apply card hover:border-border/70 hover:shadow-[0_0_20px_-4px_rgba(99,102,241,0.3)] transition-all duration-200;
   }
 
+  .chat-compaction-rule {
+    display: block;
+    flex: 1 1 0;
+    height: 1px;
+    min-width: 1rem;
+    transform: translateY(1px);
+  }
+
+  .chat-compaction-label {
+    display: inline-flex;
+    justify-content: center;
+    max-width: min(24rem, 70vw);
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .chat-compaction-rule--left {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--border) / 0.24) 0%,
+      rgb(var(--muted-foreground) / 0.22) 42%,
+      rgb(var(--muted-foreground) / 0.32) 100%
+    );
+  }
+
+  .chat-compaction-rule--right {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--muted-foreground) / 0.32) 0%,
+      rgb(var(--muted-foreground) / 0.22) 58%,
+      rgb(var(--border) / 0.24) 100%
+    );
+  }
+
+  .chat-compaction-wave-text {
+    background-image: linear-gradient(
+      90deg,
+      rgb(var(--muted-foreground) / 0.58) 0%,
+      rgb(var(--muted-foreground) / 0.58) 36%,
+      rgb(var(--muted-foreground) / 0.78) 45%,
+      rgb(var(--foreground) / 0.86) 50%,
+      rgb(var(--muted-foreground) / 0.78) 55%,
+      rgb(var(--muted-foreground) / 0.58) 64%,
+      rgb(var(--muted-foreground) / 0.58) 100%
+    );
+    background-size: 260% 100%;
+    background-position: 100% 50%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: rgb(var(--muted-foreground));
+    -webkit-text-fill-color: transparent;
+    animation: chatCompactionTextWave 2.15s linear infinite;
+  }
+
   .macro-topbar {
     min-height: var(--macro-titlebar-height, 48px);
     border-bottom: 1px solid rgb(var(--border) / 0.9);
@@ -454,7 +508,6 @@
     color: rgb(var(--foreground));
     font-size: 0.75rem;
     font-weight: 500;
-    backdrop-filter: blur(10px);
   }
 
   [data-sonner-toaster].macro-toaster [data-button].macro-toast-action:hover,
@@ -507,26 +560,35 @@
 
   .macro-terminal-shell {
     @apply h-full w-full bg-background p-3;
+    color: rgb(var(--foreground));
     overflow: hidden;
   }
 
   .macro-terminal-host {
     @apply h-full w-full overflow-hidden rounded-md;
     background: rgb(var(--background));
+    color: rgb(var(--foreground));
+  }
+
+  .macro-terminal-runtime {
+    height: 100%;
+    width: 100%;
   }
 
   .macro-terminal-shell .xterm {
     height: 100%;
+    width: 100%;
     padding: 0;
+    background: rgb(var(--background));
+    color: rgb(var(--foreground));
   }
 
-  .macro-terminal-shell .xterm-screen,
-  .macro-terminal-shell .xterm-viewport {
-    height: 100% !important;
-    width: 100% !important;
+  .macro-terminal-shell .xterm-screen {
+    color: rgb(var(--foreground));
   }
 
   .macro-terminal-shell .xterm-viewport {
+    background: rgb(var(--background)) !important;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
   }
@@ -647,6 +709,7 @@
     filter: saturate(1.22) brightness(1.14);
     will-change: transform, opacity;
   }
+
 }
 
 @keyframes separatorExpand {
@@ -697,11 +760,84 @@
   }
 }
 
+@keyframes chatCompactionTextWave {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes contextWindowCompactionWave {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: var(--context-window-wave-start, -64);
+  }
+  18% {
+    opacity: 0.92;
+  }
+  72% {
+    opacity: 0.68;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+.context-window-compaction-wave {
+  animation: contextWindowCompactionWave 1.55s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  filter: drop-shadow(0 0 3px rgb(var(--primary) / 0.28));
+}
+
+@keyframes strategyGraphFlowPulse {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.72);
+  }
+  22% {
+    opacity: var(--strategy-graph-flow-peak-opacity, 0.42);
+  }
+  72% {
+    opacity: calc(var(--strategy-graph-flow-peak-opacity, 0.42) * 0.86);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.strategy-graph-flow-pulse {
+  animation: strategyGraphFlowPulse 2.35s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.strategy-graph-flow-pulse--static {
+  animation: none;
+  opacity: var(--strategy-graph-flow-peak-opacity, 0.18);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-status-awaiting-response__wave {
     animation: none;
     opacity: 0.38;
     transform: scale(var(--task-status-wave-mid-scale, 0.68));
+  }
+
+  .chat-compaction-wave-text {
+    animation: none;
+    background-position: 50% 50%;
+  }
+
+  .context-window-compaction-wave {
+    animation: none;
+    opacity: 0.72;
+    stroke-dashoffset: 0;
+  }
+
+  .strategy-graph-flow-pulse {
+    animation: none;
+    opacity: min(var(--strategy-graph-flow-peak-opacity, 0.42), 0.42);
   }
 }
 
@@ -750,7 +886,7 @@
   }
 
   .glass-effect {
-    @apply bg-card/50 backdrop-blur-sm border border-border/50;
+    @apply bg-card/95 border border-border/50;
   }
 
   /* Custom select styling to work with themes */

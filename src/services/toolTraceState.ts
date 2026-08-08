@@ -38,15 +38,26 @@ export const mergeToolTracesPreservingDeniedStatus = (
   incoming: ToolTrace[],
   existing: ToolTrace[] = [],
 ): ToolTrace[] => {
-  const existingStatusByToolCallId = new Map(
-    existing.map((trace) => [trace.tool_call_id, trace.status]),
+  const existingByToolCallId = new Map(
+    existing.map((trace) => [trace.tool_call_id, trace]),
   );
 
-  return incoming.map((trace) => ({
-    ...trace,
-    status:
-      existingStatusByToolCallId.get(trace.tool_call_id) === "denied"
-        ? "denied"
-        : trace.status,
-  }));
+  return incoming.map((trace) => {
+    const existingTrace = existingByToolCallId.get(trace.tool_call_id);
+    if (!existingTrace) return trace;
+
+    if (
+      existingTrace.status === "denied" ||
+      existingTrace.status === "pending_approval" ||
+      (existingTrace.status === "done" && trace.status === "running")
+    ) {
+      return {
+        ...trace,
+        status: existingTrace.status,
+        completed_at_ms: existingTrace.completed_at_ms ?? trace.completed_at_ms,
+      };
+    }
+
+    return trace;
+  });
 };

@@ -69,12 +69,14 @@ const metadataTargets = [
 
 const createAppState = (overrides?: {
   metadataAutoPush?: boolean;
+  metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
   activeArchitectPlanId?: string | null;
   activePlanContext?: { targetBranch: string } | null;
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
 }) => ({
   metadataAutoPush: overrides?.metadataAutoPush ?? false,
+  metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy ?? 'ask',
   activeArchitectPlanId: overrides?.activeArchitectPlanId ?? 'plan-1',
   activePlanContext: overrides?.activePlanContext ?? { targetBranch: 'develop' },
   selectedGroupId: overrides?.selectedGroupId ?? 'group-1',
@@ -124,6 +126,7 @@ const createAppState = (overrides?: {
 
 const loadMacroSyncService = (overrides?: {
   metadataAutoPush?: boolean;
+  metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
 }) => createMacroSyncService({
   tauriIpc: {
     isTauriAvailable: () => true,
@@ -135,6 +138,7 @@ const loadMacroSyncService = (overrides?: {
   },
   getAppState: () => createAppState({
     metadataAutoPush: overrides?.metadataAutoPush,
+    metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy,
   }),
   resolveTargets: async () => metadataTargets,
   toServiceError,
@@ -229,6 +233,31 @@ describe('macroSyncService', () => {
         },
       ],
     });
+  });
+
+  it('skips WSL repositories when syncing @macro metadata', async () => {
+    const service = createMacroSyncService({
+      tauriIpc: {
+        isTauriAvailable: () => true,
+        macroBranchEnsure: macroBranchEnsureMock,
+        macroBranchStatus: macroBranchStatusMock,
+        macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+        macroBranchPull: macroBranchPullMock,
+        macroBranchPush: macroBranchPushMock,
+      },
+      getAppState: () => createAppState(),
+      resolveTargets: async () => [
+        { repoPath: '\\\\wsl.localhost\\Ubuntu\\home\\oscar\\repo', projectId: 'wsl' },
+        { repoPath: '/repos/api', projectId: 'api' },
+      ],
+      toServiceError,
+    });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
   });
 
   it('blocks pull across all repositories when one target still requires a commit', async () => {
@@ -453,6 +482,67 @@ describe('macroSyncService', () => {
     expect(result?.reason).toBe('behind');
   });
 
+  it('does not auto-push metadata when code-triggered push finds a missing upstream', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        has_upstream: false,
+        ahead: 1,
+        reason: 'missing_upstream',
+        next_action: 'push',
+        output: `missing upstream:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'push' });
+
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('pending');
+    expect(result?.reason).toBe('missing_upstream');
+    expect(result?.next_action).toBe('push');
+  });
+
+  it('leaves missing upstream non-published when the policy is ignored', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        has_upstream: false,
+        ahead: 1,
+        reason: 'missing_upstream',
+        next_action: 'push',
+        output: `missing upstream:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService({ metadataMissingUpstreamPolicy: 'ignore' });
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'push' });
+
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(result?.reason).toBe('missing_upstream');
+    expect(result?.next_action).toBe('push');
+  });
+
+  it('pushes metadata explicitly even when upstream is missing', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        has_upstream: false,
+        ahead: 1,
+        reason: 'missing_upstream',
+        next_action: 'push',
+        output: `missing upstream:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.pushMacroMetadata();
+
+    expect(macroBranchPushMock).toHaveBeenCalledTimes(2);
+    expect(result?.state).toBe('clean');
+  });
+
   it('flushes dirty metadata before code-triggered push without pulling', async () => {
     const ensureCallsByPath = new Map<string, number>();
     macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
@@ -521,7 +611,7 @@ describe('macroSyncService', () => {
     expect(getMacroSyncDescription(result!)).toContain('authentication');
   });
 
-  it('falls back to all repositories in the selected global project when no plan targets are active', async () => {
+  it('falls back to all repositories in the selected group when no plan targets are active', async () => {
     const service = createMacroSyncService({
       tauriIpc: {
         isTauriAvailable: () => true,

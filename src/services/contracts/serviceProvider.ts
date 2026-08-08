@@ -12,16 +12,28 @@ import type {
   ModelsDto,
   ProjectDto,
   ProvidersDto,
+  SkillDetailDto,
+  SkillListDto,
+  SkillResourceReadDto,
   TaskCatalogDto,
   ToolSettingsDto,
 } from './dtos';
 import type {
+  MCPServer,
+  MCPTool,
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
   ProjectGitSetupAction,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  SkillManifest,
+  SkillLocationOpenRequest,
+  SkillProjectRoot,
+  SkillScriptRunRequest,
+  SkillScriptRunResult,
+  SkillTemplateCreateRequest,
+  SkillTemplateCreateResult,
 } from '../../types';
 
 export interface ServiceProvider {
@@ -35,7 +47,8 @@ export interface ServiceProvider {
     taskId: string,
     branchName: string,
     fromRef?: string | null,
-    preferredCommitBranch?: string | null
+    preferredCommitBranch?: string | null,
+    fallbackBranches?: string[] | null
   ) => Promise<{
     taskId: string;
     worktreePath: string;
@@ -64,9 +77,11 @@ export interface ServiceProvider {
     groupName?: string | null;
     path?: string;
     gitFlowSettings?: ProjectGitFlowSettings;
+    requestId?: string | null;
   }) => Promise<ProjectDto>;
   previewProjectGitSetup: (data: {
     path?: string;
+    requestId?: string | null;
   }) => Promise<ProjectGitFlowDetection>;
   createProjectWithGitSetup: (data: {
     name: string;
@@ -79,7 +94,18 @@ export interface ServiceProvider {
     expectedRepoRootPath?: string | null;
     expectedSetupState: ProjectGitFlowDetection['setupState'];
     expectedRecommendedActionSequence: ProjectGitSetupAction[];
+    requestId?: string | null;
   }) => Promise<ProjectGitSetupCommitResult>;
+  createNewProjectRepo: (data: {
+    repoName: string;
+    parentPath: string;
+    folderName: string;
+    groupId: string | null;
+    groupName?: string | null;
+    gitFlowSettings?: ProjectGitFlowSettings;
+    requestId?: string | null;
+  }) => Promise<ProjectGitSetupCommitResult>;
+  cancelProjectOperation: (requestId: string) => Promise<boolean>;
   importGitRepo: (data: {
     gitUrl: string;
     projectName: string;
@@ -93,6 +119,14 @@ export interface ServiceProvider {
     groupId: string;
     name: string;
   }) => Promise<{ projectGroup: ProjectGroup }>;
+  createProjectGroup: (data: {
+    name: string;
+    projectIds: string[];
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
+  moveProjectToGroup: (data: {
+    projectId: string;
+    groupId: string | null;
+  }) => Promise<{ projectGroups: ProjectGroup[] }>;
   renameProject: (data: {
     projectId: string;
     name: string;
@@ -141,4 +175,30 @@ export interface ServiceProvider {
   updateToolSettings: (settings: ToolSettingsDto) => Promise<void>;
   getMCPServerSettings: () => Promise<MCPServerSettingsDto>;
   updateMCPServerSettings: (settings: MCPServerSettingsDto) => Promise<void>;
+  mcpDiscoverTools: (server: MCPServer) => Promise<{ tools: MCPTool[] }>;
+  mcpCallTool: (data: {
+    server: MCPServer;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    timeoutMs?: number | null;
+  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  listSkills: (data?: { projectRoots?: SkillProjectRoot[] }) => Promise<SkillListDto>;
+  getSkill: (data: {
+    skillId: string;
+    projectRoots?: SkillProjectRoot[];
+  }) => Promise<SkillDetailDto>;
+  installSkillFromLocalPath: (data: { sourcePath: string }) => Promise<SkillManifest>;
+  createSkillTemplate: (data: SkillTemplateCreateRequest) => Promise<SkillTemplateCreateResult>;
+  openSkillLocation: (data: SkillLocationOpenRequest) => Promise<void>;
+  readSkillResource: (data: {
+    skillId: string;
+    resourcePath: string;
+    projectRoots?: SkillProjectRoot[];
+  }) => Promise<SkillResourceReadDto>;
+  runSkillScript: (
+    data: SkillScriptRunRequest & {
+      projectRoots?: SkillProjectRoot[];
+      workspacePath?: string | null;
+    }
+  ) => Promise<SkillScriptRunResult>;
 }

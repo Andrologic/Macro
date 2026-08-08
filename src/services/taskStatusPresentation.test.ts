@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
+  resolveRunningConversationIds,
   resolveRunningTaskIds,
   resolveTaskStatusIndicatorState,
 } from './taskStatusPresentation';
@@ -65,6 +66,105 @@ describe('taskStatusPresentation', () => {
     expect(
       resolveTaskStatusIndicatorState('AwaitingResponse', runningTaskIds.has('task-3'))
     ).toBe('awaiting_response');
+  });
+
+  it('treats transient compaction phases as active conversations', () => {
+    const runningTaskIds = resolveRunningTaskIds({
+      conversations: [
+        { id: 'conversation-1', task_id: 'task-1' },
+        { id: 'conversation-2', task_id: 'task-2' },
+        { id: 'conversation-3', task_id: 'task-3' },
+        { id: 'conversation-4', task_id: 'task-4' },
+        { id: 'conversation-5', task_id: 'task-5' },
+        { id: 'conversation-6', task_id: 'task-6' },
+        { id: 'conversation-7', task_id: 'task-7' },
+      ],
+      conversationRuntimeById: {},
+      conversationCompactionStatusById: {
+        'conversation-1': { phase: 'compacting' },
+        'conversation-2': { phase: 'safety_compacting' },
+        'conversation-3': { phase: 'model_switch_compacting' },
+        'conversation-4': { phase: 'recovering_overflow' },
+        'conversation-5': { phase: 'compacted' },
+        'conversation-6': { phase: 'degraded' },
+        'conversation-7': { phase: 'too_large' },
+      },
+    });
+
+    expect(Array.from(runningTaskIds).sort()).toEqual([
+      'task-1',
+      'task-2',
+      'task-3',
+      'task-4',
+    ]);
+  });
+
+  it('maps an active conversation to tasks through task conversation_id when needed', () => {
+    const runningTaskIds = resolveRunningTaskIds({
+      conversations: [{ id: 'conversation-1', task_id: null }],
+      tasks: [{ id: 'task-1', conversation_id: 'conversation-1' }],
+      conversationRuntimeById: {},
+      conversationCompactionStatusById: {
+        'conversation-1': { phase: 'compacting' },
+      },
+    });
+
+    expect(Array.from(runningTaskIds)).toEqual(['task-1']);
+  });
+
+  it('maps the active selected conversation to the selected task when persisted links are stale', () => {
+    const runningTaskIds = resolveRunningTaskIds({
+      conversations: [{ id: 'conversation-1', task_id: null }],
+      tasks: [{ id: 'task-1', conversation_id: null }],
+      selectedConversationId: 'conversation-1',
+      selectedTaskId: 'task-1',
+      conversationRuntimeById: {},
+      conversationCompactionStatusById: {
+        'conversation-1': { phase: 'compacting' },
+      },
+    });
+
+    expect(Array.from(runningTaskIds)).toEqual(['task-1']);
+  });
+
+  it('does not map the selected task when compaction belongs to another conversation', () => {
+    const runningTaskIds = resolveRunningTaskIds({
+      conversations: [{ id: 'conversation-1', task_id: null }],
+      tasks: [{ id: 'task-1', conversation_id: null }],
+      selectedConversationId: 'conversation-1',
+      selectedTaskId: 'task-1',
+      conversationRuntimeById: {},
+      conversationCompactionStatusById: {
+        'conversation-2': { phase: 'compacting' },
+      },
+    });
+
+    expect(Array.from(runningTaskIds)).toEqual([]);
+  });
+
+  it('keeps preparing and streaming conversations active when compaction statuses are provided', () => {
+    const runningConversationIds = resolveRunningConversationIds(
+      {
+        'conversation-1': {
+          phase: 'streaming',
+          sessionId: 'session-1',
+        },
+        'conversation-2': {
+          phase: 'preparing',
+          sessionId: 'session-2',
+        },
+      },
+      {
+        'conversation-3': { phase: 'compacting' },
+        'conversation-4': { phase: 'compacted' },
+      }
+    );
+
+    expect(Array.from(runningConversationIds).sort()).toEqual([
+      'conversation-1',
+      'conversation-2',
+      'conversation-3',
+    ]);
   });
 
   it('projects plan node statuses to the shared task indicator states', () => {

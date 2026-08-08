@@ -141,6 +141,22 @@ describe('DiffMergeView', () => {
     return handle as MergeViewEditorHandle;
   };
 
+  const forceEditorDocumentTop = (editor: MergeViewEditorHandle['b'], top = 0) => {
+    const originalDocumentTop = Object.getOwnPropertyDescriptor(editor, 'documentTop');
+    Object.defineProperty(editor, 'documentTop', {
+      configurable: true,
+      get: () => top,
+    });
+
+    return () => {
+      if (originalDocumentTop) {
+        Object.defineProperty(editor, 'documentTop', originalDocumentTop);
+      } else {
+        Reflect.deleteProperty(editor, 'documentTop');
+      }
+    };
+  };
+
   it('renders merge view with two editors', async () => {
     await act(async () => {
       root?.render(
@@ -759,6 +775,7 @@ describe('DiffMergeView', () => {
     });
 
     const handle = requireHandle(latestHandle);
+    const restoreDocumentTop = forceEditorDocumentTop(handle.b);
     const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
     expect(revertButton).not.toBeNull();
 
@@ -775,6 +792,7 @@ describe('DiffMergeView', () => {
     });
 
     expect(revertButton?.style.top).toBe('132px');
+    restoreDocumentTop();
   });
 
   it('keeps the revert control aligned when a collapsed block sits above the changed chunk', async () => {
@@ -804,6 +822,7 @@ describe('DiffMergeView', () => {
     });
 
     const handle = requireHandle(latestHandle);
+    const restoreDocumentTop = forceEditorDocumentTop(handle.b);
     const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
     expect(revertButton).not.toBeNull();
     expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
@@ -840,6 +859,7 @@ describe('DiffMergeView', () => {
     });
 
     expect(revertButton?.style.top).toBe('196px');
+    restoreDocumentTop();
   });
 
   it('keeps the revert control aligned when a collapsed block sits below the changed chunk', async () => {
@@ -869,6 +889,7 @@ describe('DiffMergeView', () => {
     });
 
     const handle = requireHandle(latestHandle);
+    const restoreDocumentTop = forceEditorDocumentTop(handle.b);
     const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
     expect(revertButton).not.toBeNull();
     expect(container?.querySelector('.cm-collapsedLines')).not.toBeNull();
@@ -905,6 +926,7 @@ describe('DiffMergeView', () => {
     });
 
     expect(revertButton?.style.top).toBe('132px');
+    restoreDocumentTop();
   });
 
   it('recomputes revert control tops after expanding a collapsed widget', async () => {
@@ -934,6 +956,7 @@ describe('DiffMergeView', () => {
     });
 
     const handle = requireHandle(latestHandle);
+    const restoreDocumentTop = forceEditorDocumentTop(handle.b);
     const revertButton = container?.querySelector('.cm-merge-revert button') as HTMLButtonElement | null;
     const collapsed = container?.querySelector('.cm-collapsedLines') as HTMLElement | null;
     expect(revertButton).not.toBeNull();
@@ -972,6 +995,7 @@ describe('DiffMergeView', () => {
     });
 
     expect(revertButton?.style.top).toBe('184px');
+    restoreDocumentTop();
   });
 
   it('styles collapsed widgets without vertical margins so their measured height stays stable', async () => {

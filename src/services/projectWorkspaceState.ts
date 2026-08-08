@@ -1,4 +1,4 @@
-import type { ProjectGroup } from '../types';
+import type { Project, ProjectGroup, ProjectRegistry } from '../types';
 import {
   getScopedActionableProjectIds,
   getScopedProjectIds,
@@ -26,25 +26,33 @@ export interface ProjectWorkspaceState {
 
 export const resolveProjectWorkspaceState = (params: {
   projectGroups: ProjectGroup[];
+  standaloneProjects?: Project[];
   selectedGroupId: string | null | undefined;
   selectedProjectId: string | null | undefined;
 }): ProjectWorkspaceState => {
-  const hasProjects = params.projectGroups.some((group) => group.projects.length > 0);
-  const knownProjectIds = new Set(
-    params.projectGroups.flatMap((group) => group.projects.map((project) => project.id))
-  );
+  const registry: ProjectRegistry = {
+    standaloneProjects: params.standaloneProjects ?? [],
+    projectGroups: params.projectGroups,
+  };
+  const hasProjects =
+    registry.standaloneProjects.length > 0 ||
+    registry.projectGroups.some((group) => group.projects.length > 0);
+  const knownProjectIds = new Set([
+    ...registry.standaloneProjects.map((project) => project.id),
+    ...registry.projectGroups.flatMap((group) => group.projects.map((project) => project.id)),
+  ]);
   const scopedProjectIds = getScopedProjectIds(
-    params.projectGroups,
+    registry,
     params.selectedGroupId,
     params.selectedProjectId
   ).filter((projectId) => knownProjectIds.has(projectId));
   const actionableProjectIds = getScopedActionableProjectIds(
-    params.projectGroups,
+    registry,
     params.selectedGroupId,
     params.selectedProjectId
   ).filter((projectId) => knownProjectIds.has(projectId));
   const readOnlyProjectIds = getScopedReadOnlyProjectIds(
-    params.projectGroups,
+    registry,
     params.selectedGroupId,
     params.selectedProjectId
   ).filter((projectId) => knownProjectIds.has(projectId));

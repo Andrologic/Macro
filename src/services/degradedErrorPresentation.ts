@@ -1,4 +1,12 @@
-import { toServiceError, type ServiceError } from './contracts/errors';
+import {
+  SERVICE_ERROR_CODES,
+  isPlanMetadataMissingError,
+  isResourcePressureError,
+  isWorkspaceStateUnavailableError,
+  toServiceError,
+  type ServiceError,
+} from './contracts/errors';
+import { isTooManyOpenFilesMessage } from './resourcePressureBackoff';
 import type { MacroSyncNextAction, MacroSyncReason } from './tauriIpc';
 
 export type DegradedErrorSeverity = 'info' | 'warning' | 'danger';
@@ -70,7 +78,7 @@ export const presentWorktreeError = (
     return {
       title: 'Macro could not find the base branch',
       body: 'This task needs a base branch before its worktree can be created.',
-      nextStep: 'Create the branch or update the project GitFlow settings, then retry.',
+      nextStep: 'Create the branch or update the project Git workflow settings, then retry.',
       severity: 'warning',
       technicalDetails: stringifyDetails(normalized.details) || message,
       projectId: options.projectId ?? null,
@@ -102,7 +110,7 @@ export const presentReadOnlyProjectIssue = (params: {
   nextStep:
     params.reason === 'missing_git'
       ? 'Initialize Git for this project, then enable editable work.'
-      : 'Open project settings and make sure GitFlow is ready.',
+      : 'Open project settings and make sure the Git workflow is ready.',
   severity: 'warning',
   technicalDetails: params.reason || null,
   projectId: params.projectId ?? null,
@@ -235,7 +243,7 @@ const METADATA_REASON_COPY: Record<MacroSyncReason, Pick<DegradedErrorPresentati
   missing_upstream: {
     title: '@macro has no upstream branch',
     body: 'The metadata branch exists locally but is not linked to a remote branch yet.',
-    nextStep: 'Push @macro to publish it and set the upstream.',
+    nextStep: 'Push @macro to publish it, or ignore this warning to keep metadata local.',
     primaryAction: 'sync_metadata',
     severity: 'warning',
   },
@@ -288,6 +296,62 @@ export const presentServiceError = (
   const normalized = toServiceError(error);
   const message = serviceErrorMessage(normalized);
   const lower = message.toLowerCase();
+
+  if (isResourcePressureError(normalized) || isTooManyOpenFilesMessage(message)) {
+    return {
+      title: 'Macro is temporarily overloaded',
+      body: 'The system has too many files open, so Macro paused automatic repository refreshes before retrying.',
+      nextStep: 'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
+
+  if (
+    normalized.code === SERVICE_ERROR_CODES.PLAN_REPLICA_DIVERGED ||
+    lower.includes('diverged metadata replicas') ||
+    lower.includes('missing metadata replicas')
+  ) {
+    return {
+      title: 'Plan metadata needs repair',
+      body: 'Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.',
+      nextStep: 'Repair the plan metadata, then retry the action.',
+      severity: 'danger',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'repair_metadata',
+    };
+  }
+
+  if (isPlanMetadataMissingError(normalized)) {
+    return {
+      title: 'Plan metadata is incomplete',
+      body: 'Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.',
+      nextStep: 'Repair the metadata links, then retry the action.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'repair_metadata',
+    };
+  }
+
+  if (isWorkspaceStateUnavailableError(normalized)) {
+    return {
+      title: 'Workspace state is temporarily unavailable',
+      body: 'Macro could not read the workspace state needed for this action.',
+      nextStep: 'Retry after the workspace finishes updating. If it persists, reopen the project.',
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
 
   if (lower.includes('worktree') || lower.includes('branch is still checked out') || lower.includes('base branch')) {
     return presentWorktreeError(normalized, options);

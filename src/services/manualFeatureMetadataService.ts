@@ -5,6 +5,7 @@ import {
   flushMacroMetadata,
   recordMacroMetadataMutation,
 } from './macroMetadataCoordinator';
+import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
@@ -52,10 +53,10 @@ const resolveMetadataWorkspacePaths = (
 ): string[] => {
   const appState = useAppStore.getState();
   const projectIds = getTaskProjectIds(task);
-  return unique([
+  return filterNonWslProjectPaths(unique([
     ...(task.execution_targets || []).map((target) => target.repoPath ?? null),
     ...projectIds.map((projectId) => appState.getProjectById(projectId)?.path ?? null),
-  ]);
+  ]));
 };
 
 const deleteMetadataRootIfPresent = async (
@@ -303,6 +304,10 @@ export const syncManualFeatureMetadataFromTask = async (
       });
     })
   );
+  await commitMetadataTargets(
+    workspacePaths,
+    `chore(@macro): update manual feature ${task.id}`,
+  );
 };
 
 export const removeManualFeatureMetadata = async (
@@ -335,8 +340,12 @@ export const removeManualFeatureMetadata = async (
         kind: 'manual_feature',
         entityId: task.id,
         label: task.id,
-        importance: 'structural',
+        importance: 'light',
       });
     })
+  );
+  await commitMetadataTargets(
+    workspacePaths,
+    `chore(@macro): delete manual feature ${task.id}`,
   );
 };

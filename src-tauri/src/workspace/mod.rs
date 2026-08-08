@@ -2,35 +2,51 @@ pub mod architect;
 pub mod metadata;
 
 use crate::core::error::{BackendError, Result};
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::GitWorktreeRecord;
 use crate::git::repo::get_status_options;
 use crate::git::MACRO_BRANCH_NAME;
 use crate::git::{detect_preferred_git_flow_branches, GitState};
+pub use crate::project_path::parse_wsl_unc_path;
+use crate::project_path::{wsl_unc_path, ProjectPathKind, WslProjectPath};
 use chrono::Utc;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
 use metadata::{
-    CreateProjectRequest, DebugResetProjectReportDto, ImportGitRepoRequest, ManualFeatureDto,
-    ManualFeatureMergeWorkflowDto, PlanDto, ProjectAccessChangePreviewDto,
-    ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto, ProjectDto,
-    ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto, ProjectMetadataDto,
-    ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto, WorkspaceBootstrapDto,
-    WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto, WorkspaceMetadataRecoveryReportDto,
+    CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
+    ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto, PlanDto,
+    ProjectAccessChangePreviewDto, ProjectAccessMigrationItemDto, ProjectAccessMigrationSummaryDto,
+    ProjectDto, ProjectGitFlowDetectionDto, ProjectGitFlowSettingsDto, ProjectGroupDto,
+    ProjectMetadataDto, ProjectRegistryDiagnosticsDto, ProjectRegistryRepairReportDto,
+    WorkspaceBootstrapDto, WorkspaceMetadataDto, WorkspaceMetadataRecoveryHintDto,
+    WorkspaceMetadataRecoveryReportDto, WorkspaceProjectRegistryReconcileReportDto,
+    WorkspaceProjectRegistryReconcileSkippedDto,
+    WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+    WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
     WorkspaceRecoverMissingMetadataRequestDto, WorkspaceState, WorkspaceTaskCatalogDto,
     WorkspaceTaskExecutionTargetDto, WorkspaceTaskPlanSummaryDto,
 };
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::Duration;
 use tokio::fs;
+use tokio::sync::{watch, Mutex as AsyncMutex, OwnedMutexGuard};
+use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
+const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
+const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
+const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
+const MACRO_BRANCHES_METADATA_DIR: &str = "branches";
 const DEFAULT_REMOTE_NAME: &str = "origin";
 const AUTO_DETECTED_MAIN_BRANCH_NAMES: &[&str] = &["main", "master"];
 const AUTO_DETECTED_BASE_BRANCH_NAMES: &[&str] = &["develop", "dev", "main", "master"];
@@ -44,6 +60,7 @@ const PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION: &str = "needs_branch_conf
 const READ_ONLY_REASON_MANUAL: &str = "manual";
 const READ_ONLY_REASON_MISSING_GIT: &str = "missing_git";
 const READ_ONLY_REASON_MISSING_INITIAL_COMMIT: &str = "missing_initial_commit";
+
 const READ_ONLY_REASON_MANUAL_AND_MISSING_GIT: &str = "manual_and_missing_git";
 const GIT_RESOLUTION_NONE: &str = "none";
 const GIT_RESOLUTION_SELECTED_FOLDER: &str = "selected_folder";
@@ -53,6 +70,30 @@ const GIT_SETUP_ACTION_INITIALIZE_REPO: &str = "initialize_repo";
 const GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT: &str = "create_initial_commit";
 const GIT_SETUP_ACTION_CREATE_DEVELOP: &str = "create_develop";
 const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
+const PROJECT_GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+
+static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+
+fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
+    std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
+}
+
+async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
+    let key = workspace_state_lock_key(metadata_root);
+    let lock = {
+        let locks = WORKSPACE_STATE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
 const ACCESS_BLOCK_LAST_ACTIONABLE_PLAN: &str = "last_actionable_plan";
@@ -92,6 +133,13 @@ fn count_projects(groups: &[ProjectGroupDto]) -> usize {
     groups.iter().map(|group| group.projects.len()).sum()
 }
 
+fn count_registry_projects(
+    standalone_projects: &[ProjectDto],
+    groups: &[ProjectGroupDto],
+) -> usize {
+    standalone_projects.len() + count_projects(groups)
+}
+
 fn short_oid(oid: Oid) -> String {
     oid.to_string().chars().take(7).collect()
 }
@@ -106,6 +154,32 @@ fn absolutize_path(path: &Path) -> PathBuf {
     };
 
     std::fs::canonicalize(&candidate).unwrap_or(candidate)
+}
+
+fn classify_project_path(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+) -> Option<ProjectPathKind> {
+    let project_path = project_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        return Some(ProjectPathKind::Wsl(wsl_path));
+    }
+    Some(ProjectPathKind::Windows(resolve_project_path(
+        workspace_path,
+        project_path,
+    )))
+}
+
+fn ensure_not_cancelled(cancel_rx: Option<&watch::Receiver<bool>>) -> Result<()> {
+    if cancel_rx.map(|rx| *rx.borrow()).unwrap_or(false) {
+        Err(BackendError::Validation(
+            "Project operation cancelled.".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn normalize_repo_resolution(
@@ -340,7 +414,10 @@ fn should_apply_auto_detected_base_branch(
 }
 
 fn repo_has_initial_commit(repo: &Repository) -> bool {
-    repo.is_empty().map(|is_empty| !is_empty).unwrap_or(false)
+    repo.head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .is_some()
 }
 
 fn recommended_git_setup_actions(detection: &ProjectGitFlowDetectionDto) -> Vec<String> {
@@ -399,6 +476,47 @@ fn project_is_read_only(project: &ProjectDto) -> bool {
     project.user_read_only || project.git_setup_state != PROJECT_GIT_SETUP_READY
 }
 
+fn enrich_project_location(mut project: ProjectDto) -> ProjectDto {
+    if let Some(wsl_path) = parse_wsl_unc_path(&project.path) {
+        project.path_kind = "wsl".to_string();
+        project.wsl_distro = Some(wsl_path.distro);
+        project.wsl_linux_path = Some(wsl_path.linux_path);
+    } else {
+        project.path_kind = "windows".to_string();
+        project.wsl_distro = None;
+        project.wsl_linux_path = None;
+    }
+    project
+}
+
+fn strip_project_location(mut project: ProjectDto) -> ProjectDto {
+    project.path_kind = "windows".to_string();
+    project.wsl_distro = None;
+    project.wsl_linux_path = None;
+    project
+}
+
+fn strip_workspace_project_locations(mut state: WorkspaceState) -> WorkspaceState {
+    state.standalone_projects = state
+        .standalone_projects
+        .into_iter()
+        .map(strip_project_location)
+        .collect();
+    state.project_groups = state
+        .project_groups
+        .into_iter()
+        .map(|mut group| {
+            group.projects = group
+                .projects
+                .into_iter()
+                .map(strip_project_location)
+                .collect();
+            group
+        })
+        .collect();
+    state
+}
+
 fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> ProjectDto {
     project.git_setup_state = git_setup_state.to_string();
     project.is_read_only = project_is_read_only(&ProjectDto {
@@ -407,7 +525,7 @@ fn normalize_project_access(mut project: ProjectDto, git_setup_state: &str) -> P
     });
     project.read_only_reason =
         derive_project_read_only_reason(project.user_read_only, git_setup_state);
-    project
+    enrich_project_location(project)
 }
 
 fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
@@ -428,6 +546,295 @@ fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
         initial_commit_risk_flags: Vec::new(),
         recommended_action_sequence: Vec::new(),
     }
+}
+
+fn project_operation_cancelled_error() -> BackendError {
+    BackendError::Validation("Project operation cancelled.".to_string())
+}
+
+fn wsl_git_unavailable_error(distro: &str, stderr: &str) -> BackendError {
+    let detail = stderr.trim();
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", detail)
+    };
+    BackendError::Git {
+        message: format!(
+            "Git is not available in WSL distribution '{}'. Install Git in WSL, then try again.{}",
+            distro, suffix
+        ),
+    }
+}
+
+async fn wait_for_wsl_command(
+    mut command: tokio::process::Command,
+    timeout_duration: Duration,
+    mut cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    command.kill_on_drop(true);
+    let child = command.spawn().map_err(|error| BackendError::Git {
+        message: format!("Failed to start WSL command: {}", error),
+    })?;
+
+    let wait_future = child.wait_with_output();
+    tokio::pin!(wait_future);
+
+    if let Some(cancel_rx) = cancel_rx.as_mut() {
+        tokio::select! {
+            result = timeout(timeout_duration, &mut wait_future) => {
+                result.map_err(|_| BackendError::Git {
+                    message: "Git detection timed out. Check WSL or add the project as read-only.".to_string(),
+                })?.map_err(|error| BackendError::Git {
+                    message: format!("Failed to run WSL command: {}", error),
+                })
+            }
+            _ = cancel_rx.changed() => {
+                Err(project_operation_cancelled_error())
+            }
+        }
+    } else {
+        timeout(timeout_duration, &mut wait_future)
+            .await
+            .map_err(|_| BackendError::Git {
+                message: "Git detection timed out. Check WSL or add the project as read-only."
+                    .to_string(),
+            })?
+            .map_err(|error| BackendError::Git {
+                message: format!("Failed to run WSL command: {}", error),
+            })
+    }
+}
+
+async fn run_wsl_git(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("git")
+        .arg("-C")
+        .arg(&wsl_path.linux_path);
+    for arg in args {
+        command.arg(arg);
+    }
+    wait_for_wsl_command(command, timeout_duration, cancel_rx).await
+}
+
+fn output_stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn output_stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+async fn run_wsl_git_required(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<String> {
+    let output = run_wsl_git(wsl_path, args, PROJECT_GIT_PROBE_TIMEOUT, cancel_rx).await?;
+    if output.status.success() {
+        Ok(output_stdout(&output))
+    } else {
+        Err(wsl_git_unavailable_error(
+            &wsl_path.distro,
+            &output_stderr(&output),
+        ))
+    }
+}
+
+async fn run_wsl_git_optional(
+    wsl_path: &WslProjectPath,
+    args: &[&str],
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<Option<String>> {
+    let output = run_wsl_git(wsl_path, args, PROJECT_GIT_PROBE_TIMEOUT, cancel_rx).await?;
+    if output.status.success() {
+        Ok(Some(output_stdout(&output)))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn collect_initial_commit_preview_for_wsl_path(
+    wsl_path: &WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<InitialCommitPreview> {
+    let script = format!(
+        "cd \"$1\" 2>/dev/null || exit 0; find . -path './.git' -prune -o -type f -print | sed 's#^./##' | head -n {}",
+        INITIAL_COMMIT_PREVIEW_LIMIT
+    );
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("sh")
+        .arg("-lc")
+        .arg(script)
+        .arg("macro-wsl-preview")
+        .arg(&wsl_path.linux_path);
+    let output = wait_for_wsl_command(command, PROJECT_WSL_PREVIEW_TIMEOUT, cancel_rx).await?;
+    if !output.status.success() {
+        return Ok(InitialCommitPreview::default());
+    }
+
+    let mut risk_flags = HashSet::new();
+    let paths = output_stdout(&output)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .inspect(|path| collect_initial_commit_risk_flags(path, &mut risk_flags))
+        .collect::<Vec<_>>();
+    let mut risk_flags = risk_flags.into_iter().collect::<Vec<_>>();
+    risk_flags.sort();
+
+    Ok(InitialCommitPreview {
+        total_count: paths.len(),
+        paths,
+        risk_flags,
+    })
+}
+
+async fn detect_wsl_project_git_flow(
+    wsl_path: &WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    let inside = run_wsl_git_required(
+        wsl_path,
+        &["rev-parse", "--is-inside-work-tree"],
+        cancel_rx.clone(),
+    )
+    .await;
+
+    if inside.is_err() {
+        let preview = collect_initial_commit_preview_for_wsl_path(wsl_path, cancel_rx.clone())
+            .await
+            .unwrap_or_default();
+        let probe = ProjectGitProbe {
+            requested_path: PathBuf::from(format!(
+                r"\\wsl.localhost\{}\{}",
+                wsl_path.distro,
+                wsl_path
+                    .linux_path
+                    .trim_start_matches('/')
+                    .replace('/', "\\")
+            )),
+            repo: None,
+            resolved_repo_root_path: Some(PathBuf::from(format!(
+                r"\\wsl.localhost\{}\{}",
+                wsl_path.distro,
+                wsl_path
+                    .linux_path
+                    .trim_start_matches('/')
+                    .replace('/', "\\")
+            ))),
+            repo_resolution: GIT_RESOLUTION_NEW_LOCAL_REPO,
+        };
+        return Ok(build_project_git_flow_detection(
+            &probe, None, false, preview,
+        ));
+    }
+
+    let repo_root = run_wsl_git_required(
+        wsl_path,
+        &["rev-parse", "--show-toplevel"],
+        cancel_rx.clone(),
+    )
+    .await?;
+    let has_initial_commit = run_wsl_git_optional(
+        wsl_path,
+        &["rev-parse", "--verify", "HEAD"],
+        cancel_rx.clone(),
+    )
+    .await?
+    .is_some();
+    let current_branch = run_wsl_git_optional(
+        wsl_path,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        cancel_rx.clone(),
+    )
+    .await?;
+    let branches_output = run_wsl_git_optional(
+        wsl_path,
+        &["branch", "--format=%(refname:short)"],
+        cancel_rx.clone(),
+    )
+    .await?
+    .unwrap_or_default();
+    let branches = branches_output
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let suggested_main = ["main", "master"]
+        .iter()
+        .find(|candidate| branches.iter().any(|branch| branch == **candidate))
+        .map(|value| (*value).to_string())
+        .or_else(|| current_branch.clone())
+        .or_else(|| branches.first().cloned())
+        .unwrap_or_else(|| "main".to_string());
+    let suggested_base = ["develop", "dev"]
+        .iter()
+        .find(|candidate| branches.iter().any(|branch| branch == **candidate))
+        .map(|value| (*value).to_string())
+        .unwrap_or_else(|| suggested_main.clone());
+    let requires_confirmation = !["main", "master"].contains(&suggested_main.as_str())
+        && suggested_base == suggested_main
+        && has_initial_commit;
+    let setup_state = if !has_initial_commit {
+        PROJECT_GIT_DETECTION_UNBORN
+    } else if requires_confirmation {
+        PROJECT_GIT_DETECTION_NEEDS_BRANCH_CONFIRMATION
+    } else {
+        PROJECT_GIT_DETECTION_READY
+    };
+    let initial_commit_preview = if has_initial_commit {
+        InitialCommitPreview::default()
+    } else {
+        collect_initial_commit_preview_for_wsl_path(wsl_path, cancel_rx.clone())
+            .await
+            .unwrap_or_default()
+    };
+
+    let mut detection = ProjectGitFlowDetectionDto {
+        repo_detected: true,
+        branches,
+        current_branch: current_branch.clone(),
+        suggested_main_branch: Some(suggested_main.clone()),
+        suggested_base_branch: Some(suggested_base),
+        suggested_commit_branch: current_branch.or(Some(suggested_main)),
+        requires_confirmation,
+        setup_state: setup_state.to_string(),
+        has_initial_commit,
+        resolved_repo_root_path: Some(format!(
+            r"\\wsl.localhost\{}\{}",
+            wsl_path.distro,
+            repo_root.trim_start_matches('/').replace('/', "\\")
+        )),
+        repo_resolution: normalize_repo_resolution(
+            Path::new(&wsl_path.linux_path),
+            Some(Path::new(&repo_root)),
+            true,
+        )
+        .to_string(),
+        initial_commit_preview_paths: initial_commit_preview.paths,
+        initial_commit_preview_count: initial_commit_preview.total_count,
+        initial_commit_risk_flags: initial_commit_preview.risk_flags,
+        recommended_action_sequence: Vec::new(),
+    };
+    detection.recommended_action_sequence = recommended_git_setup_actions(&detection);
+    Ok(detection)
 }
 
 fn build_project_git_flow_detection(
@@ -561,6 +968,24 @@ pub fn detect_project_git_flow(
     detect_project_git_flow_internal(workspace_path, project_path)
 }
 
+async fn detect_project_git_flow_for_add(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    match classify_project_path(workspace_path, project_path) {
+        Some(ProjectPathKind::Wsl(wsl_path)) => {
+            detect_wsl_project_git_flow(&wsl_path, cancel_rx).await
+        }
+        Some(ProjectPathKind::Windows(_)) => Ok(detect_project_git_flow_internal(
+            workspace_path,
+            project_path,
+        )),
+        None => Ok(empty_git_flow_detection()),
+    }
+}
+
 fn resolve_repo_workdir(repo: &Repository, fallback: &Path) -> PathBuf {
     let workdir = repo
         .workdir()
@@ -659,6 +1084,14 @@ pub fn preview_project_git_setup(
     detect_project_git_flow_internal(workspace_path, project_path)
 }
 
+pub async fn preview_project_git_setup_async(
+    workspace_path: &Path,
+    project_path: Option<&str>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectGitFlowDetectionDto> {
+    detect_project_git_flow_for_add(workspace_path, project_path, cancel_rx).await
+}
+
 fn normalize_git_setup_actions(actions: &[String]) -> Vec<String> {
     actions
         .iter()
@@ -675,15 +1108,17 @@ fn git_setup_actions_are_prefix(requested: &[String], recommended: &[String]) ->
             .all(|(requested_action, recommended_action)| requested_action == recommended_action)
 }
 
-fn validate_project_git_setup_commit(
+async fn validate_project_git_setup_commit(
     workspace_path: &Path,
     project_path: &str,
     requested_actions: &[String],
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<ProjectGitFlowDetectionDto> {
-    let detection = detect_project_git_flow_internal(workspace_path, Some(project_path));
+    let detection =
+        detect_project_git_flow_for_add(workspace_path, Some(project_path), cancel_rx).await?;
     let normalized_requested_actions = normalize_git_setup_actions(requested_actions);
     let normalized_expected_recommended_actions =
         normalize_git_setup_actions(expected_recommended_action_sequence);
@@ -897,6 +1332,73 @@ fn apply_git_setup_action(
     Ok(())
 }
 
+fn wsl_git_setup_action_command(
+    action: &str,
+    source_branch: Option<&str>,
+) -> Result<(&'static str, Vec<String>)> {
+    match action {
+        GIT_SETUP_ACTION_INITIALIZE_REPO => Ok((
+            r#"if [ ! -d "$1/.git" ]; then git -C "$1" init -b main; fi"#,
+            Vec::new(),
+        )),
+        GIT_SETUP_ACTION_CREATE_INITIAL_COMMIT => Ok((
+            r#"git -C "$1" config user.name >/dev/null 2>&1 || git -C "$1" config user.name Macro
+git -C "$1" config user.email >/dev/null 2>&1 || git -C "$1" config user.email macro@local
+git -C "$1" add -A
+git -C "$1" diff --cached --quiet && git -C "$1" commit --allow-empty -m "chore(git): initialize repository" || git -C "$1" commit -m "chore(git): initialize repository""#,
+            Vec::new(),
+        )),
+        GIT_SETUP_ACTION_CREATE_DEVELOP => Ok((
+            r#"git -C "$1" show-ref --verify --quiet refs/heads/develop || git -C "$1" branch develop "$2""#,
+            vec![source_branch.unwrap_or("main").to_string()],
+        )),
+        _ => Err(BackendError::Validation(format!(
+            "Unsupported project Git setup action: {}",
+            action
+        ))),
+    }
+}
+
+async fn apply_wsl_git_setup_action(
+    wsl_path: &WslProjectPath,
+    detection: &ProjectGitFlowDetectionDto,
+    action: &str,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<()> {
+    let source_branch = if action == GIT_SETUP_ACTION_CREATE_DEVELOP {
+        Some(
+            detection
+                .suggested_main_branch
+                .clone()
+                .or_else(|| detection.suggested_commit_branch.clone())
+                .or_else(|| detection.current_branch.clone())
+                .unwrap_or_else(|| "main".to_string()),
+        )
+    } else {
+        None
+    };
+    let (script, additional_args) = wsl_git_setup_action_command(action, source_branch.as_deref())?;
+
+    let output = run_wsl_shell_with_args(
+        wsl_path,
+        script,
+        &additional_args,
+        Duration::from_secs(12),
+        cancel_rx,
+    )
+    .await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(BackendError::Git {
+            message: format!(
+                "Failed to apply WSL Git setup action: {}",
+                output_stderr(&output)
+            ),
+        })
+    }
+}
+
 async fn execute_project_git_setup_commit<T, F, Fut>(
     workspace_path: &Path,
     project_path: &str,
@@ -904,6 +1406,7 @@ async fn execute_project_git_setup_commit<T, F, Fut>(
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
     persist_operation: F,
 ) -> Result<(T, ProjectGitFlowDetectionDto)>
 where
@@ -919,6 +1422,7 @@ where
         expected_repo_root_path = ?expected_repo_root_path
     );
 
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     let detection = validate_project_git_setup_commit(
         workspace_path,
         project_path,
@@ -926,36 +1430,44 @@ where
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
-    )?;
-
-    if !normalized_actions.is_empty() {
-        let resolved_project_path = resolve_project_path(workspace_path, project_path);
-        fs::create_dir_all(&resolved_project_path)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!(
-                    "Failed to create project directory {}: {}",
-                    resolved_project_path.display(),
-                    error
-                ),
-            })?;
-    }
+        cancel_rx.clone(),
+    )
+    .await?;
 
     let mut rollback_steps = Vec::new();
-    for action in normalized_actions.iter() {
-        apply_git_setup_action(
+    if !normalized_actions.is_empty() {
+        ensure_project_directory_for_add(
             workspace_path,
             project_path,
-            &detection,
-            action,
-            &mut rollback_steps,
-        )?;
+            "project_git_setup",
+            cancel_rx.clone(),
+        )
+        .await?;
+    }
+
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        for action in normalized_actions.iter() {
+            ensure_not_cancelled(cancel_rx.as_ref())?;
+            apply_wsl_git_setup_action(&wsl_path, &detection, action, cancel_rx.clone()).await?;
+        }
+    } else {
+        for action in normalized_actions.iter() {
+            ensure_not_cancelled(cancel_rx.as_ref())?;
+            apply_git_setup_action(
+                workspace_path,
+                project_path,
+                &detection,
+                action,
+                &mut rollback_steps,
+            )?;
+        }
     }
 
     match persist_operation().await {
         Ok(result) => {
             let next_detection =
-                detect_project_git_flow_internal(workspace_path, Some(project_path));
+                detect_project_git_flow_for_add(workspace_path, Some(project_path), cancel_rx)
+                    .await?;
             tracing::info!(
                 action = "git_setup_commit_succeeded",
                 project_path = %project_path,
@@ -1002,6 +1514,7 @@ pub async fn create_project_with_git_setup(
     expected_repo_root_path: Option<&str>,
     expected_setup_state: &str,
     expected_recommended_action_sequence: &[String],
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<metadata::ProjectGitSetupCommitResultDto> {
     let project_path = request.path.clone().ok_or_else(|| {
         BackendError::Validation(
@@ -1015,7 +1528,8 @@ pub async fn create_project_with_git_setup(
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
-        || create_project(workspace_path, metadata_root, request),
+        cancel_rx.clone(),
+        || create_project_with_cancel(workspace_path, metadata_root, request, cancel_rx.clone()),
     )
     .await?;
 
@@ -1046,7 +1560,7 @@ pub async fn update_project_git_flow_with_setup(
     } = input;
 
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = find_project_by_id(&state.project_groups, project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
     let project_path = project.path.clone();
@@ -1058,6 +1572,7 @@ pub async fn update_project_git_flow_with_setup(
         expected_repo_root_path,
         expected_setup_state,
         expected_recommended_action_sequence,
+        None,
         || update_project_git_flow(workspace_path, metadata_root, project_id, git_flow_settings),
     )
     .await?;
@@ -1069,6 +1584,7 @@ pub async fn refresh_project_registry_state(
     workspace_path: &Path,
     metadata_root: &Path,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let state = load_or_create_state(workspace_path, metadata_root).await?;
     let _ = persist_sanitized_state(
         workspace_path,
@@ -1121,6 +1637,45 @@ fn auto_detect_project_git_flow_settings(
     normalized
 }
 
+fn auto_detect_project_git_flow_settings_from_detection(
+    settings: Option<&ProjectGitFlowSettingsDto>,
+    detected: &ProjectGitFlowDetectionDto,
+) -> ProjectGitFlowSettingsDto {
+    let mut normalized = normalize_project_git_flow_settings(settings);
+    if !detected.repo_detected || !detected.has_initial_commit || detected.requires_confirmation {
+        return normalized;
+    }
+
+    if should_auto_update_project_main_branch(&normalized.main_branch) {
+        if let Some(main_branch) = detected
+            .suggested_main_branch
+            .clone()
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            normalized.main_branch = main_branch;
+        }
+    }
+
+    if should_auto_update_project_base_branch(&normalized.base_branch) {
+        if let Some(base_branch) = detected
+            .suggested_base_branch
+            .clone()
+            .or_else(|| detected.suggested_main_branch.clone())
+            .or_else(|| detected.suggested_commit_branch.clone())
+        {
+            if should_apply_auto_detected_base_branch(
+                &normalized.base_branch,
+                &base_branch,
+                detected.suggested_main_branch.as_deref(),
+            ) {
+                normalized.base_branch = base_branch;
+            }
+        }
+    }
+
+    normalized
+}
+
 pub async fn get_project_registry_diagnostics(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -1130,10 +1685,18 @@ pub async fn get_project_registry_diagnostics(
         sanitize_workspace_state(workspace_path, raw_state.clone());
 
     Ok(ProjectRegistryDiagnosticsDto {
+        raw_standalone_projects: raw_state.standalone_projects.clone(),
         raw_group_count: raw_state.project_groups.len(),
-        raw_project_count: count_projects(&raw_state.project_groups),
+        raw_project_count: count_registry_projects(
+            &raw_state.standalone_projects,
+            &raw_state.project_groups,
+        ),
+        sanitized_standalone_projects: sanitized_state.standalone_projects.clone(),
         sanitized_group_count: sanitized_state.project_groups.len(),
-        sanitized_project_count: count_projects(&sanitized_state.project_groups),
+        sanitized_project_count: count_registry_projects(
+            &sanitized_state.standalone_projects,
+            &sanitized_state.project_groups,
+        ),
         raw_project_groups: raw_state.project_groups,
         sanitized_project_groups: sanitized_state.project_groups,
         repair_report,
@@ -1147,6 +1710,7 @@ pub async fn get_bootstrap(
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     Ok(WorkspaceBootstrapDto {
         plan: state.current_plan,
+        standalone_projects: state.standalone_projects,
         project_groups: state.project_groups,
         plan_nodes: state.plan_nodes,
         predicted_branches: state.predicted_branches,
@@ -1161,17 +1725,39 @@ pub async fn list_projects(
     Ok(state.project_groups)
 }
 
+pub async fn get_project_by_id(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+) -> Result<Option<ProjectDto>> {
+    let state = load_or_default_state(workspace_path, metadata_root).await?;
+    Ok(find_project_by_id_in_state(&state, project_id).cloned())
+}
+
 pub async fn list_tasks(
     workspace_path: &Path,
     metadata_root: &Path,
 ) -> Result<WorkspaceTaskCatalogDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
+    let project_count = count_registry_projects(&state.standalone_projects, &state.project_groups);
+    let manual_feature_count = state.manual_features.len();
     let manual_tasks = state
         .manual_features
         .iter()
         .map(manual_feature_to_task_value)
         .collect::<Vec<_>>();
     let Some(plan) = state.current_plan else {
+        if manual_tasks.is_empty() {
+            tracing::warn!(
+                action = "workspace_task_catalog_empty",
+                reason = "no_current_plan",
+                project_count,
+                manual_feature_count,
+                workspace_path = %workspace_path.display(),
+                metadata_root = %metadata_root.display(),
+                "Workspace task catalog is empty because no current plan or manual features were found."
+            );
+        }
         return Ok(WorkspaceTaskCatalogDto {
             tasks: manual_tasks.clone(),
             plans: Vec::new(),
@@ -1232,6 +1818,30 @@ pub async fn list_tasks(
         "empty".to_string()
     };
 
+    if fallback_tasks.is_empty() {
+        let empty_reason = if task_count == 0 && !is_executable_plan {
+            "non_executable_plan_without_tasks"
+        } else if task_count == 0 {
+            "executable_plan_without_tasks"
+        } else {
+            "no_catalog_tasks"
+        };
+        tracing::warn!(
+            action = "workspace_task_catalog_empty",
+            reason = empty_reason,
+            source = %source,
+            plan_id = %plan.id,
+            plan_status = %plan.status,
+            plan_task_count = task_count,
+            manual_feature_count,
+            project_count,
+            is_executable_plan,
+            workspace_path = %workspace_path.display(),
+            metadata_root = %metadata_root.display(),
+            "Workspace task catalog is empty after loading workspace metadata."
+        );
+    }
+
     Ok(WorkspaceTaskCatalogDto {
         tasks: fallback_tasks,
         plans,
@@ -1246,11 +1856,7 @@ pub async fn get_metadata(
 ) -> Result<WorkspaceMetadataDto> {
     let state = load_or_default_state(workspace_path, metadata_root).await?;
     let metadata_path = workspace_state_path(metadata_root);
-    let project_count = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
+    let project_count = count_registry_projects(&state.standalone_projects, &state.project_groups);
 
     Ok(WorkspaceMetadataDto {
         workspace_path: workspace_path.to_string_lossy().to_string(),
@@ -1271,9 +1877,10 @@ pub async fn create_manual_feature_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
-    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
+    let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
     let normalized_project_ids = sanitize_project_id_list(project_ids, &actionable_project_ids);
     let normalized_context_project_ids =
         sanitize_project_id_list(context_project_ids, &read_only_project_ids);
@@ -1365,7 +1972,9 @@ pub async fn finalize_manual_feature(
     description: &str,
     feature_slug: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let standalone_projects = state.standalone_projects.clone();
     let project_groups = state.project_groups.clone();
     let normalized_task_id = task_id.trim();
     let feature_index = state
@@ -1436,6 +2045,7 @@ pub async fn finalize_manual_feature(
     let execution_targets = build_manual_feature_execution_targets(
         &feature.project_ids,
         &normalized_feature_slug,
+        &standalone_projects,
         &project_groups,
     );
     let branch_name = execution_targets
@@ -1492,6 +2102,7 @@ pub async fn revert_manual_feature_to_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let feature_index = state
@@ -1568,6 +2179,7 @@ pub async fn delete_manual_feature_draft(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
     state
@@ -1596,6 +2208,7 @@ pub async fn rename_manual_feature(
     task_id: &str,
     title: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let normalized_title = title.trim();
@@ -1641,6 +2254,7 @@ pub async fn archive_manual_feature(
     reason: Option<&str>,
     merged_at: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
@@ -1691,6 +2305,7 @@ pub async fn restore_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
@@ -1737,6 +2352,7 @@ pub async fn delete_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
     let normalized_task_id = task_id.trim();
@@ -1766,6 +2382,7 @@ pub async fn update_standalone_task_status(
     task_id: &str,
     status: &str,
 ) -> Result<()> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let normalized_status = status.trim();
@@ -1843,6 +2460,7 @@ pub async fn update_manual_feature_merge_workflow(
     task_id: &str,
     merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
 ) -> Result<ManualFeatureDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     let feature = state
@@ -1874,11 +2492,169 @@ pub async fn update_manual_feature_merge_workflow(
         })
 }
 
+async fn ensure_project_directory(project_path: &Path, operation: &str) -> Result<()> {
+    if project_path.exists() {
+        let metadata =
+            fs::metadata(project_path)
+                .await
+                .map_err(|error| BackendError::Filesystem {
+                    message: format!(
+                        "Failed to inspect project directory {} for {}: {}",
+                        project_path.display(),
+                        operation,
+                        error
+                    ),
+                })?;
+
+        if !metadata.is_dir() {
+            return Err(BackendError::FilesystemIsFile {
+                message: format!(
+                    "Project path {} for {} is not a directory",
+                    project_path.display(),
+                    operation
+                ),
+            });
+        }
+
+        return Ok(());
+    }
+
+    fs::create_dir_all(project_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to create project directory {} for {}: {}",
+                project_path.display(),
+                operation,
+                error
+            ),
+        })?;
+
+    Ok(())
+}
+
+async fn ensure_project_directory_for_add(
+    workspace_path: &Path,
+    project_path: &str,
+    operation: &str,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<()> {
+    if let Some(wsl_path) = parse_wsl_unc_path(project_path) {
+        let output = run_wsl_shell(
+            &wsl_path,
+            r#"test -d "$1""#,
+            PROJECT_GIT_PROBE_TIMEOUT,
+            cancel_rx,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(BackendError::FilesystemNotFound {
+            message: format!(
+                "Project path {} for {} was not found.",
+                project_path, operation
+            ),
+        });
+    }
+
+    ensure_project_directory(
+        &resolve_project_path(workspace_path, project_path),
+        operation,
+    )
+    .await
+}
+
+fn normalize_new_repo_folder_name(folder_name: &str) -> Result<String> {
+    let trimmed = folder_name.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "New project folder name must be a single folder name.".to_string(),
+        });
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn ensure_new_repo_parent_path(parent_path: &Path) -> Result<()> {
+    if !parent_path.exists() {
+        return Err(BackendError::FilesystemNotFound {
+            message: format!("Parent folder {} does not exist.", parent_path.display()),
+        });
+    }
+
+    if !parent_path.is_dir() {
+        return Err(BackendError::FilesystemIsFile {
+            message: format!("Parent path {} is not a directory.", parent_path.display()),
+        });
+    }
+
+    if Repository::discover(parent_path)
+        .or_else(|_| Repository::open(parent_path))
+        .is_ok()
+    {
+        return Err(BackendError::Validation(
+            "Choose a parent folder that is not inside an existing Git repository.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_new_repo_target_available(project_path: &Path) -> Result<()> {
+    if project_path.exists() {
+        return Err(BackendError::FilesystemAlreadyExists {
+            message: format!(
+                "New project folder {} already exists.",
+                project_path.display()
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+async fn rollback_created_new_repo<T>(
+    project_path: &Path,
+    original_error: BackendError,
+) -> Result<T> {
+    if !project_path.exists() {
+        return Err(original_error);
+    }
+
+    fs::remove_dir_all(project_path)
+        .await
+        .map_err(|rollback_error| BackendError::Internal {
+            message: format!(
+                "New project creation failed and rollback was not fully applied: {}; rollback error: {}",
+                original_error, rollback_error
+            ),
+        })?;
+
+    Err(original_error)
+}
+
 pub async fn create_project(
     workspace_path: &Path,
     metadata_root: &Path,
     request: CreateProjectRequest,
 ) -> Result<ProjectDto> {
+    create_project_with_cancel(workspace_path, metadata_root, request, None).await
+}
+
+pub async fn create_project_with_cancel(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateProjectRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -1894,29 +2670,36 @@ pub async fn create_project(
         request.group_name.as_deref(),
         &request.name,
     )?;
-    let project = build_project(
+    let project = build_project_for_add(
         &request.name,
         &request.description,
         request.path.as_deref(),
         workspace_path,
         request.git_flow_settings.as_ref(),
-    );
-    ensure_unique_project_name_in_group(
-        &state.project_groups,
+        cancel_rx.clone(),
+    )
+    .await?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    ensure_unique_project_name_in_target(
+        &state,
         request.group_id.as_deref(),
+        request.group_name.as_deref(),
         &project.name,
     )?;
 
     let project_path = resolve_project_path(workspace_path, &project.path);
-    ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
-    fs::create_dir_all(project_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to create project directory: {}", error),
-        })?;
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
+    ensure_project_directory_for_add(
+        workspace_path,
+        &project.path,
+        "create_project",
+        cancel_rx.clone(),
+    )
+    .await?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
 
-    insert_project_into_group(
-        &mut state.project_groups,
+    insert_project_into_registry(
+        &mut state,
         request.group_id.as_deref(),
         request.group_name.as_deref(),
         project.clone(),
@@ -1925,7 +2708,7 @@ pub async fn create_project(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "create_project").await?;
-    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+    let persisted_project = find_project_by_id_in_state(&sanitized_state, &project.id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
@@ -1933,10 +2716,271 @@ pub async fn create_project(
         operation = "create_project",
         project_id = %project.id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(persisted_project)
+}
+
+pub async fn create_new_project_repo(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    create_new_project_repo_with_cancel(workspace_path, metadata_root, request, None).await
+}
+
+pub async fn create_new_project_repo_with_cancel(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    if let Some(wsl_parent) = parse_wsl_unc_path(&request.parent_path) {
+        return create_new_wsl_project_repo(
+            workspace_path,
+            metadata_root,
+            request,
+            wsl_parent,
+            cancel_rx,
+        )
+        .await;
+    }
+
+    let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
+    let parent_path = resolve_project_path(workspace_path, &request.parent_path);
+    let project_path = absolutize_path(&parent_path.join(folder_name));
+    let project_path_string = project_path.to_string_lossy().to_string();
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    ensure_valid_project_group_target(
+        &state.project_groups,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_name_in_target(
+        &state,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
+    ensure_new_repo_parent_path(&parent_path)?;
+    ensure_new_repo_target_available(&project_path)?;
+
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    fs::create_dir_all(&project_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to create repository directory {}: {}",
+                project_path.display(),
+                error
+            ),
+        })?;
+
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+    let setup_result: Result<()> = (|| {
+        let mut opts = RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let repo =
+            Repository::init_opts(&project_path, &opts).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to initialize git repository at {}: {}",
+                    project_path.display(),
+                    error
+                ),
+            })?;
+        create_initial_commit(&repo)?;
+        Ok(())
+    })();
+
+    if let Err(error) = setup_result {
+        return rollback_created_new_repo(&project_path, error).await;
+    }
+
+    let create_request = CreateProjectRequest {
+        name: request.repo_name,
+        description: String::new(),
+        group_id: request.group_id,
+        group_name: request.group_name,
+        path: Some(project_path_string.clone()),
+        git_flow_settings: request.git_flow_settings,
+    };
+
+    match create_project(workspace_path, metadata_root, create_request).await {
+        Ok(project) => {
+            let detection = detect_project_git_flow_for_add(
+                workspace_path,
+                Some(project_path_string.as_str()),
+                cancel_rx,
+            )
+            .await?;
+            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+        }
+        Err(error) => rollback_created_new_repo(&project_path, error).await,
+    }
+}
+
+async fn run_wsl_shell(
+    wsl_path: &WslProjectPath,
+    script: &str,
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    run_wsl_shell_with_args(wsl_path, script, &[], timeout_duration, cancel_rx).await
+}
+
+async fn run_wsl_shell_with_args(
+    wsl_path: &WslProjectPath,
+    script: &str,
+    additional_args: &[String],
+    timeout_duration: Duration,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg("sh")
+        .arg("-lc")
+        .arg(script)
+        .arg("macro-wsl-command")
+        .arg(&wsl_path.linux_path)
+        .args(additional_args);
+    wait_for_wsl_command(command, timeout_duration, cancel_rx).await
+}
+
+async fn create_new_wsl_project_repo(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+    parent_wsl_path: WslProjectPath,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
+    let project_linux_path = format!(
+        "{}/{}",
+        parent_wsl_path.linux_path.trim_end_matches('/'),
+        folder_name
+    );
+    let project_path_string = wsl_unc_path(&parent_wsl_path.distro, &project_linux_path);
+    let project_wsl_path = WslProjectPath {
+        distro: parent_wsl_path.distro.clone(),
+        linux_path: project_linux_path,
+        original_path: project_path_string.clone(),
+        unc_path: project_path_string.clone(),
+    };
+
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    ensure_valid_project_group_target(
+        &state.project_groups,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_name_in_target(
+        &state,
+        request.group_id.as_deref(),
+        request.group_name.as_deref(),
+        &request.repo_name,
+    )?;
+    ensure_unique_project_path_in_state(&state, workspace_path, Path::new(&project_path_string))?;
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+
+    let create_script = r#"set -e
+parent="$1"
+project="$parent"
+if [ -e "$project" ]; then
+  if [ "$(find "$project" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
+    echo "target exists and is not empty" >&2
+    exit 17
+  fi
+else
+  mkdir -p "$project"
+fi
+git -C "$project" init -b main
+git -C "$project" config user.name >/dev/null 2>&1 || git -C "$project" config user.name Macro
+git -C "$project" config user.email >/dev/null 2>&1 || git -C "$project" config user.email macro@local
+git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
+"#;
+    let output = match run_wsl_shell(
+        &project_wsl_path,
+        create_script,
+        Duration::from_secs(12),
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = run_wsl_shell(
+                &project_wsl_path,
+                r#"rm -rf "$1/.git""#,
+                PROJECT_GIT_PROBE_TIMEOUT,
+                None,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if !output.status.success() {
+        let _ = run_wsl_shell(
+            &project_wsl_path,
+            r#"rm -rf "$1/.git""#,
+            PROJECT_GIT_PROBE_TIMEOUT,
+            None,
+        )
+        .await;
+        return Err(BackendError::Git {
+            message: format!(
+                "Failed to initialize WSL git repository: {}",
+                output_stderr(&output)
+            ),
+        });
+    }
+    ensure_not_cancelled(cancel_rx.as_ref())?;
+
+    let create_request = CreateProjectRequest {
+        name: request.repo_name,
+        description: String::new(),
+        group_id: request.group_id,
+        group_name: request.group_name,
+        path: Some(project_path_string.clone()),
+        git_flow_settings: request.git_flow_settings,
+    };
+
+    match create_project_with_cancel(
+        workspace_path,
+        metadata_root,
+        create_request,
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(project) => {
+            let detection = detect_project_git_flow_for_add(
+                workspace_path,
+                Some(project_path_string.as_str()),
+                cancel_rx,
+            )
+            .await?;
+            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+        }
+        Err(error) => {
+            let _ = run_wsl_shell(
+                &project_wsl_path,
+                r#"rm -rf "$1/.git""#,
+                PROJECT_GIT_PROBE_TIMEOUT,
+                None,
+            )
+            .await;
+            Err(error)
+        }
+    }
 }
 
 pub async fn import_git_repo(
@@ -1944,6 +2988,7 @@ pub async fn import_git_repo(
     metadata_root: &Path,
     request: ImportGitRepoRequest,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
@@ -1969,24 +3014,19 @@ pub async fn import_git_repo(
         workspace_path,
         request.git_flow_settings.as_ref(),
     );
-    ensure_unique_project_name_in_group(
-        &state.project_groups,
+    ensure_unique_project_name_in_target(
+        &state,
         request.group_id.as_deref(),
+        request.group_name.as_deref(),
         &project.name,
     )?;
 
     let project_path = resolve_project_path(workspace_path, &project.path);
-    ensure_unique_project_path(&state.project_groups, workspace_path, &project_path)?;
-    if !project_path.exists() {
-        fs::create_dir_all(&project_path)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to create imported project directory: {}", error),
-            })?;
-    }
+    ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
+    ensure_project_directory(&project_path, "import_git_repo").await?;
 
-    insert_project_into_group(
-        &mut state.project_groups,
+    insert_project_into_registry(
+        &mut state,
         request.group_id.as_deref(),
         request.group_name.as_deref(),
         project.clone(),
@@ -1995,7 +3035,7 @@ pub async fn import_git_repo(
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "import_git_repo").await?;
-    let persisted_project = find_project_by_id(&sanitized_state.project_groups, &project.id)
+    let persisted_project = find_project_by_id_in_state(&sanitized_state, &project.id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project.id)))?;
     tracing::info!(
@@ -2003,7 +3043,7 @@ pub async fn import_git_repo(
         operation = "import_git_repo",
         project_id = %project.id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(persisted_project)
@@ -2015,6 +3055,7 @@ pub async fn rename_project_group(
     group_id: &str,
     name: &str,
 ) -> Result<ProjectGroupDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err(BackendError::Validation(
@@ -2054,10 +3095,125 @@ pub async fn rename_project_group(
         operation = "rename_project_group",
         group_id = %group_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_group)
+}
+
+pub async fn create_project_group(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    name: &str,
+    project_ids: &[String],
+) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err(BackendError::Validation(
+            "Group name cannot be empty".to_string(),
+        ));
+    }
+
+    let mut unique_project_ids = Vec::new();
+    let mut seen = HashSet::new();
+    for project_id in project_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        if seen.insert(project_id.to_string()) {
+            unique_project_ids.push(project_id.to_string());
+        }
+    }
+
+    if unique_project_ids.len() < 2 {
+        return Err(BackendError::Validation(
+            "A group requires at least two projects.".to_string(),
+        ));
+    }
+
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let mut grouped_projects = Vec::with_capacity(unique_project_ids.len());
+    for project_id in &unique_project_ids {
+        let project = take_project_from_registry(&mut state, project_id).ok_or_else(|| {
+            BackendError::Validation(format!("Unknown project id: {}", project_id))
+        })?;
+        grouped_projects.push(project);
+    }
+
+    state.project_groups.push(ProjectGroupDto {
+        id: format!("group-{}", Utc::now().timestamp_millis()),
+        name: trimmed_name.to_string(),
+        is_open: true,
+        projects: grouped_projects,
+    });
+
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "create_project_group")
+            .await?;
+    Ok(sanitized_state.project_groups)
+}
+
+pub async fn move_project_to_group(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+    group_id: Option<&str>,
+) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let current_group_id = find_group_id_for_project(&state, project_id);
+    let target_group_id = group_id.map(str::trim).filter(|value| !value.is_empty());
+
+    if current_group_id.as_deref() == target_group_id {
+        let (sanitized_state, _) = persist_sanitized_state(
+            workspace_path,
+            metadata_root,
+            state,
+            "move_project_to_group",
+        )
+        .await?;
+        return Ok(sanitized_state.project_groups);
+    }
+
+    if let Some(target_group_id) = target_group_id {
+        if !state
+            .project_groups
+            .iter()
+            .any(|group| group.id == target_group_id)
+        {
+            return Err(BackendError::Validation(format!(
+                "Unknown project group id: {}",
+                target_group_id
+            )));
+        }
+    }
+
+    let project = take_project_from_registry(&mut state, project_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+
+    if let Some(target_group_id) = target_group_id {
+        let group = state
+            .project_groups
+            .iter_mut()
+            .find(|group| group.id == target_group_id)
+            .ok_or_else(|| {
+                BackendError::Validation(format!("Unknown project group id: {}", target_group_id))
+            })?;
+        group.projects.push(project);
+    } else {
+        state.standalone_projects.push(project);
+    }
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "move_project_to_group",
+    )
+    .await?;
+    Ok(sanitized_state.project_groups)
 }
 
 pub async fn rename_project(
@@ -2066,6 +3222,7 @@ pub async fn rename_project(
     project_id: &str,
     name: &str,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err(BackendError::Validation(
@@ -2082,16 +3239,9 @@ pub async fn rename_project(
     );
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.name = trimmed_name.to_string();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.name = trimmed_name.to_string();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2100,9 +3250,14 @@ pub async fn rename_project(
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "rename_project").await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2111,7 +3266,7 @@ pub async fn rename_project(
         operation = "rename_project",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_project)
@@ -2123,6 +3278,7 @@ pub async fn update_project_git_flow(
     project_id: &str,
     git_flow_settings: &ProjectGitFlowSettingsDto,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_git_flow_settings = normalize_project_git_flow_settings(Some(git_flow_settings));
     validate_project_git_flow_settings_strict(&normalized_git_flow_settings)?;
@@ -2133,16 +3289,9 @@ pub async fn update_project_git_flow(
     );
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.git_flow_settings = normalized_git_flow_settings.clone();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.git_flow_settings = normalized_git_flow_settings.clone();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2156,9 +3305,14 @@ pub async fn update_project_git_flow(
     )
     .await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2167,7 +3321,7 @@ pub async fn update_project_git_flow(
         operation = "update_project_git_flow",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(updated_project)
@@ -2279,15 +3433,11 @@ pub async fn preview_project_access_change(
     live_terminal_project_ids: &HashSet<String>,
 ) -> Result<ProjectAccessChangePreviewDto> {
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = state
-        .project_groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
 
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
     let mut blocking_reasons = Vec::new();
     let mut plan_labels = HashSet::new();
     let mut manual_feature_labels = HashSet::new();
@@ -2533,6 +3683,7 @@ pub async fn update_project_access(
     confirmed_migration: bool,
     access_preview: Option<&ProjectAccessChangePreviewDto>,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     tracing::info!(
         action = "project_access_update_requested",
         project_id = %project_id,
@@ -2563,7 +3714,7 @@ pub async fn update_project_access(
                 requires_confirmation = preview.requires_confirmation
             );
             return Err(BackendError::Validation(format!(
-                "This subproject cannot be switched to read-only right now: {}.",
+                "This project cannot be switched to read-only right now: {}.",
                 blocking_reasons_message(&preview.blocking_reasons)
             )));
         }
@@ -2584,28 +3735,21 @@ pub async fn update_project_access(
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            if !user_read_only && project.git_setup_state != PROJECT_GIT_SETUP_READY {
-                tracing::warn!(
-                    action = "project_access_update_rejected",
-                    project_id = %project_id,
-                    user_read_only = user_read_only,
-                    project_git_setup_state = %project.git_setup_state,
-                    reason = "git_not_ready"
-                );
-                return Err(BackendError::Validation(
-                    "Git must be ready before this subproject can become editable.".to_string(),
-                ));
-            }
-            project.user_read_only = user_read_only;
-            updated_project = Some(project.clone());
-            break;
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        if !user_read_only && project.git_setup_state != PROJECT_GIT_SETUP_READY {
+            tracing::warn!(
+                action = "project_access_update_rejected",
+                project_id = %project_id,
+                user_read_only = user_read_only,
+                project_git_setup_state = %project.git_setup_state,
+                reason = "git_not_ready"
+            );
+            return Err(BackendError::Validation(
+                "Git must be ready before this project can become editable.".to_string(),
+            ));
         }
+        project.user_read_only = user_read_only;
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2619,9 +3763,14 @@ pub async fn update_project_access(
     )
     .await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2643,6 +3792,7 @@ pub async fn archive_project_group(
     metadata_root: &Path,
     group_id: &str,
 ) -> Result<ProjectGroupDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let group = state
         .project_groups
@@ -2679,19 +3829,13 @@ pub async fn archive_project(
     metadata_root: &Path,
     project_id: &str,
 ) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let mut updated_project: Option<ProjectDto> = None;
 
-    for group in state.project_groups.iter_mut() {
-        if let Some(project) = group
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        {
-            project.status = "archived".to_string();
-            updated_project = Some(project.clone());
-            break;
-        }
+    if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        project.status = "archived".to_string();
+        updated_project = Some(project.clone());
     }
 
     updated_project
@@ -2700,9 +3844,14 @@ pub async fn archive_project(
     let (sanitized_state, _) =
         persist_sanitized_state(workspace_path, metadata_root, state, "archive_project").await?;
     let updated_project = sanitized_state
-        .project_groups
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            sanitized_state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
@@ -2714,39 +3863,24 @@ pub async fn remove_project_group(
     metadata_root: &Path,
     group_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
         operation = "remove_project_group",
         group_id = %group_id,
         before_group_count = state.project_groups.len(),
-        before_project_count = count_projects(&state.project_groups)
+        before_project_count = count_registry_projects(&state.standalone_projects, &state.project_groups)
     );
-    let removed_project_ids = state
+    let group_index = state
         .project_groups
         .iter()
-        .find(|group| group.id == group_id)
-        .map(|group| {
-            group
-                .projects
-                .iter()
-                .map(|project| project.id.clone())
-                .collect::<Vec<_>>()
-        })
+        .position(|group| group.id == group_id)
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown project group id: {}", group_id))
         })?;
-
-    state.project_groups.retain(|group| group.id != group_id);
-
-    if let Some(plan) = state.current_plan.as_mut() {
-        plan.project_ids.retain(|id| {
-            !removed_project_ids
-                .iter()
-                .any(|project_id| project_id == id)
-        });
-        plan.updated_at = Utc::now().to_rfc3339();
-    }
+    let dissolved_group = state.project_groups.remove(group_index);
+    state.standalone_projects.extend(dissolved_group.projects);
 
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "remove_project_group")
@@ -2756,7 +3890,7 @@ pub async fn remove_project_group(
         operation = "remove_project_group",
         group_id = %group_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(sanitized_state.project_groups)
@@ -2767,35 +3901,18 @@ pub async fn close_project(
     metadata_root: &Path,
     project_id: &str,
 ) -> Result<Vec<ProjectGroupDto>> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
         action = "project_registry_action_started",
         operation = "remove_project",
         project_id = %project_id,
         before_group_count = state.project_groups.len(),
-        before_project_count = count_projects(&state.project_groups)
+        before_project_count = count_registry_projects(&state.standalone_projects, &state.project_groups)
     );
-    let initial_project_count: usize = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
+    let removed_project = take_project_from_registry(&mut state, project_id);
 
-    for group in state.project_groups.iter_mut() {
-        group.projects.retain(|project| project.id != project_id);
-    }
-
-    state
-        .project_groups
-        .retain(|group| !group.projects.is_empty());
-
-    let remaining_project_count: usize = state
-        .project_groups
-        .iter()
-        .map(|group| group.projects.len())
-        .sum();
-
-    if initial_project_count == remaining_project_count {
+    if removed_project.is_none() {
         return Err(BackendError::Validation(format!(
             "Unknown project id: {}",
             project_id
@@ -2814,7 +3931,7 @@ pub async fn close_project(
         operation = "remove_project",
         project_id = %project_id,
         after_group_count = sanitized_state.project_groups.len(),
-        after_project_count = count_projects(&sanitized_state.project_groups),
+        after_project_count = count_registry_projects(&sanitized_state.standalone_projects, &sanitized_state.project_groups),
         repair_applied = repair_report.has_repairs()
     );
     Ok(sanitized_state.project_groups)
@@ -2842,11 +3959,7 @@ pub async fn debug_reset_project(
     }
 
     let state = load_or_create_state(workspace_path, metadata_root).await?;
-    let project = state
-        .project_groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .find(|project| project.id == project_id)
+    let project = find_project_by_id_in_state(&state, project_id)
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
     let project_path = resolve_project_path(workspace_path, &project.path);
@@ -2885,27 +3998,45 @@ fn merge_task_lists(mut legacy_tasks: Vec<Value>, manual_tasks: Vec<Value>) -> V
     merged
 }
 
-fn collect_valid_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_valid_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .map(|project| project.id.clone())
         .collect()
 }
 
-fn collect_actionable_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_actionable_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .filter(|project| !project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
 }
 
-fn collect_read_only_project_ids(groups: &[ProjectGroupDto]) -> HashSet<String> {
-    groups
+fn collect_read_only_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
+    state
+        .standalone_projects
         .iter()
-        .flat_map(|group| group.projects.iter())
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .filter(|project| project_is_read_only(project))
         .map(|project| project.id.clone())
         .collect()
@@ -3025,12 +4156,16 @@ fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
 fn build_manual_feature_execution_targets(
     project_ids: &[String],
     feature_slug: &str,
+    standalone_projects: &[ProjectDto],
     project_groups: &[ProjectGroupDto],
 ) -> Vec<WorkspaceTaskExecutionTargetDto> {
     project_ids
         .iter()
         .map(|project_id| {
-            let project = find_project_by_id(project_groups, project_id);
+            let project = standalone_projects
+                .iter()
+                .find(|project| project.id == *project_id)
+                .or_else(|| find_project_by_id(project_groups, project_id));
             let branch_name = render_standalone_feature_branch_name(
                 project.map(|project| &project.git_flow_settings),
                 feature_slug,
@@ -3191,6 +4326,10 @@ fn workspace_state_path(metadata_root: &Path) -> PathBuf {
     metadata_root.join(WORKSPACE_STATE_FILE)
 }
 
+fn workspace_state_backup_path(metadata_root: &Path) -> PathBuf {
+    metadata_root.join(WORKSPACE_STATE_BACKUP_FILE)
+}
+
 fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
     metadata_root
         .join(LEGACY_WORKSPACE_META_DIR)
@@ -3200,42 +4339,524 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
+    let backup_path = workspace_state_backup_path(metadata_root);
     let path = if primary_path.exists() {
-        primary_path
+        primary_path.clone()
     } else if legacy_path.exists() {
         legacy_path
+    } else if backup_path.exists() {
+        backup_path.clone()
     } else {
         return Ok(None);
     };
 
-    let content = std::fs::read_to_string(&path).map_err(|error| BackendError::Filesystem {
-        message: format!("Failed to read workspace state: {}", error),
-    })?;
+    let read_and_parse = |candidate: &Path| -> Result<WorkspaceState> {
+        let content =
+            std::fs::read_to_string(candidate).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to read workspace state {}: {}",
+                    candidate.display(),
+                    error
+                ),
+            })?;
+        serde_json::from_str(&content).map_err(|error| {
+            BackendError::Validation(format!(
+                "Invalid workspace state format in {}: {}",
+                candidate.display(),
+                error
+            ))
+        })
+    };
 
-    let state: WorkspaceState = serde_json::from_str(&content).map_err(|error| {
-        BackendError::Validation(format!("Invalid workspace state format: {}", error))
-    })?;
+    match read_and_parse(&path) {
+        Ok(state) => {
+            if path == backup_path && !primary_path.exists() {
+                persist_state_sync(metadata_root, &state)?;
+                tracing::warn!(
+                    action = "workspace_state_recovered_from_backup",
+                    backup_path = %backup_path.display(),
+                    primary_path = %primary_path.display(),
+                    reason = "primary_missing"
+                );
+            }
+            Ok(Some(state))
+        }
+        Err(primary_error) if path == primary_path && backup_path.exists() => {
+            match read_and_parse(&backup_path) {
+                Ok(state) => {
+                    let corrupt_path = metadata_root.join(format!(
+                        "{}.corrupt-{}",
+                        WORKSPACE_STATE_FILE,
+                        uuid::Uuid::new_v4().simple()
+                    ));
+                    std::fs::rename(&primary_path, &corrupt_path).map_err(|error| {
+                        BackendError::Filesystem {
+                            message: format!(
+                                "Failed to preserve invalid workspace state {} before recovery: {}",
+                                primary_path.display(),
+                                error
+                            ),
+                        }
+                    })?;
+                    persist_state_sync(metadata_root, &state)?;
+                    tracing::warn!(
+                        action = "workspace_state_recovered_from_backup",
+                        backup_path = %backup_path.display(),
+                        primary_path = %primary_path.display(),
+                        corrupt_path = %corrupt_path.display(),
+                        reason = "primary_invalid",
+                        primary_error = %primary_error
+                    );
+                    Ok(Some(state))
+                }
+                Err(backup_error) => Err(BackendError::Validation(format!(
+                    "Workspace state and backup are both invalid. Primary error: {}; backup error: {}",
+                    primary_error, backup_error
+                ))),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
 
-    Ok(Some(state))
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ManualFeatureMetadataSnapshot {
+    id: String,
+    conversation_id: Option<String>,
+    draft: bool,
+    title: String,
+    description: String,
+    status: String,
+    feature_slug: Option<String>,
+    branch_name: Option<String>,
+    archived_at: Option<String>,
+    archive_reason: Option<String>,
+    merged_at: Option<String>,
+    base_branch: String,
+    project_ids: Vec<String>,
+    context_project_ids: Vec<String>,
+    execution_targets: Vec<WorkspaceTaskExecutionTargetDto>,
+    merge_workflow: Option<ManualFeatureMergeWorkflowDto>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+fn normalize_manual_feature_timestamp(value: Option<String>, fallback: &str) -> String {
+    value
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn manual_feature_snapshot_to_dto(
+    snapshot: ManualFeatureMetadataSnapshot,
+) -> Option<ManualFeatureDto> {
+    let id = snapshot.id.trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+
+    let fallback_timestamp = Utc::now().to_rfc3339();
+    let updated_at = normalize_manual_feature_timestamp(snapshot.updated_at, &fallback_timestamp);
+    let created_at = normalize_manual_feature_timestamp(snapshot.created_at, &updated_at);
+    let base_branch = snapshot.base_branch.trim().to_string();
+
+    Some(ManualFeatureDto {
+        id: id.clone(),
+        conversation_id: snapshot
+            .conversation_id
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default(),
+        draft: snapshot.draft,
+        title: if snapshot.title.trim().is_empty() {
+            id.clone()
+        } else {
+            snapshot.title.trim().to_string()
+        },
+        description: snapshot.description,
+        status: if snapshot.status.trim().is_empty() {
+            "Pending".to_string()
+        } else {
+            snapshot.status.trim().to_string()
+        },
+        feature_slug: snapshot
+            .feature_slug
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        branch_name: snapshot
+            .branch_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        archived_at: snapshot.archived_at,
+        archive_reason: snapshot.archive_reason,
+        merged_at: snapshot.merged_at,
+        base_branch: if base_branch.is_empty() {
+            "main".to_string()
+        } else {
+            base_branch
+        },
+        project_ids: snapshot.project_ids,
+        context_project_ids: snapshot.context_project_ids,
+        execution_targets: snapshot.execution_targets,
+        merge_workflow: snapshot.merge_workflow,
+        created_at,
+        updated_at,
+    })
+}
+
+fn load_manual_features_from_metadata_root_sync(metadata_root: &Path) -> Vec<ManualFeatureDto> {
+    let manual_features_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR);
+    let Ok(entries) = std::fs::read_dir(&manual_features_root) else {
+        return Vec::new();
+    };
+
+    let mut features = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let metadata_file = entry.path().join(MANUAL_FEATURE_METADATA_FILE);
+        let Ok(content) = std::fs::read_to_string(&metadata_file) else {
+            continue;
+        };
+        let snapshot = match serde_json::from_str::<ManualFeatureMetadataSnapshot>(&content) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(
+                    action = "manual_feature_metadata_snapshot_ignored",
+                    path = %metadata_file.display(),
+                    error = %error,
+                    "Ignored an invalid manual feature metadata snapshot while loading @macro."
+                );
+                continue;
+            }
+        };
+        if let Some(feature) = manual_feature_snapshot_to_dto(snapshot) {
+            features.push(feature);
+        }
+    }
+
+    features.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    features
+}
+
+fn merge_manual_feature_snapshots_from_metadata_root(
+    state: &mut WorkspaceState,
+    metadata_root: &Path,
+) -> usize {
+    let mut known_ids = state
+        .manual_features
+        .iter()
+        .map(|feature| feature.id.clone())
+        .collect::<HashSet<_>>();
+    let recovered_features = load_manual_features_from_metadata_root_sync(metadata_root);
+    let mut added = 0;
+
+    for feature in recovered_features {
+        if known_ids.insert(feature.id.clone()) {
+            state.manual_features.push(feature);
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        state
+            .manual_features
+            .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        tracing::info!(
+            action = "manual_feature_metadata_snapshots_loaded",
+            added,
+            metadata_root = %metadata_root.display(),
+            "Loaded manual feature snapshots directly from @macro metadata."
+        );
+    }
+
+    added
+}
+
+fn collect_project_ids_from_json_value(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "projectId",
+                "project_id",
+                "expectedProjectIds",
+                "projectIds",
+                "project_ids",
+                "availableProjectIds",
+            ] {
+                if let Some(nested) = map.get(key) {
+                    collect_project_ids_from_json_value(nested, output);
+                }
+            }
+            if let Some(replicas) = map.get("replicas") {
+                collect_project_ids_from_json_value(replicas, output);
+            }
+            if let Some(participants) = map.get("participants") {
+                collect_project_ids_from_json_value(participants, output);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_project_ids_from_json_value(item, output);
+            }
+        }
+        Value::String(value) => {
+            let candidate = value.trim();
+            if candidate.starts_with("project-") {
+                output.push(candidate.to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_project_ids_from_json_file(path: &Path, output: &mut Vec<String>) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return;
+    };
+    collect_project_ids_from_json_value(&value, output);
+}
+
+fn infer_project_id_from_macro_metadata_root_sync(metadata_root: &Path) -> Option<String> {
+    let mut project_ids = Vec::new();
+
+    let manual_features_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR);
+    if let Ok(entries) = std::fs::read_dir(&manual_features_root) {
+        for entry in entries.flatten() {
+            let metadata_file = entry.path().join(MANUAL_FEATURE_METADATA_FILE);
+            collect_project_ids_from_json_file(&metadata_file, &mut project_ids);
+        }
+    }
+
+    let branches_root = metadata_root.join(MACRO_BRANCHES_METADATA_DIR);
+    if let Ok(branches) = std::fs::read_dir(&branches_root) {
+        for branch in branches.flatten() {
+            let plans_root = branch.path().join("plans");
+            collect_project_ids_from_json_file(&plans_root.join("index.json"), &mut project_ids);
+            let Ok(plans) = std::fs::read_dir(&plans_root) else {
+                continue;
+            };
+            for plan in plans.flatten() {
+                let plan_path = plan.path();
+                if !plan_path.is_dir() {
+                    continue;
+                }
+                collect_project_ids_from_json_file(
+                    &plan_path.join("manifest.json"),
+                    &mut project_ids,
+                );
+                collect_project_ids_from_json_file(&plan_path.join("plan.json"), &mut project_ids);
+            }
+        }
+    }
+
+    project_ids
+        .into_iter()
+        .map(|project_id| project_id.trim().to_string())
+        .find(|project_id| !project_id.is_empty())
+}
+
+fn fallback_recovered_project_id(workspace_path: &Path) -> String {
+    let slug = workspace_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(slugify_mount_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "project".to_string());
+    format!("project-{slug}-recovered")
+}
+
+fn build_recovered_standalone_project_from_workspace_path(
+    workspace_path: &Path,
+    metadata_root: &Path,
+) -> Option<ProjectDto> {
+    if !workspace_path.join(".git").exists() {
+        return None;
+    }
+    let project_path = absolutize_path(workspace_path);
+    let project_name = project_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Recovered project")
+        .to_string();
+    let project_id = infer_project_id_from_macro_metadata_root_sync(metadata_root)
+        .unwrap_or_else(|| fallback_recovered_project_id(&project_path));
+    let now = Utc::now().to_rfc3339();
+
+    Some(ProjectDto {
+        id: project_id.clone(),
+        name: project_name.clone(),
+        mount_name: derive_project_mount_name(
+            project_path.to_string_lossy().as_ref(),
+            &project_name,
+            &project_id,
+        ),
+        path: project_path.to_string_lossy().to_string(),
+        git_flow_settings: ProjectGitFlowSettingsDto::default(),
+        created_at: now,
+        status: "active".to_string(),
+        user_read_only: false,
+        git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+        is_read_only: false,
+        read_only_reason: None,
+        path_kind: "windows".to_string(),
+        wsl_distro: None,
+        wsl_linux_path: None,
+        metadata: ProjectMetadataDto {
+            description: String::new(),
+            tags: Vec::new(),
+            team_members: Vec::new(),
+            api_contracts: Vec::new(),
+            dependencies: Vec::new(),
+        },
+    })
+}
+
+fn recover_physical_workspace_project_if_missing(
+    state: &mut WorkspaceState,
+    workspace_path: &Path,
+    metadata_root: &Path,
+) -> bool {
+    if count_registry_projects(&state.standalone_projects, &state.project_groups) > 0 {
+        return false;
+    }
+    let Some(project) =
+        build_recovered_standalone_project_from_workspace_path(workspace_path, metadata_root)
+    else {
+        return false;
+    };
+    tracing::info!(
+        action = "physical_workspace_project_recovered",
+        project_id = %project.id,
+        project_path = %project.path,
+        metadata_root = %metadata_root.display(),
+        "Recovered the selected physical Git repository as a standalone project at runtime."
+    );
+    state.standalone_projects.push(project);
+    true
 }
 
 fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
-        message: format!("Failed to create workspace metadata directory: {}", error),
+        message: format!(
+            "Failed to create workspace metadata directory {}: {}",
+            metadata_root.display(),
+            error
+        ),
     })?;
 
+    let durable_state = strip_workspace_project_locations(state.clone());
     let serialized =
-        serde_json::to_string_pretty(state).map_err(|error| BackendError::Internal {
+        serde_json::to_string_pretty(&durable_state).map_err(|error| BackendError::Internal {
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
 
-    std::fs::write(workspace_state_path(metadata_root), serialized).map_err(|error| {
-        BackendError::Filesystem {
-            message: format!("Failed to write workspace state: {}", error),
-        }
-    })?;
+    write_workspace_state_durably_sync(metadata_root, serialized.as_bytes())?;
 
     Ok(())
+}
+
+fn write_workspace_state_durably_sync(metadata_root: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!(
+            "Failed to create workspace metadata directory {}: {}",
+            metadata_root.display(),
+            error
+        ),
+    })?;
+
+    let primary_path = workspace_state_path(metadata_root);
+    let backup_path = workspace_state_backup_path(metadata_root);
+    let temp_path = metadata_root.join(format!(
+        ".{}.macro-tmp-{}",
+        WORKSPACE_STATE_FILE,
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    let write_result = (|| -> Result<()> {
+        let mut temp_file =
+            std::fs::File::create(&temp_path).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to create temporary workspace state {}: {}",
+                    temp_path.display(),
+                    error
+                ),
+            })?;
+        temp_file
+            .write_all(bytes)
+            .and_then(|_| temp_file.flush())
+            .and_then(|_| temp_file.sync_all())
+            .map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to write temporary workspace state {}: {}",
+                    temp_path.display(),
+                    error
+                ),
+            })?;
+
+        if primary_path.exists() {
+            std::fs::copy(&primary_path, &backup_path).map_err(|error| {
+                BackendError::Filesystem {
+                    message: format!(
+                        "Failed to back up workspace state {} to {}: {}",
+                        primary_path.display(),
+                        backup_path.display(),
+                        error
+                    ),
+                }
+            })?;
+            if let Ok(backup_file) = std::fs::File::open(&backup_path) {
+                let _ = backup_file.sync_all();
+            }
+        }
+
+        #[cfg(windows)]
+        if primary_path.exists() {
+            std::fs::remove_file(&primary_path).map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to prepare workspace state replacement {}: {}",
+                    primary_path.display(),
+                    error
+                ),
+            })?;
+        }
+
+        if let Err(error) = std::fs::rename(&temp_path, &primary_path) {
+            if !primary_path.exists() && backup_path.exists() {
+                let _ = std::fs::copy(&backup_path, &primary_path);
+            }
+            return Err(BackendError::Filesystem {
+                message: format!(
+                    "Failed to replace workspace state {}: {}",
+                    primary_path.display(),
+                    error
+                ),
+            });
+        }
+
+        #[cfg(unix)]
+        if let Ok(directory) = std::fs::File::open(metadata_root) {
+            let _ = directory.sync_all();
+        }
+
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
@@ -3243,12 +4864,25 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
         return Ok(None);
     };
 
+    let raw_state = state.clone();
     let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
-    if repair_report.has_repairs() {
-        persist_state_sync(metadata_root, &sanitized_state)?;
+    let mut loaded_state = if repair_report.has_destructive_repairs() {
+        raw_state
+    } else {
+        if repair_report.has_repairs() {
+            persist_state_sync(metadata_root, &sanitized_state)?;
+        }
+        sanitized_state
+    };
+
+    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
+
+    if repair_report.has_destructive_repairs() {
+        return Ok(Some(loaded_state));
     }
 
-    Ok(Some(sanitized_state))
+    Ok(Some(loaded_state))
 }
 
 fn metadata_statuses(repo: &Repository) -> Result<(bool, bool)> {
@@ -3274,15 +4908,14 @@ fn pull_macro_branch_best_effort(
         return (false, false, None);
     }
 
-    let output = Command::new("git")
-        .current_dir(metadata_root)
-        .args([
-            "pull",
-            "--no-rebase",
-            DEFAULT_REMOTE_NAME,
-            MACRO_BRANCH_NAME,
-        ])
-        .output();
+    let mut command = background_command("git");
+    command.current_dir(metadata_root).args([
+        "pull",
+        "--no-rebase",
+        DEFAULT_REMOTE_NAME,
+        MACRO_BRANCH_NAME,
+    ]);
+    let output = command.output();
 
     match output {
         Ok(output) => {
@@ -3323,7 +4956,8 @@ fn try_read_workspace_state_from_tree(
 }
 
 fn is_workspace_state_exploitable(state: &WorkspaceState) -> bool {
-    !state.project_groups.is_empty()
+    !state.standalone_projects.is_empty()
+        || !state.project_groups.is_empty()
         || state.current_plan.is_some()
         || !state.plan_nodes.is_empty()
         || !state.predicted_branches.is_empty()
@@ -3473,15 +5107,447 @@ fn reconstruct_workspace_state_from_hints(
         })
         .collect::<Vec<_>>();
 
-    WorkspaceState {
+    let mut state = WorkspaceState {
         version: WorkspaceState::default().version,
+        standalone_projects: Vec::new(),
         project_groups,
         current_plan: None,
         plan_nodes: Vec::new(),
         predicted_branches: Vec::new(),
         manual_features: Vec::new(),
         reserved_standalone_feature_slugs: Vec::new(),
+    };
+    collapse_singleton_project_groups(&mut state);
+    state
+}
+
+fn hint_project_id_is_recoverable(project_id: &str) -> bool {
+    let trimmed = project_id.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("session-project-")
+}
+
+fn project_macro_metadata_root_is_usable(project_path: &Path) -> bool {
+    if let Ok(repo) = Repository::open(project_path) {
+        if crate::git::repair_existing_macro_metadata_worktree(&repo)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return true;
+        }
     }
+    if crate::git::find_existing_macro_metadata_worktree_root(project_path).is_some() {
+        return true;
+    }
+
+    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
+    legacy_root.exists() && Repository::open(legacy_root).is_ok()
+}
+
+fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> {
+    if let Ok(repo) = Repository::open(project_path) {
+        if let Some(result) = crate::git::repair_existing_macro_metadata_worktree(&repo)
+            .ok()
+            .flatten()
+        {
+            return Some(result.worktree_path);
+        }
+    }
+    if let Some(worktree_path) =
+        crate::git::find_existing_macro_metadata_worktree_root(project_path)
+    {
+        return Some(worktree_path);
+    }
+
+    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
+    if legacy_root.exists() && Repository::open(&legacy_root).is_ok() {
+        return Some(legacy_root);
+    }
+
+    None
+}
+
+fn collect_project_registry_parent_dirs(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for project in state.standalone_projects.iter().chain(
+        state
+            .project_groups
+            .iter()
+            .flat_map(|group| group.projects.iter()),
+    ) {
+        let resolved_path = resolve_project_path(workspace_path, &project.path);
+        let Some(parent) = resolved_path.parent() else {
+            continue;
+        };
+        if !parent.is_dir() {
+            continue;
+        }
+        let key = normalized_path_key(parent);
+        if !key.is_empty() && seen.insert(key) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn collect_known_project_path_keys(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+) -> HashSet<String> {
+    state
+        .standalone_projects
+        .iter()
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .filter_map(|project| {
+            let key = normalized_path_key(&resolve_project_path(workspace_path, &project.path));
+            if key.is_empty() {
+                None
+            } else {
+                Some(key)
+            }
+        })
+        .collect()
+}
+
+fn push_project_ids_from_json_value(value: &Value, ids: &mut Vec<String>) {
+    if let Some(project_id) = value.get("projectId").and_then(Value::as_str) {
+        ids.push(project_id.to_string());
+    }
+    for key in [
+        "projectIds",
+        "expectedProjectIds",
+        "contextProjectIds",
+        "availableProjectIds",
+    ] {
+        if let Some(values) = value.get(key).and_then(Value::as_array) {
+            ids.extend(
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string),
+            );
+        }
+    }
+    if let Some(map) = value
+        .get("targetBranchesByProjectId")
+        .and_then(Value::as_object)
+    {
+        ids.extend(map.keys().cloned());
+    }
+    if let Some(participants) = value.get("participants").and_then(Value::as_array) {
+        ids.extend(participants.iter().filter_map(|participant| {
+            participant
+                .get("projectId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        }));
+    }
+    if let Some(nodes) = value.get("nodes").and_then(Value::as_array) {
+        for node in nodes {
+            push_project_ids_from_json_value(node, ids);
+        }
+    }
+    if let Some(branches) = value.get("predictedBranches").and_then(Value::as_array) {
+        for branch in branches {
+            push_project_ids_from_json_value(branch, ids);
+        }
+    }
+}
+
+fn collect_macro_metadata_project_ids(metadata_root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    let branches_root = metadata_root.join("branches");
+    let Ok(branches) = std::fs::read_dir(branches_root) else {
+        return ids;
+    };
+
+    for branch in branches.flatten() {
+        let plans_root = branch.path().join("plans");
+        let Ok(plans) = std::fs::read_dir(plans_root) else {
+            continue;
+        };
+        for plan in plans.flatten() {
+            let plan_path = plan.path();
+            if !plan_path.is_dir() {
+                continue;
+            }
+            for file_name in ["manifest.json", "plan.json"] {
+                let path = plan_path.join(file_name);
+                let Ok(content) = std::fs::read_to_string(path) else {
+                    continue;
+                };
+                let Ok(value) = serde_json::from_str::<Value>(&content) else {
+                    continue;
+                };
+                push_project_ids_from_json_value(&value, &mut ids);
+            }
+        }
+    }
+
+    ids
+}
+
+fn choose_recovery_project_id(ids: Vec<String>) -> Option<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for id in ids {
+        let trimmed = id.trim();
+        if !hint_project_id_is_recoverable(trimmed) {
+            continue;
+        }
+        *counts.entry(trimmed.to_string()).or_insert(0) += 1;
+    }
+    let mut ranked = counts.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ranked.into_iter().map(|(id, _)| id).next()
+}
+
+fn discover_recoverable_project_hints(
+    workspace_path: &Path,
+    state: &WorkspaceState,
+    max_children_per_root: usize,
+) -> Vec<WorkspaceMetadataRecoveryHintDto> {
+    let known_paths = collect_known_project_path_keys(workspace_path, state);
+    let mut seen_candidate_paths = HashSet::new();
+    let mut hints = Vec::new();
+    let roots = collect_project_registry_parent_dirs(workspace_path, state);
+    let mut scanned_child_count = 0usize;
+    let mut known_path_count = 0usize;
+    let mut duplicate_candidate_count = 0usize;
+    let mut metadata_repo_count = 0usize;
+    let mut missing_project_id_count = 0usize;
+
+    for root in &roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten().take(max_children_per_root) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            scanned_child_count += 1;
+            let candidate_path = entry.path();
+            let normalized_path = normalized_path_key(&candidate_path);
+            if normalized_path.is_empty() {
+                continue;
+            }
+            if known_paths.contains(&normalized_path) {
+                known_path_count += 1;
+                continue;
+            }
+            if !seen_candidate_paths.insert(normalized_path) {
+                duplicate_candidate_count += 1;
+                continue;
+            }
+            let Some(metadata_root) = resolve_existing_macro_metadata_root(&candidate_path) else {
+                continue;
+            };
+            metadata_repo_count += 1;
+            let Some(project_id) =
+                choose_recovery_project_id(collect_macro_metadata_project_ids(&metadata_root))
+            else {
+                missing_project_id_count += 1;
+                continue;
+            };
+            let name = candidate_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Recovered project")
+                .to_string();
+            hints.push(WorkspaceMetadataRecoveryHintDto {
+                project_id,
+                group_id: None,
+                name,
+                path: candidate_path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    tracing::info!(
+        action = "project_registry_recoverable_project_discovery_scanned",
+        root_count = roots.len(),
+        known_path_count = known_paths.len(),
+        scanned_child_count,
+        skipped_known_path_count = known_path_count,
+        skipped_duplicate_candidate_count = duplicate_candidate_count,
+        metadata_repo_count,
+        missing_project_id_count,
+        hint_count = hints.len(),
+        max_children_per_root,
+        "Scanned known project parent directories for recoverable @macro repositories."
+    );
+
+    hints
+}
+
+fn push_registry_reconcile_skip(
+    report: &mut WorkspaceProjectRegistryReconcileReportDto,
+    hint: &WorkspaceMetadataRecoveryHintDto,
+    reason: &str,
+) {
+    report
+        .skipped_projects
+        .push(WorkspaceProjectRegistryReconcileSkippedDto {
+            project_id: if hint.project_id.trim().is_empty() {
+                None
+            } else {
+                Some(hint.project_id.trim().to_string())
+            },
+            path: hint.path.trim().to_string(),
+            reason: reason.to_string(),
+        });
+}
+
+pub async fn reconcile_project_registry_from_hints(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut report = WorkspaceProjectRegistryReconcileReportDto {
+        status: "unchanged".to_string(),
+        ..WorkspaceProjectRegistryReconcileReportDto::default()
+    };
+    let mut state = load_raw_state(metadata_root).await?.unwrap_or_default();
+    let mut seen_paths = HashSet::new();
+    let mut known_project_ids = HashSet::new();
+
+    for project in state.standalone_projects.iter().chain(
+        state
+            .project_groups
+            .iter()
+            .flat_map(|group| group.projects.iter()),
+    ) {
+        known_project_ids.insert(project.id.trim().to_string());
+        let resolved_path = resolve_project_path(workspace_path, &project.path);
+        let normalized_path = normalized_path_key(&resolved_path);
+        if !normalized_path.trim().is_empty() {
+            seen_paths.insert(normalized_path);
+        }
+    }
+
+    for hint in request.projects {
+        let raw_path = hint.path.trim();
+        let project_id = hint.project_id.trim();
+        if raw_path.is_empty() {
+            push_registry_reconcile_skip(&mut report, &hint, "missing_path");
+            continue;
+        }
+        if !hint_project_id_is_recoverable(project_id) {
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_project_id");
+            continue;
+        }
+        if known_project_ids.contains(project_id) {
+            push_registry_reconcile_skip(&mut report, &hint, "duplicate_project_id");
+            continue;
+        }
+
+        let resolved_path = resolve_project_path(workspace_path, raw_path);
+        let normalized_path = normalized_path_key(&resolved_path);
+        if normalized_path.trim().is_empty() || !resolved_path.is_dir() {
+            report.invalid_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_path");
+            continue;
+        }
+        if seen_paths.contains(&normalized_path) {
+            report.duplicate_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "duplicate_path");
+            continue;
+        }
+        if Repository::open(&resolved_path).is_err() && !resolved_path.join(".git").exists() {
+            report.invalid_paths.push(raw_path.to_string());
+            push_registry_reconcile_skip(&mut report, &hint, "invalid_git_repo");
+            continue;
+        }
+        if !project_macro_metadata_root_is_usable(&resolved_path) {
+            push_registry_reconcile_skip(&mut report, &hint, "missing_or_invalid_macro_metadata");
+            continue;
+        }
+
+        let project = project_from_recovery_hint(&hint, &resolved_path, workspace_path);
+
+        known_project_ids.insert(project.id.clone());
+        seen_paths.insert(normalized_path);
+        report.added_projects.push(project.clone());
+        state.standalone_projects.push(project);
+    }
+
+    if !report.added_projects.is_empty() {
+        state.version = state.version.max(WorkspaceState::default().version);
+        persist_state(metadata_root, &state).await?;
+        report.status = "reconciled".to_string();
+        tracing::warn!(
+            action = "project_registry_reconciled_from_hints",
+            added_project_count = report.added_projects.len(),
+            skipped_project_count = report.skipped_projects.len(),
+            duplicate_path_count = report.duplicate_paths.len(),
+            invalid_path_count = report.invalid_paths.len(),
+            "Workspace registry was repaired additively from remembered project hints."
+        );
+    }
+
+    Ok(report)
+}
+
+fn project_from_recovery_hint(
+    hint: &WorkspaceMetadataRecoveryHintDto,
+    resolved_path: &Path,
+    workspace_path: &Path,
+) -> ProjectDto {
+    let project_name = project_name_from_hint(hint, resolved_path);
+    let mut project = build_project(&project_name, "", Some(&hint.path), workspace_path, None);
+    project.id = hint.project_id.trim().to_string();
+    project.name = project_name;
+    project.mount_name = derive_project_mount_name(&project.path, &project.name, &project.id);
+    project
+}
+
+pub async fn discover_recoverable_projects(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
+) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    let state = load_raw_state(metadata_root).await?.unwrap_or_default();
+    let max_children_per_root = request.max_children_per_root.unwrap_or(250).clamp(1, 1000);
+    let hints = discover_recoverable_project_hints(workspace_path, &state, max_children_per_root);
+
+    let mut report = WorkspaceProjectRegistryReconcileReportDto {
+        status: if hints.is_empty() {
+            "unchanged".to_string()
+        } else {
+            "discovered".to_string()
+        },
+        ..WorkspaceProjectRegistryReconcileReportDto::default()
+    };
+
+    for hint in hints {
+        let resolved_path = resolve_project_path(workspace_path, &hint.path);
+        report.discovered_projects.push(project_from_recovery_hint(
+            &hint,
+            &resolved_path,
+            workspace_path,
+        ));
+    }
+
+    tracing::info!(
+        action = "project_registry_discover_recoverable_projects_completed",
+        discovered_project_count = report.discovered_projects.len(),
+        status = %report.status,
+        "Workspace registry recoverable project discovery completed without mutating metadata."
+    );
+    Ok(report)
 }
 
 fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<String> {
@@ -3494,6 +5560,69 @@ fn append_report_message(base: Option<String>, extra: Option<String>) -> Option<
         (None, Some(extra)) => Some(extra),
         (None, None) => None,
     }
+}
+
+fn sanitize_backup_operation(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "mutation".to_string()
+    } else {
+        sanitized.chars().take(48).collect()
+    }
+}
+
+async fn backup_workspace_state_if_present(
+    metadata_root: &Path,
+    operation: &str,
+) -> Result<Option<PathBuf>> {
+    let source = workspace_state_path(metadata_root);
+    if !source.exists() {
+        return Ok(None);
+    }
+
+    let now = Utc::now();
+    let timestamp = format!(
+        "{}-{:03}",
+        now.format("%Y%m%d-%H%M%S"),
+        now.timestamp_subsec_millis()
+    );
+    let backup_file_name = format!(
+        "{}.bak-{}-{}",
+        WORKSPACE_STATE_FILE,
+        timestamp,
+        sanitize_backup_operation(operation)
+    );
+    let mut backup_path = metadata_root.join(&backup_file_name);
+    let mut collision_index = 1usize;
+    while backup_path.exists() {
+        backup_path = metadata_root.join(format!("{}.{}", backup_file_name, collision_index));
+        collision_index += 1;
+    }
+
+    fs::copy(&source, &backup_path)
+        .await
+        .map_err(|error| BackendError::Filesystem {
+            message: format!(
+                "Failed to back up workspace state {} to {}: {}",
+                source.display(),
+                backup_path.display(),
+                error
+            ),
+        })?;
+
+    Ok(Some(backup_path))
 }
 
 pub(crate) fn recover_missing_metadata_sync(
@@ -3594,6 +5723,7 @@ pub async fn recover_missing_metadata(
     metadata_root: &Path,
     request: WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
 
@@ -3618,7 +5748,10 @@ async fn load_or_default_state(
         return Ok(state);
     }
 
-    Ok(WorkspaceState::default())
+    let mut state = WorkspaceState::default();
+    merge_manual_feature_snapshots_from_metadata_root(&mut state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut state, workspace_path, metadata_root);
+    Ok(state)
 }
 
 async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Option<WorkspaceState>> {
@@ -3626,6 +5759,7 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
         return Ok(None);
     };
 
+    let raw_state = state.clone();
     let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
     if repair_report.has_repairs() {
         tracing::warn!(
@@ -3646,34 +5780,87 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
             predicted_branches_removed = repair_report.predicted_branches_removed,
             git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
         );
-        persist_state(metadata_root, &sanitized_state).await?;
+        if repair_report.has_destructive_repairs() {
+            tracing::warn!(
+                action = "project_registry_state_sanitized_not_persisted",
+                reason = "destructive_repairs_during_load",
+                "Workspace metadata repairs were ignored because a simple load must not remove projects or task metadata."
+            );
+            let mut loaded_state = raw_state;
+            merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+            recover_physical_workspace_project_if_missing(
+                &mut loaded_state,
+                workspace_path,
+                metadata_root,
+            );
+            return Ok(Some(loaded_state));
+        } else {
+            persist_state(metadata_root, &sanitized_state).await?;
+        }
     }
 
-    Ok(Some(sanitized_state))
+    let mut loaded_state = sanitized_state;
+    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
+
+    Ok(Some(loaded_state))
 }
 
 async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
-    let primary_path = workspace_state_path(metadata_root);
-    let legacy_path = legacy_workspace_state_path(metadata_root);
-    let path = if primary_path.exists() {
-        primary_path
-    } else if legacy_path.exists() {
-        legacy_path
-    } else {
-        return Ok(None);
-    };
-
-    let content = fs::read_to_string(&path)
+    let metadata_root = metadata_root.to_path_buf();
+    tokio::task::spawn_blocking(move || load_raw_state_sync(&metadata_root))
         .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to read workspace state: {}", error),
-        })?;
+        .map_err(|error| BackendError::Internal {
+            message: format!("Workspace state load task failed: {error}"),
+        })?
+}
 
-    let state: WorkspaceState = serde_json::from_str(&content).map_err(|error| {
-        BackendError::Validation(format!("Invalid workspace state format: {}", error))
-    })?;
+fn sanitize_project_entry(
+    workspace_path: &Path,
+    project: ProjectDto,
+    seen_paths: &mut HashSet<String>,
+    repair_report: &mut ProjectRegistryRepairReportDto,
+) -> Option<ProjectDto> {
+    if project.id.starts_with("session-project-") {
+        repair_report.removed_synthetic_projects += 1;
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
 
-    Ok(Some(state))
+    let resolved_path = resolve_project_path(workspace_path, &project.path);
+    let normalized_key = normalized_path_key(&resolved_path);
+    if normalized_key.trim().is_empty() {
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
+
+    if seen_paths.contains(&normalized_key) {
+        repair_report.duplicate_paths_removed += 1;
+        repair_report.removed_project_ids.push(project.id);
+        return None;
+    }
+
+    seen_paths.insert(normalized_key);
+    if parse_wsl_unc_path(&project.path).is_some() {
+        return Some(enrich_project_location(project));
+    }
+    let git_flow_settings = auto_detect_project_git_flow_settings(
+        workspace_path,
+        &project.path,
+        Some(&project.git_flow_settings),
+    );
+    let git_detection =
+        detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
+    if git_flow_settings != project.git_flow_settings {
+        repair_report.git_flow_settings_auto_updated += 1;
+    }
+    Some(normalize_project_access(
+        ProjectDto {
+            git_flow_settings,
+            ..project
+        },
+        derive_git_setup_state(&git_detection),
+    ))
 }
 
 fn sanitize_workspace_state(
@@ -3682,9 +5869,18 @@ fn sanitize_workspace_state(
 ) -> (WorkspaceState, ProjectRegistryRepairReportDto) {
     let mut repair_report = ProjectRegistryRepairReportDto::default();
     let mut seen_paths = HashSet::new();
+    let mut sanitized_standalone_projects = Vec::with_capacity(state.standalone_projects.len());
     let mut sanitized_groups = Vec::with_capacity(state.project_groups.len());
 
-    for group in state.project_groups {
+    for project in std::mem::take(&mut state.standalone_projects) {
+        if let Some(project) =
+            sanitize_project_entry(workspace_path, project, &mut seen_paths, &mut repair_report)
+        {
+            sanitized_standalone_projects.push(project);
+        }
+    }
+
+    for group in std::mem::take(&mut state.project_groups) {
         if group.id.starts_with("session-group-") {
             repair_report.removed_synthetic_groups += 1;
             repair_report.removed_group_ids.push(group.id);
@@ -3693,48 +5889,22 @@ fn sanitize_workspace_state(
 
         let mut sanitized_projects = Vec::with_capacity(group.projects.len());
         for project in group.projects {
-            if project.id.starts_with("session-project-") {
-                repair_report.removed_synthetic_projects += 1;
-                repair_report.removed_project_ids.push(project.id);
-                continue;
+            if let Some(project) =
+                sanitize_project_entry(workspace_path, project, &mut seen_paths, &mut repair_report)
+            {
+                sanitized_projects.push(project);
             }
-
-            let resolved_path = resolve_project_path(workspace_path, &project.path);
-            let normalized_key = normalized_path_key(&resolved_path);
-            if normalized_key.trim().is_empty() {
-                repair_report.removed_project_ids.push(project.id);
-                continue;
-            }
-
-            if seen_paths.contains(&normalized_key) {
-                repair_report.duplicate_paths_removed += 1;
-                repair_report.removed_project_ids.push(project.id);
-                continue;
-            }
-
-            seen_paths.insert(normalized_key);
-            let git_flow_settings = auto_detect_project_git_flow_settings(
-                workspace_path,
-                &project.path,
-                Some(&project.git_flow_settings),
-            );
-            let git_detection =
-                detect_project_git_flow_internal(workspace_path, Some(project.path.as_str()));
-            if git_flow_settings != project.git_flow_settings {
-                repair_report.git_flow_settings_auto_updated += 1;
-            }
-            sanitized_projects.push(normalize_project_access(
-                ProjectDto {
-                    git_flow_settings,
-                    ..project
-                },
-                derive_git_setup_state(&git_detection),
-            ));
         }
 
         if sanitized_projects.is_empty() {
             repair_report.empty_groups_removed += 1;
             repair_report.removed_group_ids.push(group.id);
+            continue;
+        }
+
+        if sanitized_projects.len() == 1 {
+            repair_report.singleton_groups_migrated += 1;
+            sanitized_standalone_projects.extend(sanitized_projects);
             continue;
         }
 
@@ -3758,10 +5928,13 @@ fn sanitize_workspace_state(
         true
     });
 
+    repair_report.mount_names_assigned +=
+        assign_group_mount_names(&mut sanitized_standalone_projects);
+    state.standalone_projects = sanitized_standalone_projects;
     state.project_groups = sanitized_groups;
-    let _valid_project_ids = collect_valid_project_ids(&state.project_groups);
-    let actionable_project_ids = collect_actionable_project_ids(&state.project_groups);
-    let read_only_project_ids = collect_read_only_project_ids(&state.project_groups);
+    let _valid_project_ids = collect_valid_project_ids_from_state(&state);
+    let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
+    let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
 
     if let Some(plan) = state.current_plan.as_mut() {
         let original_project_ids = plan.project_ids.clone();
@@ -4086,29 +6259,36 @@ async fn persist_sanitized_state(
         );
     }
 
+    if repair_report.has_destructive_repairs() {
+        if let Some(backup_path) =
+            backup_workspace_state_if_present(metadata_root, operation).await?
+        {
+            tracing::warn!(
+                action = "project_registry_destructive_repair_backup_created",
+                operation,
+                backup_path = %backup_path.display()
+            );
+        }
+    }
+
     persist_state(metadata_root, &sanitized_state).await?;
     Ok((sanitized_state, repair_report))
 }
 
 async fn persist_state(workspace_path: &Path, state: &WorkspaceState) -> Result<()> {
-    fs::create_dir_all(workspace_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to create workspace metadata directory: {}", error),
-        })?;
-
+    let durable_state = strip_workspace_project_locations(state.clone());
     let serialized =
-        serde_json::to_string_pretty(state).map_err(|error| BackendError::Internal {
+        serde_json::to_string_pretty(&durable_state).map_err(|error| BackendError::Internal {
             message: format!("Failed to serialize workspace state: {}", error),
         })?;
-
-    fs::write(workspace_state_path(workspace_path), serialized)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!("Failed to write workspace state: {}", error),
-        })?;
-
-    Ok(())
+    let workspace_path = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        write_workspace_state_durably_sync(&workspace_path, serialized.as_bytes())
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Workspace state persistence task failed: {error}"),
+    })?
 }
 
 fn build_project(
@@ -4154,6 +6334,9 @@ fn build_project(
             git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
             is_read_only: false,
             read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
             metadata: ProjectMetadataDto {
                 description: description.to_string(),
                 tags: Vec::new(),
@@ -4166,6 +6349,66 @@ fn build_project(
     )
 }
 
+async fn build_project_for_add(
+    name: &str,
+    description: &str,
+    path: Option<&str>,
+    workspace_path: &Path,
+    git_flow_settings: Option<&ProjectGitFlowSettingsDto>,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectDto> {
+    let now = Utc::now().to_rfc3339();
+    let slug = slugify(name);
+    let id = format!("project-{}-{}", slug, Utc::now().timestamp_millis());
+    let project_path = path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("projects/{}", slug));
+
+    let project_name = name.trim();
+    let normalized_name = if project_name.is_empty() {
+        workspace_path
+            .file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or("Project")
+            .to_string()
+    } else {
+        project_name.to_string()
+    };
+    let git_detection =
+        detect_project_git_flow_for_add(workspace_path, Some(project_path.as_str()), cancel_rx)
+            .await?;
+    let detected_git_flow_settings =
+        auto_detect_project_git_flow_settings_from_detection(git_flow_settings, &git_detection);
+
+    Ok(normalize_project_access(
+        ProjectDto {
+            id: id.clone(),
+            name: normalized_name,
+            mount_name: derive_project_mount_name(&project_path, name, &id),
+            path: project_path,
+            created_at: now,
+            status: "active".to_string(),
+            git_flow_settings: detected_git_flow_settings,
+            user_read_only: false,
+            git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
+            is_read_only: false,
+            read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
+            metadata: ProjectMetadataDto {
+                description: description.to_string(),
+                tags: Vec::new(),
+                team_members: Vec::new(),
+                api_contracts: Vec::new(),
+                dependencies: Vec::new(),
+            },
+        },
+        derive_git_setup_state(&git_detection),
+    ))
+}
+
 fn normalize_project_git_flow_settings(
     settings: Option<&ProjectGitFlowSettingsDto>,
 ) -> ProjectGitFlowSettingsDto {
@@ -4175,6 +6418,10 @@ fn normalize_project_git_flow_settings(
     ProjectGitFlowSettingsDto {
         base_branch: normalize_base_branch(Some(input.base_branch.as_str())),
         main_branch: normalize_base_branch(Some(input.main_branch.as_str())),
+        completion_merge_policy: match input.completion_merge_policy.as_str() {
+            "fast_forward" => "fast_forward".to_string(),
+            _ => "merge_commit".to_string(),
+        },
         plan_branch_template: normalize_branch_template(
             Some(input.plan_branch_template.as_str()),
             defaults.plan_branch_template.as_str(),
@@ -4295,6 +6542,12 @@ fn validate_project_git_flow_settings_strict(settings: &ProjectGitFlowSettingsDt
 
     if normalized.main_branch.trim().is_empty() {
         errors.push("Main branch cannot be empty.".to_string());
+    }
+
+    if normalized.completion_merge_policy != "merge_commit"
+        && normalized.completion_merge_policy != "fast_forward"
+    {
+        errors.push("Completion merge policy must be merge_commit or fast_forward.".to_string());
     }
 
     let required_tokens = [
@@ -4446,6 +6699,10 @@ fn ensure_valid_project_group_target(
         )));
     }
 
+    if group_name.unwrap_or_default().trim().is_empty() {
+        return Ok(());
+    }
+
     if normalize_group_name(group_name, fallback_name)
         .trim()
         .is_empty()
@@ -4456,6 +6713,10 @@ fn ensure_valid_project_group_target(
     }
 
     Ok(())
+}
+
+fn target_is_standalone(group_id: Option<&str>, group_name: Option<&str>) -> bool {
+    group_id.is_none() && group_name.unwrap_or_default().trim().is_empty()
 }
 
 fn ensure_unique_project_name_in_group(
@@ -4482,10 +6743,34 @@ fn ensure_unique_project_name_in_group(
             });
         if duplicate.is_some() {
             return Err(BackendError::Validation(format!(
-                "A subproject named \"{}\" already exists in this global project.",
+                "A project named \"{}\" already exists in this group.",
                 trimmed_name
             )));
         }
+    }
+
+    Ok(())
+}
+
+fn ensure_unique_project_name_in_target(
+    state: &WorkspaceState,
+    group_id: Option<&str>,
+    group_name: Option<&str>,
+    project_name: &str,
+) -> Result<()> {
+    ensure_unique_project_name_in_group(&state.project_groups, group_id, project_name)?;
+
+    let trimmed_name = project_name.trim();
+    if target_is_standalone(group_id, group_name)
+        && state
+            .standalone_projects
+            .iter()
+            .any(|project| project.name.trim().eq_ignore_ascii_case(trimmed_name))
+    {
+        return Err(BackendError::Validation(format!(
+            "A project named \"{}\" already exists outside groups.",
+            trimmed_name
+        )));
     }
 
     Ok(())
@@ -4519,7 +6804,29 @@ fn ensure_unique_project_path(
 
     if duplicate {
         return Err(BackendError::Validation(
-            "A subproject with this folder already exists in the workspace.".to_string(),
+            "A project with this folder already exists in the workspace.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_unique_project_path_in_state(
+    state: &WorkspaceState,
+    workspace_path: &Path,
+    project_path: &Path,
+) -> Result<()> {
+    ensure_unique_project_path(&state.project_groups, workspace_path, project_path)?;
+
+    let next_project_path_key = normalized_path_key(project_path);
+    let duplicate = state.standalone_projects.iter().any(|project| {
+        let existing_path = resolve_project_path(workspace_path, &project.path);
+        normalized_path_key(&existing_path) == next_project_path_key
+    });
+
+    if duplicate {
+        return Err(BackendError::Validation(
+            "A project with this folder already exists in the workspace.".to_string(),
         ));
     }
 
@@ -4553,6 +6860,60 @@ fn insert_project_into_group(
     });
 
     Ok(())
+}
+
+fn insert_project_into_registry(
+    state: &mut WorkspaceState,
+    group_id: Option<&str>,
+    group_name: Option<&str>,
+    project: ProjectDto,
+) -> Result<()> {
+    if target_is_standalone(group_id, group_name) {
+        state.standalone_projects.push(project);
+        return Ok(());
+    }
+
+    insert_project_into_group(&mut state.project_groups, group_id, group_name, project)
+}
+
+fn collapse_singleton_project_groups(state: &mut WorkspaceState) {
+    let mut next_groups = Vec::with_capacity(state.project_groups.len());
+    for mut group in std::mem::take(&mut state.project_groups) {
+        match group.projects.len() {
+            0 => {}
+            1 => {
+                if let Some(project) = group.projects.pop() {
+                    state.standalone_projects.push(project);
+                }
+            }
+            _ => next_groups.push(group),
+        }
+    }
+    state.project_groups = next_groups;
+}
+
+fn take_project_from_registry(state: &mut WorkspaceState, project_id: &str) -> Option<ProjectDto> {
+    if let Some(index) = state
+        .standalone_projects
+        .iter()
+        .position(|project| project.id == project_id)
+    {
+        return Some(state.standalone_projects.remove(index));
+    }
+
+    let mut removed_project = None;
+    for group in state.project_groups.iter_mut() {
+        if let Some(index) = group
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+        {
+            removed_project = Some(group.projects.remove(index));
+            break;
+        }
+    }
+    collapse_singleton_project_groups(state);
+    removed_project
 }
 
 fn ensure_plan_has_project(state: &mut WorkspaceState, project: &ProjectDto) {
@@ -4696,6 +7057,54 @@ fn find_project_by_id<'a>(
         .find(|project| project.id == project_id)
 }
 
+fn find_project_by_id_in_state<'a>(
+    state: &'a WorkspaceState,
+    project_id: &str,
+) -> Option<&'a ProjectDto> {
+    state
+        .standalone_projects
+        .iter()
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .find(|project| project.id == project_id)
+}
+
+fn find_project_by_id_mut_in_state<'a>(
+    state: &'a mut WorkspaceState,
+    project_id: &str,
+) -> Option<&'a mut ProjectDto> {
+    if let Some(project) = state
+        .standalone_projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+    {
+        return Some(project);
+    }
+
+    state
+        .project_groups
+        .iter_mut()
+        .flat_map(|group| group.projects.iter_mut())
+        .find(|project| project.id == project_id)
+}
+
+fn find_group_id_for_project(state: &WorkspaceState, project_id: &str) -> Option<String> {
+    state
+        .project_groups
+        .iter()
+        .find(|group| {
+            group
+                .projects
+                .iter()
+                .any(|project| project.id == project_id)
+        })
+        .map(|group| group.id.clone())
+}
+
 fn task_status_matches(task: &Value, expected: &[&str]) -> bool {
     task.get("status")
         .and_then(|value| value.as_str())
@@ -4714,11 +7123,43 @@ fn get_git_flow_target_branch(plan: &PlanDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::process::background_command;
     use git2::{Repository, RepositoryInitOptions};
     use serde_json::json;
     use std::fs as stdfs;
-    use std::process::Command;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn parse_wsl_unc_path_supports_wsl_dollar_prefix() {
+        let parsed = parse_wsl_unc_path(r"\\wsl$\Ubuntu\home\oscar\repo").expect("parse wsl path");
+
+        assert_eq!(parsed.distro, "Ubuntu");
+        assert_eq!(parsed.linux_path, "/home/oscar/repo");
+    }
+
+    #[test]
+    fn parse_wsl_unc_path_supports_wsl_localhost_prefix() {
+        let parsed = parse_wsl_unc_path(r"\\wsl.localhost\Debian\var\www\app")
+            .expect("parse wsl localhost path");
+
+        assert_eq!(parsed.distro, "Debian");
+        assert_eq!(parsed.linux_path, "/var/www/app");
+    }
+
+    #[test]
+    fn wsl_develop_branch_source_is_passed_as_positional_argument() {
+        let source_branch = r#"main$(touch /tmp/macro-pwned);`id`"#;
+
+        let (script, args) =
+            wsl_git_setup_action_command(GIT_SETUP_ACTION_CREATE_DEVELOP, Some(source_branch))
+                .expect("build WSL git setup command");
+
+        assert!(script.contains("\"$2\""));
+        assert!(!script.contains(source_branch));
+        assert_eq!(args, vec![source_branch.to_string()]);
+    }
 
     fn make_project(id: &str, path: &str) -> ProjectDto {
         ProjectDto {
@@ -4729,6 +7170,7 @@ mod tests {
             git_flow_settings: ProjectGitFlowSettingsDto {
                 base_branch: "develop".to_string(),
                 main_branch: "main".to_string(),
+                completion_merge_policy: "merge_commit".to_string(),
                 plan_branch_template: "plan/{planSlug}".to_string(),
                 feature_branch_template: "feature/{planSlug}/{featureSlug}".to_string(),
                 standalone_feature_branch_template: "feature/{featureSlug}".to_string(),
@@ -4742,6 +7184,9 @@ mod tests {
             git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
             is_read_only: false,
             read_only_reason: None,
+            path_kind: "windows".to_string(),
+            wsl_distro: None,
+            wsl_linux_path: None,
             metadata: ProjectMetadataDto {
                 description: String::new(),
                 tags: Vec::new(),
@@ -4750,6 +7195,74 @@ mod tests {
                 dependencies: Vec::new(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_finds_standalone_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let standalone_project = make_project("project-standalone", "apps/standalone");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![standalone_project],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Grouped".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-grouped", "apps/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-standalone")
+            .await
+            .expect("lookup standalone project")
+            .expect("standalone project");
+
+        assert_eq!(found.id, "project-standalone");
+        assert_eq!(found.path, "apps/standalone");
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_finds_group_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project("project-standalone", "apps/standalone")],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Grouped".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-grouped", "apps/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-grouped")
+            .await
+            .expect("lookup grouped project")
+            .expect("grouped project");
+
+        assert_eq!(found.id, "project-grouped");
+        assert_eq!(found.path, "apps/grouped");
+    }
+
+    #[tokio::test]
+    async fn get_project_by_id_returns_none_for_unknown_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project("project-standalone", "apps/standalone")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(temp.path(), &state).expect("persist workspace state");
+
+        let found = get_project_by_id(temp.path(), temp.path(), "project-missing")
+            .await
+            .expect("lookup missing project");
+
+        assert!(found.is_none());
     }
 
     fn init_git_repo(path: &Path, initial_head: &str, extra_branches: &[&str]) -> Repository {
@@ -4807,14 +7320,18 @@ mod tests {
     }
 
     fn commit_all(repo_root: &Path, message: &str) -> Oid {
-        let add_status = Command::new("git")
+        let add_output = background_command("git")
             .current_dir(repo_root)
-            .args(["add", "-A", "."])
-            .status()
+            .args(["-c", "core.autocrlf=false", "add", "-A", "."])
+            .output()
             .expect("git add");
-        assert!(add_status.success());
+        assert!(
+            add_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&add_output.stderr)
+        );
 
-        let commit_output = Command::new("git")
+        let commit_output = background_command("git")
             .current_dir(repo_root)
             .args([
                 "-c",
@@ -4841,6 +7358,202 @@ mod tests {
             .expect("head oid")
     }
 
+    #[tokio::test]
+    async fn create_project_with_absolute_path_persists_metadata_under_metadata_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = temp.path().join("repos").join("web");
+
+        let project = create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Web".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create project");
+
+        assert_eq!(project.path, project_path.to_string_lossy());
+        assert!(project_path.is_dir());
+        assert!(metadata_root.join(WORKSPACE_STATE_FILE).exists());
+        assert!(!workspace_path.join(WORKSPACE_STATE_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn create_project_reports_project_path_when_target_is_file() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = temp.path().join("repos").join("web");
+        stdfs::create_dir_all(project_path.parent().expect("project parent"))
+            .expect("create project parent");
+        stdfs::write(&project_path, "not a directory").expect("write file target");
+
+        let result = create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Web".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemIsFile { message })
+                if message.contains(&project_path.to_string_lossy().to_string())
+                    && message.contains("create_project")
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_creates_git_repo_with_initial_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create new repo");
+
+        let project_path = parent_path.join("backend-api");
+        let repo = Repository::open(&project_path).expect("open created repo");
+        assert!(project_path.join(".git").is_dir());
+        assert!(repo.head().expect("head").target().is_some());
+        assert_eq!(result.project.name, "Backend API");
+        assert_eq!(result.project.git_setup_state, PROJECT_GIT_SETUP_READY);
+        assert!(!result.project.is_read_only);
+        assert_eq!(result.detection.setup_state, PROJECT_GIT_DETECTION_READY);
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_blocks_existing_target_folder() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        stdfs::create_dir_all(parent_path.join("backend-api")).expect("create target");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemAlreadyExists { message })
+                if message.contains("backend-api")
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_blocks_parent_inside_git_repo() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        init_git_repo(&parent_path, "main", &[]);
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::Validation(message))
+                if message.contains("not inside an existing Git repository")
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_reuses_project_path_uniqueness_validation() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        let project_path = parent_path.join("backend-api");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        create_project(
+            &workspace_path,
+            &metadata_root,
+            CreateProjectRequest {
+                name: "Existing".to_string(),
+                description: String::new(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                path: Some(project_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await
+        .expect("create existing project");
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Other Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::Validation(message))
+                if message.contains("folder already exists")
+        ));
+    }
+
     #[test]
     fn manual_feature_targets_use_project_standalone_templates() {
         let mut web = make_project("project-web", "apps/web");
@@ -4862,6 +7575,7 @@ mod tests {
         let targets = build_manual_feature_execution_targets(
             &["project-web".to_string(), "project-api".to_string()],
             "quick-export",
+            &[],
             &project_groups,
         );
 
@@ -4938,6 +7652,7 @@ mod tests {
         let workspace_path = PathBuf::from("C:/workspace");
         let state = WorkspaceState {
             version: 3,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -4990,6 +7705,7 @@ mod tests {
         init_git_repo(&workspace_path.join("apps/api"), "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![
                 ProjectGroupDto {
                     id: "group-main".to_string(),
@@ -5122,6 +7838,7 @@ mod tests {
         let workspace_path = PathBuf::from("C:/workspace");
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5214,6 +7931,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5224,11 +7942,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "master");
         assert_eq!(project.git_flow_settings.base_branch, "dev");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5240,6 +7959,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5250,11 +7970,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "main");
         assert_eq!(project.git_flow_settings.base_branch, "develop");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5266,6 +7987,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5276,11 +7998,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "trunk");
         assert_eq!(project.git_flow_settings.base_branch, "integration");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 1);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5292,6 +8015,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5302,11 +8026,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "main");
         assert_eq!(project.git_flow_settings.base_branch, "develop");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5322,6 +8047,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5332,11 +8058,12 @@ mod tests {
         };
 
         let (sanitized_state, repair_report) = sanitize_workspace_state(temp.path(), state);
-        let project = &sanitized_state.project_groups[0].projects[0];
+        let project = &sanitized_state.standalone_projects[0];
 
         assert_eq!(project.git_flow_settings.main_branch, "trunk");
         assert_eq!(project.git_flow_settings.base_branch, "release");
         assert_eq!(repair_report.git_flow_settings_auto_updated, 0);
+        assert_eq!(repair_report.singleton_groups_migrated, 1);
     }
 
     #[test]
@@ -5414,6 +8141,7 @@ mod tests {
 
         let valid_state = WorkspaceState {
             version: 2,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
                 name: "Suite".to_string(),
@@ -5429,6 +8157,10 @@ mod tests {
         let _empty_commit = commit_all(temp.path(), "empty metadata");
 
         stdfs::remove_file(workspace_state_path(temp.path())).expect("remove workspace state");
+        if workspace_state_backup_path(temp.path()).exists() {
+            stdfs::remove_file(workspace_state_backup_path(temp.path()))
+                .expect("remove workspace backup");
+        }
         let _missing_commit = commit_all(temp.path(), "remove metadata");
 
         let report = recover_missing_metadata_sync(
@@ -5451,8 +8183,9 @@ mod tests {
             report.restored_commit.as_deref(),
             Some(expected_commit.as_str())
         );
-        assert_eq!(restored.project_groups.len(), 1);
-        assert_eq!(restored.project_groups[0].projects[0].id, "project-web");
+        assert_eq!(restored.project_groups.len(), 0);
+        assert_eq!(restored.standalone_projects.len(), 1);
+        assert_eq!(restored.standalone_projects[0].id, "project-web");
     }
 
     #[test]
@@ -5481,13 +8214,691 @@ mod tests {
             .expect("reconstructed state");
 
         assert_eq!(report.status, "reconstructed_from_hints");
-        assert_eq!(reconstructed.project_groups.len(), 1);
-        assert_eq!(reconstructed.project_groups[0].id, "group-1");
+        assert_eq!(reconstructed.project_groups.len(), 0);
+        assert_eq!(reconstructed.standalone_projects.len(), 1);
+        assert_eq!(reconstructed.standalone_projects[0].id, "project-web");
+        assert_eq!(reconstructed.standalone_projects[0].name, "Web");
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_adds_missing_standalone_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("octan_sales");
+        let _project_repo = init_git_repo(&project_path, "main", &[]);
+        let _project_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: Vec::new(),
+            project_groups: vec![ProjectGroupDto {
+                id: "group-existing".to_string(),
+                name: "Existing".to_string(),
+                is_open: true,
+                projects: vec![make_project("project-existing", "apps/existing")],
+            }],
+            current_plan: Some(PlanDto {
+                id: "legacy-plan".to_string(),
+                description: "Keep me".to_string(),
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+                status: "Draft".to_string(),
+                project_ids: vec!["project-existing".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: Vec::new(),
+                predicted_git_trees: HashMap::new(),
+            }),
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: project_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert_eq!(report.status, "reconciled");
+        assert_eq!(report.added_projects.len(), 1);
         assert_eq!(
-            reconstructed.project_groups[0].projects[0].id,
-            "project-web"
+            report.added_projects[0].id,
+            "project-octan-sales-1780653766405"
         );
-        assert_eq!(reconstructed.project_groups[0].projects[0].name, "Web");
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(
+            repaired.standalone_projects[0].id,
+            "project-octan-sales-1780653766405"
+        );
+        assert_eq!(repaired.project_groups.len(), 1);
+        assert_eq!(
+            repaired.current_plan.as_ref().map(|plan| plan.id.as_str()),
+            Some("legacy-plan")
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_repairs_metadata_worktree_after_project_rename()
+    {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let original_path = temp.path().join("lplr-app");
+        let renamed_path = temp.path().join("octan_sales");
+
+        {
+            let _project_repo = init_git_repo(&original_path, "main", &[]);
+            let project_metadata_root = GitState::new()
+                .resolve_macro_metadata_root(&original_path)
+                .expect("project metadata root");
+            stdfs::write(project_metadata_root.join("plan.txt"), "kept metadata")
+                .expect("write metadata file");
+            assert!(Repository::open(&project_metadata_root).is_ok());
+        }
+
+        stdfs::rename(&original_path, &renamed_path).expect("rename project");
+        persist_state_sync(&metadata_root, &WorkspaceState::default())
+            .expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: renamed_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired_metadata_root = renamed_path
+            .join(".git")
+            .join(crate::git::MACRO_WORKTREE_DIR_NAME);
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("repaired state");
+
+        assert_eq!(report.status, "reconciled");
+        assert_eq!(report.added_projects.len(), 1);
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert!(Repository::open(&repaired_metadata_root).is_ok());
+        assert_eq!(
+            stdfs::read_to_string(repaired_metadata_root.join("plan.txt"))
+                .expect("read metadata file"),
+            "kept metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_recoverable_projects_finds_missing_macro_repo_without_mutating_registry() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let known_path = parent.join("sysml-drone-demo");
+        let missing_path = parent.join("octan_sales");
+        let _known_repo = init_git_repo(&known_path, "main", &[]);
+        let missing_repo = init_git_repo(&missing_path, "main", &[]);
+        let missing_git_config = missing_repo.path().join("config");
+        let missing_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&missing_path)
+            .expect("missing project metadata root");
+        {
+            use std::io::Write as _;
+            let mut config = stdfs::OpenOptions::new()
+                .append(true)
+                .open(&missing_git_config)
+                .expect("open missing repo config");
+            writeln!(
+                config,
+                "\n[extensions]\n\trelativeWorktrees = true\n\tworktreeConfig = true"
+            )
+            .expect("write relative worktree extension");
+        }
+        let plan_dir = missing_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "participants": [{
+                    "projectId": "project-lplr-app-1780329499166",
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-sysml".to_string(),
+                    name: "sysml".to_string(),
+                    is_open: true,
+                    projects: vec![make_project(
+                        "project-sysml",
+                        known_path.to_string_lossy().as_ref(),
+                    )],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        let before = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read workspace state before discovery");
+
+        let report = discover_recoverable_projects(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto {
+                max_children_per_root: Some(50),
+            },
+        )
+        .await
+        .expect("discover missing macro repo");
+        let after = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read workspace state after discovery");
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("read persisted state")
+            .expect("persisted state");
+
+        assert_eq!(report.status, "discovered");
+        assert_eq!(report.discovered_projects.len(), 1);
+        assert!(report.added_projects.is_empty());
+        assert_eq!(
+            report.discovered_projects[0].id,
+            "project-lplr-app-1780329499166"
+        );
+        assert_eq!(report.discovered_projects[0].name, "octan_sales");
+        assert_eq!(before, after);
+        assert!(persisted.standalone_projects.is_empty());
+        assert_eq!(persisted.project_groups[0].projects[0].id, "project-sysml");
+    }
+
+    #[tokio::test]
+    async fn remove_project_does_not_restore_macro_sibling_on_next_load() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let kept_path = parent.join("kept");
+        let removed_path = parent.join("octan_sales");
+        let _kept_repo = init_git_repo(&kept_path, "main", &[]);
+        let _removed_repo = init_git_repo(&removed_path, "main", &[]);
+        let removed_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&removed_path)
+            .expect("removed project metadata root");
+        let plan_dir = removed_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create removed plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-octan-sales"]
+            })
+            .to_string(),
+        )
+        .expect("write removed manifest");
+
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-main".to_string(),
+                    name: "Main".to_string(),
+                    is_open: true,
+                    projects: vec![
+                        make_project("project-kept", kept_path.to_string_lossy().as_ref()),
+                        make_project(
+                            "project-octan-sales",
+                            removed_path.to_string_lossy().as_ref(),
+                        ),
+                    ],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        close_project(temp.path(), &metadata_root, "project-octan-sales")
+            .await
+            .expect("remove project");
+        let loaded = load_state(temp.path(), &metadata_root)
+            .await
+            .expect("load state")
+            .expect("state");
+        let all_project_ids = loaded
+            .standalone_projects
+            .iter()
+            .chain(
+                loaded
+                    .project_groups
+                    .iter()
+                    .flat_map(|group| group.projects.iter()),
+            )
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(all_project_ids, vec!["project-kept"]);
+        assert!(removed_metadata_root.exists());
+    }
+
+    #[tokio::test]
+    async fn list_tasks_recovers_manual_features_from_macro_metadata_without_workspace_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".git").join("macro-metadata-worktree");
+        let feature_dir = metadata_root
+            .join(MANUAL_FEATURES_METADATA_DIR)
+            .join("manual-feature-1");
+        stdfs::create_dir_all(&feature_dir).expect("create manual feature dir");
+        stdfs::write(
+            feature_dir.join(MANUAL_FEATURE_METADATA_FILE),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "id": "manual-feature-1",
+                "title": "Recovered independent task",
+                "description": "Loaded from physical @macro metadata.",
+                "status": "InProgress",
+                "draft": false,
+                "featureSlug": "recovered-independent-task",
+                "branchName": "feature/recovered-independent-task",
+                "baseBranch": "develop",
+                "conversationId": "conversation-1",
+                "projectIds": ["project-old"],
+                "executionTargets": [{
+                    "projectId": "project-old",
+                    "branchName": "feature/recovered-independent-task",
+                    "targetBranchName": "develop",
+                    "worktreeKey": "branch-project-old-feature-recovered",
+                    "repoPath": "/old/path"
+                }],
+                "updatedAt": "2026-06-05T07:52:40.707Z"
+            })
+            .to_string(),
+        )
+        .expect("write manual feature snapshot");
+
+        let catalog = list_tasks(temp.path(), &metadata_root)
+            .await
+            .expect("recover manual feature task catalog");
+
+        assert_eq!(catalog.tasks.len(), 1);
+        assert_eq!(catalog.source, "fallback");
+        assert!(catalog.has_standalone_tasks);
+        assert_eq!(catalog.tasks[0]["id"], "manual-feature-1");
+        assert_eq!(catalog.tasks[0]["standalone_kind"], "manual_feature");
+        assert_eq!(catalog.tasks[0]["conversation_id"], "conversation-1");
+        assert_eq!(
+            catalog.tasks[0]["execution_targets"][0]["projectId"],
+            "project-old"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_recovers_selected_physical_repo_as_standalone_project_without_workspace_state(
+    ) {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("octan_sales");
+        let _repo = init_git_repo(&project_path, "main", &[]);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let stale_project_id = "project-lplr-app-1780329499166";
+        let plan_id = "1780299051043";
+        let plan_dir = metadata_root
+            .join(MACRO_BRANCHES_METADATA_DIR)
+            .join("main")
+            .join("plans")
+            .join(plan_id);
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            metadata_root
+                .join(MACRO_BRANCHES_METADATA_DIR)
+                .join("main")
+                .join("plans")
+                .join("index.json"),
+            serde_json::json!({
+                "version": 3,
+                "activePlanId": plan_id,
+                "plans": [{
+                    "id": plan_id,
+                    "slug": "refonte-catalogue-produit",
+                    "title": "Refonte catalogue produit",
+                    "label": "Refonte catalogue produit",
+                    "description": "Plan from physical @macro metadata.",
+                    "status": "draft",
+                    "targetBranch": "main",
+                    "projectId": stale_project_id,
+                    "projectIds": [stale_project_id],
+                    "expectedProjectIds": [stale_project_id],
+                    "createdAt": "2026-06-05T00:00:00.000Z",
+                    "updatedAt": "2026-06-05T00:00:00.000Z",
+                    "nodeCount": 1
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write plan index");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": plan_id,
+                "targetBranch": "main",
+                "expectedProjectIds": [stale_project_id],
+                "participants": [{
+                    "projectId": stale_project_id,
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+
+        let bootstrap = get_bootstrap(&project_path, &metadata_root)
+            .await
+            .expect("bootstrap from physical repo");
+
+        assert_eq!(bootstrap.project_groups.len(), 0);
+        assert_eq!(bootstrap.standalone_projects.len(), 1);
+        assert_eq!(bootstrap.standalone_projects[0].id, stale_project_id);
+        assert_eq!(bootstrap.standalone_projects[0].name, "octan_sales");
+        assert_eq!(
+            bootstrap.standalone_projects[0].path,
+            absolutize_path(&project_path).to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_does_not_restore_missing_sibling_macro_repo() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let parent = temp.path().join("github");
+        let known_path = parent.join("sysml-drone-demo");
+        let missing_path = parent.join("octan_sales");
+        let _known_repo = init_git_repo(&known_path, "main", &[]);
+        let _missing_repo = init_git_repo(&missing_path, "main", &[]);
+        let missing_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&missing_path)
+            .expect("missing project metadata root");
+        let plan_dir = missing_metadata_root
+            .join("branches")
+            .join("main")
+            .join("plans")
+            .join("1780299051043");
+        stdfs::create_dir_all(&plan_dir).expect("create plan dir");
+        stdfs::write(
+            plan_dir.join("manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 3,
+                "planId": "1780299051043",
+                "targetBranch": "main",
+                "expectedProjectIds": ["project-lplr-app-1780329499166"],
+                "participants": [{
+                    "projectId": "project-lplr-app-1780329499166",
+                    "repoPathSnapshot": "/Users/oscarlahaie/github/lplr-app"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                version: WorkspaceState::default().version,
+                standalone_projects: Vec::new(),
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-sysml".to_string(),
+                    name: "sysml".to_string(),
+                    is_open: true,
+                    projects: vec![make_project(
+                        "project-sysml",
+                        known_path.to_string_lossy().as_ref(),
+                    )],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        let bootstrap = get_bootstrap(temp.path(), &metadata_root)
+            .await
+            .expect("bootstrap loads registry");
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("read persisted state")
+            .expect("persisted state");
+
+        assert!(!bootstrap
+            .standalone_projects
+            .iter()
+            .any(|project| project.id == "project-lplr-app-1780329499166"
+                && project.name == "octan_sales"));
+        assert!(!persisted
+            .standalone_projects
+            .iter()
+            .any(|project| project.id == "project-lplr-app-1780329499166"
+                && project.name == "octan_sales"));
+        let persisted_project_ids = persisted
+            .standalone_projects
+            .iter()
+            .chain(
+                persisted
+                    .project_groups
+                    .iter()
+                    .flat_map(|group| group.projects.iter()),
+            )
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_project_ids, vec!["project-sysml"]);
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_does_not_duplicate_existing_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("octan_sales");
+        let _project_repo = init_git_repo(&project_path, "main", &[]);
+        let _project_metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let state = WorkspaceState {
+            version: WorkspaceState::default().version,
+            standalone_projects: vec![make_project(
+                "project-existing",
+                project_path.to_string_lossy().as_ref(),
+            )],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist workspace state");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-octan-sales-1780653766405".to_string(),
+                    group_id: None,
+                    name: "octan_sales".to_string(),
+                    path: project_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let repaired = load_raw_state_sync(&metadata_root)
+            .expect("read repaired state")
+            .expect("state");
+
+        assert_eq!(report.status, "unchanged");
+        assert!(report.added_projects.is_empty());
+        assert_eq!(
+            report.duplicate_paths,
+            vec![project_path.to_string_lossy().to_string()]
+        );
+        assert_eq!(repaired.standalone_projects.len(), 1);
+        assert_eq!(repaired.standalone_projects[0].id, "project-existing");
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_from_hints_ignores_invalid_paths() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        persist_state_sync(&metadata_root, &WorkspaceState::default())
+            .expect("persist workspace state");
+        let missing_path = temp.path().join("missing");
+
+        let report = reconcile_project_registry_from_hints(
+            temp.path(),
+            &metadata_root,
+            WorkspaceReconcileProjectRegistryFromHintsRequestDto {
+                projects: vec![WorkspaceMetadataRecoveryHintDto {
+                    project_id: "project-missing".to_string(),
+                    group_id: None,
+                    name: "Missing".to_string(),
+                    path: missing_path.to_string_lossy().to_string(),
+                }],
+            },
+        )
+        .await
+        .expect("reconcile registry");
+        let state = load_raw_state_sync(&metadata_root)
+            .expect("read state")
+            .expect("state");
+
+        assert_eq!(report.status, "unchanged");
+        assert!(report.added_projects.is_empty());
+        assert_eq!(
+            report.invalid_paths,
+            vec![missing_path.to_string_lossy().to_string()]
+        );
+        assert!(state.standalone_projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_state_does_not_persist_destructive_repairs() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+
+        let state = WorkspaceState {
+            version: 3,
+            standalone_projects: Vec::new(),
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Suite".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: Some(PlanDto {
+                id: "plan-main".to_string(),
+                description: "Workspace execution plan".to_string(),
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+                status: "Draft".to_string(),
+                project_ids: vec!["project-web".to_string(), "project-missing".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: Vec::new(),
+                predicted_git_trees: HashMap::new(),
+            }),
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist raw state");
+
+        let loaded = load_state(temp.path(), &metadata_root)
+            .await
+            .expect("load state")
+            .expect("state");
+        assert_eq!(
+            loaded.current_plan.as_ref().unwrap().project_ids,
+            vec!["project-web".to_string(), "project-missing".to_string()]
+        );
+
+        let raw_content =
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("read raw state");
+        assert!(raw_content.contains("project-missing"));
+    }
+
+    #[tokio::test]
+    async fn destructive_mutation_repairs_back_up_workspace_state_before_persisting() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+
+        let state = WorkspaceState {
+            version: 3,
+            standalone_projects: Vec::new(),
+            project_groups: vec![ProjectGroupDto {
+                id: "group-1".to_string(),
+                name: "Suite".to_string(),
+                is_open: true,
+                projects: vec![
+                    make_project("project-web", project_path.to_string_lossy().as_ref()),
+                    make_project("project-web-copy", project_path.to_string_lossy().as_ref()),
+                ],
+            }],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("persist raw state");
+
+        persist_sanitized_state(temp.path(), &metadata_root, state, "remove_project")
+            .await
+            .expect("persist sanitized state");
+
+        let backups = stdfs::read_dir(&metadata_root)
+            .expect("read metadata root")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("workspace.json.bak-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+
+        let backup_content = stdfs::read_to_string(backups[0].path()).expect("read backup state");
+        assert!(backup_content.contains("project-web-copy"));
     }
 
     #[tokio::test]
@@ -5509,6 +8920,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async {
                 Err::<(), BackendError>(BackendError::Validation(
                     "persist failed on purpose".to_string(),
@@ -5539,6 +8951,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async {
                 Err::<(), BackendError>(BackendError::Validation(
                     "persist failed on purpose".to_string(),
@@ -5570,6 +8983,7 @@ mod tests {
             detection.resolved_repo_root_path.as_deref(),
             &detection.setup_state,
             &detection.recommended_action_sequence,
+            None,
             || async { Ok(()) },
         )
         .await;
@@ -5588,6 +9002,7 @@ mod tests {
         init_git_repo(&project_path, "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -5660,5 +9075,136 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[test]
+    fn load_raw_state_restores_the_last_valid_backup() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let first = WorkspaceState {
+            standalone_projects: vec![make_project("project-first", "/tmp/first")],
+            ..WorkspaceState::default()
+        };
+        let second = WorkspaceState {
+            standalone_projects: vec![make_project("project-second", "/tmp/second")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &first).expect("persist first state");
+        persist_state_sync(&metadata_root, &second).expect("persist second state");
+        stdfs::write(workspace_state_path(&metadata_root), "{invalid")
+            .expect("corrupt primary state");
+
+        let recovered = load_raw_state_sync(&metadata_root)
+            .expect("recover state")
+            .expect("workspace state");
+        assert_eq!(recovered.standalone_projects[0].id, "project-first");
+
+        let restored_content =
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("restored primary");
+        let restored: WorkspaceState =
+            serde_json::from_str(&restored_content).expect("valid restored json");
+        assert_eq!(restored.standalone_projects[0].id, "project-first");
+    }
+
+    #[test]
+    fn load_raw_state_reports_primary_and_backup_corruption() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        stdfs::write(workspace_state_path(&metadata_root), "{primary").expect("corrupt primary");
+        stdfs::write(workspace_state_backup_path(&metadata_root), "{backup")
+            .expect("corrupt backup");
+
+        let error = load_raw_state_sync(&metadata_root).expect_err("both files must fail");
+        let message = error.to_string();
+        assert!(message.contains("Primary error"));
+        assert!(message.contains("backup error"));
+        assert_eq!(
+            stdfs::read_to_string(workspace_state_path(&metadata_root)).expect("primary kept"),
+            "{primary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_write_failure_preserves_the_last_valid_json() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let original = WorkspaceState {
+            standalone_projects: vec![make_project("project-original", "/tmp/original")],
+            ..WorkspaceState::default()
+        };
+        let replacement = WorkspaceState {
+            standalone_projects: vec![make_project("project-replacement", "/tmp/replacement")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &original).expect("persist original state");
+
+        let writable_permissions = stdfs::metadata(&metadata_root)
+            .expect("metadata root")
+            .permissions();
+        let mut read_only_permissions = writable_permissions.clone();
+        read_only_permissions.set_mode(0o555);
+        stdfs::set_permissions(&metadata_root, read_only_permissions)
+            .expect("make metadata root read-only");
+        let result = persist_state_sync(&metadata_root, &replacement);
+        stdfs::set_permissions(&metadata_root, writable_permissions)
+            .expect("restore metadata permissions");
+
+        assert!(
+            result.is_err(),
+            "write should fail in a read-only directory"
+        );
+        let content = stdfs::read_to_string(workspace_state_path(&metadata_root))
+            .expect("read preserved primary state");
+        let preserved: WorkspaceState =
+            serde_json::from_str(&content).expect("preserved primary must remain valid JSON");
+        assert_eq!(preserved.standalone_projects[0].id, "project-original");
+    }
+
+    #[tokio::test]
+    async fn concurrent_workspace_mutations_preserve_both_updates() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let first_path = temp.path().join("first");
+        let second_path = temp.path().join("second");
+        stdfs::create_dir_all(&first_path).expect("first path");
+        stdfs::create_dir_all(&second_path).expect("second path");
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                make_project("project-first", first_path.to_string_lossy().as_ref()),
+                make_project("project-second", second_path.to_string_lossy().as_ref()),
+            ],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &state).expect("seed state");
+
+        let (first_result, second_result) = tokio::join!(
+            rename_project(
+                temp.path(),
+                &metadata_root,
+                "project-first",
+                "First renamed"
+            ),
+            rename_project(
+                temp.path(),
+                &metadata_root,
+                "project-second",
+                "Second renamed"
+            )
+        );
+        first_result.expect("rename first");
+        second_result.expect("rename second");
+
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("load state")
+            .expect("workspace state");
+        let names = persisted
+            .standalone_projects
+            .iter()
+            .map(|project| project.name.as_str())
+            .collect::<HashSet<_>>();
+        assert!(names.contains("First renamed"));
+        assert!(names.contains("Second renamed"));
     }
 }

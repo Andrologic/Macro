@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -16,6 +16,20 @@ import {
   type ReviewRepositoryUiState,
 } from '../../services/implementMultiRepoSummary';
 import {
+  getArchitectPlan,
+  getGitFlowBaseBranch,
+  resolveTargetBranch,
+  type ArchitectPlanRecord,
+} from '../../services/architectPlanService';
+import {
+  listVisibleTaskArtifactReviewEntries,
+  normalizeArtifactContracts,
+  validateVisibleTaskArtifact,
+  unvalidateVisibleTaskArtifact,
+  type VisiblePlanTaskArtifactReviewEntry,
+} from '../../services/architectPlanArtifactService';
+import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
+import {
   getServiceRuntimeCapabilities,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../../services';
@@ -32,49 +46,94 @@ import {
   resolveMergeWorkflowViewState,
 } from '../../services/mergeWorkflow';
 import { isPlanFinalizationTaskSource } from '../../services/planFinalization';
+import { isSmartCommitMessageGenerationError } from '../../services/smartCommitMessageGenerator';
 import {
-  isSmartCommitMessageGenerationError,
-  type GeneratedCommitMessages,
-} from '../../services/smartCommitMessageGenerator';
-import {
-  PREF_KEYS,
-  loadPreference,
-  savePreference,
-} from '../../services/preferences';
-import {
-  ALLOWED_COMMIT_TYPES,
   formatConventionalCommitMessage,
   validateConventionalCommitFields,
   type ConventionalCommitFields,
-  type ConventionalCommitType,
 } from '../../services/conventionalCommit';
-import type { SmartCommitModelConfig } from '../../services/smartCommitModelConfig';
+import {
+  normalizeMetadataModelConfig,
+  resolveMetadataModelReasoningEfforts,
+  type MetadataModelConfig,
+} from '../../services/metadataModelConfig';
+import {
+  loadMetadataModelConfig,
+  saveMetadataModelConfig,
+  subscribeMetadataModelConfig,
+} from '../../services/metadataModelPreference';
+import {
+  buildEditableCommitMessages,
+  buildManualCommitMessageDrafts,
+} from '../../services/smartCommitDrafts';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
+import { ArtifactDiffModal } from '../modals/ArtifactDiffModal';
 import { FileChangesDiffModal } from '../modals/FileChangesDiffModal';
 import { Button } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
-import { Textarea } from '../ui/Textarea';
 import { MergeWorkflowTaskPanel } from '../plan/MergeWorkflowTaskPanel';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import {
+  getDependencyBlockedMessage,
+  TaskBlockedState,
+} from './TaskBlockedState';
+import {
   presentServiceError,
   presentWorktreeError,
 } from '../../services/degradedErrorPresentation';
+import {
+  getTooManyOpenFilesNotificationKey,
+  isTooManyOpenFilesBackoffActive,
+  isTooManyOpenFilesMessage,
+  noteTooManyOpenFilesBackoff,
+} from '../../services/resourcePressureBackoff';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import { canAutoRefreshFileChangesForTask } from '../../services/fileChangesRefreshPolicy';
+import { CommitMessageEditorModal } from './CommitMessageEditorModal';
+import { CommitMessageGenerationFailureModal } from './CommitMessageGenerationFailureModal';
+import { useElementSize } from '../../hooks/useElementSize';
 
 interface FileChangesPanelProps {
   className?: string;
 }
 
 interface CommitMessageEditState {
+  mode: 'review_generated' | 'manual_fallback';
   fieldsByRepositoryId: Record<string, ConventionalCommitFields>;
   error: string | null;
 }
 
+interface ArtifactReviewPanelState {
+  branchName: string;
+  plan: ArchitectPlanRecord;
+  entries: VisiblePlanTaskArtifactReviewEntry[];
+  contracts: ReturnType<typeof normalizeArtifactContracts>;
+  lastError: string | null;
+}
+
+const ARTIFACT_REPOSITORY_ID = '__task-artifacts__';
+
+const PASSIVE_WORKTREE_WAITING_STATUSES = new Set([
+  'Pending',
+  'Blocked',
+  'Failed',
+  'Completed',
+]);
+
+const isPassiveWorktreeWaitingState = (
+  loadState: string,
+  task: { status?: string | null } | null | undefined
+): boolean =>
+  loadState === 'awaiting_worktree' &&
+  PASSIVE_WORKTREE_WAITING_STATUSES.has(task?.status || '');
+
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+
+const HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE =
+  'transition-opacity group-hover:opacity-0';
 
 const interpolateFallbackPlaceholders = (
   value: string,
@@ -92,6 +151,8 @@ const interpolateFallbackPlaceholders = (
 const CHANGE_PANEL_POLL_INTERVAL_MS = 1500;
 const CHANGE_PANEL_HIDDEN_POLL_INTERVAL_MS = 8000;
 const POST_ASSISTANT_REFRESH_DELAY_MS = 400;
+const MULTI_REPOSITORY_MIN_SECTION_HEIGHT = 112;
+const NO_REASONING_EFFORTS = (_providerId?: string | null, _modelId?: string | null): ReasoningEffort[] => [];
 
 const STATUS_COLORS = {
   added: 'text-primary',
@@ -131,6 +192,18 @@ const getRepositoryDisplayName = (
   return projectName || tail;
 };
 
+const getTaskArtifactBranchName = (
+  task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
+): string => resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+
+const canShowTaskArtifacts = (
+  task: Pick<CatalogedImplementTask, 'task_source' | 'plan_id'> | null | undefined
+): task is CatalogedImplementTask =>
+  Boolean(
+    task?.plan_id &&
+      (task.task_source === 'architect' || isPlanFinalizationTaskSource(task.task_source))
+  );
+
 const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
   const value = raw.toLowerCase();
   if (value.includes('staged files outside this task')) {
@@ -142,28 +215,6 @@ const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
   return raw;
 };
 
-const buildEditableCommitMessages = (
-  generatedMessages: GeneratedCommitMessages,
-  repositories: ReviewRepositoryState[]
-): Record<string, ConventionalCommitFields> => Object.fromEntries(
-  repositories
-    .filter((repository) =>
-      repository.commitState === 'idle' &&
-      repository.stats.validatedStagedFileCount > 0 &&
-      repository.stagedPaths.length > 0
-    )
-    .map((repository) => {
-      const generated = generatedMessages.repositories.find((entry) => entry.repositoryId === repository.id);
-      return [repository.id, {
-        type: generated?.type ?? 'chore',
-        scope: null,
-        breaking: generated?.breaking ?? false,
-        subject: generated?.subject?.trim() || 'update task changes',
-        body: generated?.body?.trim() || null,
-      }];
-    })
-);
-
 interface FolderTreeItemProps {
   repositoryId: string;
   node: FolderNode;
@@ -171,6 +222,7 @@ interface FolderTreeItemProps {
   selectedChangeId: string | null;
   onFileClick: (changeId: string) => void;
   onStageChanges: (changeIds: string[]) => void;
+  canValidateChanges: (changeIds: string[]) => boolean;
   onUnstageChanges: (changeIds: string[]) => void;
   onRevert: (changeIds: string[], scopeLabel: string, requiresConfirm: boolean) => void;
   labels: {
@@ -183,6 +235,8 @@ interface FolderTreeItemProps {
 
 interface ScopeActionRailProps {
   onValidate?: () => void;
+  showValidate?: boolean;
+  validateDisabled?: boolean;
   onUnstage?: () => void;
   onRevert?: () => void;
   labels: {
@@ -196,19 +250,22 @@ interface ScopeActionRailProps {
 
 const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
   onValidate,
+  showValidate = Boolean(onValidate),
+  validateDisabled = false,
   onUnstage,
   onRevert,
   labels,
   className,
 }) => (
   <div
+    data-scope-action-rail="true"
     className={cn(
-      'absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
-      'bg-transparent',
+      'pointer-events-none absolute inset-y-0 right-0 z-20 flex items-center gap-1 pr-1 pl-10 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100',
+      'bg-gradient-to-l from-background via-background/95 to-transparent',
       className
     )}
   >
-    {onValidate && (
+    {showValidate && (
       <Button
         type="button"
         variant="ghost"
@@ -216,9 +273,10 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
         className="h-7 w-7 px-0"
         title={labels.validate}
         aria-label={labels.validate}
+        disabled={validateDisabled}
         onClick={(event) => {
           event.stopPropagation();
-          onValidate();
+          onValidate?.();
         }}
       >
         <Icon name="check" size={14} />
@@ -266,6 +324,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
   selectedChangeId,
   onFileClick,
   onStageChanges,
+  canValidateChanges,
   onUnstageChanges,
   onRevert,
   labels,
@@ -300,13 +359,18 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
             {!isOpen && hasPendingValidation && (
               <span
                 data-pending-validation-indicator="true"
-                className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+                className={cn(
+                  'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                  HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                )}
               />
             )}
           </button>
           {(pendingChangeIds.length > 0 || stagedChangeIds.length > 0) && (
             <ScopeActionRail
-              onValidate={pendingChangeIds.length > 0 ? () => onStageChanges(pendingChangeIds) : undefined}
+              showValidate={pendingChangeIds.length > 0}
+              validateDisabled={!canValidateChanges(pendingChangeIds)}
+              onValidate={pendingChangeIds.length > 0 && canValidateChanges(pendingChangeIds) ? () => onStageChanges(pendingChangeIds) : undefined}
               onUnstage={stagedChangeIds.length > 0 ? () => onUnstageChanges(stagedChangeIds) : undefined}
               onRevert={pendingChangeIds.length > 0 ? () => onRevert(pendingChangeIds, node.path, true) : undefined}
               labels={labels}
@@ -325,6 +389,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
                 selectedChangeId={selectedChangeId}
                 onFileClick={onFileClick}
                 onStageChanges={onStageChanges}
+                canValidateChanges={canValidateChanges}
                 onUnstageChanges={onUnstageChanges}
                 onRevert={onRevert}
                 labels={labels}
@@ -370,15 +435,19 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
         {change.hasPendingVisibleChange && (
           <span
             data-pending-validation-indicator="true"
-            className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+            className={cn(
+              'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+            )}
           />
         )}
 
         <div
+          data-file-change-metadata="true"
           className={cn(
             'flex items-center gap-1 text-[11px] shrink-0 opacity-60',
             (change.hasPendingVisibleChange || change.hasValidatedStage) &&
-              'transition-opacity group-hover:opacity-0'
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
           )}
         >
           {change.hasValidatedStage && (
@@ -396,9 +465,117 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
       </button>
       {(change.hasPendingVisibleChange || change.hasValidatedStage) && (
         <ScopeActionRail
-          onValidate={change.hasPendingVisibleChange ? () => onStageChanges([change.id]) : undefined}
+          showValidate={change.hasPendingVisibleChange}
+          validateDisabled={!canValidateChanges([change.id])}
+          onValidate={change.hasPendingVisibleChange && canValidateChanges([change.id]) ? () => onStageChanges([change.id]) : undefined}
           onUnstage={change.hasValidatedStage ? () => onUnstageChanges([change.id]) : undefined}
           onRevert={change.hasPendingVisibleChange ? () => onRevert([change.id], change.path, false) : undefined}
+          labels={labels}
+          className="rounded-r-lg"
+        />
+      )}
+    </div>
+  );
+};
+
+interface ArtifactReviewItemProps {
+  entry: VisiblePlanTaskArtifactReviewEntry;
+  sourceTitle: string;
+  isSelected: boolean;
+  onOpen: () => void;
+  onValidate: () => void;
+  canValidate: boolean;
+  onUnvalidate: () => void;
+  labels: {
+    staged: string;
+    validate: string;
+    unstage: string;
+    revert: string;
+    new: string;
+    inherited: string;
+  };
+}
+
+const ArtifactReviewItem: React.FC<ArtifactReviewItemProps> = ({
+  entry,
+  sourceTitle,
+  isSelected,
+  onOpen,
+  onValidate,
+  canValidate,
+  onUnvalidate,
+  labels,
+}) => {
+  const { artifact } = entry;
+  const isOwn = artifact.visibility === 'own';
+  return (
+    <div
+      className={cn(
+        'group relative rounded-lg transition-all overflow-hidden',
+        isSelected
+          ? 'bg-primary/[0.035]'
+          : 'bg-primary/[0.035] hover:bg-primary/[0.06]'
+      )}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-w-0 w-full appearance-none items-start gap-2 border-0 bg-transparent px-2 py-1.5 pr-2 text-left outline-none"
+      >
+        <span
+          className={cn(
+            'mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold font-mono',
+            isOwn ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+          )}
+        >
+          {isOwn ? '+' : 'I'}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm text-foreground">{artifact.title}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+            {artifact.summary || sourceTitle}
+          </span>
+        </span>
+        {entry.hasPendingReview && (
+          <span
+            data-pending-validation-indicator="true"
+            className={cn(
+              'mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+            )}
+          />
+        )}
+        <div
+          data-file-change-metadata="true"
+          className={cn(
+            'flex shrink-0 flex-wrap items-center justify-end gap-1 text-[11px] opacity-80',
+            (entry.hasPendingReview || entry.hasValidatedReview) &&
+              HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+          )}
+        >
+          <span
+            className={cn(
+              'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+              isOwn
+                ? 'bg-primary/10 text-primary'
+                : 'bg-muted text-muted-foreground'
+            )}
+          >
+            {isOwn ? labels.new : labels.inherited}
+          </span>
+          {entry.hasValidatedReview && (
+            <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+              {labels.staged}
+            </span>
+          )}
+        </div>
+      </button>
+      {(entry.hasPendingReview || entry.hasValidatedReview) && (
+        <ScopeActionRail
+          showValidate={entry.hasPendingReview}
+          validateDisabled={!canValidate}
+          onValidate={entry.hasPendingReview && canValidate ? onValidate : undefined}
+          onUnstage={entry.hasValidatedReview ? onUnvalidate : undefined}
           labels={labels}
           className="rounded-r-lg"
         />
@@ -445,6 +622,27 @@ const renderRepositoryState = (
   });
 };
 
+const renderArtifactRepositoryState = (
+  pendingCount: number,
+  validatedCount: number,
+  t: TranslateFn
+): string => {
+  if (pendingCount > 0 && validatedCount > 0) {
+    return t('implement.artifacts.pendingAndValidated', '{{pending}} pending, {{validated}} validated', {
+      pending: pendingCount,
+      validated: validatedCount,
+    });
+  }
+  if (validatedCount > 0) {
+    return t('implement.artifacts.validatedOnly', '{{validated}} validated', {
+      validated: validatedCount,
+    });
+  }
+  return t('implement.artifacts.pendingOnly', '{{pending}} pending', {
+    pending: pendingCount,
+  });
+};
+
 const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) => {
   const { t } = useTranslation();
   const translate: TranslateFn = (key, fallback, options) =>
@@ -458,8 +656,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    standaloneProjects,
     projectGroups,
     getProjectById,
+    openSettings,
   } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
@@ -485,6 +685,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       .sort()
       .join('|');
   });
+  const selectedTaskHasPendingQuestionnaire = useChatStore((state) => {
+    if (!selectedTaskId) return false;
+    return state.conversations.some((conversation) => {
+      if (
+        conversation.scope_mode !== 'Implement' ||
+        conversation.task_id !== selectedTaskId
+      ) {
+        return false;
+      }
+      return state.getActiveQuestionnaire(conversation.id)?.mode === 'pending_reply';
+    });
+  });
   const selectedTaskWorktreeKey = useTaskStore((state) => {
     if (!selectedTaskId) return '';
     const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
@@ -498,15 +710,22 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const providerStore = useProviderStore();
   const providerConfigs = providerStore.providerConfigs;
   const modelsByProvider = providerStore.modelsByProvider;
-  const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? (() => []);
+  const getAvailableReasoningEfforts = providerStore.getAvailableReasoningEfforts ?? NO_REASONING_EFFORTS;
   const [expandedRepositoryIds, setExpandedRepositoryIds] = useState<Record<string, boolean>>({});
+  const [artifactPanelState, setArtifactPanelState] = useState<ArtifactReviewPanelState | null>(null);
+  const [isLoadingArtifacts, setIsLoadingArtifacts] = useState(false);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [isFinishingTask, setIsFinishingTask] = useState(false);
+  const finishingTaskIdRef = useRef<string | null>(null);
+  const [reviewedChangeSignatures, setReviewedChangeSignatures] = useState<Record<string, string>>({});
+  const [reviewedArtifactSignatures, setReviewedArtifactSignatures] = useState<Record<string, string>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
     repositoryId: string;
     changeIds: string[];
     scopeLabel: string;
   } | null>(null);
   const [commitMessageGenerationError, setCommitMessageGenerationError] = useState<string | null>(null);
-  const [smartCommitModelConfig, setSmartCommitModelConfig] = useState<SmartCommitModelConfig | null | undefined>(
+  const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null | undefined>(
     undefined
   );
   const [isCommitModelChoiceOpen, setIsCommitModelChoiceOpen] = useState(false);
@@ -522,11 +741,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const postAssistantRefreshTimeoutRef = useRef<number | null>(null);
   const [commitMessageEditState, setCommitMessageEditState] = useState<CommitMessageEditState | null>(null);
   const {
+    ref: repositoryListRef,
+    height: repositoryListHeight,
+  } = useElementSize<HTMLDivElement>();
+  const {
     repositories,
     reviewSummary,
     currentTaskLoadState,
     currentTaskLoadMessage,
-    selectedRepositoryId,
     selectedDiffTarget,
     isDiffModalOpen,
     isLoading,
@@ -536,7 +758,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     executionRecords,
     loadCurrentChanges,
     resetReviewState,
-    selectRepository,
     openDiffModal,
     closeDiffModal,
     stageChanges,
@@ -549,54 +770,150 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
+        standaloneProjects,
         projectGroups,
         selectedGroupId,
         selectedProjectId,
       }),
-    [projectGroups, selectedGroupId, selectedProjectId]
+    [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
   const enabledCommitProviders = useMemo(
     () => providerConfigs.filter((provider) => providerHasCredentials(provider)),
     [providerConfigs]
   );
+  const normalizeCommitModelConfig = useCallback((
+    config: MetadataModelConfig | null | undefined
+  ): MetadataModelConfig | null =>
+    normalizeMetadataModelConfig(config, {
+      providerConfigs: enabledCommitProviders,
+      modelsByProvider,
+      getAvailableReasoningEfforts,
+    }), [enabledCommitProviders, getAvailableReasoningEfforts, modelsByProvider]);
   const dedicatedCommitModels = useMemo(
     () => dedicatedCommitProviderId
       ? (modelsByProvider[dedicatedCommitProviderId] || []).filter((model) => model.isEnabled !== false)
       : [],
     [dedicatedCommitProviderId, modelsByProvider]
   );
-  const dedicatedCommitReasoningEfforts = getAvailableReasoningEfforts(
+  const dedicatedCommitReasoningEfforts = resolveMetadataModelReasoningEfforts(
     dedicatedCommitProviderId || null,
-    dedicatedCommitModelId || null
+    dedicatedCommitModelId || null,
+    {
+      providerConfigs: enabledCommitProviders,
+      modelsByProvider,
+      getAvailableReasoningEfforts,
+    }
   );
   const canUseDedicatedCommitModel = Boolean(dedicatedCommitProviderId && dedicatedCommitModelId);
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
+  const hasResourcePressureError = isTooManyOpenFilesMessage(lastError);
+  const canAutoRefreshCurrentTask = canAutoRefreshFileChangesForTask({
+    selectedTaskId,
+    taskStatus: currentTask?.status,
+    hasPendingQuestionnaire: selectedTaskHasPendingQuestionnaire,
+    hasRepositoryScope,
+    isReadOnlyRemoteMode,
+    isPlanFinalizationTask,
+    hasActiveMergeWorkflow,
+    hasResourcePressureError,
+    isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
+  });
   const isSelectedTaskAssistantActive =
     selectedTaskAssistantRuntimeSignature.includes(':preparing:') ||
     selectedTaskAssistantRuntimeSignature.includes(':streaming:');
 
+  const loadArtifactReviewState = useCallback(async () => {
+    if (!canShowTaskArtifacts(currentTask)) {
+      setArtifactPanelState(null);
+      setSelectedArtifactId(null);
+      return;
+    }
+    setIsLoadingArtifacts(true);
+    try {
+      const branchName = getTaskArtifactBranchName(currentTask);
+      const plan = await getArchitectPlan(branchName, currentTask.plan_id);
+      if (!plan || plan.status === 'deleted') {
+        setArtifactPanelState(null);
+        setSelectedArtifactId(null);
+        return;
+      }
+      const entries = await listVisibleTaskArtifactReviewEntries({
+        branchName,
+        plan,
+        task: currentTask,
+        includeInherited: true,
+        includeOwn: true,
+      });
+      const node = plan.nodes.find((candidate) => candidate.id === currentTask.id);
+      setArtifactPanelState({
+        branchName,
+        plan,
+        entries,
+        contracts: normalizeArtifactContracts(node || {}),
+        lastError: null,
+      });
+      setSelectedArtifactId((current) =>
+        current && entries.some((entry) => entry.artifact.id === current)
+          ? current
+          : null
+      );
+    } catch (error) {
+      const message = toServiceError(error).message || t('common.error', 'An error occurred');
+      setArtifactPanelState((current) =>
+        current
+          ? { ...current, lastError: message }
+          : null
+      );
+      notify.error(message);
+    } finally {
+      setIsLoadingArtifacts(false);
+    }
+  }, [currentTask, t]);
+
   useEffect(() => {
     let disposed = false;
-    void loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG)
+    void loadMetadataModelConfig()
       .then((value) => {
         if (!disposed) {
-          setSmartCommitModelConfig(value);
-          if (value?.mode === 'dedicated') {
+          const normalized = normalizeCommitModelConfig(value);
+          setMetadataModelConfig(normalized);
+          if (normalized?.mode === 'dedicated') {
             setCommitModelChoiceMode('dedicated');
-            setDedicatedCommitProviderId(value.providerId);
-            setDedicatedCommitModelId(value.modelId);
-            setDedicatedCommitReasoningEffort(value.reasoningEffort ?? null);
+            setDedicatedCommitProviderId(normalized.providerId);
+            setDedicatedCommitModelId(normalized.modelId);
+            setDedicatedCommitReasoningEffort(normalized.reasoningEffort ?? null);
           }
         }
       });
 
+    const unsubscribe = subscribeMetadataModelConfig(
+      (value) => {
+        if (disposed) return;
+        const normalized = normalizeCommitModelConfig(value);
+        setMetadataModelConfig(normalized);
+        if (normalized?.mode === 'dedicated') {
+          setCommitModelChoiceMode('dedicated');
+          setDedicatedCommitProviderId(normalized.providerId);
+          setDedicatedCommitModelId(normalized.modelId);
+          setDedicatedCommitReasoningEffort(normalized.reasoningEffort ?? null);
+        } else if (normalized?.mode === 'conversation') {
+          setCommitModelChoiceMode('conversation');
+        }
+      }
+    );
+
     return () => {
       disposed = true;
+      unsubscribe();
     };
-  }, []);
+  }, [normalizeCommitModelConfig]);
+
+  useEffect(() => {
+    void loadArtifactReviewState();
+  }, [loadArtifactReviewState]);
 
   useEffect(() => {
     if (commitModelChoiceMode !== 'dedicated') return;
@@ -624,7 +941,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       resetReviewState();
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
+    if (
+      !hasRepositoryScope ||
+      !selectedTaskId ||
+      !canAutoRefreshCurrentTask ||
+      isPlanFinalizationTask ||
+      hasActiveMergeWorkflow ||
+      hasResourcePressureError ||
+      isTooManyOpenFilesBackoffActive()
+    ) {
       resetReviewState();
       return;
     }
@@ -634,6 +959,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     void loadCurrentChanges();
   }, [
     currentTask?.status,
+    canAutoRefreshCurrentTask,
+    hasResourcePressureError,
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
@@ -651,7 +978,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isReadOnlyRemoteMode) {
       return;
     }
-    if (!hasRepositoryScope || !selectedTaskId || isPlanFinalizationTask || hasActiveMergeWorkflow) {
+    if (
+      !hasRepositoryScope ||
+      !selectedTaskId ||
+      !canAutoRefreshCurrentTask ||
+      isPlanFinalizationTask ||
+      hasActiveMergeWorkflow ||
+      hasResourcePressureError
+    ) {
       return;
     }
     if (isDiffModalOpen) {
@@ -663,13 +997,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     let timeoutId: number | null = null;
 
     const refreshChanges = async (silent: boolean = true) => {
-      if (disposed || refreshInFlight || isCommitting) {
+      if (disposed || refreshInFlight || isCommitting || isTooManyOpenFilesBackoffActive()) {
         return;
       }
 
       refreshInFlight = true;
       try {
         await loadCurrentChanges({ silent });
+      } catch (error) {
+        if (isTooManyOpenFilesMessage(error)) {
+          noteTooManyOpenFilesBackoff();
+        }
       } finally {
         refreshInFlight = false;
       }
@@ -719,6 +1057,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, [
     hasRepositoryScope,
     hasActiveMergeWorkflow,
+    canAutoRefreshCurrentTask,
+    hasResourcePressureError,
     isCommitting,
     isDiffModalOpen,
     isPlanFinalizationTask,
@@ -728,6 +1068,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskId,
     isReadOnlyRemoteMode,
   ]);
+
+  useEffect(() => {
+    if (!lastError || !isTooManyOpenFilesMessage(lastError)) {
+      return;
+    }
+
+    noteTooManyOpenFilesBackoff();
+    const presentation = presentServiceError(lastError);
+    notify.actionRequired(presentation.title, {
+      notificationKey: getTooManyOpenFilesNotificationKey(),
+      tone: 'warning',
+      description: [presentation.body, presentation.nextStep].filter(Boolean).join('\n\n'),
+      category: 'task_attention_required',
+      actions: [
+        {
+          label: t('common.retry', 'Retry'),
+          variant: 'primary',
+          onClick: () => void loadCurrentChanges(),
+        },
+      ],
+    });
+  }, [lastError, loadCurrentChanges, t]);
 
   useEffect(() => {
     if (assistantRefreshTaskIdRef.current === selectedTaskId) {
@@ -782,13 +1144,25 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (!postAssistantRefreshToken || !postAssistantRefreshPendingRef.current) {
       return;
     }
-    if (isDiffModalOpen || isCommitting || isGeneratingCommitMessages) {
+    if (isCommitting || isGeneratingCommitMessages) {
       return;
     }
     if (
       postAssistantRefreshInFlightRef.current ||
       isReadOnlyRemoteMode ||
       !hasRepositoryScope ||
+      hasResourcePressureError ||
+      !canAutoRefreshFileChangesForTask({
+        selectedTaskId,
+        taskStatus: currentTask?.status,
+        hasPendingQuestionnaire: selectedTaskHasPendingQuestionnaire,
+        hasRepositoryScope,
+        isReadOnlyRemoteMode,
+        isPlanFinalizationTask: false,
+        hasActiveMergeWorkflow: false,
+        hasResourcePressureError,
+        isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
+      }) ||
       !currentTask ||
       !selectedTaskId
     ) {
@@ -810,8 +1184,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         }
 
         if (!isPlanFinalizationTask) {
-          await loadCurrentChanges({ silent: true });
+          await loadCurrentChanges({
+            silent: true,
+            ...(isDiffModalOpen ? { preserveDiffModalSession: true } : {}),
+          });
         }
+        await loadArtifactReviewState();
       } catch {
         // Silent refresh: the panel will surface explicit errors on the next user action.
       } finally {
@@ -825,43 +1203,190 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     currentMergeWorkflowRuntime,
     currentTask,
     hasRepositoryScope,
+    hasResourcePressureError,
     isCommitting,
     isDiffModalOpen,
     isGeneratingCommitMessages,
     isPlanFinalizationTask,
     isReadOnlyRemoteMode,
+    loadArtifactReviewState,
     loadCurrentChanges,
     loadMergeWorkflowReview,
     postAssistantRefreshToken,
     selectedTaskId,
+    selectedTaskHasPendingQuestionnaire,
   ]);
 
+  const artifactEntries = useMemo(
+    () => artifactPanelState?.entries ?? [],
+    [artifactPanelState?.entries]
+  );
+  const currentChangeSignatures = useMemo(() => {
+    const signatures: Record<string, string> = {};
+    repositories.forEach((repository) => {
+      repository.changes.forEach((change) => {
+        signatures[`${repository.id}:${change.id}`] = [
+          change.status,
+          change.additions,
+          change.deletions,
+          change.modifiedContent.length,
+          change.indexContent.length,
+        ].join(':');
+      });
+    });
+    return signatures;
+  }, [repositories]);
+  const currentArtifactSignatures = useMemo(
+    () => Object.fromEntries(
+      artifactEntries.map((entry) => [
+        entry.artifact.id,
+        `${entry.artifact.contentHash}:${entry.artifact.updatedAt}`,
+      ])
+    ),
+    [artifactEntries]
+  );
+
   useEffect(() => {
-    if (repositories.length === 0) return;
+    setReviewedChangeSignatures((current) => Object.fromEntries(
+      Object.entries(current).filter(
+        ([key, signature]) => currentChangeSignatures[key] === signature
+      )
+    ));
+  }, [currentChangeSignatures]);
+
+  useEffect(() => {
+    setReviewedArtifactSignatures((current) => Object.fromEntries(
+      Object.entries(current).filter(
+        ([key, signature]) => currentArtifactSignatures[key] === signature
+      )
+    ));
+  }, [currentArtifactSignatures]);
+
+  const markChangeReviewed = useCallback((repositoryId: string, changeId: string) => {
+    const key = `${repositoryId}:${changeId}`;
+    const signature = currentChangeSignatures[key];
+    if (!signature) return;
+    setReviewedChangeSignatures((current) => ({ ...current, [key]: signature }));
+  }, [currentChangeSignatures]);
+
+  const areChangesReviewed = useCallback(
+    (repositoryId: string, changeIds: string[]) => changeIds.every((changeId) => {
+      const key = `${repositoryId}:${changeId}`;
+      return Boolean(
+        currentChangeSignatures[key] &&
+        reviewedChangeSignatures[key] === currentChangeSignatures[key]
+      );
+    }),
+    [currentChangeSignatures, reviewedChangeSignatures]
+  );
+
+  const markArtifactReviewed = useCallback((artifactId: string) => {
+    const signature = currentArtifactSignatures[artifactId];
+    if (!signature) return;
+    setReviewedArtifactSignatures((current) => ({ ...current, [artifactId]: signature }));
+  }, [currentArtifactSignatures]);
+
+  const isArtifactReviewed = useCallback(
+    (artifactId: string) => Boolean(
+      currentArtifactSignatures[artifactId] &&
+      reviewedArtifactSignatures[artifactId] === currentArtifactSignatures[artifactId]
+    ),
+    [currentArtifactSignatures, reviewedArtifactSignatures]
+  );
+  const artifactContracts = artifactPanelState?.contracts ?? [];
+  const missingArtifactContracts = artifactContracts.filter(
+    (contract) =>
+      !artifactEntries.some(
+        (entry) =>
+          entry.artifact.taskId === currentTask?.id &&
+          (entry.artifact.contractId === contract.id || entry.artifact.id === contract.id)
+      )
+  );
+  const showArtifactRepository = Boolean(
+    artifactPanelState &&
+      (artifactEntries.length > 0 || artifactContracts.length > 0 || artifactPanelState.lastError)
+  );
+  const artifactPendingReviewCount = artifactEntries.filter((entry) => entry.hasPendingReview).length;
+  const ownArtifactPendingReviewCount = artifactEntries.filter(
+    (entry) => entry.hasPendingReview && entry.artifact.visibility === 'own'
+  ).length;
+  const artifactValidatedReviewCount = artifactEntries.filter((entry) => entry.hasValidatedReview).length;
+  const reviewSectionCount = repositories.length + (showArtifactRepository ? 1 : 0);
+  const hasActionableRepositoryChanges =
+    reviewSummary.actionCounts.pending_validation > 0 ||
+    reviewSummary.actionCounts.ready_to_commit > 0;
+  const shouldDefaultExpandArtifactRepository =
+    showArtifactRepository &&
+    (repositories.length === 0 || !hasActionableRepositoryChanges);
+
+  useEffect(() => {
+    if (reviewSectionCount === 0) return;
     setExpandedRepositoryIds((current) => {
       const next = { ...current };
       repositories.forEach((repository) => {
         if (next[repository.id] !== undefined) return;
         next[repository.id] =
           repositories.length === 1 ||
-          repository.id === selectedRepositoryId ||
           repository.id === reviewSummary.nextRepositoryId;
       });
+      if (showArtifactRepository && next[ARTIFACT_REPOSITORY_ID] === undefined) {
+        next[ARTIFACT_REPOSITORY_ID] = shouldDefaultExpandArtifactRepository;
+      }
       return next;
     });
-  }, [repositories, reviewSummary.nextRepositoryId, selectedRepositoryId]);
+  }, [
+    repositories,
+    reviewSectionCount,
+    reviewSummary.nextRepositoryId,
+    shouldDefaultExpandArtifactRepository,
+    showArtifactRepository,
+  ]);
 
   const repositorySummaryById = useMemo(
     () => new Map(reviewSummary.repositories.map((repository) => [repository.id, repository])),
     [reviewSummary.repositories]
   );
+  const repositoriesSectionMaxHeight =
+    repositories.length > 1 && repositoryListHeight > 0
+      ? Math.max(
+          MULTI_REPOSITORY_MIN_SECTION_HEIGHT,
+          Math.floor(repositoryListHeight / repositories.length)
+        )
+      : null;
+  const artifactSectionMaxHeight =
+    reviewSectionCount > 1 && repositoryListHeight > 0
+      ? Math.max(
+          MULTI_REPOSITORY_MIN_SECTION_HEIGHT,
+          Math.floor(repositoryListHeight / reviewSectionCount)
+        )
+      : null;
   const overallStats = getOverallStats();
-  const actionableFileCount =
-    overallStats.pendingVisibleFileCount + overallStats.validatedStagedFileCount;
-  const progressPercent = actionableFileCount > 0
-    ? (overallStats.validatedStagedFileCount / actionableFileCount) * 100
+  const actionableChangeCount =
+    overallStats.pendingVisibleFileCount +
+    overallStats.validatedStagedFileCount +
+    artifactPendingReviewCount +
+    artifactValidatedReviewCount;
+  const validatedChangeCount =
+    overallStats.validatedStagedFileCount + artifactValidatedReviewCount;
+  const pendingChangeCount =
+    overallStats.pendingVisibleFileCount + artifactPendingReviewCount;
+  const progressPercent = actionableChangeCount > 0
+    ? (validatedChangeCount / actionableChangeCount) * 100
     : 0;
-  const hasPendingValidation = reviewSummary.actionCounts.pending_validation > 0;
+  const hasPendingValidation =
+    reviewSummary.actionCounts.pending_validation > 0 || artifactPendingReviewCount > 0;
+  const unreviewedPendingFileCount = repositories.reduce(
+    (count, repository) => count + repository.changes.filter(
+      (change) => change.hasPendingVisibleChange &&
+        !areChangesReviewed(repository.id, [change.id])
+    ).length,
+    0
+  );
+  const unreviewedPendingArtifactCount = artifactEntries.filter(
+    (entry) => entry.hasPendingReview && !isArtifactReviewed(entry.artifact.id)
+  ).length;
+  const unreviewedPendingCount =
+    unreviewedPendingFileCount + unreviewedPendingArtifactCount;
   const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
   const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
@@ -884,10 +1409,20 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     allTaskRepositoriesResolved &&
     reviewSummary.actionCounts.pending_validation === 0 &&
     reviewSummary.actionCounts.ready_to_commit === 0 &&
+    ownArtifactPendingReviewCount === 0 &&
     hasTaskCommittedRepositories;
-  const isValidateChangesDisabled = isCommitting || isGeneratingCommitMessages || !hasPendingValidation;
+  const isValidateChangesDisabled =
+    isCommitting ||
+    isGeneratingCommitMessages ||
+    !hasPendingValidation ||
+    unreviewedPendingCount > 0;
   const validateChangesDisabledReason = isGeneratingCommitMessages
     ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+    : unreviewedPendingCount > 0
+      ? t(
+          'implement.reviewBeforeValidation',
+          'Open every pending diff before validating changes.'
+        )
     : t(
         'implement.noRemainingChangesToValidate',
         'No remaining unstaged changes to validate.'
@@ -904,13 +1439,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const outOfScopeMessage = currentTaskLoadState === 'out_of_scope'
     ? currentTaskLoadMessage
     : null;
+  const dependencyBlockedMessage = getDependencyBlockedMessage(currentTask, t);
+  const isPassiveWorktreeWaiting = isPassiveWorktreeWaitingState(
+    currentTaskLoadState,
+    currentTask
+  );
   const isManualDraftEmptyState =
     isManualDraftPendingInitialization(currentTask) &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree');
-  const draftEmptyStateMessage = isManualDraftEmptyState
+  const draftEmptyStateMessage = isManualDraftEmptyState || isPassiveWorktreeWaiting
     ? currentTaskLoadMessage
     : null;
-  const mappingError = !isManualDraftEmptyState &&
+  const mappingError =
+    !dependencyBlockedMessage &&
+    !isManualDraftEmptyState &&
+    !isPassiveWorktreeWaiting &&
     (currentTaskLoadState === 'invalid_mapping' || currentTaskLoadState === 'awaiting_worktree')
     ? currentTaskLoadMessage
     : null;
@@ -926,7 +1469,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     : null;
   const runCommit = async (
     options: {
-      modelConfig?: SmartCommitModelConfig | null;
+      modelConfig?: MetadataModelConfig | null;
       messagesByRepositoryId?: Record<string, string>;
     } = {}
   ) => {
@@ -941,6 +1484,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       if (isSmartCommitMessageGenerationError(error)) {
         if (error.generatedMessages) {
           setCommitMessageEditState({
+            mode: 'review_generated',
             fieldsByRepositoryId: buildEditableCommitMessages(error.generatedMessages, repositories),
             error: messageText || t(
               'implement.commitMessageValidationFailed',
@@ -965,30 +1509,50 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleCommit = async () => {
-    if (smartCommitModelConfig === undefined) {
-      const persisted = await loadPreference<SmartCommitModelConfig | null>(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG);
-      setSmartCommitModelConfig(persisted);
-      if (persisted === null) {
-        setIsCommitModelChoiceOpen(true);
-        return;
-      }
-      await runCommit({ modelConfig: persisted });
-      return;
+    const persisted = await loadMetadataModelConfig();
+    const sourceConfig = metadataModelConfig === undefined ? persisted : persisted ?? metadataModelConfig;
+    const normalizedConfig = normalizeCommitModelConfig(sourceConfig);
+
+    setMetadataModelConfig(normalizedConfig);
+    if (normalizedConfig?.mode === 'dedicated') {
+      setCommitModelChoiceMode('dedicated');
+      setDedicatedCommitProviderId(normalizedConfig.providerId);
+      setDedicatedCommitModelId(normalizedConfig.modelId);
+      setDedicatedCommitReasoningEffort(normalizedConfig.reasoningEffort ?? null);
+    } else if (normalizedConfig?.mode === 'conversation') {
+      setCommitModelChoiceMode('conversation');
     }
 
-    if (smartCommitModelConfig === null) {
+    if (normalizedConfig === null) {
       setIsCommitModelChoiceOpen(true);
       return;
     }
 
-    await runCommit({ modelConfig: smartCommitModelConfig });
+    await runCommit({ modelConfig: normalizedConfig });
   };
 
-  const saveAndUseCommitModelConfig = async (config: SmartCommitModelConfig) => {
-    await savePreference(PREF_KEYS.SMART_COMMIT_MODEL_CONFIG, config);
-    setSmartCommitModelConfig(config);
+  const handleWriteCommitMessagesManually = () => {
+    setCommitMessageGenerationError(null);
+    setCommitMessageEditState({
+      mode: 'manual_fallback',
+      fieldsByRepositoryId: buildManualCommitMessageDrafts(repositories, {
+        taskTitle: currentTask?.title,
+      }),
+      error: null,
+    });
+  };
+
+  const handleOpenCommitModelSettings = () => {
+    setCommitMessageGenerationError(null);
+    openSettings('models');
+  };
+
+  const saveAndUseCommitModelConfig = async (config: MetadataModelConfig) => {
+    const normalizedConfig = normalizeCommitModelConfig(config) ?? config;
+    await saveMetadataModelConfig(normalizedConfig);
+    setMetadataModelConfig(normalizedConfig);
     setIsCommitModelChoiceOpen(false);
-    await runCommit({ modelConfig: config });
+    await runCommit({ modelConfig: normalizedConfig });
   };
 
   const handleCommitEditedMessages = async () => {
@@ -1003,10 +1567,79 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     });
   };
 
-  const handleValidateChanges = async () => {
-    if (!hasPendingValidation) return;
+  const handleValidateArtifact = async (artifactId: string) => {
+    if (!artifactPanelState || !currentTask || !canShowTaskArtifacts(currentTask)) {
+      return;
+    }
+    if (!isArtifactReviewed(artifactId)) {
+      notify.warning(
+        t('implement.reviewArtifactBeforeValidation', 'Open this artifact before validating it.')
+      );
+      return;
+    }
     try {
-      await stageAllTaskChanges();
+      await validateVisibleTaskArtifact({
+        branchName: artifactPanelState.branchName,
+        plan: artifactPanelState.plan,
+        task: currentTask,
+        artifactId,
+      });
+      await loadArtifactReviewState();
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.artifacts.validateFailed', 'Failed to validate artifact.')
+      );
+    }
+  };
+
+  const handleUnvalidateArtifact = async (artifactId: string) => {
+    if (!artifactPanelState || !currentTask || !canShowTaskArtifacts(currentTask)) {
+      return;
+    }
+    try {
+      await unvalidateVisibleTaskArtifact({
+        branchName: artifactPanelState.branchName,
+        plan: artifactPanelState.plan,
+        task: currentTask,
+        artifactId,
+      });
+      await loadArtifactReviewState();
+    } catch (error) {
+      notify.error(
+        toServiceError(error).message ||
+          t('implement.artifacts.unvalidateFailed', 'Failed to unvalidate artifact.')
+      );
+    }
+  };
+
+  const handleArtifactSaved = async (artifactId: string) => {
+    await loadArtifactReviewState();
+    setSelectedArtifactId(artifactId);
+  };
+
+  const handleValidateChanges = async () => {
+    if (isValidateChangesDisabled) return;
+    try {
+      if (reviewSummary.actionCounts.pending_validation > 0) {
+        await stageAllTaskChanges();
+      }
+      if (artifactPanelState && currentTask && canShowTaskArtifacts(currentTask)) {
+        const pendingArtifactIds = artifactEntries
+          .filter((entry) => entry.hasPendingReview)
+          .map((entry) => entry.artifact.id);
+        for (const artifactId of pendingArtifactIds) {
+          await validateVisibleTaskArtifact({
+            branchName: artifactPanelState.branchName,
+            plan: artifactPanelState.plan,
+            task: currentTask,
+            artifactId,
+          });
+        }
+        if (pendingArtifactIds.length > 0) {
+          await loadArtifactReviewState();
+        }
+      }
     } catch (error) {
       notify.error(
         toServiceError(error).message ||
@@ -1017,6 +1650,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleStageScope = async (repositoryId: string, changeIds: string[]) => {
     if (changeIds.length === 0) return;
+    if (!areChangesReviewed(repositoryId, changeIds)) {
+      notify.warning(
+        t('implement.reviewBeforeValidation', 'Open every pending diff before validating changes.')
+      );
+      return;
+    }
     try {
       await stageChanges(repositoryId, changeIds);
     } catch (error) {
@@ -1069,6 +1708,31 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, [commitMessageEditState]);
   const hasInvalidEditedCommitMessage = Object.values(commitMessageValidationByRepositoryId)
     .some((validation) => !validation.ok);
+  const commitMessageEditorRepositories = useMemo(() => (
+    repositories.map((repository) => ({
+      id: repository.id,
+      label: getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name),
+    }))
+  ), [getProjectById, repositories]);
+
+  const updateEditedCommitMessageFields = useCallback((
+    repositoryId: string,
+    patch: Partial<ConventionalCommitFields>
+  ) => {
+    setCommitMessageEditState((current) => current
+      ? {
+          ...current,
+          fieldsByRepositoryId: {
+            ...current.fieldsByRepositoryId,
+            [repositoryId]: {
+              ...current.fieldsByRepositoryId[repositoryId],
+              ...patch,
+            },
+          },
+        }
+      : current
+    );
+  }, []);
 
   const handleOpenCommit = () => {
     if (isReadOnlyRemoteMode) {
@@ -1079,7 +1743,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleFinishTask = async () => {
-    if (!currentTask || isCommitting || isGeneratingCommitMessages) return;
+    if (
+      !currentTask ||
+      isCommitting ||
+      isGeneratingCommitMessages ||
+      isFinishingTask ||
+      finishingTaskIdRef.current === currentTask.id
+    ) return;
+    finishingTaskIdRef.current = currentTask.id;
+    setIsFinishingTask(true);
     try {
       const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
       if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
@@ -1100,31 +1772,39 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         const messageText = toServiceError(error).message;
         notify.error(messageText || t('implement.completeTaskFailed', 'Failed to complete task'));
       }
+    } finally {
+      if (finishingTaskIdRef.current === currentTask.id) {
+        finishingTaskIdRef.current = null;
+        setIsFinishingTask(false);
+      }
     }
   };
-  const primaryAction = canFinishTask
-    ? {
-        onClick: () => void handleFinishTask(),
-        disabled: isGeneratingCommitMessages,
-        title: undefined,
-        icon: 'git-merge' as const,
-        label: t('implement.finishTask', 'Finish task'),
-      }
-    : {
-        onClick: handleOpenCommit,
-        disabled: isCommitDisabled,
-        title: isCommitDisabled ? commitDisabledReason : undefined,
-        icon: 'git-commit' as const,
-        label: isGeneratingCommitMessages
-          ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
-          : t('implement.commitChangesGeneric', 'Commit'),
-      };
+  const isPrimaryActionDisabled = canFinishTask
+    ? isGeneratingCommitMessages || isFinishingTask
+    : isCommitDisabled;
+  const primaryActionTitle = !canFinishTask && isCommitDisabled
+    ? commitDisabledReason
+    : undefined;
+  const primaryActionIcon = canFinishTask ? 'git-merge' as const : 'git-commit' as const;
+  const primaryActionLabel = canFinishTask
+    ? t('implement.finishTask', 'Finish task')
+    : isGeneratingCommitMessages
+      ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
+      : t('implement.commitChangesGeneric', 'Commit');
 
   const actionLabels = {
     staged: t('implement.stagedBadge', 'Staged'),
     validate: t('implement.validateAction', 'Validate'),
     unstage: t('implement.unstageAction', 'Unstage'),
     revert: t('implement.revertAction', 'Revert'),
+  };
+  const artifactActionLabels = {
+    staged: t('implement.artifacts.validatedBadge', 'Validated'),
+    validate: t('implement.artifacts.validateAction', 'Validate artifact'),
+    unstage: t('implement.artifacts.unvalidateAction', 'Unvalidate'),
+    revert: t('implement.revertAction', 'Revert'),
+    new: t('implement.artifacts.newBadge', 'Produced'),
+    inherited: t('implement.artifacts.inheritedBadge', 'Inherited'),
   };
 
   if (isWorkspaceMissing) {
@@ -1214,23 +1894,26 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             />
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
-            {overallStats.validatedStagedFileCount > 0 && overallStats.pendingVisibleFileCount > 0
+            {validatedChangeCount > 0 && pendingChangeCount > 0
               ? translate('implement.overallPendingAndReadyCompact', '{{ready}} ready, {{pending}} pending', {
-                  ready: overallStats.validatedStagedFileCount,
-                  pending: overallStats.pendingVisibleFileCount,
+                  ready: validatedChangeCount,
+                  pending: pendingChangeCount,
                 })
-              : overallStats.validatedStagedFileCount > 0
+              : validatedChangeCount > 0
                 ? translate('implement.overallReadyCompact', '{{ready}} ready', {
-                    ready: overallStats.validatedStagedFileCount,
+                    ready: validatedChangeCount,
                   })
                 : translate('implement.overallPendingCompact', '{{pending}} pending', {
-                    pending: overallStats.pendingVisibleFileCount,
+                    pending: pendingChangeCount,
                   })}
           </span>
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2">
+      <div
+        ref={repositoryListRef}
+        className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2"
+      >
         {isLoading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
@@ -1250,17 +1933,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
+        {!isLoading && !mappingError && dependencyBlockedMessage && (
+          <TaskBlockedState
+            variant="panel"
+            title={t('implement.taskBlockedTitle', 'Task blocked')}
+            message={dependencyBlockedMessage}
+            help={t(
+              'implement.taskBlockedChangesHelp',
+              'Complete the prerequisite tasks before reviewing changes here.'
+            )}
+          />
+        )}
         {!isLoading && !mappingError && !displayError && outOfScopeMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {outOfScopeMessage}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {draftEmptyStateMessage}
           </div>
         )}
-        {!isLoading && displayError && (
+        {!isLoading && !dependencyBlockedMessage && displayError && (
           <div className="px-4 py-6">
             {displayErrorPresentation ? (
               <ActionableErrorCallout
@@ -1274,19 +1968,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && !showArtifactRepository && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
         )}
-        {!isLoading && !mappingError && !displayError && repositories.map((repository) => {
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && repositories.map((repository) => {
           const project = getProjectById(repository.projectId);
           const repositorySummary = repositorySummaryById.get(repository.id);
           const isExpanded =
             expandedRepositoryIds[repository.id] ??
             (
               repositories.length === 1 ||
-              repository.id === selectedRepositoryId ||
               repositorySummary?.isNextAction ||
               false
             );
@@ -1309,19 +2002,28 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             .filter((change) => change.hasValidatedStage)
             .map((change) => change.id);
           const repositoryActionCount = repositoryChangeIds.length + repositoryStagedChangeIds.length;
+          const repositoryMaxHeight =
+            isExpanded && repositoriesSectionMaxHeight
+              ? `${repositoriesSectionMaxHeight}px`
+              : undefined;
           return (
             <section
               key={repository.id}
+              data-review-repository-section="true"
+              data-review-repository-expanded={isExpanded ? 'true' : 'false'}
               className={cn(
                 'mx-2 flex min-h-0 flex-col',
-                isExpanded ? 'min-h-[7rem] flex-1 basis-0' : 'shrink-0'
+                isExpanded && repositories.length === 1 && 'min-h-[7rem] flex-1 basis-0',
+                isExpanded && repositories.length > 1 && 'shrink-0 overflow-hidden',
+                !isExpanded && 'shrink-0'
               )}
+              style={repositoryMaxHeight ? { maxHeight: repositoryMaxHeight } : undefined}
             >
               <div
                 className={cn(
                   'group relative w-full rounded-xl px-3 py-2.5 transition-colors overflow-hidden',
-                  repository.id === selectedRepositoryId || isExpanded
-                    ? 'bg-primary/5'
+                  isExpanded
+                    ? 'bg-accent/25'
                     : 'bg-card hover:bg-accent/40'
                 )}
               >
@@ -1329,13 +2031,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   <button
                     type="button"
                     onClick={() => {
-                      selectRepository(repository.id);
                       setExpandedRepositoryIds((current) => ({
                         ...current,
                         [repository.id]: !(
                           current[repository.id] ??
                           (repositories.length === 1 ||
-                            repository.id === selectedRepositoryId ||
                             repository.id === reviewSummary.nextRepositoryId)
                         ),
                       }));
@@ -1359,10 +2059,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       {!isExpanded && repositoryHasPendingValidation && (
                         <span
                           data-pending-validation-indicator="true"
-                          className="h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15 transition-opacity group-hover:opacity-0"
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                            HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                          )}
                         />
                       )}
-                      {repositorySummary?.isNextAction && !repositorySummary.isSelected && (
+                      {repositorySummary?.isNextAction && (
                         <span className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px]">
                           {t('implement.nextRepository', 'Next')}
                         </span>
@@ -1372,9 +2075,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   <div className="flex shrink-0 items-center gap-2">
                     {repositorySummary && (
                       <span
+                        data-repository-change-status="true"
                         className={cn(
                           'px-2 py-0.5 rounded-full text-[10px] shrink-0',
-                          repositoryActionCount > 0 && 'transition-opacity group-hover:opacity-0',
+                          repositoryActionCount > 0 && HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE,
                           REVIEW_STATE_CLASSES[repositorySummary.state]
                         )}
                       >
@@ -1385,8 +2089,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 </div>
                 {repository.commitState === 'idle' && repositoryActionCount > 0 && (
                   <ScopeActionRail
+                    showValidate={repositoryChangeIds.length > 0}
+                    validateDisabled={
+                      repositoryChangeIds.length > 0 &&
+                      !areChangesReviewed(repository.id, repositoryChangeIds)
+                    }
                     onValidate={
-                      repositoryChangeIds.length > 0
+                      repositoryChangeIds.length > 0 &&
+                      areChangesReviewed(repository.id, repositoryChangeIds)
                         ? () => void handleStageScope(repository.id, repositoryChangeIds)
                         : undefined
                     }
@@ -1412,7 +2122,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
               {isExpanded && (
                 <div className="ml-4 mr-3 mb-3 flex min-h-0 flex-1 flex-col pl-2">
-                  <div className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
+                  <div
+                    data-review-repository-scroll-region="true"
+                    className="min-h-0 flex-1 overflow-y-auto py-1 pr-1"
+                  >
                     {repositoryError && (
                       <div className="px-2 py-3">
                         {repositoryErrorPresentation ? (
@@ -1428,12 +2141,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'committed' && (
-                      <div className="px-2 py-8 text-center text-sm text-primary">
+                      <div className="px-2 py-4 text-center text-sm text-primary">
                         {t('implement.repositoryCommittedHelp', 'This repository has already been committed for this task.')}
                       </div>
                     )}
                     {!repositoryError && repository.commitState === 'no_changes' && (
-                      <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                      <div className="px-2 py-4 text-center text-sm text-muted-foreground">
                         {t('implement.repositoryNoChangesHelp', 'No pending file changes for this repository.')}
                       </div>
                     )}
@@ -1441,7 +2154,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       repository.commitState === 'idle' &&
                       folderTree.length === 0 &&
                       repository.stats.validatedStagedFileCount === 0 && (
-                        <div className="px-2 py-8 text-center text-sm text-muted-foreground">
+                        <div className="px-2 py-4 text-center text-sm text-muted-foreground">
                           {t('implement.noPendingChanges', 'No pending file changes for this repository.')}
                         </div>
                       )}
@@ -1453,19 +2166,19 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
                         onFileClick={(changeId) => {
-                          selectRepository(repository.id);
+                          markChangeReviewed(repository.id, changeId);
                           openDiffModal(repository.id, changeId);
                         }}
                         onStageChanges={(changeIds) => {
-                          selectRepository(repository.id);
                           void handleStageScope(repository.id, changeIds);
                         }}
+                        canValidateChanges={(changeIds) =>
+                          areChangesReviewed(repository.id, changeIds)
+                        }
                         onUnstageChanges={(changeIds) => {
-                          selectRepository(repository.id);
                           void handleUnstageScope(repository.id, changeIds);
                         }}
                         onRevert={(changeIds, scopeLabel, requiresConfirm) => {
-                          selectRepository(repository.id);
                           if (requiresConfirm) {
                             setPendingRevertScope({
                               repositoryId: repository.id,
@@ -1486,6 +2199,184 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             </section>
           );
         })}
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && showArtifactRepository && artifactPanelState && (() => {
+          const isExpanded =
+            expandedRepositoryIds[ARTIFACT_REPOSITORY_ID] ??
+            shouldDefaultExpandArtifactRepository;
+          const artifactMaxHeight =
+            isExpanded && artifactSectionMaxHeight
+              ? `${artifactSectionMaxHeight}px`
+              : undefined;
+          return (
+            <section
+              key={ARTIFACT_REPOSITORY_ID}
+              data-review-repository-section="true"
+              data-review-repository-expanded={isExpanded ? 'true' : 'false'}
+              data-artifacts-review-section="true"
+              className={cn(
+                'mx-2 flex min-h-0 flex-col',
+                isExpanded && reviewSectionCount === 1 && 'min-h-[7rem] flex-1 basis-0',
+                isExpanded && reviewSectionCount > 1 && 'shrink-0 overflow-hidden',
+                !isExpanded && 'shrink-0'
+              )}
+              style={artifactMaxHeight ? { maxHeight: artifactMaxHeight } : undefined}
+            >
+              <div
+                className={cn(
+                  'group relative w-full rounded-xl px-3 py-2.5 transition-colors overflow-hidden',
+                  isExpanded
+                    ? 'bg-accent/25'
+                    : 'bg-card hover:bg-accent/40'
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpandedRepositoryIds((current) => ({
+                        ...current,
+                        [ARTIFACT_REPOSITORY_ID]: !(
+                          current[ARTIFACT_REPOSITORY_ID] ??
+                          shouldDefaultExpandArtifactRepository
+                        ),
+                      }));
+                    }}
+                    className="min-w-0 flex flex-1 appearance-none items-center gap-2 border-0 bg-transparent text-left outline-none"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Icon
+                        name={isExpanded ? 'chevron-down' : 'chevron-right'}
+                        size={14}
+                        className="text-muted-foreground shrink-0"
+                      />
+                      <Icon
+                        name={isExpanded ? 'folder-open' : 'folder'}
+                        size={15}
+                        className="shrink-0 text-primary/80"
+                      />
+                      <span className="text-sm font-medium text-foreground truncate">
+                        {t('implement.artifacts.title', 'Artifacts')}
+                      </span>
+                      {!isExpanded && artifactPendingReviewCount > 0 && (
+                        <span
+                          data-pending-validation-indicator="true"
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full bg-primary ring-2 ring-primary/15',
+                            HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE
+                          )}
+                        />
+                      )}
+                    </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span
+                      data-repository-change-status="true"
+                      className={cn(
+                        'px-2 py-0.5 rounded-full text-[10px] shrink-0',
+                        (artifactPendingReviewCount > 0 || artifactValidatedReviewCount > 0) &&
+                          HIDE_CHANGE_META_WHEN_ACTIONS_VISIBLE,
+                        artifactPendingReviewCount > 0
+                          ? REVIEW_STATE_CLASSES.pending_validation
+                          : REVIEW_STATE_CLASSES.no_changes
+                      )}
+                    >
+                      {renderArtifactRepositoryState(
+                        artifactPendingReviewCount,
+                        artifactValidatedReviewCount,
+                        translate
+                      )}
+                    </span>
+                  </div>
+                </div>
+                {(artifactPendingReviewCount > 0 || artifactValidatedReviewCount > 0) && (
+                  <ScopeActionRail
+                    onValidate={
+                      artifactPendingReviewCount > 0
+                        ? () => void handleValidateChanges()
+                        : undefined
+                    }
+                    onUnstage={
+                      artifactValidatedReviewCount > 0
+                        ? () => {
+                            void (async () => {
+                              for (const entry of artifactEntries.filter((candidate) => candidate.hasValidatedReview)) {
+                                await handleUnvalidateArtifact(entry.artifact.id);
+                              }
+                            })();
+                          }
+                        : undefined
+                    }
+                    labels={artifactActionLabels}
+                    className="rounded-r-xl"
+                  />
+                )}
+              </div>
+
+              {isExpanded && (
+                <div className="ml-4 mr-3 mb-3 flex min-h-0 flex-1 flex-col pl-2">
+                  <div
+                    data-review-repository-scroll-region="true"
+                    className="min-h-0 flex-1 overflow-y-auto py-1 pr-1"
+                  >
+                    {isLoadingArtifacts && (
+                      <div className="flex items-center justify-center gap-2 px-2 py-4 text-sm text-muted-foreground">
+                        <Icon name="loader" size={14} className="animate-spin" />
+                        {t('implement.artifacts.loading', 'Loading artifacts...')}
+                      </div>
+                    )}
+                    {artifactPanelState.lastError && (
+                      <div className="px-2 py-4 text-center text-sm text-destructive">
+                        {artifactPanelState.lastError}
+                      </div>
+                    )}
+                    {!artifactPanelState.lastError && artifactEntries.length === 0 && (
+                      <div className="px-2 py-4 text-center">
+                        <div className="text-sm text-muted-foreground">
+                          {t('implement.artifacts.noneProduced', 'No produced artifacts yet.')}
+                        </div>
+                        {artifactContracts.length > 0 && (
+                          <div className="mx-auto mt-1 max-w-[18rem] text-xs leading-relaxed text-muted-foreground/80">
+                            {t('implement.artifacts.expectedCount', '{{count}} expected', {
+                              count: artifactContracts.length,
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!artifactPanelState.lastError &&
+                      artifactEntries.length > 0 &&
+                      missingArtifactContracts.length > 0 && (
+                        <div className="px-2 pb-1 text-xs leading-relaxed text-muted-foreground/80">
+                          {t('implement.artifacts.stillExpectedCount', '{{count}} still expected', {
+                            count: missingArtifactContracts.length,
+                          })}
+                        </div>
+                      )}
+                    {!artifactPanelState.lastError && artifactEntries.map((entry) => {
+                      const sourceNode = artifactPanelState.plan.nodes.find((node) => node.id === entry.artifact.taskId);
+                      return (
+                        <ArtifactReviewItem
+                          key={entry.artifact.id}
+                          entry={entry}
+                          sourceTitle={sourceNode?.title || entry.artifact.taskId}
+                          isSelected={selectedArtifactId === entry.artifact.id}
+                          onOpen={() => {
+                            markArtifactReviewed(entry.artifact.id);
+                            setSelectedArtifactId(entry.artifact.id);
+                          }}
+                          onValidate={() => void handleValidateArtifact(entry.artifact.id)}
+                          canValidate={isArtifactReviewed(entry.artifact.id)}
+                          onUnvalidate={() => void handleUnvalidateArtifact(entry.artifact.id)}
+                          labels={artifactActionLabels}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })()}
       </div>
 
       <div className="p-3 border-t border-border shrink-0 space-y-2">
@@ -1507,25 +2398,47 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           </button>
         )}
         <button
-          onClick={primaryAction.onClick}
+          onClick={canFinishTask ? () => void handleFinishTask() : handleOpenCommit}
           data-tour-id="implement-commit-changes"
-          disabled={primaryAction.disabled}
-          title={primaryAction.title}
+          disabled={isPrimaryActionDisabled}
+          title={primaryActionTitle}
           className={cn(
             'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-            primaryAction.disabled
+            isPrimaryActionDisabled
               ? 'bg-muted text-muted-foreground cursor-not-allowed'
               : 'bg-primary text-primary-foreground hover:bg-primary/90'
           )}
         >
-          <Icon name={primaryAction.icon} size={14} />
-          {primaryAction.label}
+          <Icon name={primaryActionIcon} size={14} />
+          {primaryActionLabel}
         </button>
       </div>
 
       {isDiffModalOpen && selectedDiffTarget && (
         <FileChangesDiffModal
           onClose={closeDiffModal}
+        />
+      )}
+
+      {selectedArtifactId && artifactPanelState && currentTask && canShowTaskArtifacts(currentTask) && (
+        <ArtifactDiffModal
+          branchName={artifactPanelState.branchName}
+          plan={artifactPanelState.plan}
+          task={currentTask}
+          entries={artifactEntries}
+          artifactId={selectedArtifactId}
+          onSelectArtifact={(artifactId) => {
+            if (!artifactId) {
+              setSelectedArtifactId(null);
+              return;
+            }
+            markArtifactReviewed(artifactId);
+            setSelectedArtifactId(artifactId);
+          }}
+          onValidate={handleValidateArtifact}
+          onUnvalidate={handleUnvalidateArtifact}
+          onArtifactSaved={handleArtifactSaved}
+          onClose={() => setSelectedArtifactId(null)}
         />
       )}
 
@@ -1553,18 +2466,18 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       {isCommitModelChoiceOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/50"
             onClick={() => setIsCommitModelChoiceOpen(false)}
           />
           <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               <h3 className="text-sm font-semibold text-foreground">
-                {t('implement.commitModelChoiceTitle', 'Choose commit message model')}
+                {t('implement.metadataModelChoiceTitle', 'Choose metadata generation model')}
               </h3>
               <p className="mt-2 text-sm text-muted-foreground">
                 {t(
-                  'implement.commitModelChoiceDescription',
-                  'Macro can generate commit messages with the active conversation model or with a dedicated model for every commit.'
+                  'implement.metadataModelChoiceDescription',
+                  'Macro can generate commit messages, plan names, conversation titles, and feature slugs with the active conversation model or a dedicated metadata model.'
                 )}
               </p>
 
@@ -1579,7 +2492,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   )}
                   onClick={() => setCommitModelChoiceMode('conversation')}
                 >
-                  {t('implement.commitModelConversation', 'Conversation model')}
+                  {t('implement.metadataModelConversation', 'Conversation model')}
                 </button>
                 <button
                   type="button"
@@ -1591,7 +2504,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                   )}
                   onClick={() => setCommitModelChoiceMode('dedicated')}
                 >
-                  {t('implement.commitModelDedicated', 'Dedicated model')}
+                  {t('implement.metadataModelDedicated', 'Dedicated model')}
                 </button>
               </div>
 
@@ -1677,7 +2590,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 size="sm"
                 disabled={commitModelChoiceMode === 'dedicated' && !canUseDedicatedCommitModel}
                 onClick={() => {
-                  const config: SmartCommitModelConfig = commitModelChoiceMode === 'dedicated'
+                  const config: MetadataModelConfig = commitModelChoiceMode === 'dedicated'
                     ? {
                         mode: 'dedicated',
                         providerId: dedicatedCommitProviderId,
@@ -1696,153 +2609,39 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       )}
 
       {commitMessageEditState && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <h3 className="text-sm font-semibold text-foreground">
-                {t('implement.commitMessageEditTitle', 'Review commit messages')}
-              </h3>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {t(
-                  'implement.commitMessageEditDescription',
-                  'The generated message did not pass Conventional Commits validation. Edit it before committing.'
-                )}
-              </p>
-              {commitMessageEditState.error && (
-                <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {commitMessageEditState.error}
-                </p>
-              )}
-              <div className="mt-4 space-y-4">
-                {Object.entries(commitMessageEditState.fieldsByRepositoryId).map(([repositoryId, fields]) => {
-                  const repository = repositories.find((entry) => entry.id === repositoryId);
-                  const validation = commitMessageValidationByRepositoryId[repositoryId];
-                  const updateFields = (patch: Partial<ConventionalCommitFields>) => {
-                    setCommitMessageEditState((current) => current
-                      ? {
-                          ...current,
-                          fieldsByRepositoryId: {
-                            ...current.fieldsByRepositoryId,
-                            [repositoryId]: {
-                              ...current.fieldsByRepositoryId[repositoryId],
-                              ...patch,
-                            },
-                          },
-                        }
-                      : current
-                    );
-                  };
-                  return (
-                    <div key={repositoryId} className="space-y-2 rounded-lg border border-border bg-muted/10 p-3">
-                      <div className="text-xs font-medium text-muted-foreground">
-                        {repository ? getRepositoryDisplayName(repository, getProjectById(repository.projectId)?.name) : repositoryId}
-                      </div>
-                      <div className="grid gap-2 md:grid-cols-[120px]">
-                        <label className="space-y-1">
-                          <span className="text-[11px] font-medium text-muted-foreground">
-                            {t('implement.commitMessageTypeLabel', 'Type')}
-                          </span>
-                          <select
-                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                            value={fields.type}
-                            onChange={(event) => updateFields({ type: event.target.value as ConventionalCommitType })}
-                          >
-                            {ALLOWED_COMMIT_TYPES.map((type) => (
-                              <option key={type} value={type}>{type}</option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                      <label className="block space-y-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          {t('implement.commitMessageSubjectLabel', 'Subject')}
-                        </span>
-                        <input
-                          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-                          value={fields.subject}
-                          onChange={(event) => updateFields({ subject: event.target.value })}
-                        />
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          {t('implement.commitMessageBodyLabel', 'Body')}
-                        </span>
-                        <Textarea
-                          rows={4}
-                          value={fields.body ?? ''}
-                          error={!!validation && !validation.ok}
-                          placeholder={t('implement.commitMessageBodyPlaceholder', 'Optional details')}
-                          onChange={(event) => updateFields({ body: event.target.value || null })}
-                        />
-                      </label>
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(fields.breaking)}
-                          onChange={(event) => updateFields({ breaking: event.target.checked })}
-                        />
-                        {t('implement.commitMessageBreakingLabel', 'Breaking change')}
-                      </label>
-                      {validation && !validation.ok && (
-                        <span className="text-xs text-destructive">{validation.message}</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setCommitMessageEditState(null)}
-                disabled={isCommitting}
-              >
-                {t('common.cancel', 'Cancel')}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  setCommitMessageEditState(null);
-                  void handleCommit();
-                }}
-                disabled={isCommitting || isGeneratingCommitMessages}
-              >
-                {t('implement.retryGeneration', 'Retry generation')}
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => void handleCommitEditedMessages()}
-                disabled={isCommitting || hasInvalidEditedCommitMessage}
-              >
-                {t('implement.commitChangesGeneric', 'Commit')}
-              </Button>
-            </div>
-          </div>
-        </div>
+        <CommitMessageEditorModal
+          t={translate}
+          mode={commitMessageEditState.mode}
+          error={commitMessageEditState.error}
+          fieldsByRepositoryId={commitMessageEditState.fieldsByRepositoryId}
+          repositories={commitMessageEditorRepositories}
+          validationsByRepositoryId={commitMessageValidationByRepositoryId}
+          isCommitting={isCommitting}
+          isGeneratingCommitMessages={isGeneratingCommitMessages}
+          hasInvalidMessage={hasInvalidEditedCommitMessage}
+          onCancel={() => setCommitMessageEditState(null)}
+          onRetryGeneration={() => {
+            setCommitMessageEditState(null);
+            void handleCommit();
+          }}
+          onCommit={() => void handleCommitEditedMessages()}
+          onUpdateFields={updateEditedCommitMessageFields}
+        />
       )}
 
       {commitMessageGenerationError && (
-        <ConfirmPromptModal
-          isOpen={true}
-          title={t('implement.commitMessageGenerationTitle', 'Couldn’t generate commit messages')}
-          description={t(
-            'implement.commitMessageGenerationDescription',
-            'Macro could not prepare the commit messages. You can retry generation or cancel without creating commits.'
-          )}
-          confirmLabel={t('common.retry', 'Retry')}
-          cancelLabel={t('common.cancel', 'Cancel')}
-          isSubmitting={isGeneratingCommitMessages}
-          onCancel={() => setCommitMessageGenerationError(null)}
-          onConfirm={() => {
+        <CommitMessageGenerationFailureModal
+          t={translate}
+          error={commitMessageGenerationError}
+          isGeneratingCommitMessages={isGeneratingCommitMessages}
+          onRetryGeneration={() => {
             setCommitMessageGenerationError(null);
             void handleCommit();
           }}
-        >
-          <p className="text-xs text-muted-foreground">{commitMessageGenerationError}</p>
-        </ConfirmPromptModal>
+          onWriteManually={handleWriteCommitMessagesManually}
+          onOpenCommitModelSettings={handleOpenCommitModelSettings}
+          onCancel={() => setCommitMessageGenerationError(null)}
+        />
       )}
     </aside>
   );

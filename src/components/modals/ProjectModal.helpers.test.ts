@@ -5,6 +5,13 @@ import type {
   ProjectGroup,
 } from '../../types';
 import {
+  getProjectSetupDevelopExplanation,
+  getProjectSetupMainlineExplanation,
+  getProjectSetupPromptDescription,
+  getProjectSetupPromptTitle,
+  type ProjectSetupPromptDetails,
+} from './projectGitSetup';
+import {
   advanceProjectSetupPrompt,
   buildDeclinedProjectSetupPayload,
   buildPendingGitFlowConfirmation,
@@ -16,8 +23,11 @@ import {
   getAcceptedActionsAfterDecliningPrompt,
   hasDuplicateSubProjectName,
   inferProjectNameFromPath,
+  isValidProjectFolderName,
+  joinProjectPath,
   normalizeProjectPath,
   shouldConfirmDetectedGitFlow,
+  slugifyProjectFolderName,
   type PendingProjectCreation,
 } from './ProjectModal.helpers';
 
@@ -38,9 +48,19 @@ const buildProject = (overrides: Partial<Project>): Project => ({
   ...overrides,
 });
 
+const testTranslate = (
+  _key: string,
+  fallback: string,
+  options?: Record<string, string>
+): string =>
+  Object.entries(options ?? {}).reduce(
+    (text, [key, value]) => text.replaceAll(`{{${key}}}`, value),
+    fallback
+  );
+
 const buildProjectGroup = (overrides: Partial<ProjectGroup>): ProjectGroup => ({
   id: 'group-id',
-  name: 'Global Project',
+  name: 'Group',
   isOpen: true,
   projects: [],
   ...overrides,
@@ -80,6 +100,10 @@ describe('ProjectModal helpers', () => {
     expect(normalizeProjectPath(' C:\\Work\\App\\\\ ')).toBe('c:/work/app');
     expect(inferProjectNameFromPath('C:\\Work\\App\\')).toBe('App');
     expect(inferProjectNameFromPath('/repos/macro/api')).toBe('api');
+    expect(slugifyProjectFolderName('Backend API')).toBe('backend-api');
+    expect(joinProjectPath('C:\\Work\\Suite\\', 'backend-api')).toBe('C:/Work/Suite/backend-api');
+    expect(isValidProjectFolderName('backend-api')).toBe(true);
+    expect(isValidProjectFolderName('../backend')).toBe(false);
   });
 
   it('finds duplicate paths and names case-insensitively', () => {
@@ -103,7 +127,6 @@ describe('ProjectModal helpers', () => {
       buildPendingProjectCreation({
         isAttachingToExistingGroup: false,
         targetGroupId: null,
-        globalProjectName: ' Suite ',
         subProjectPath: ' C:/work/app ',
         derivedSubProjectName: 'app',
       })
@@ -111,7 +134,7 @@ describe('ProjectModal helpers', () => {
       name: 'app',
       description: '',
       groupId: null,
-      groupName: 'Suite',
+      groupName: null,
       path: 'C:/work/app',
     });
 
@@ -119,7 +142,6 @@ describe('ProjectModal helpers', () => {
       buildPendingProjectCreation({
         isAttachingToExistingGroup: true,
         targetGroupId: 'group-id',
-        globalProjectName: 'Ignored',
         subProjectPath: '',
         derivedSubProjectName: 'api',
       })
@@ -132,7 +154,7 @@ describe('ProjectModal helpers', () => {
     });
   });
 
-  it('prepares branch confirmation state from detected Git Flow metadata', () => {
+  it('prepares branch confirmation state from detected Git workflow metadata', () => {
     const detection = buildDetection({
       repoDetected: true,
       branches: ['release/v1'],
@@ -206,5 +228,25 @@ describe('ProjectModal helpers', () => {
       baseBranch: 'main',
     });
     expect(getAcceptedActionsAfterDecliningPrompt(promptState, prompt)).toEqual([]);
+  });
+
+  it('centralizes Git setup prompt wording around generic Git workflows', () => {
+    const prompt: ProjectSetupPromptDetails = {
+      kind: 'create_develop',
+      projectPath: 'C:/work/app',
+      mainBranch: 'trunk',
+      resolvedRepoRootPath: 'C:/work/app',
+      repoResolution: 'selected_folder',
+      initialCommitPreviewPaths: [],
+      initialCommitPreviewCount: 0,
+      initialCommitRiskFlags: [],
+    };
+
+    expect(getProjectSetupPromptTitle(testTranslate, prompt)).toBe('Create develop?');
+    expect(getProjectSetupPromptDescription(testTranslate, prompt, 'project_creation')).toContain(
+      'separate integration branch'
+    );
+    expect(getProjectSetupMainlineExplanation(testTranslate, prompt)).toContain('trunk');
+    expect(getProjectSetupDevelopExplanation(testTranslate, prompt)).not.toMatch(/Git[- ]Flow/i);
   });
 });

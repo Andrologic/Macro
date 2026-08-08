@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
@@ -12,16 +12,30 @@ import {
   buildPlanFinalizationFailureState,
   toBlockedPlanFinalizationState,
 } from '../services/planFinalization';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
 const actualTauriIpc = await import('../services/tauriIpc');
+const { services } = await import('../services');
 
 let isolatedTaskStoreImportCounter = 0;
 let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }) => Promise<void>) | null = null;
 const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/repos/web/.macro/worktrees/task-1',
+}));
+const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+  worktreeKey: params.worktreeKey,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.worktreeKey}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
+}));
+const gitWorktreeCreateMock = mock(async (params: { repoPath: string; taskId: string; branchName: string }) => ({
+  taskId: params.taskId,
+  worktreePath: `${params.repoPath}/.macro/worktrees/integration-${params.taskId}`,
+  branchName: params.branchName,
+  status: 'reused' as const,
 }));
 const gitStatusMock = mock(async () => ({
   branch: 'plan/review-actions',
@@ -92,19 +106,98 @@ const workspaceUpdateStandaloneTaskStatusMock = mock(
   }
 );
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
+const startTaskCommandTabMock = mock(async () => ({
+  id: 'terminal-tab-1',
+  kind: 'task',
+  taskId: 'task-1',
+  projectId: 'project-1',
+  projectName: 'Project One',
+  mountName: 'project-one',
+  workspacePath: '/repos/web/.macro/worktrees/task-1',
+  cwd: '/repos/web/.macro/worktrees/task-1',
+  title: 'Project One - Task 1',
+  status: 'running',
+  snapshot: 'npm test\r\n',
+  lastCommand: 'npm test',
+  lastExitCode: null,
+  hasLiveSession: true,
+  isRestored: false,
+  outputSequence: 1,
+  hasUnreadOutput: false,
+  createdAt: '2026-06-03T10:00:00.000Z',
+  updatedAt: '2026-06-03T10:00:00.000Z',
+}));
+const interruptTabMock = mock(async () => undefined);
+const closeTabMock = mock(async () => undefined);
+const runWorktreeSetupCommandMock = mock(async () => ({
+  exitCode: 0,
+  failed: false,
+  tabId: 'setup-tab-1',
+}));
+let taskProjectCommandRegistryMock: {
+  version: 3;
+  commandsByProjectPath: Record<
+    string,
+    {
+      projectId: string;
+      projectName: string;
+      projectPath: string;
+      command: string;
+      worktreeSetupCommand: string;
+      openTerminalOnRun: boolean;
+      updatedAt: string;
+    }
+  >;
+} = {
+  version: 3,
+  commandsByProjectPath: {
+    '/repos/web': {
+      projectId: 'project-1',
+      projectName: 'Project One',
+      projectPath: '/repos/web',
+      command: 'npm test',
+      worktreeSetupCommand: '',
+      openTerminalOnRun: true,
+      updatedAt: '2026-06-03T10:00:00.000Z',
+    },
+  },
+};
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
 const persistArchitectPlanMergeWorkflowSessionMock = mock(async () => undefined);
 const ensureConversationForCurrentModeMock = mock(async () => null as string | null);
+const reapplySelectionForCurrentContextMock = mock(async () => undefined);
 const createConversationMock = mock(async () => ({ id: 'conv-1' }));
 const sendMessageMock = mock(async () => undefined);
 const deleteConversationMock = mock(async () => undefined);
 let chatStoreConversations: Array<{ id: string }> = [];
 const appStoreState = {
+  mode: 'Implement' as const,
   selectedTaskId: null as string | null,
   selectedGroupId: 'group-1' as string | null,
   selectedProjectId: null as string | null,
+  projectGroups: [
+    {
+      id: 'group-1',
+      name: 'Group One',
+      isOpen: true,
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+        },
+      ],
+    },
+  ],
+  standaloneProjects: [] as Array<{
+    id: string;
+    name: string;
+    path: string;
+  }>,
+  activeArchitectPlanId: null as string | null,
+  activePlanContext: null as { targetBranch?: string | null } | null,
   getProjectById: (_projectId: string) => null as null | {
     id: string;
     name: string;
@@ -130,6 +223,8 @@ mock.module('../services/tauriIpc', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -154,6 +249,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -173,14 +270,36 @@ mock.module('./useTerminalStore', () => ({
   useTerminalStore: {
     getState: () => ({
       syncTerminalDisplayMetadata: syncTerminalDisplayMetadataMock,
+      startTaskCommandTab: startTaskCommandTabMock,
+      interruptTab: interruptTabMock,
+      closeTab: closeTabMock,
     }),
   },
+}));
+
+mock.module('../services/taskProjectCommands', () => ({
+  loadTaskProjectCommandRegistry: mock(async () => taskProjectCommandRegistryMock),
+  normalizeTaskProjectCommandPath: (value: string): string =>
+    value.trim().replace(/\\/g, '/').replace(/\/+$/, ''),
+  getTaskProjectCommand: (registry: {
+    commandsByProjectPath: Record<string, { command: string; openTerminalOnRun: boolean }>;
+  }, projectPath: string | null | undefined) =>
+    projectPath
+      ? registry.commandsByProjectPath[
+          projectPath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+        ] ?? null
+      : null,
+}));
+
+mock.module('../services/worktreeSetupCommands', () => ({
+  runWorktreeSetupCommand: runWorktreeSetupCommandMock,
 }));
 
 mock.module('./useChatStore', () => ({
   useChatStore: {
     getState: () => ({
       ensureConversationForCurrentMode: ensureConversationForCurrentModeMock,
+      reapplySelectionForCurrentContext: reapplySelectionForCurrentContextMock,
       createConversation: createConversationMock,
       sendMessage: sendMessageMock,
       deleteConversation: deleteConversationMock,
@@ -215,9 +334,33 @@ const invokeDeferredResolver = (resolver: (() => void) | null) => {
 };
 
 const flushPromises = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+  }
 };
+
+beforeEach(() => {
+  installTauriRuntimeMock();
+  runWorktreeSetupCommandMock.mockClear();
+  taskProjectCommandRegistryMock = {
+    version: 3,
+    commandsByProjectPath: {
+      '/repos/web': {
+        projectId: 'project-1',
+        projectName: 'Project One',
+        projectPath: '/repos/web',
+        command: 'npm test',
+        worktreeSetupCommand: '',
+        openTerminalOnRun: true,
+        updatedAt: '2026-06-03T10:00:00.000Z',
+      },
+    },
+  };
+});
+
+afterEach(() => {
+  removeTauriRuntimeMock();
+});
 
 const blockedRepository = {
   id: 'api::/repos/api',
@@ -395,6 +538,49 @@ describe('getPlanActivationCandidateTask', () => {
   });
 });
 
+describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('clears a missing selected task and reapplies chat selection when the catalog becomes empty', async () => {
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty' as const,
+    }));
+    ensureConversationForCurrentModeMock.mockClear();
+    reapplySelectionForCurrentContextMock.mockClear();
+    appStoreState.selectedTaskId = 'task-1';
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = null;
+    appStoreState.mode = 'Implement';
+    appStoreState.setSelectedTask.mockClear();
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      useTaskStore.setState({
+        tasks: [buildTask({ id: 'task-1' })],
+        source: 'architect',
+        isLoading: false,
+        lastError: null,
+      });
+
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: true,
+      });
+
+      expect(appStoreState.selectedTaskId).toBeNull();
+      expect(reapplySelectionForCurrentContextMock).toHaveBeenCalledTimes(1);
+      expect(ensureConversationForCurrentModeMock).not.toHaveBeenCalled();
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+});
+
 describe('useTaskStore merge workflow review loading', () => {
   beforeEach(() => {
     gitStatusMock.mockClear();
@@ -409,6 +595,8 @@ describe('useTaskStore merge workflow review loading', () => {
     gitRebaseBranchMock.mockClear();
     gitStartMergeResolutionMock.mockClear();
     gitCompleteMergeMock.mockClear();
+    gitBranchWorktreeCreateMock.mockClear();
+    gitWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
@@ -418,13 +606,17 @@ describe('useTaskStore merge workflow review loading', () => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
     ensureConversationForCurrentModeMock.mockClear();
+    reapplySelectionForCurrentContextMock.mockClear();
     createConversationMock.mockClear();
     sendMessageMock.mockClear();
     deleteConversationMock.mockClear();
     chatStoreConversations = [];
+    appStoreState.mode = 'Implement';
     appStoreState.selectedTaskId = null;
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
+    appStoreState.activeArchitectPlanId = null;
+    appStoreState.activePlanContext = null;
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',
       name: 'Project One',
@@ -473,6 +665,8 @@ describe('useTaskStore merge workflow review loading', () => {
       id: 'project-1::/repos/web',
       projectId: 'project-1',
       repoPath: '/repos/web',
+      repositoryRootPath: '/repos/web',
+      integrationWorktreePath: null,
       sourceBranchName: 'feature/review-actions',
       targetBranchName: 'plan/review-actions',
       progressState: 'pending',
@@ -570,8 +764,10 @@ describe('useTaskStore merge workflow review loading', () => {
 
     const firstLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
     await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const secondLoad = useTaskStore.getState().loadMergeWorkflowReview('task-1');
 
+    expect(gitBranchWorktreeCreateMock).toHaveBeenCalledTimes(1);
     expect(gitStatusMock).toHaveBeenCalledTimes(1);
     expect(gitDiffMock).toHaveBeenCalledTimes(1);
 
@@ -605,7 +801,9 @@ describe('useTaskStore merge workflow review loading', () => {
       .getState()
       .loadMergeWorkflowReview('task-1', { force: true });
     await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(gitBranchWorktreeCreateMock).toHaveBeenCalledTimes(2);
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
     expect(gitDiffMock).toHaveBeenCalledTimes(2);
 
@@ -709,10 +907,12 @@ describe('useTaskStore merge workflow review loading', () => {
       autoResolvedRepositoryCount: 0,
       remainingBlockedRepositoryCount: 1,
     });
-    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web');
+    expect(useTaskStore.getState().activeRepositoryPath).toEqual(
+      expect.stringContaining('/repos/web/.macro/worktrees/integration-')
+    );
     expect(useTaskStore.getState().activeBranchName).toBe('plan/review-actions');
     expect(useTaskStore.getState().activeWorkspacePathOverridesByProjectId).toEqual({
-      'project-1': '/repos/web',
+      'project-1': expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(sendMessageMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -894,7 +1094,7 @@ describe('useTaskStore merge workflow review loading', () => {
     await useTaskStore.getState().runMergeWorkflow('task-1');
 
     expect(gitCompleteMergeMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
@@ -975,7 +1175,7 @@ describe('useTaskStore merge workflow review loading', () => {
       remainingBlockedRepositoryCount: 0,
     });
     expect(gitStashMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       message: 'Macro merge blocker: Task 1',
     });
     expect(gitStatusMock).toHaveBeenCalledTimes(2);
@@ -1106,7 +1306,7 @@ describe('useTaskStore merge workflow review loading', () => {
       remainingBlockedRepositoryCount: 0,
     });
     expect(gitRestorePathsMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
+      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       paths: ['src/staged.ts', 'src/unstaged.ts', 'src/new.ts'],
       target: 'staged_and_worktree',
     });
@@ -1370,6 +1570,82 @@ describe('useTaskStore task status transition guards', () => {
   });
 });
 
+describe('useTaskStore reopenTask and retryTask', () => {
+  beforeEach(() => {
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    updateStandaloneTaskStatusImpl = null;
+    appStoreState.selectedTaskId = 'task-1';
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+    });
+  });
+
+  it('clears a stale lastError when reopening a Completed task', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        status: 'Completed',
+        standalone_kind: 'manual_feature',
+      })],
+      lastError: 'Cannot complete task while repository has uncommitted changes.',
+      refreshFromPlan: refreshFromPlanMock as never,
+    });
+
+    await useTaskStore.getState().reopenTask('task-1');
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(refreshFromPlanMock).toHaveBeenCalled();
+  });
+
+  it('keeps the lastError when reopening an unknown task id', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [],
+      lastError: null,
+    });
+
+    await useTaskStore.getState().reopenTask('unknown-id');
+
+    expect(useTaskStore.getState().lastError).toContain('Unknown task');
+  });
+
+  it('clears a stale lastError when retrying a Failed task', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const startTaskMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'Failed' })],
+      lastError: 'Cannot continue merge: branches have diverged.',
+      startTask: startTaskMock as never,
+    });
+
+    await useTaskStore.getState().retryTask('task-1');
+
+    expect(startTaskMock).toHaveBeenCalledWith('task-1');
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('clears a stale lastError when retrying an AwaitingResponse task', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => undefined);
+
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'AwaitingResponse' })],
+      lastError: 'Stale dependency block message.',
+      refreshFromPlan: refreshFromPlanMock as never,
+    });
+
+    await useTaskStore.getState().retryTask('task-1');
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+});
+
 describe('useTaskStore revertManualFeatureToDraft', () => {
   beforeEach(() => {
     gitWorktreeRemoveMock.mockClear();
@@ -1485,9 +1761,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
 describe('useTaskStore remote runtime guards', () => {
   it('rejects task status mutations with the stable remote unsupported error', async () => {
     const previousTransport = process.env.VITE_BACKEND_TRANSPORT;
-    const previousProvider = process.env.VITE_DATA_PROVIDER;
     process.env.VITE_BACKEND_TRANSPORT = 'remote';
-    delete process.env.VITE_DATA_PROVIDER;
 
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
@@ -1515,12 +1789,454 @@ describe('useTaskStore remote runtime guards', () => {
       } else {
         process.env.VITE_BACKEND_TRANSPORT = previousTransport;
       }
-
-      if (previousProvider === undefined) {
-        delete process.env.VITE_DATA_PROVIDER;
-      } else {
-        process.env.VITE_DATA_PROVIDER = previousProvider;
-      }
     }
+  });
+});
+
+describe('useTaskStore task command terminal lifecycle', () => {
+  beforeEach(() => {
+    startTaskCommandTabMock.mockClear();
+    runWorktreeSetupCommandMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = null;
+    appStoreState.projectGroups = [
+      {
+        id: 'group-1',
+        name: 'Group One',
+        isOpen: true,
+        projects: [
+          {
+            id: 'project-1',
+            name: 'Project One',
+            path: '/repos/web',
+          },
+        ],
+      },
+    ];
+    appStoreState.standaloneProjects = [];
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+    });
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+  });
+
+  it('keeps the command run visible after launching a task terminal', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      completedCount: 1,
+      totalCount: 1,
+    });
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        projectId: 'project-1',
+        cwd: '/repos/web/.macro/worktrees/task-1',
+        command: 'npm test',
+      })
+    );
+    expect(runWorktreeSetupCommandMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toMatchObject({
+      status: 'running',
+      activeTabIds: ['terminal-tab-1'],
+      currentProjectId: 'project-1',
+    });
+  });
+
+  it('uses the current registry repo path instead of stale task target snapshots when launching commands', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-lplr-app-1780329499166';
+    appStoreState.projectGroups = [];
+    appStoreState.standaloneProjects = [
+      {
+        id: 'project-lplr-app-1780329499166',
+        name: 'octan_sales',
+        path: '/repos/octan_sales',
+      },
+    ];
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-lplr-app-1780329499166',
+      name: 'octan_sales',
+      path: '/repos/octan_sales',
+    });
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/octan_sales': {
+          projectId: 'project-lplr-app-1780329499166',
+          projectName: 'octan_sales',
+          projectPath: '/repos/octan_sales',
+          command: 'npm test',
+          worktreeSetupCommand: 'bun install',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run renamed app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-lplr-app-1780329499166',
+          project_ids: ['project-lplr-app-1780329499166'],
+          execution_targets: [
+            {
+              projectId: 'project-lplr-app-1780329499166',
+              branchName: 'feature/run-app',
+              worktreeKey: 'branch-project-lplr-app-feature-run-app',
+              repoPath: '/repos/lplr-app',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-lplr-app-1780329499166::feature/run-app':
+          '/repos/octan_sales/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      completedCount: 1,
+      totalCount: 1,
+    });
+    expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-lplr-app-1780329499166',
+        repoPath: '/repos/octan_sales',
+        worktreePath: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        command: 'bun install',
+      })
+    );
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        projectId: 'project-lplr-app-1780329499166',
+        cwd: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        command: 'npm test',
+      })
+    );
+  });
+
+  it('runs the configured worktree setup command before launching task commands', async () => {
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: 'bun install',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        taskTitle: 'Run app',
+        projectId: 'project-1',
+        projectName: 'Project One',
+        repoPath: '/repos/web',
+        worktreePath: '/repos/web/.macro/worktrees/task-1',
+        command: 'bun install',
+      })
+    );
+    expect(startTaskCommandTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npm test',
+      })
+    );
+  });
+
+  it('clears the active command run when its terminal tab is closed', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      taskCommandRuns: {
+        'task-1': {
+          taskId: 'task-1',
+          status: 'running',
+          currentProjectId: 'project-1',
+          currentProjectName: 'Web',
+          activeTabIds: ['terminal-tab-1'],
+          startedAt: '2026-06-03T10:00:00.000Z',
+        },
+        'task-2': {
+          taskId: 'task-2',
+          status: 'running',
+          currentProjectId: 'project-2',
+          currentProjectName: 'API',
+          activeTabIds: ['terminal-tab-2'],
+          startedAt: '2026-06-03T10:01:00.000Z',
+        },
+      },
+    });
+
+    useTaskStore.getState().handleTaskCommandTerminalClosed('terminal-tab-1');
+
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
+    expect(useTaskStore.getState().taskCommandRuns['task-2']).toMatchObject({
+      activeTabIds: ['terminal-tab-2'],
+      currentProjectId: 'project-2',
+    });
+  });
+
+  it('closes the associated terminal tab when cancelling a task command run', async () => {
+    closeTabMock.mockClear();
+    interruptTabMock.mockClear();
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      taskCommandRuns: {
+        'task-1': {
+          taskId: 'task-1',
+          status: 'running',
+          currentProjectId: 'project-1',
+          currentProjectName: 'Web',
+          activeTabIds: ['terminal-tab-1'],
+          startedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+      lastError: null,
+    });
+
+    await useTaskStore.getState().cancelTaskCommands('task-1');
+
+    expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-1');
+    expect(interruptTabMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
+  });
+
+  it('tracks and closes every terminal opened by a multi-project command batch', async () => {
+    closeTabMock.mockClear();
+    appStoreState.projectGroups = [
+      {
+        id: 'group-1',
+        name: 'Group One',
+        isOpen: true,
+        projects: [
+          {
+            id: 'project-1',
+            name: 'Project One',
+            path: '/repos/web',
+          },
+          {
+            id: 'project-2',
+            name: 'Project Two',
+            path: '/repos/api',
+          },
+        ],
+      },
+    ];
+    appStoreState.getProjectById = (projectId: string) => projectId === 'project-2'
+      ? {
+          id: 'project-2',
+          name: 'Project Two',
+          path: '/repos/api',
+        }
+      : {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+        };
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+        '/repos/api': {
+          projectId: 'project-2',
+          projectName: 'Project Two',
+          projectPath: '/repos/api',
+          command: 'npm test',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    startTaskCommandTabMock
+      .mockImplementationOnce(async () => ({
+        id: 'terminal-tab-1',
+        kind: 'task' as const,
+        projectId: 'project-1',
+        taskId: 'task-1',
+        projectName: 'Project One',
+        mountName: 'project-one',
+        workspacePath: '/repos/web/.macro/worktrees/task-1-web',
+        cwd: '/repos/web/.macro/worktrees/task-1-web',
+        title: 'Project One - Task 1',
+        status: 'running' as const,
+        snapshot: 'npm test\r\n',
+        lastCommand: 'npm test',
+        lastExitCode: null,
+        hasLiveSession: true,
+        isRestored: false,
+        outputSequence: 1,
+        hasUnreadOutput: false,
+        createdAt: '2026-06-03T10:00:00.000Z',
+        updatedAt: '2026-06-03T10:00:00.000Z',
+      }))
+      .mockImplementationOnce(async () => ({
+        id: 'terminal-tab-2',
+        kind: 'task' as const,
+        projectId: 'project-2',
+        taskId: 'task-1',
+        projectName: 'Project Two',
+        mountName: 'project-two',
+        workspacePath: '/repos/api/.macro/worktrees/task-1-api',
+        cwd: '/repos/api/.macro/worktrees/task-1-api',
+        title: 'Project Two - Task 1',
+        status: 'running' as const,
+        snapshot: 'npm test\r\n',
+        lastCommand: 'npm test',
+        lastExitCode: null,
+        hasLiveSession: true,
+        isRestored: false,
+        outputSequence: 1,
+        hasUnreadOutput: false,
+        createdAt: '2026-06-03T10:00:00.000Z',
+        updatedAt: '2026-06-03T10:00:00.000Z',
+      }));
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        id: 'task-1',
+        status: 'InProgress',
+        draft: false,
+        project_id: 'project-1',
+        project_ids: ['project-1', 'project-2'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/run-app',
+            worktreeKey: 'project-1::feature/run-app',
+            repoPath: '/repos/web',
+          },
+          {
+            projectId: 'project-2',
+            branchName: 'feature/run-app',
+            worktreeKey: 'project-2::feature/run-app',
+            repoPath: '/repos/api',
+          },
+        ],
+      })],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1-web',
+        'project-2::feature/run-app': '/repos/api/.macro/worktrees/task-1-api',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({ status: 'completed', completedCount: 2, totalCount: 2 });
+    expect(useTaskStore.getState().taskCommandRuns['task-1']?.activeTabIds).toEqual([
+      'terminal-tab-1',
+      'terminal-tab-2',
+    ]);
+
+    await useTaskStore.getState().cancelTaskCommands('task-1');
+
+    expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-1');
+    expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-2');
+    expect(closeTabMock).toHaveBeenCalledTimes(2);
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
 });

@@ -4,10 +4,11 @@
 mod review;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use git2::{
@@ -18,9 +19,13 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::error::{BackendError, Result};
+use crate::core::process::background_command;
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
+use crate::project_path::{
+    parse_wsl_unc_path, run_wsl_git_allow_failure, WslCommandOutput, WslProjectPath,
+};
 use crate::workspace;
 use crate::workspace::metadata::WorkspaceRecoverMissingMetadataRequestDto;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
@@ -30,6 +35,8 @@ const DEFAULT_REMOTE_NAME: &str = "origin";
 const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
     "Commit message must follow Conventional Commits: type: subject";
 const MAX_CONFLICT_FILE_BYTES: usize = 1_000_000;
+const WSL_GIT_TIMEOUT: Duration = Duration::from_secs(8);
+const WSL_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -108,10 +115,26 @@ pub struct GitSyncDto {
     pub output: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GitRemoteDto {
+    pub remote: String,
+    pub url: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitWorktreeInspectionDto {
     pub task_id: String,
+    pub worktree_path: String,
+    pub branch_name: Option<String>,
+    pub status: String,
+    pub is_dirty: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeInspectionDto {
+    pub worktree_key: String,
     pub worktree_path: String,
     pub branch_name: Option<String>,
     pub status: String,
@@ -129,8 +152,27 @@ pub struct GitWorktreeEnsureDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeEnsureDto {
+    pub worktree_key: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitWorktreeRemoveDto {
     pub task_id: String,
+    pub worktree_path: String,
+    pub removed_path: bool,
+    pub pruned_registration: bool,
+    pub already_absent: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchWorktreeRemoveDto {
+    pub worktree_key: String,
     pub worktree_path: String,
     pub removed_path: bool,
     pub pruned_registration: bool,
@@ -333,13 +375,17 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| BackendError::Git {
-            message: format!("Failed to run git command '{}': {}", args.join(" "), e),
-        })?;
+    let repo = Repository::discover(cwd)?;
+    ensure_safe_config(&repo)?;
+
+    let mut command = background_command("git");
+    command
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
+    command.current_dir(cwd).args(args);
+    let output = command.output().map_err(|e| BackendError::Git {
+        message: format!("Failed to run git command '{}': {}", args.join(" "), e),
+    })?;
 
     Ok(GitCommandOutput {
         success: output.status.success(),
@@ -347,6 +393,12 @@ fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn is_git_environment_variable(key: &OsStr) -> bool {
+    key.to_string_lossy()
+        .to_ascii_uppercase()
+        .starts_with("GIT_")
 }
 
 fn command_output_text(output: &GitCommandOutput) -> String {
@@ -362,6 +414,812 @@ fn command_output_text(output: &GitCommandOutput) -> String {
         return stdout.to_string();
     }
     format!("{}\n{}", stdout, stderr)
+}
+
+fn wsl_output_text(output: &WslCommandOutput) -> String {
+    let stdout = output.stdout_text();
+    let stderr = output.stderr_text();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{}\n{}", stdout, stderr),
+    }
+}
+
+fn wsl_git_failure(output: &WslCommandOutput, fallback: &str) -> BackendError {
+    let details = wsl_output_text(output);
+    BackendError::Git {
+        message: if details.is_empty() {
+            fallback.to_string()
+        } else {
+            details
+        },
+    }
+}
+
+async fn run_wsl_git_checked(
+    repo_path: &WslProjectPath,
+    args: &[String],
+    timeout: Duration,
+    fallback: &str,
+) -> Result<WslCommandOutput> {
+    let output = run_wsl_git_allow_failure(repo_path, args, timeout).await?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(wsl_git_failure(&output, fallback))
+    }
+}
+
+pub(crate) fn parse_wsl_repo_path(repo_path: &str) -> Option<WslProjectPath> {
+    parse_wsl_unc_path(repo_path)
+}
+
+fn wsl_status_label(code: char) -> String {
+    match code {
+        'A' => "added",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "copied",
+        '?' => "untracked",
+        'U' => "conflicted",
+        _ => "modified",
+    }
+    .to_string()
+}
+
+fn parse_wsl_status_path(raw: &str) -> (Option<String>, String) {
+    if let Some((old_path, new_path)) = raw.split_once(" -> ") {
+        (
+            Some(old_path.trim().to_string()),
+            new_path.trim().to_string(),
+        )
+    } else {
+        (None, raw.trim().to_string())
+    }
+}
+
+fn parse_wsl_branch_line(line: &str) -> String {
+    let value = line.strip_prefix("## ").unwrap_or(line).trim();
+    if let Some(branch) = value.strip_prefix("No commits yet on ") {
+        return branch.trim().to_string();
+    }
+    if value.starts_with("HEAD ") || value.starts_with("HEAD(") || value == "HEAD" {
+        return "DETACHED".to_string();
+    }
+    value
+        .split("...")
+        .next()
+        .unwrap_or(value)
+        .split_whitespace()
+        .next()
+        .unwrap_or("DETACHED")
+        .to_string()
+}
+
+fn parse_wsl_commit_line(line: &str) -> Option<GitCommitDto> {
+    let parts = line.split('\x1f').collect::<Vec<_>>();
+    if parts.len() < 6 {
+        return None;
+    }
+    let id = parts[0].to_string();
+    let message = parts[2].to_string();
+    Some(GitCommitDto {
+        id: id.clone(),
+        hash: parts[1].to_string(),
+        message: message.clone(),
+        author: parts[3].to_string(),
+        date: parts[4].to_string(),
+        status: "committed".to_string(),
+        parent_ids: parts[5]
+            .split_whitespace()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        graph_depth: 0,
+        is_branch_point: false,
+        task_id: parse_task_id(&message),
+    })
+}
+
+fn annotate_commit_graph(commits: &mut [GitCommitDto]) {
+    let mut child_counts: HashMap<String, usize> = HashMap::new();
+    for commit in commits.iter() {
+        for parent_id in commit.parent_ids.iter() {
+            *child_counts.entry(parent_id.clone()).or_default() += 1;
+        }
+    }
+
+    let mut depth_map: HashMap<String, usize> = HashMap::new();
+    let mut child_seen: HashMap<String, usize> = HashMap::new();
+    let mut next_depth = 0usize;
+    for commit in commits.iter_mut() {
+        let mut depth = 0usize;
+        if let Some(parent) = commit.parent_ids.first() {
+            let base_depth = depth_map.get(parent).copied().unwrap_or(0);
+            let seen = child_seen.entry(parent.clone()).or_default();
+            depth = if *seen == 0 {
+                base_depth
+            } else {
+                next_depth + 1
+            };
+            *seen += 1;
+        }
+        if depth > next_depth {
+            next_depth = depth;
+        }
+        commit.graph_depth = depth;
+        commit.is_branch_point = child_counts.get(&commit.id).copied().unwrap_or(0) > 1;
+        depth_map.insert(commit.id.clone(), depth);
+    }
+}
+
+async fn wsl_head_commit(repo_path: &WslProjectPath) -> Result<Option<GitCommitDto>> {
+    let output = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "log".to_string(),
+            "-1".to_string(),
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(output
+        .stdout_text()
+        .lines()
+        .next()
+        .and_then(parse_wsl_commit_line))
+}
+
+pub(crate) async fn build_wsl_git_status(repo_path: &WslProjectPath) -> Result<GitStatusDto> {
+    let status_output = run_wsl_git_checked(
+        repo_path,
+        &[
+            "status".to_string(),
+            "--porcelain=v1".to_string(),
+            "--branch".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git status WSL failed",
+    )
+    .await?;
+    let mut branch = "DETACHED".to_string();
+    let mut staged_files = Vec::new();
+    let mut unstaged_files = Vec::new();
+    let mut untracked_files = Vec::new();
+    let mut conflicted_files = Vec::new();
+
+    for line in status_output.stdout_text().lines() {
+        if line.starts_with("## ") {
+            branch = parse_wsl_branch_line(line);
+            continue;
+        }
+        if line.len() < 3 {
+            continue;
+        }
+        let mut chars = line.chars();
+        let index_status = chars.next().unwrap_or(' ');
+        let worktree_status = chars.next().unwrap_or(' ');
+        let raw_path = line.get(3..).unwrap_or("").trim();
+        let (old_path, path) = parse_wsl_status_path(raw_path);
+        if path.is_empty() {
+            continue;
+        }
+        let is_conflict = index_status == 'U'
+            || worktree_status == 'U'
+            || matches!((index_status, worktree_status), ('A', 'A') | ('D', 'D'));
+        if is_conflict {
+            conflicted_files.push(path);
+            continue;
+        }
+        if index_status == '?' && worktree_status == '?' {
+            untracked_files.push(GitFileStatus {
+                path,
+                status: "untracked".to_string(),
+                old_path: None,
+            });
+            continue;
+        }
+        if index_status != ' ' {
+            staged_files.push(GitFileStatus {
+                path: path.clone(),
+                status: wsl_status_label(index_status),
+                old_path: old_path.clone(),
+            });
+        }
+        if worktree_status != ' ' {
+            unstaged_files.push(GitFileStatus {
+                path,
+                status: wsl_status_label(worktree_status),
+                old_path: None,
+            });
+        }
+    }
+
+    let head_commit = wsl_head_commit(repo_path).await?;
+    let has_origin = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "remote".to_string(),
+            "get-url".to_string(),
+            DEFAULT_REMOTE_NAME.to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?
+    .status
+    .success();
+    let upstream = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "rev-parse".to_string(),
+            "--abbrev-ref".to_string(),
+            "--symbolic-full-name".to_string(),
+            "@{u}".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    let has_upstream = upstream.status.success();
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    if has_upstream {
+        let counts = run_wsl_git_allow_failure(
+            repo_path,
+            &[
+                "rev-list".to_string(),
+                "--left-right".to_string(),
+                "--count".to_string(),
+                "@{u}...HEAD".to_string(),
+            ],
+            WSL_GIT_TIMEOUT,
+        )
+        .await?;
+        if counts.status.success() {
+            let values = counts.stdout_text();
+            let mut parts = values.split_whitespace();
+            behind = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            ahead = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+    let merge_in_progress = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "rev-parse".to_string(),
+            "-q".to_string(),
+            "--verify".to_string(),
+            "MERGE_HEAD".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?
+    .status
+    .success();
+    let is_clean = !merge_in_progress
+        && staged_files.is_empty()
+        && unstaged_files.is_empty()
+        && untracked_files.is_empty()
+        && conflicted_files.is_empty();
+
+    Ok(GitStatusDto {
+        branch,
+        head_commit,
+        staged_files,
+        unstaged_files,
+        untracked_files,
+        conflicted_files,
+        merge_in_progress,
+        is_clean,
+        has_origin,
+        has_upstream,
+        ahead,
+        behind,
+    })
+}
+
+pub(crate) async fn build_wsl_git_log(
+    repo_path: &WslProjectPath,
+    limit: usize,
+    branch: Option<&str>,
+) -> Result<Vec<GitCommitDto>> {
+    if let Some(branch) = branch {
+        validate_refspec(branch)?;
+    }
+    let status = build_wsl_git_status(repo_path).await?;
+    let mut commits = Vec::new();
+    if !status.unstaged_files.is_empty() || !status.untracked_files.is_empty() {
+        commits.push(build_virtual_commit("in-progress", "Working tree changes"));
+    }
+    if !status.staged_files.is_empty() {
+        commits.push(build_virtual_commit("planned", "Staged changes"));
+    }
+    let mut args = vec![
+        "log".to_string(),
+        format!("--max-count={}", limit),
+        "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
+    ];
+    if let Some(branch) = branch {
+        args.push(branch.to_string());
+    }
+    let output = run_wsl_git_allow_failure(repo_path, &args, WSL_GIT_TIMEOUT).await?;
+    if output.status.success() {
+        commits.extend(
+            output
+                .stdout_text()
+                .lines()
+                .filter_map(parse_wsl_commit_line),
+        );
+    }
+    annotate_commit_graph(&mut commits);
+    Ok(commits)
+}
+
+pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result<GitBranchesDto> {
+    let current_output = run_wsl_git_allow_failure(
+        repo_path,
+        &["branch".to_string(), "--show-current".to_string()],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    let current = if current_output.status.success() {
+        let value = current_output.stdout_text();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    } else {
+        None
+    };
+    let parse_refs = |stdout: String, current: Option<&String>| -> Vec<GitBranch> {
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let (name, commit) = line.split_once('\t')?;
+                Some(GitBranch {
+                    name: name.to_string(),
+                    is_head: current.is_some_and(|value| value == name),
+                    commit: commit.to_string(),
+                })
+            })
+            .collect()
+    };
+    let local_output = run_wsl_git_checked(
+        repo_path,
+        &[
+            "for-each-ref".to_string(),
+            "refs/heads".to_string(),
+            "--format=%(refname:short)\t%(objectname:short)".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git branch list WSL failed",
+    )
+    .await?;
+    let remote_output = run_wsl_git_checked(
+        repo_path,
+        &[
+            "for-each-ref".to_string(),
+            "refs/remotes".to_string(),
+            "--format=%(refname:short)\t%(objectname:short)".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git branch list WSL failed",
+    )
+    .await?;
+    Ok(GitBranchesDto {
+        local: parse_refs(local_output.stdout_text(), current.as_ref()),
+        remote: parse_refs(remote_output.stdout_text(), None),
+        current,
+    })
+}
+
+pub(crate) async fn wsl_git_add(repo_path: &WslProjectPath, paths: &[String]) -> Result<()> {
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    if paths.is_empty() {
+        args.push(".".to_string());
+    } else {
+        args.extend(paths.iter().cloned());
+    }
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git add WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_commit(
+    repo_path: &WslProjectPath,
+    message: &str,
+    stage_all: bool,
+) -> Result<String> {
+    validate_commit_message(message)?;
+    if stage_all {
+        wsl_git_add(repo_path, &[".".to_string()]).await?;
+    }
+    run_wsl_git_checked(
+        repo_path,
+        &[
+            "-c".to_string(),
+            "user.name=Macro".to_string(),
+            "-c".to_string(),
+            "user.email=macro@local".to_string(),
+            "commit".to_string(),
+            "-m".to_string(),
+            message.to_string(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git commit WSL failed",
+    )
+    .await?;
+    let hash = run_wsl_git_checked(
+        repo_path,
+        &[
+            "rev-parse".to_string(),
+            "--short=12".to_string(),
+            "HEAD".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git rev-parse WSL failed",
+    )
+    .await?;
+    Ok(hash.stdout_text())
+}
+
+async fn wsl_git_restore_paths(
+    repo_path: &WslProjectPath,
+    paths: &[String],
+    target: RestoreTarget,
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["restore".to_string()];
+    match target {
+        RestoreTarget::Worktree => {}
+        RestoreTarget::Staged => args.push("--staged".to_string()),
+        RestoreTarget::StagedAndWorktree => {
+            args.push("--staged".to_string());
+            args.push("--worktree".to_string());
+        }
+    }
+    args.push("--".to_string());
+    args.extend(paths.iter().cloned());
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git restore WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_reset(
+    repo_path: &WslProjectPath,
+    mode: &str,
+    commit: Option<String>,
+    confirm: Option<bool>,
+) -> Result<()> {
+    let reset_mode = match mode {
+        "soft" | "mixed" | "hard" => mode,
+        other => {
+            return Err(BackendError::Validation(format!(
+                "Invalid reset mode: {}",
+                other
+            )))
+        }
+    };
+    if reset_mode == "hard" && !confirm.unwrap_or(false) {
+        return Err(BackendError::Git {
+            message: "Hard reset is destructive; set confirm=true".to_string(),
+        });
+    }
+    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
+    if let Some(commit) = commit {
+        args.push(commit);
+    }
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git reset WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_checkout(
+    repo_path: &WslProjectPath,
+    branch_or_commit: &str,
+    create: bool,
+) -> Result<()> {
+    if create {
+        validate_branch_name(branch_or_commit)?;
+    } else {
+        validate_refspec(branch_or_commit)?;
+    }
+    let mut args = vec!["checkout".to_string()];
+    if create {
+        args.push("-b".to_string());
+    }
+    args.push(branch_or_commit.to_string());
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git checkout WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn wsl_git_branch_create(
+    repo_path: &WslProjectPath,
+    branch_name: &str,
+    from_ref: &str,
+) -> Result<()> {
+    validate_branch_name(branch_name)?;
+    validate_refspec(from_ref)?;
+    run_wsl_git_checked(
+        repo_path,
+        &[
+            "branch".to_string(),
+            branch_name.to_string(),
+            from_ref.to_string(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git branch WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn wsl_git_branch_delete(
+    repo_path: &WslProjectPath,
+    branch_name: &str,
+    force: bool,
+) -> Result<()> {
+    validate_branch_name(branch_name)?;
+    run_wsl_git_checked(
+        repo_path,
+        &[
+            "branch".to_string(),
+            if force { "-D" } else { "-d" }.to_string(),
+            branch_name.to_string(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git branch delete WSL failed",
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_diff(
+    repo_path: &WslProjectPath,
+    base: Option<&str>,
+    head: Option<&str>,
+    options: DiffRequestOptions,
+) -> Result<String> {
+    let mut args = vec!["diff".to_string()];
+    if let Some(context_lines) = options.context_lines {
+        args.push(format!("--unified={}", context_lines));
+    }
+    if options.ignore_whitespace {
+        args.push("--ignore-all-space".to_string());
+    }
+    match (base, head) {
+        (Some(base), Some(head)) => args.push(format!("{}..{}", base, head)),
+        (Some(base), None) => args.push(base.to_string()),
+        (None, Some(head)) => args.push(head.to_string()),
+        (None, None) => {}
+    }
+    if let Some(paths) = options.paths {
+        if !paths.is_empty() {
+            args.push("--".to_string());
+            args.extend(paths);
+        }
+    }
+    let output =
+        run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git diff WSL failed").await?;
+    Ok(output.stdout_text())
+}
+
+pub(crate) async fn build_wsl_git_tree(
+    repo_path: &WslProjectPath,
+    branch: Option<&str>,
+) -> Result<PredictedGitTreeDto> {
+    let branch_name = if let Some(branch) = branch {
+        validate_refspec(branch)?;
+        branch.to_string()
+    } else {
+        build_wsl_git_status(repo_path).await?.branch
+    };
+    let tree_ref = if branch_name == "DETACHED" {
+        "HEAD".to_string()
+    } else {
+        branch_name.clone()
+    };
+    let tree_output = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "ls-tree".to_string(),
+            "-r".to_string(),
+            "--name-only".to_string(),
+            tree_ref,
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    let mut structure = Vec::new();
+    if tree_output.status.success() {
+        for path in tree_output.stdout_text().lines() {
+            let parts = path.split('/').collect::<Vec<_>>();
+            insert_node(&mut structure, &parts, "", "tracked");
+        }
+    }
+    let status = build_wsl_git_status(repo_path).await?;
+    let mut status_count = 0u32;
+    for file in status
+        .staged_files
+        .iter()
+        .chain(status.unstaged_files.iter())
+        .chain(status.untracked_files.iter())
+    {
+        status_count += 1;
+        let parts = file.path.split('/').collect::<Vec<_>>();
+        insert_node(&mut structure, &parts, "", &file.status);
+    }
+    for path in status.conflicted_files {
+        status_count += 1;
+        let parts = path.split('/').collect::<Vec<_>>();
+        insert_node(&mut structure, &parts, "", "conflicted");
+    }
+    Ok(PredictedGitTreeDto {
+        branch: branch_name,
+        structure,
+        modified_files_count: status_count,
+    })
+}
+
+async fn wsl_resolve_target_branch(
+    repo_path: &WslProjectPath,
+    branch: Option<String>,
+) -> Result<String> {
+    if let Some(branch) = branch {
+        let branch = branch.trim().to_string();
+        if branch.is_empty() {
+            return Err(BackendError::Validation(
+                "Branch cannot be empty".to_string(),
+            ));
+        }
+        return Ok(branch);
+    }
+    let output = run_wsl_git_checked(
+        repo_path,
+        &["branch".to_string(), "--show-current".to_string()],
+        WSL_GIT_TIMEOUT,
+        "Cannot determine current WSL branch",
+    )
+    .await?;
+    let branch = output.stdout_text();
+    if branch.is_empty() {
+        Err(BackendError::GitBranchNotFound {
+            message: "No current branch".to_string(),
+        })
+    } else {
+        Ok(branch)
+    }
+}
+
+async fn wsl_git_sync(
+    repo_path: &WslProjectPath,
+    operation: &str,
+    remote: Option<String>,
+    branch: Option<String>,
+) -> Result<GitSyncDto> {
+    let remote_name = remote
+        .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+        .trim()
+        .to_string();
+    validate_remote_name(&remote_name)?;
+    let branch_name = wsl_resolve_target_branch(repo_path, branch).await?;
+    let args = match operation {
+        "fetch" => vec![
+            "fetch".to_string(),
+            remote_name.clone(),
+            branch_name.clone(),
+        ],
+        "push" => vec![
+            "push".to_string(),
+            "-u".to_string(),
+            remote_name.clone(),
+            branch_name.clone(),
+        ],
+        "pull" => vec![
+            "pull".to_string(),
+            "--no-rebase".to_string(),
+            remote_name.clone(),
+            branch_name.clone(),
+        ],
+        other => {
+            return Err(BackendError::Validation(format!(
+                "Invalid Git sync operation: {}",
+                other
+            )))
+        }
+    };
+    let output = run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "Git WSL sync failed",
+    )
+    .await?;
+    Ok(GitSyncDto {
+        branch: branch_name,
+        remote: remote_name,
+        output: wsl_output_text(&output),
+    })
+}
+
+async fn wsl_git_remote_add_origin(repo_path: &WslProjectPath, url: &str) -> Result<GitRemoteDto> {
+    let normalized_url = normalize_remote_url(url)?;
+    let exists = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "remote".to_string(),
+            "get-url".to_string(),
+            DEFAULT_REMOTE_NAME.to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?
+    .status
+    .success();
+    if exists {
+        return Err(BackendError::Validation(
+            "Remote origin is already configured".to_string(),
+        ));
+    }
+    run_wsl_git_checked(
+        repo_path,
+        &[
+            "remote".to_string(),
+            "add".to_string(),
+            DEFAULT_REMOTE_NAME.to_string(),
+            normalized_url.clone(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git remote add WSL failed",
+    )
+    .await?;
+    Ok(GitRemoteDto {
+        remote: DEFAULT_REMOTE_NAME.to_string(),
+        url: normalized_url,
+    })
+}
+
+fn unsupported_wsl_git_operation(name: &str) -> BackendError {
+    BackendError::Git {
+        message: format!(
+            "L'operation Git WSL '{}' n'est pas encore prise en charge sans fallback Windows.",
+            name
+        ),
+    }
 }
 
 fn sanitize_temp_segment(value: &str) -> String {
@@ -404,6 +1262,41 @@ fn validate_remote_name(remote: &str) -> Result<()> {
     Ok(())
 }
 
+fn normalize_remote_url(url: &str) -> Result<String> {
+    let normalized = url.trim().to_string();
+    if normalized.is_empty() {
+        return Err(BackendError::Validation(
+            "Remote URL cannot be empty".to_string(),
+        ));
+    }
+    if normalized
+        .chars()
+        .any(|c| c == '\n' || c == '\r' || c == '\0')
+    {
+        return Err(BackendError::Validation(
+            "Remote URL cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn add_origin_remote(repo: &Repository, url: &str) -> Result<GitRemoteDto> {
+    let normalized_url = normalize_remote_url(url)?;
+    if repo.find_remote(DEFAULT_REMOTE_NAME).is_ok() {
+        return Err(BackendError::Validation(
+            "Remote origin is already configured".to_string(),
+        ));
+    }
+    repo.remote(DEFAULT_REMOTE_NAME, &normalized_url)
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to add remote origin: {}", error),
+        })?;
+    Ok(GitRemoteDto {
+        remote: DEFAULT_REMOTE_NAME.to_string(),
+        url: normalized_url,
+    })
+}
+
 fn resolve_target_branch(repo: &Repository, branch: Option<String>) -> Result<String> {
     if let Some(branch) = branch {
         let normalized = branch.trim().to_string();
@@ -424,12 +1317,14 @@ fn resolve_target_branch(repo: &Repository, branch: Option<String>) -> Result<St
 fn resolve_macro_worktree(
     git_state: &GitState,
     workspace_root: &Path,
-) -> Result<(PathBuf, Repository)> {
+) -> Result<(PathBuf, Repository, bool)> {
     let repo = git_state.open_repo(workspace_root)?;
     let repo = repo.lock().map_err(|_| BackendError::Internal {
         message: "Failed to lock repository".to_string(),
     })?;
-    let worktree_path = git_state.ensure_macro_metadata_worktree(&repo)?;
+    let ensured = git_state.ensure_macro_metadata_worktree_with_status(&repo)?;
+    let worktree_path = ensured.worktree_path;
+    let repaired_after_move = ensured.repaired_after_move;
     drop(repo);
 
     let worktree_repo = Repository::open(&worktree_path).map_err(|e| BackendError::Git {
@@ -440,7 +1335,7 @@ fn resolve_macro_worktree(
         ),
     })?;
 
-    Ok((worktree_path, worktree_repo))
+    Ok((worktree_path, worktree_repo, repaired_after_move))
 }
 
 fn resolve_macro_workspace_path(
@@ -458,6 +1353,15 @@ fn resolve_macro_workspace_path(
         }
         None => default_workspace_root.to_path_buf(),
     }
+}
+
+fn ensure_macro_workspace_not_wsl(workspace: &Path) -> Result<()> {
+    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
+        return Err(BackendError::Git {
+            message: "Les metadata @macro pour WSL doivent etre gerees via Git Linux; ce flux n'est pas encore porte sans fallback Windows.".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn gather_macro_conflicted_files(repo: &Repository) -> Result<Vec<String>> {
@@ -610,6 +1514,14 @@ fn derive_macro_sync_diagnostic(
         };
     }
 
+    if !signals.has_upstream {
+        return MacroSyncDiagnostic {
+            state: "pending",
+            reason: Some("missing_upstream"),
+            next_action: Some("push"),
+        };
+    }
+
     if signals.ahead > 0 && signals.behind > 0 {
         return MacroSyncDiagnostic {
             state: "pending",
@@ -630,14 +1542,6 @@ fn derive_macro_sync_diagnostic(
         return MacroSyncDiagnostic {
             state: "pending",
             reason: Some("ahead"),
-            next_action: Some("push"),
-        };
-    }
-
-    if !signals.has_upstream {
-        return MacroSyncDiagnostic {
-            state: "pending",
-            reason: Some("missing_upstream"),
             next_action: Some("push"),
         };
     }
@@ -3081,6 +3985,10 @@ pub async fn git_status(
     git_state: State<'_, GitState>,
     repo_path: String,
 ) -> Result<GitStatusDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return build_wsl_git_status(&wsl_repo_path).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3106,6 +4014,11 @@ pub async fn git_log(
     limit: Option<u32>,
     branch: Option<String>,
 ) -> Result<Vec<GitCommitDto>> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let limit = limit.map(|v| v as usize).unwrap_or(DEFAULT_LOG_LIMIT);
+        return build_wsl_git_log(&wsl_repo_path, limit, branch.as_deref()).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
     let limit = limit.map(|v| v as usize).unwrap_or(DEFAULT_LOG_LIMIT);
@@ -3130,6 +4043,10 @@ pub async fn git_branch_list(
     git_state: State<'_, GitState>,
     repo_path: String,
 ) -> Result<GitBranchesDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return build_wsl_git_branches(&wsl_repo_path).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3155,6 +4072,10 @@ pub async fn git_branch_create(
     branch_name: String,
     from_ref: String,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_branch_create(&wsl_repo_path, &branch_name, &from_ref).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3180,6 +4101,10 @@ pub async fn git_branch_delete(
     branch_name: String,
     force: Option<bool>,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3205,6 +4130,28 @@ pub async fn git_branch_delete_remote(
     branch_name: String,
     remote: Option<String>,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        validate_branch_name(&branch_name)?;
+        let remote_name = remote
+            .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
+            .trim()
+            .to_string();
+        validate_remote_name(&remote_name)?;
+        run_wsl_git_checked(
+            &wsl_repo_path,
+            &[
+                "push".to_string(),
+                remote_name,
+                "--delete".to_string(),
+                branch_name,
+            ],
+            WSL_GIT_MUTATION_TIMEOUT,
+            "git push --delete WSL failed",
+        )
+        .await?;
+        return Ok(());
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3259,6 +4206,10 @@ pub async fn git_checkout(
     branch_or_commit: String,
     create: bool,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3284,6 +4235,10 @@ pub async fn git_merge_check(
     branch_name: String,
     into_branch: String,
 ) -> Result<GitMergeCheckDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_merge_check"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3309,6 +4264,10 @@ pub async fn git_merge(
     branch_name: String,
     into_branch: String,
 ) -> Result<String> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_merge"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3334,6 +4293,10 @@ pub async fn git_start_merge_resolution(
     branch_name: String,
     into_branch: String,
 ) -> Result<GitStartMergeResolutionDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_start_merge_resolution"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3359,6 +4322,10 @@ pub async fn git_fast_forward(
     source_branch: String,
     target_branch: String,
 ) -> Result<String> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_fast_forward"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3384,6 +4351,10 @@ pub async fn git_rebase_check(
     branch_name: String,
     onto_branch: String,
 ) -> Result<GitRebaseCheckDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_rebase_check"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3410,6 +4381,10 @@ pub async fn git_rebase_branch(
     onto_branch: String,
     confirm: Option<bool>,
 ) -> Result<String> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_rebase_branch"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3435,6 +4410,10 @@ pub async fn git_commit(
     message: String,
     stage_all: bool,
 ) -> Result<String> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_commit(&wsl_repo_path, &message, stage_all).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3459,6 +4438,10 @@ pub async fn git_add(
     repo_path: String,
     paths: Vec<String>,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_add(&wsl_repo_path, &paths).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3484,6 +4467,15 @@ pub async fn git_restore_paths(
     paths: Vec<String>,
     target: Option<String>,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_restore_paths(
+            &wsl_repo_path,
+            &paths,
+            RestoreTarget::from_option(target.as_deref())?,
+        )
+        .await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3514,6 +4506,10 @@ pub async fn git_reset(
     commit: Option<String>,
     confirm: Option<bool>,
 ) -> Result<()> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_reset(&wsl_repo_path, &mode, commit, confirm).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3544,6 +4540,10 @@ pub async fn git_abort_merge(
     repo_path: String,
     confirm: Option<bool>,
 ) -> Result<()> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_abort_merge"));
+    }
+
     if !confirm.unwrap_or(false) {
         return Err(BackendError::Git {
             message: "Abort merge requires confirm=true".to_string(),
@@ -3574,6 +4574,10 @@ pub async fn git_stash(
     repo_path: String,
     message: Option<String>,
 ) -> Result<String> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_stash"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3603,6 +4607,20 @@ pub async fn git_diff(
     ignore_whitespace: Option<bool>,
     paths: Option<Vec<String>>,
 ) -> Result<String> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_diff(
+            &wsl_repo_path,
+            base.as_deref(),
+            head.as_deref(),
+            DiffRequestOptions {
+                context_lines,
+                ignore_whitespace: ignore_whitespace.unwrap_or(false),
+                paths,
+            },
+        )
+        .await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3636,6 +4654,10 @@ pub async fn git_read_file_pair(
     repo_path: String,
     path: String,
 ) -> Result<GitFilePairDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_read_file_pair"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3660,6 +4682,10 @@ pub async fn git_review_snapshot(
     git_state: State<'_, GitState>,
     repo_path: String,
 ) -> Result<GitReviewSnapshotDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_review_snapshot"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3684,6 +4710,10 @@ pub async fn git_review_file(
     repo_path: String,
     path: String,
 ) -> Result<GitReviewFileDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_review_file"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3718,6 +4748,10 @@ pub async fn git_read_conflict_file(
     repo_path: String,
     path: String,
 ) -> Result<GitConflictFileDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_read_conflict_file"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3745,6 +4779,12 @@ pub async fn git_write_conflict_resolution(
     content: String,
     stage: Option<bool>,
 ) -> Result<()> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation(
+            "git_write_conflict_resolution",
+        ));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3777,6 +4817,10 @@ pub async fn git_accept_conflict_side(
     path: String,
     side: String,
 ) -> Result<()> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_accept_conflict_side"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3801,6 +4845,10 @@ pub async fn git_complete_merge(
     git_state: State<'_, GitState>,
     repo_path: String,
 ) -> Result<String> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_complete_merge"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3825,6 +4873,10 @@ pub async fn git_get_tree(
     repo_path: String,
     branch: Option<String>,
 ) -> Result<PredictedGitTreeDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return build_wsl_git_tree(&wsl_repo_path, branch.as_deref()).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3850,6 +4902,10 @@ pub async fn git_worktree_inspect(
     task_id: String,
     branch_name: Option<String>,
 ) -> Result<GitWorktreeInspectionDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_worktree_inspect"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3900,7 +4956,12 @@ pub async fn git_worktree_create(
     branch_name: String,
     from_ref: Option<String>,
     preferred_commit_branch: Option<String>,
+    fallback_branches: Option<Vec<String>>,
 ) -> Result<GitWorktreeEnsureDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_worktree_create"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3911,12 +4972,20 @@ pub async fn git_worktree_create(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        let fallback_branches = fallback_branches.unwrap_or_else(|| {
+            preferred_commit_branch
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>()
+        });
+
         let ensured = git_state.ensure_task_worktree(
             &repo,
             &task_id,
             &branch_name,
             from_ref.as_deref(),
             preferred_commit_branch.as_deref(),
+            &fallback_branches,
         )?;
         Ok(GitWorktreeEnsureDto {
             task_id: ensured.task_id,
@@ -3935,6 +5004,142 @@ pub async fn git_worktree_create(
 }
 
 #[tauri::command]
+/// Inspect a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_inspect(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+) -> Result<GitBranchWorktreeInspectionDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_branch_worktree_inspect"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
+        Ok(GitBranchWorktreeInspectionDto {
+            worktree_key: inspection.worktree_key,
+            worktree_path: inspection.worktree_path.to_string_lossy().into_owned(),
+            branch_name: inspection.branch_name,
+            status: match inspection.status {
+                TaskWorktreeStatus::Absent => TaskWorktreeStatus::Absent.as_str(),
+                TaskWorktreeStatus::Ready => TaskWorktreeStatus::Ready.as_str(),
+                TaskWorktreeStatus::StaleRegistration => {
+                    TaskWorktreeStatus::StaleRegistration.as_str()
+                }
+                TaskWorktreeStatus::OrphanPath => TaskWorktreeStatus::OrphanPath.as_str(),
+                TaskWorktreeStatus::InvalidRepo => TaskWorktreeStatus::InvalidRepo.as_str(),
+            }
+            .to_string(),
+            is_dirty: inspection.is_dirty,
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Create or repair a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_create(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+    from_ref: Option<String>,
+    fallback_branches: Option<Vec<String>>,
+) -> Result<GitBranchWorktreeEnsureDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_branch_worktree_create"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let fallback_branches = fallback_branches.unwrap_or_default();
+        let ensured = git_state.ensure_branch_worktree(
+            &repo,
+            &worktree_key,
+            &branch_name,
+            from_ref.as_deref(),
+            &fallback_branches,
+        )?;
+        Ok(GitBranchWorktreeEnsureDto {
+            worktree_key: ensured.worktree_key,
+            worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
+            branch_name: ensured.branch_name,
+            status: match ensured.status {
+                TaskWorktreeEnsureStatus::Created => TaskWorktreeEnsureStatus::Created.as_str(),
+                TaskWorktreeEnsureStatus::Reused => TaskWorktreeEnsureStatus::Reused.as_str(),
+                TaskWorktreeEnsureStatus::Repaired => TaskWorktreeEnsureStatus::Repaired.as_str(),
+            }
+            .to_string(),
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Remove a Git worktree for a generic branch integration target.
+pub async fn git_branch_worktree_remove(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    worktree_key: String,
+    branch_name: String,
+    force: Option<bool>,
+) -> Result<GitBranchWorktreeRemoveDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_branch_worktree_remove"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        let removed = git_state.remove_branch_worktree(
+            &repo,
+            &worktree_key,
+            &branch_name,
+            force.unwrap_or(false),
+        )?;
+        Ok(GitBranchWorktreeRemoveDto {
+            worktree_key: removed.worktree_key,
+            worktree_path: removed.worktree_path.to_string_lossy().into_owned(),
+            removed_path: removed.removed_path,
+            pruned_registration: removed.pruned_registration,
+            already_absent: removed.already_absent,
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Remove a Git worktree for a specific task.
 pub async fn git_worktree_remove(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -3944,6 +5149,10 @@ pub async fn git_worktree_remove(
     force: Option<bool>,
     branch_name: Option<String>,
 ) -> Result<GitWorktreeRemoveDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_worktree_remove"));
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -3984,6 +5193,10 @@ pub async fn git_fetch(
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_sync(&wsl_repo_path, "fetch", remote, branch).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -4037,6 +5250,10 @@ pub async fn git_push(
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_sync(&wsl_repo_path, "push", remote, branch).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -4084,6 +5301,32 @@ pub async fn git_push(
 }
 
 #[tauri::command]
+pub async fn git_remote_add_origin(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    url: String,
+) -> Result<GitRemoteDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_remote_add_origin(&wsl_repo_path, &url).await;
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        add_origin_remote(&repo, &url)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Pull updates for current branch (or provided branch) from remote.
 pub async fn git_pull(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -4092,6 +5335,10 @@ pub async fn git_pull(
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_sync(&wsl_repo_path, "pull", remote, branch).await;
+    }
+
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
@@ -4149,16 +5396,25 @@ pub async fn macro_branch_ensure(
         &workspace_root.inner().0.read().await.clone(),
         workspace_path,
     );
+    ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, repaired_after_move) =
+            resolve_macro_worktree(&git_state, &workspace)?;
         build_macro_sync_dto(
             &worktree_repo,
             &worktree_path,
             false,
             None,
-            Some("Metadata branch ensured".to_string()),
+            Some(
+                if repaired_after_move {
+                    "Metadata worktree repaired after project move."
+                } else {
+                    "Metadata branch ensured"
+                }
+                .to_string(),
+            ),
             None,
         )
     })
@@ -4177,11 +5433,21 @@ pub async fn macro_branch_status(
         &workspace_root.inner().0.read().await.clone(),
         workspace_path,
     );
+    ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
-        build_macro_sync_dto(&worktree_repo, &worktree_path, false, None, None, None)
+        let (worktree_path, worktree_repo, repaired_after_move) =
+            resolve_macro_worktree(&git_state, &workspace)?;
+        build_macro_sync_dto(
+            &worktree_repo,
+            &worktree_path,
+            false,
+            None,
+            repaired_after_move
+                .then(|| "Metadata worktree repaired after project move.".to_string()),
+            None,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -4199,6 +5465,7 @@ pub async fn macro_branch_commit_if_dirty(
         &workspace_root.inner().0.read().await.clone(),
         workspace_path,
     );
+    ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
@@ -4206,7 +5473,7 @@ pub async fn macro_branch_commit_if_dirty(
         .to_string();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
 
         let add_output = run_git_command(
             &worktree_path,
@@ -4332,10 +5599,11 @@ pub async fn macro_branch_push(
         &workspace_root.inner().0.read().await.clone(),
         workspace_path,
     );
+    ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let push_output = run_git_command(
             &worktree_path,
             &[
@@ -4409,10 +5677,11 @@ pub async fn macro_branch_pull(
         &workspace_root.inner().0.read().await.clone(),
         workspace_path,
     );
+    ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let (worktree_path, worktree_repo) = resolve_macro_worktree(&git_state, &workspace)?;
+        let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let pull_output = run_git_command(
             &worktree_path,
             &[
@@ -4511,6 +5780,34 @@ mod tests {
         }
         repo.set_head(&branch_ref).expect("set HEAD to @macro");
         (temp, repo)
+    }
+
+    #[test]
+    fn git_environment_filter_is_case_insensitive() {
+        assert!(is_git_environment_variable(OsStr::new("GIT_DIR")));
+        assert!(is_git_environment_variable(OsStr::new("git_config_count")));
+        assert!(!is_git_environment_variable(OsStr::new("PATH")));
+    }
+
+    #[test]
+    fn run_git_command_rejects_unsafe_hooks_path() {
+        let (temp, repo) = init_repo();
+        let hooks_path = temp
+            .path()
+            .parent()
+            .expect("temp parent")
+            .join("outside-hooks");
+        repo.config()
+            .expect("repo config")
+            .set_str("core.hooksPath", hooks_path.to_string_lossy().as_ref())
+            .expect("set hooks path");
+
+        let error = match run_git_command(temp.path(), &["status".to_string()]) {
+            Ok(_) => panic!("unsafe hooks path must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("core.hooksPath"));
     }
 
     #[test]
@@ -5198,6 +6495,60 @@ mod tests {
         assert_eq!(diagnostic.state, "pending");
         assert_eq!(diagnostic.reason, Some("missing_upstream"));
         assert_eq!(diagnostic.next_action, Some("push"));
+    }
+
+    #[test]
+    fn test_derive_macro_sync_diagnostic_missing_upstream_wins_over_ahead() {
+        let diagnostic = derive_macro_sync_diagnostic(
+            &MacroSyncSignals {
+                has_origin: true,
+                has_upstream: false,
+                is_dirty: false,
+                ahead: 2,
+                behind: 0,
+                has_conflicts: false,
+            },
+            None,
+        );
+
+        assert_eq!(diagnostic.state, "pending");
+        assert_eq!(diagnostic.reason, Some("missing_upstream"));
+        assert_eq!(diagnostic.next_action, Some("push"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_adds_origin() {
+        let (_temp, repo) = init_repo();
+
+        let result =
+            add_origin_remote(&repo, "https://github.com/example/repo.git").expect("add origin");
+
+        assert_eq!(result.remote, "origin");
+        assert_eq!(result.url, "https://github.com/example/repo.git");
+        let origin = repo.find_remote("origin").expect("origin remote");
+        assert_eq!(origin.url(), Some("https://github.com/example/repo.git"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_rejects_existing_origin() {
+        let (_temp, repo) = init_repo();
+        add_origin_remote(&repo, "https://github.com/example/repo.git").expect("add origin");
+
+        let error = add_origin_remote(&repo, "https://github.com/example/other.git")
+            .expect_err("existing origin should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Remote origin is already configured"));
+    }
+
+    #[test]
+    fn test_add_origin_remote_rejects_empty_url() {
+        let (_temp, repo) = init_repo();
+
+        let error = add_origin_remote(&repo, "  ").expect_err("empty url should fail");
+
+        assert!(error.to_string().contains("Remote URL cannot be empty"));
     }
 
     #[test]

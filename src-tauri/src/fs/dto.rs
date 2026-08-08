@@ -39,6 +39,28 @@ pub struct DirEntryDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceFileSearchRootDto {
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub workspace_path: String,
+    pub mount_name: Option<String>,
+    pub is_focused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceFileSearchResultDto {
+    pub id: String,
+    pub path: String,
+    pub relative_path: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub language: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub modified: Option<String>,
+    pub is_focused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileStatsDto {
     /// Absolute path
     pub path: String,
